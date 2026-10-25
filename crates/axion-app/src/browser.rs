@@ -107,10 +107,10 @@ struct SiteClick {
 const SITE_CLICK_RETRY: Duration = Duration::from_millis(1200);
 const SITE_CLICK_TRIES: u32 = 3;
 const DAY_SECONDS: i64 = 24 * 60 * 60;
-/// Scrolling more than this (CSS px) between two reports hides or shows the bars …
-const SCROLL_THRESHOLD: f32 = 10.0;
-/// … and near the top of the page they always show.
-const SCROLL_SHOW_NEAR_TOP: f32 = 40.0;
+
+/// While the page's frame is smaller than its rectangle, the column this far (logical px)
+/// from the frame's right edge fills the rest: just left of a classic scrollbar.
+const EDGE_SAMPLE_INSET: f32 = 20.0;
 
 /// Time between the steps of a capture's `--open=a,b`.
 const OPEN_STEP_INTERVAL: Duration = Duration::from_millis(2500);
@@ -189,7 +189,6 @@ pub struct Browser {
     clipboard_reader: ClipboardReader,
     player: PlayerOverlay,
     /// The active page's last reported scroll position (CSS px).
-    last_scroll_y: f32,
     /// Frames saved so far by the `AXION_CAPTURE_FRAMES` debug aid.
     capture_frame: u32,
     /// Those frames, kept in memory until the sequence is complete (saving each one at once
@@ -466,7 +465,6 @@ impl Browser {
             file_drag_at: None,
             clipboard_reader: ClipboardReader::default(),
             player,
-            last_scroll_y: 0.0,
             capture_frame: 0,
             captured_frames: Vec::new(),
             pip: None,
@@ -690,14 +688,12 @@ impl Browser {
     }
 
     fn on_active_changed(&mut self, previous: Option<ViewId>) {
-        self.last_scroll_y = 0.0;
         // Find on Page belongs to the page it was opened on.
         self.close_find();
         self.passwords.hide_prompt(None, false);
         if let Some(tab) = self.tabs.active_mut() {
             tab.last_viewed = unix_now();
         }
-        self.set_bars_collapsed(false);
         if let Some(view) = previous {
             self.engine.set_focus(view, false);
             self.engine.set_hidden(view, true);
@@ -784,10 +780,7 @@ impl Browser {
                     self.engine.set_zoom_level(view, zoom);
                 }
             }
-            Action::ToggleFullscreen => {
-                let fullscreen = self.window.fullscreen().is_none().then_some(Fullscreen::Borderless(None));
-                self.window.set_fullscreen(fullscreen);
-            }
+            Action::ToggleFullscreen => self.set_presentation(!self.chrome.presentation()),
             Action::TabOverview => {
                 if self.overview.is_open() {
                     self.close_overview(self.tabs.active_index());
@@ -1180,11 +1173,7 @@ impl Browser {
                 }
                 self.update_now_playing();
             }
-            axion_media::Message::Scroll { y } => {
-                if Some(view) == self.active_view() {
-                    self.page_scrolled(y);
-                }
-            }
+            axion_media::Message::Probe(state) => tracing::info!(%state, "media probe"),
             axion_media::Message::DoubleClick { id } => {
                 let fullscreen = self.player.mode() != PlayerMode::Fullscreen;
                 let command = axion_media::Command::new(&id, axion_media::Action::Fullscreen(fullscreen));
@@ -1475,30 +1464,15 @@ impl Browser {
         }
     }
 
-    /// Hides the bars while the page scrolls down and brings them back when it scrolls up
-    /// (Safari's "hide tab bar when scrolling").
-    fn page_scrolled(&mut self, y: f32) {
-        let dy = y - self.last_scroll_y;
-        self.last_scroll_y = y;
-        if !self.config.layout.hide_bar_on_scroll || self.overview.is_open() {
+    /// Whole-page fullscreen (F11): the window goes fullscreen and Axion's chrome gives way
+    /// to the page; the page's own element fullscreen (video) is separate and keeps working.
+    fn set_presentation(&mut self, on: bool) {
+        if !self.chrome.set_presentation(on, &self.config) {
             return;
         }
-        let collapse = if y <= SCROLL_SHOW_NEAR_TOP || dy < -SCROLL_THRESHOLD {
-            false
-        } else if dy > SCROLL_THRESHOLD {
-            true
-        } else {
-            return;
-        };
-        self.set_bars_collapsed(collapse);
-    }
-
-    fn set_bars_collapsed(&mut self, collapse: bool) {
-        if self.chrome.set_collapsed(collapse, &self.config) {
-            let host = self.tabs.active().map(|t| display_host(&t.url)).unwrap_or_default();
-            self.chrome.set_mini_host(&mut self.ui, &host);
-            self.update_layout();
-        }
+        let window = on || self.chrome.page_fullscreen();
+        self.window.set_fullscreen(window.then_some(Fullscreen::Borderless(None)));
+        self.update_layout();
     }
 
     fn update_player(&mut self, dt: f32) {
@@ -2667,7 +2641,6 @@ impl Browser {
                             self.tabs_changed = true;
                         }
                     }
-                    Some(ChromeAction::ExpandBars) => self.set_bars_collapsed(false),
                     Some(ChromeAction::NowPlaying) => {
                         if let Some(view) = self.now_playing {
                             self.show_view(view);
@@ -2832,7 +2805,9 @@ impl Browser {
                 EngineEvent::FullscreenRequested { view, fullscreen } => {
                     if Some(view) == self.active_view() {
                         self.chrome.set_page_fullscreen(fullscreen);
-                        self.window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
+                        // In F11 fullscreen the window stays fullscreen after the video.
+                        let window = fullscreen || self.chrome.presentation();
+                        self.window.set_fullscreen(window.then_some(Fullscreen::Borderless(None)));
                         self.update_layout();
                     }
                 }
@@ -3484,6 +3459,15 @@ impl Browser {
             return false;
         }
         if pressed
+            && self.chrome.presentation()
+            && !self.chrome.page_fullscreen()
+            && self.ui.focused().is_none()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            self.set_presentation(false);
+            return false;
+        }
+        if pressed
             && self.chrome.page_fullscreen()
             && self.player.mode() != PlayerMode::Fullscreen
             && input::key(event) == Some(Key::Named("Escape".into()))
@@ -3773,6 +3757,8 @@ impl Browser {
                 // Capture aid: open the player's speed menu.
                 // Capture aid: scroll the page down by 600 px.
                 "toggle-sidebar" => self.run(Action::ToggleSidebar),
+                // Capture aid: F11, whole-page fullscreen (again to leave it).
+                "presentation" => self.run(Action::ToggleFullscreen),
                 // Capture aid: move the pointer to window position "hover:X:Y" (logical px).
                 hover if hover.starts_with("hover:") => {
                     let mut parts = hover.split(':').skip(1).filter_map(|n| n.parse::<f32>().ok());
@@ -3840,11 +3826,6 @@ impl Browser {
                     }
                 }
                 "paste" => self.run(Action::Paste),
-                "scroll-page" => {
-                    if let Some(view) = self.active_view() {
-                        self.engine.run_script(view, "window.scrollBy(0, 600);", false);
-                    }
-                }
                 "settings-scroll" => self.settings.scroll_by(&mut self.ui, -400.0),
                 "player-speed" => {
                     let _ = self.player.click(&mut self.ui, PlayerControl::Speed, &self.config);
@@ -3990,10 +3971,9 @@ impl Browser {
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
         self.ui.animate(dt);
-        let centre_x = self.page_rect().center().x;
         let before_slide = self.page_rect().size;
         let was_sliding = self.chrome.is_sliding();
-        self.chrome.animate_all(&mut self.ui, dt, centre_x);
+        self.chrome.animate_all(&mut self.ui, dt);
         if was_sliding {
             // The page's rectangle and the toolbar follow the sidebar frame by frame, but the
             // page itself is resized at most once while it slides: to the larger of its size
@@ -4100,24 +4080,29 @@ impl Browser {
             let tex = Vec2::new(frame.texture.width() as f32, frame.texture.height() as f32);
             tracing::trace!(serial = frame.serial, ?tex, page = ?page_px.size, "page frame composited");
             let shown = page_px.size.min(tex);
-            let radius =
-                if self.chrome.page_fullscreen() { 0.0 } else { self.config.layout.page_corner_radius * s };
+            let radius = self.chrome.page_corner_radius(&self.config) * s;
             let texel = Vec2::ONE / tex.max(Vec2::ONE);
-            if shown.x < page_px.size.x || shown.y < page_px.size.y {
-                // The rectangle grew faster than Chromium's frames (the first frame of a new size
-                // takes a moment): the frame's right (or bottom) edge is stretched over the
-                // whole rectangle beneath it, so the uncovered part never shows the background.
+            // The rectangle grew faster than Chromium's frames (the first frame of a new size
+            // takes a moment; F11 grows it in both directions): the frame's right column and
+            // bottom row are stretched over the uncovered part, so it never shows the
+            // background. Both lie under the page, the column across the whole rectangle.
+            if shown.x < page_px.size.x {
                 let mut edge = ImageDraw::new(view, page_px);
-                edge.uv = if shown.x < page_px.size.x {
-                    Rect {
-                        origin: Vec2::new(1.0 - texel.x, 0.0),
-                        size: Vec2::new(texel.x, page_px.size.y * texel.y),
-                    }
-                } else {
-                    Rect {
-                        origin: Vec2::new(0.0, 1.0 - texel.y),
-                        size: Vec2::new(page_px.size.x * texel.x, texel.y),
-                    }
+                // Left of the page's scrollbar, whose track would paint a grey band.
+                let column = (1.0 - EDGE_SAMPLE_INSET * s * texel.x).max(0.0);
+                edge.uv =
+                    Rect { origin: Vec2::new(column, 0.0), size: Vec2::new(texel.x, shown.y * texel.y) };
+                edge.radius = radius;
+                layers.push(Layer::Image(edge));
+            }
+            if shown.y < page_px.size.y {
+                let mut edge = ImageDraw::new(
+                    view,
+                    Rect { origin: page_px.origin, size: Vec2::new(shown.x, page_px.size.y) },
+                );
+                edge.uv = Rect {
+                    origin: Vec2::new(0.0, 1.0 - texel.y),
+                    size: Vec2::new(shown.x * texel.x, texel.y),
                 };
                 edge.radius = radius;
                 layers.push(Layer::Image(edge));

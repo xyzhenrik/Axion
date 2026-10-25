@@ -1,6 +1,9 @@
-//! Picture in Picture: the video in its own small, borderless window that stays above all
-//! other windows and can be dragged anywhere on the screen. Its controls (close, back to the
-//! tab, ±10 s, play/pause, progress) show while the pointer is over it (Safari, iPadOS 26).
+//! Picture in Picture: the video in its own small window that stays above all other windows.
+//! It is a plain window of the window manager's (its corners and shadow, if it draws any for
+//! a window without a title bar), just without the title bar: the video fills it — letterboxed
+//! in black when the window's aspect differs — with no shape, margin or transparency of ours.
+//! Dragging the video moves the window, its edges resize it. Glass controls (close, back to
+//! the tab, ±10 s, play/pause, progress) show while the pointer is over it (Safari, iPadOS 26).
 //!
 //! The picture is the video's tab's frame: cropped to the video while that tab is shown in the
 //! browser, and — while another tab is shown — the whole frame of the hidden tab, in which the
@@ -26,14 +29,16 @@ use glam::Vec2;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId, WindowLevel};
+use winit::window::{CursorIcon, ResizeDirection, Window, WindowId, WindowLevel};
 
 const ACTION_BASE: u32 = 9700;
 /// The window's width (logical px); the height follows the video.
 const WIDTH: f32 = 480.0;
 const MAX_HEIGHT: f32 = 480.0;
 const MIN_WIDTH: f32 = 240.0;
-const RADIUS: f32 = 16.0;
+/// How close to the window's edge (logical px) a drag resizes instead of moving it: the
+/// window has no frame of its own to grab.
+const RESIZE_BORDER: f32 = 8.0;
 const BUTTON: f32 = 34.0;
 const PLAY: f32 = 50.0;
 const SKIP: f32 = 40.0;
@@ -91,7 +96,9 @@ fn circle(
         Widget::container()
             .with_action(control.id())
             .with_radius(CAPSULE)
-            .with_background(Background::Glass(GlassLevel::Thick)),
+            .with_background(Background::Glass(GlassLevel::Thick))
+            .pressed_whole()
+            .without_hover_fill(),
         Style {
             size: Size { width: length(side), height: length(side) },
             flex_shrink: 0.0,
@@ -132,13 +139,16 @@ pub struct PipWindow {
     queue: wgpu::Queue,
     compositor: Compositor,
     ui: Ui,
-    transparent: bool,
     picture: NodeId,
     controls: NodeId,
     play_icon: NodeId,
     progress: NodeId,
     controls_opacity: Animated<f32>,
     hovered: bool,
+    /// The pointer (logical px), for resizing at the edges.
+    pointer: Option<Vec2>,
+    /// The video's aspect (width / height) the picture is letterboxed to.
+    aspect: f32,
     last_frame: Instant,
     /// The PiP'd video, while PiP is on.
     pub view: Option<ViewId>,
@@ -159,8 +169,8 @@ impl PipWindow {
     ) -> Result<Self> {
         let attributes = Window::default_attributes()
             .with_title(TITLE)
+            // No title bar: the window manager's own window, with only the video in it.
             .with_decorations(false)
-            .with_transparent(true)
             .with_resizable(true)
             .with_visible(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
@@ -175,10 +185,12 @@ impl PipWindow {
         let surface = instance.create_surface(window.clone()).context("PiP window surface")?;
         let caps = surface.get_capabilities(adapter);
         let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
-        // Rounded corners need a transparent window; without one the corners stay black.
-        let transparent = caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied);
-        let alpha_mode =
-            if transparent { wgpu::CompositeAlphaMode::PreMultiplied } else { caps.alpha_modes[0] };
+        // Opaque: the window is the video, no shape of ours.
+        let alpha_mode = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+            wgpu::CompositeAlphaMode::Opaque
+        } else {
+            caps.alpha_modes[0]
+        };
         // Never wait for vsync here: the browser window already does, and both render on one
         // thread.
         let present_mode = [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate]
@@ -205,7 +217,7 @@ impl PipWindow {
         let root = ui.root();
         let picture = ui.add(
             root,
-            Widget::image().with_radius(RADIUS),
+            Widget::image(),
             Style {
                 position: Position::Absolute,
                 size: Size { width: percent(1.0), height: percent(1.0) },
@@ -215,8 +227,7 @@ impl PipWindow {
         let controls = ui.add(
             root,
             Widget::container()
-                .with_background(Background::Fill(Paint::Fixed(axion_config::Color::rgb(0x000000)), 0.2))
-                .with_radius(RADIUS),
+                .with_background(Background::Fill(Paint::Fixed(axion_config::Color::rgb(0x000000)), 0.2)),
             Style {
                 position: Position::Absolute,
                 size: Size { width: percent(1.0), height: percent(1.0) },
@@ -270,13 +281,14 @@ impl PipWindow {
             queue: queue.clone(),
             compositor,
             ui,
-            transparent,
             picture,
             controls,
             play_icon,
             progress,
             controls_opacity: Animated::new(0.0, Spring::SNAPPY),
             hovered: false,
+            pointer: None,
+            aspect: 16.0 / 9.0,
             last_frame: Instant::now(),
             view: None,
             player: None,
@@ -322,7 +334,27 @@ impl PipWindow {
         self.ui.set_theme(Theme::new(config, true));
     }
 
-    /// Input for the PiP window. Dragging anywhere but on a button moves the window.
+    /// Which edge or corner of the window `p` (logical px) grabs, if any.
+    fn edge_at(&self, p: Vec2) -> Option<ResizeDirection> {
+        let size = self.window.inner_size();
+        let size = Vec2::new(size.width as f32, size.height as f32) / self.window.scale_factor() as f32;
+        let (left, right) = (p.x < RESIZE_BORDER, p.x > size.x - RESIZE_BORDER);
+        let (top, bottom) = (p.y < RESIZE_BORDER, p.y > size.y - RESIZE_BORDER);
+        Some(match (left, right, top, bottom) {
+            (true, _, true, _) => ResizeDirection::NorthWest,
+            (_, true, true, _) => ResizeDirection::NorthEast,
+            (true, _, _, true) => ResizeDirection::SouthWest,
+            (_, true, _, true) => ResizeDirection::SouthEast,
+            (true, ..) => ResizeDirection::West,
+            (_, true, ..) => ResizeDirection::East,
+            (_, _, true, _) => ResizeDirection::North,
+            (_, _, _, true) => ResizeDirection::South,
+            _ => return None,
+        })
+    }
+
+    /// Input for the PiP window. Dragging the edges resizes it, anywhere else but on a button
+    /// moves it.
     pub fn window_event(&mut self, event: WindowEvent, config: &Config) -> Option<PipOutcome> {
         match event {
             WindowEvent::CloseRequested => {
@@ -339,15 +371,30 @@ impl PipWindow {
             WindowEvent::CursorEntered { .. } => self.hovered = true,
             WindowEvent::CursorLeft { .. } => {
                 self.hovered = false;
+                self.pointer = None;
                 self.ui.handle(UiInput::PointerLeave);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.hovered = true;
                 let p = Vec2::new(position.x as f32, position.y as f32) / self.window.scale_factor() as f32;
+                self.pointer = Some(p);
                 self.ui.handle(UiInput::PointerMove(p));
+                let cursor = match self.edge_at(p) {
+                    Some(ResizeDirection::NorthWest | ResizeDirection::SouthEast) => CursorIcon::NwseResize,
+                    Some(ResizeDirection::NorthEast | ResizeDirection::SouthWest) => CursorIcon::NeswResize,
+                    Some(ResizeDirection::West | ResizeDirection::East) => CursorIcon::EwResize,
+                    Some(ResizeDirection::North | ResizeDirection::South) => CursorIcon::NsResize,
+                    None => CursorIcon::Default,
+                };
+                self.window.set_cursor(cursor);
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 if state == ElementState::Pressed {
+                    if let Some(direction) = self.pointer.and_then(|p| self.edge_at(p)) {
+                        // The window manager resizes it (there is no frame of its own to grab).
+                        let _ = self.window.drag_resize_window(direction);
+                        return None;
+                    }
                     let (consumed, _) = self.ui.handle(UiInput::PointerDown);
                     if !consumed || self.ui.pressed_action().is_none() {
                         // Not on a button: the window follows the pointer (the window manager
@@ -393,9 +440,15 @@ impl PipWindow {
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
         if let Some((image, uv)) = picture {
+            let (w, h) = image.1;
+            let video = Vec2::new(w as f32, h as f32) * uv.size;
+            if video.x > 0.0 && video.y > 0.0 {
+                self.aspect = video.x / video.y;
+            }
             self.ui.set_image(self.picture, Some(image));
             self.ui.set_image_crop(self.picture, Some(uv));
         }
+        self.letterbox();
         if let Some(player) = &self.player {
             self.ui.set_icon(self.play_icon, if player.is_playing() { Icon::Pause } else { Icon::Play });
             if player.duration > 0.0 {
@@ -423,12 +476,45 @@ impl PipWindow {
         let target = frame.texture.create_view(&Default::default());
         let mut layers = Vec::new();
         self.ui.paint(&mut layers);
-        let clear = if self.transparent { [0.0, 0.0, 0.0, 0.0] } else { [0.0, 0.0, 0.0, 1.0] };
-        let scene = Scene { clear, layers };
+        // Black around the letterboxed video.
+        let scene = Scene { clear: [0.0, 0.0, 0.0, 1.0], layers };
         let size = (self.surface_config.width, self.surface_config.height);
         self.compositor.render(&scene, &mut self.ui.fonts(), &target, size);
         drop(scene);
         self.queue.present(frame);
+    }
+}
+
+impl PipWindow {
+    /// Fits the picture into the window at the video's aspect, centred (black bars where the
+    /// window's aspect differs).
+    fn letterbox(&mut self) {
+        let size = self.window.inner_size();
+        let window = Vec2::new(size.width as f32, size.height as f32) / self.window.scale_factor() as f32;
+        let fit = fit_aspect(window, self.aspect);
+        let origin = (window - fit) / 2.0;
+        let style = self.ui.style(self.picture);
+        let wanted = Style {
+            position: Position::Absolute,
+            inset: Rect { left: length(origin.x), top: length(origin.y), right: auto(), bottom: auto() },
+            size: Size { width: length(fit.x), height: length(fit.y) },
+            ..style.clone()
+        };
+        if wanted != style {
+            self.ui.set_style(self.picture, wanted);
+        }
+    }
+}
+
+/// The largest size of aspect `aspect` (width / height) that fits into `window`.
+fn fit_aspect(window: Vec2, aspect: f32) -> Vec2 {
+    if aspect <= 0.0 || window.y <= 0.0 {
+        return window;
+    }
+    if window.x / window.y > aspect {
+        Vec2::new(window.y * aspect, window.y)
+    } else {
+        Vec2::new(window.x, window.x / aspect)
     }
 }
 
@@ -482,6 +568,13 @@ for (var i = 0; i < list.length; i++) keep(list[i]);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn letterbox_fits_the_video() {
+        assert_eq!(fit_aspect(Vec2::new(400.0, 400.0), 2.0), Vec2::new(400.0, 200.0));
+        assert_eq!(fit_aspect(Vec2::new(400.0, 100.0), 2.0), Vec2::new(200.0, 100.0));
+        assert_eq!(fit_aspect(Vec2::new(320.0, 180.0), 16.0 / 9.0), Vec2::new(320.0, 180.0));
+    }
 
     #[test]
     fn control_ids_round_trip() {

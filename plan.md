@@ -257,9 +257,20 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [ ] **H.264/AAC**: the prebuilt CEF has no proprietary codecs (ffmpeg is inside
       libcef.so). `tools/build-cef.sh` builds CEF 156.0.14 with them (hours, ~100 GB);
       then point `CEF_PATH` at the result. Needed for most hosters (aniworld's VOE is x264).
-- [x] Picture in Picture as its own borderless OS window: drag anywhere on screen, always on
-      top (X11 window level; KDE Wayland via a KWin script — untested on Wayland so far).
-      The video keeps playing from its hidden tab (takeover, still rendering).
+      Checked 2026-10-26 (probe-media, which now also reports codec support): on aniworld every
+      hoster serves H.264/AAC — VOE loads its `_h.mp4` and JW Player fails with 224003
+      (unsupported format), `MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"')`
+      and AAC are false, `canPlayType` is ""; Filemoon/Doodstream are x264/AAC too. Shields,
+      popups, cookies and the bridge are not the cause (VOE's stream URL loads; its ad tab is
+      blocked as intended). Vidmoly additionally shows "AdBlock detected" because its bait
+      scripts (IAB `adblockDetector.js`, `adsbygoogle.js`) are blocked outright: needs
+      adblock-rust redirect resources / scriptlets (open, see Phase 3).
+- [x] Picture in Picture as its own OS window (user decision): a plain window of the window
+      manager without a title bar, only the video in it (letterboxed in black, no corners,
+      margins or transparency of ours); dragging the video moves it, its edges resize it
+      (`drag_resize_window`), glass controls on hover. Always on top (X11 window level; KDE
+      Wayland via a KWin script — untested on Wayland so far). The video keeps playing from
+      its hidden tab (takeover, still rendering).
 - [x] Playback priority: playing tabs are never frozen/unloaded (bridge state); VA-API
       on by default (`chrome://gpu`: Video Decode hardware accelerated); fullscreen controls
       disappear entirely while hidden, so no glass is drawn over playing video.
@@ -293,8 +304,7 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [x] Locked private browsing view + unlock alert card.
 - [x] Tab overview top bar [Private | N Tabs], +, search, blue done; light backdrop.
 - [x] Grouped settings (cards, sections, notes), scrolling with clipping; Safari's tab options:
-      separate/compact tab bar, colour in tab bar, hide bars on scroll (pill with the host),
-      open new tabs in background, close tabs after a day/week/month.
+      separate/compact tab bar, colour in tab bar, open new tabs in background, close tabs after a day/week/month.
 - [ ] Page menu items (translate, find on page, reader, request mobile site), address dropdown
       sections ("Google suggestions", "Bookmarks, History and Tabs").
 
@@ -371,6 +381,12 @@ Windows/macOS, touchscreen-first mode.
   without TPM access moves into the TPM at the first start where it is usable (same secret,
   `device.tpm` verified by unsealing before `device.key` is zeroed and removed; retried each
   start on failure).
+- 2026-10-25: The bars no longer hide while scrolling (the "mini pill" was removed; old
+  `layout.hide_bar_on_scroll` keys are accepted and ignored). **F11** (`toggle_fullscreen`)
+  is whole-page fullscreen instead: the window goes fullscreen, bars slide up and fade, the
+  sidebar slides away and the page card grows to the whole screen (springs); Esc or F11
+  leaves. The page's own element fullscreen (video) stays separate. `Chrome::is_fullscreen`
+  tells transient UI (find bar…) that nothing else may cover the page.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

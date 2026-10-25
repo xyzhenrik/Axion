@@ -38,9 +38,8 @@ const TAB_STRIP_HEIGHT: f32 = 38.0;
 /// Tint of the capsule under the tabs that aren't open.
 const TAB_CAPSULE_TINT: f32 = 0.06;
 const TAB_STRIP_GAP: f32 = 8.0;
-/// The pill with the site's name while the bars are hidden.
-const MINI_HEIGHT: f32 = 28.0;
-const MINI_TOP: f32 = 6.0;
+/// Below this the F11 fullscreen transition counts as settled.
+const PRESENTATION_SETTLED: f32 = 0.001;
 /// The address field's widest size with the separate tab bar.
 const SEPARATE_ADDRESS_MAX: f32 = 680.0;
 const ADDRESS_FAVICON: f32 = 18.0;
@@ -91,8 +90,6 @@ pub enum ChromeAction {
     ClosePanel,
     /// The speaker in the address field: mutes or unmutes the active tab.
     MuteTab,
-    /// The small pill shown while the bars are hidden: brings them back.
-    ExpandBars,
     /// The Now Playing card: open its tab.
     NowPlaying,
     /// The bookmarks bar's chevron: the bookmarks that don't fit, as a menu.
@@ -180,7 +177,7 @@ const BOOKMARK_BASE: u32 = 18_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 30] = [
+    const SIMPLE: [ChromeAction; 29] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -202,7 +199,6 @@ impl ChromeAction {
         ChromeAction::NowPlaying,
         ChromeAction::NowPlayingToggle,
         ChromeAction::MuteTab,
-        ChromeAction::ExpandBars,
         ChromeAction::ClearPanel,
         ChromeAction::Downloads,
         ChromeAction::DownloadsButton,
@@ -228,7 +224,7 @@ impl ChromeAction {
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=30 => Some(Self::SIMPLE[n as usize - 1]),
+            n if (1..=Self::SIMPLE.len() as u32).contains(&n) => Some(Self::SIMPLE[n as usize - 1]),
             n if (BOOKMARK_BASE..BOOKMARK_BASE + 1000).contains(&n) => {
                 Some(ChromeAction::OpenBookmark((n - BOOKMARK_BASE) as usize))
             }
@@ -381,13 +377,11 @@ pub struct Chrome {
     /// The separate tab bar's row of tabs.
     tab_strip: NodeId,
     tab_bar: TabBarStyle,
-    mini: NodeId,
-    mini_label: NodeId,
-    /// The bars are hidden (scrolled away) …
-    collapsed: bool,
-    /// … animated 0 (shown) → 1 (hidden).
-    collapse: Animated<f32>,
-    /// The bar's resting top inset (logical px), for the collapse animation.
+    /// Whole-page fullscreen (F11): all of the chrome gives way to the page …
+    presentation: bool,
+    /// … animated 0 (chrome shown) → 1 (only the page).
+    presentation_k: Animated<f32>,
+    /// The bar's resting top inset (logical px), for the fullscreen transition.
     bar_top: f32,
     /// The active tab's segment; persistent so typing survives tab-list rebuilds.
     address: NodeId,
@@ -1033,23 +1027,6 @@ impl Chrome {
         );
         ui.set_visible(tab_strip, false);
         let bookmarks = BookmarkRow::build(ui, root);
-        // While scrolling down the bars give way to this pill with the site's name (Safari).
-        let mini = ui.add(
-            root,
-            Widget::container()
-                .with_background(Background::Glass(GlassLevel::Thin))
-                .with_radius(CAPSULE)
-                .with_action(ChromeAction::ExpandBars.id())
-                .pressed_whole(),
-            Style {
-                position: Position::Absolute,
-                size: Size { width: auto(), height: length(MINI_HEIGHT) },
-                padding: padding(16.0, 16.0, 0.0, 0.0),
-                ..row(0.0)
-            },
-        );
-        let mini_label = ui.add_label(mini, "", TextStyle::Footnote, Style::default());
-        ui.set_visible(mini, false);
         // While downloads run (Safari): an arrow over a thin progress bar; opens the list.
         let downloads = ui.add(
             actions,
@@ -1162,10 +1139,8 @@ impl Chrome {
             address_slot,
             tab_strip,
             tab_bar: TabBarStyle::Compact,
-            mini,
-            mini_label,
-            collapsed: false,
-            collapse: Animated::new(0.0, Spring::SMOOTH),
+            presentation: false,
+            presentation_k: Animated::new(0.0, Spring::SMOOTH),
             bar_top: 0.0,
             address,
             address_close,
@@ -1222,9 +1197,10 @@ impl Chrome {
         (width + self.slide.value).clamp(0.0, width)
     }
 
-    /// The sidebar is sliding (the page and toolbar follow it every frame).
+    /// The sidebar is sliding, or the chrome is moving for F11 fullscreen (the page and
+    /// toolbar follow it every frame).
     pub fn is_sliding(&self) -> bool {
-        !self.slide.is_settled(SLIDE_SETTLED)
+        !self.slide.is_settled(SLIDE_SETTLED) || !self.presentation_k.is_settled(PRESENTATION_SETTLED)
     }
 
     pub fn sidebar_open(&self) -> bool {
@@ -1504,61 +1480,68 @@ impl Chrome {
         }
     }
 
-    /// Hides the bars (scrolling down) or shows them again. Returns whether that changed, so
-    /// the page can be resized.
-    pub fn set_collapsed(&mut self, collapsed: bool, config: &Config) -> bool {
-        if collapsed == self.collapsed {
+    /// Whole-page fullscreen (F11) on or off: the bars slide up and fade, the sidebar slides
+    /// away and the page grows to the whole window (or all of it comes back). Returns whether
+    /// that changed; the caller relayouts (the sidebar's slide starts in `apply_layout`).
+    pub fn set_presentation(&mut self, on: bool, config: &Config) -> bool {
+        if on == self.presentation {
             return false;
         }
-        self.collapsed = collapsed;
+        self.presentation = on;
         let motion = &config.motion;
-        self.collapse.spring = if config.glass.reduce_motion {
+        self.presentation_k.spring = if config.glass.reduce_motion {
             Spring::new(0.2, 1.0)
         } else {
             Spring::new(motion.smooth.response * motion.speed, motion.smooth.damping)
         };
-        self.collapse.target = if collapsed { 1.0 } else { 0.0 };
+        self.presentation_k.target = if on { 1.0 } else { 0.0 };
         true
     }
 
-    /// The site shown in the pill while the bars are hidden.
-    pub fn set_mini_host(&self, ui: &mut Ui, host: &str) {
-        ui.set_text(self.mini_label, host);
+    /// Whole-page fullscreen (F11) is on.
+    pub fn presentation(&self) -> bool {
+        self.presentation
     }
 
-    fn animate_collapse(&mut self, ui: &mut Ui, dt: f32, centre_x: f32) {
-        self.collapse.step(dt);
-        let k = self.collapse.value.clamp(0.0, 1.0);
+    /// Something is fullscreen — the whole page (F11) or an element of it (video): Axion's
+    /// chrome is out of the way, so nothing but transient UI may cover the page.
+    pub fn is_fullscreen(&self) -> bool {
+        self.presentation || self.page_fullscreen
+    }
+
+    /// How far the chrome has given way to the page (0 shown … 1 page only).
+    fn chrome_away(&self) -> f32 {
+        if self.page_fullscreen { 1.0 } else { self.presentation_k.value.clamp(0.0, 1.0) }
+    }
+
+    /// F11 fullscreen has fully hidden the bars.
+    fn chrome_gone(&self) -> bool {
+        self.presentation && self.presentation_k.is_settled(PRESENTATION_SETTLED)
+    }
+
+    fn animate_presentation(&mut self, ui: &mut Ui, dt: f32) {
+        self.presentation_k.step(dt);
+        let k = self.presentation_k.value.clamp(0.0, 1.0);
         let shift = k * (self.bar_top + 2.0 * (TAB_STRIP_HEIGHT + TAB_STRIP_GAP) + BAR_CAPSULE);
-        for (node, top) in
-            [(self.bar, self.bar_top), (self.tab_strip, self.bar_top + BAR_CAPSULE + TAB_STRIP_GAP)]
-        {
+        let gone = self.chrome_gone();
+        let separate = self.tab_bar == TabBarStyle::Separate;
+        for (node, top, shown) in [
+            (self.bar, self.bar_top, true),
+            (self.tab_strip, self.bar_top + BAR_CAPSULE + TAB_STRIP_GAP, separate),
+        ] {
             let mut style = ui.style(node);
             style.inset.top = length(top - shift);
             ui.set_style(node, style);
             ui.set_opacity(node, 1.0 - k);
-        }
-        let visible = k > 0.01 && !self.page_fullscreen;
-        ui.set_visible(self.mini, visible);
-        if visible {
-            let width = ui.frame(self.mini).size.x;
-            let mut style = ui.style(self.mini);
-            style.inset = Rect {
-                left: length((centre_x - width / 2.0).max(0.0)),
-                right: auto(),
-                top: length(MINI_TOP),
-                bottom: auto(),
-            };
-            ui.set_style(self.mini, style);
-            ui.set_opacity(self.mini, k);
+            // Gone entirely once out of sight: no glass is drawn over the page.
+            ui.set_visible(node, shown && !self.page_fullscreen && !gone);
         }
     }
 
-    /// Advances the sidebar's slide and the bars' collapse. Call every frame.
-    /// `centre_x`: the page's horizontal centre, where the pill sits while the bars are hidden.
-    pub fn animate_all(&mut self, ui: &mut Ui, dt: f32, centre_x: f32) {
-        if !self.collapse.is_settled(0.001) || self.collapsed {
-            self.animate_collapse(ui, dt, centre_x);
+    /// Advances the sidebar's slide and the F11 fullscreen transition. Call every frame.
+    pub fn animate_all(&mut self, ui: &mut Ui, dt: f32) {
+        if !self.presentation_k.is_settled(PRESENTATION_SETTLED) || self.presentation {
+            self.animate_presentation(ui, dt);
         }
         self.animate(ui, dt);
     }
@@ -1591,7 +1574,7 @@ impl Chrome {
             Mode::Narrow
         };
         self.docked = self.sidebar_docked(config);
-        let show_sidebar = self.sidebar_open() && !self.page_fullscreen;
+        let show_sidebar = self.sidebar_open() && !self.is_fullscreen();
         let m = l.margin;
 
         // Docked, the toolbar starts where the (possibly sliding) sidebar ends.
@@ -1610,7 +1593,7 @@ impl Chrome {
         let separate = l.tab_bar == TabBarStyle::Separate;
         ui.set_visible(self.tab_capsule, !separate);
         ui.set_visible(self.address_slot, separate);
-        ui.set_visible(self.tab_strip, separate && !self.page_fullscreen);
+        ui.set_visible(self.tab_strip, separate && !self.page_fullscreen && !self.chrome_gone());
         let mut strip = ui.style(self.tab_strip);
         strip.inset = Rect {
             left: length(bar_left),
@@ -1683,34 +1666,45 @@ impl Chrome {
     /// The page's rectangle (logical px): below the toolbar, beside a docked sidebar, with a
     /// small margin to the window edges so its rounded corners read as a card.
     pub fn page_rect(&self, config: &Config, window: Vec2) -> Frame {
-        if self.page_fullscreen {
+        self.card_rect(config, window, self.chrome_away(), self.docked_sidebar_width(config))
+    }
+
+    /// The page card for a docked sidebar `sidebar` wide, with the chrome `away` (0–1) gone
+    /// (F11: the card's margins shrink away as the chrome leaves).
+    fn card_rect(&self, config: &Config, window: Vec2, away: f32, sidebar: f32) -> Frame {
+        if away >= 1.0 {
             return Frame { origin: Vec2::ZERO, size: window };
         }
         let l = &config.layout;
         // The page's left edge follows the sidebar as it slides.
-        let left = self.docked_sidebar_width(config) + l.page_margin;
+        let left = sidebar + l.page_margin;
         let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 }
             + self.bookmarks_room();
-        let top = if self.collapsed {
-            MINI_TOP + MINI_HEIGHT + l.page_margin / 2.0
-        } else {
-            l.margin + l.bar_height + strip + l.margin / 2.0
-        };
-        let origin = Vec2::new(left, top);
-        let size = window - origin - Vec2::splat(l.page_margin);
+        let top = l.margin + l.bar_height + strip + l.margin / 2.0;
+        let keep = 1.0 - away;
+        let origin = Vec2::new(left, top) * keep;
+        let size = window - origin - Vec2::splat(l.page_margin * keep);
         Frame { origin, size: size.max(Vec2::ONE) }
     }
 
-    /// The page's rectangle once the sidebar's slide has settled (see [`Self::page_rect`]).
+    /// The page card's corner radius (logical px): square while fullscreen.
+    pub fn page_corner_radius(&self, config: &Config) -> f32 {
+        config.layout.page_corner_radius * (1.0 - self.chrome_away())
+    }
+
+    /// The page's rectangle once the sidebar's slide and the F11 transition have settled (see
+    /// [`Self::page_rect`]).
     pub fn settled_page_rect(&self, config: &Config, window: Vec2) -> Frame {
-        let mut rect = self.page_rect(config, window);
-        if self.docked && !self.page_fullscreen {
-            let width = config.layout.sidebar_width;
-            let shift = (width + self.slide.target).clamp(0.0, width) - self.docked_sidebar_width(config);
-            rect.origin.x += shift;
-            rect.size.x = (rect.size.x - shift).max(1.0);
+        if self.page_fullscreen || self.presentation {
+            return Frame { origin: Vec2::ZERO, size: window };
         }
-        rect
+        let sidebar = if self.docked {
+            let width = config.layout.sidebar_width;
+            (width + self.slide.target).clamp(0.0, width)
+        } else {
+            0.0
+        };
+        self.card_rect(config, window, 0.0, sidebar)
     }
 
     /// The toolbar node: popovers that should flow out of the bar's glass live in it.
