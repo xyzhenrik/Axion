@@ -1371,6 +1371,18 @@ impl Chrome {
         Frame { origin, size: size.max(Vec2::ONE) }
     }
 
+    /// The page's rectangle once the sidebar's slide has settled (see [`Self::page_rect`]).
+    pub fn settled_page_rect(&self, config: &Config, window: Vec2) -> Frame {
+        let mut rect = self.page_rect(config, window);
+        if self.docked && !self.page_fullscreen {
+            let width = config.layout.sidebar_width;
+            let shift = (width + self.slide.target).clamp(0.0, width) - self.docked_sidebar_width(config);
+            rect.origin.x += shift;
+            rect.size.x = (rect.size.x - shift).max(1.0);
+        }
+        rect
+    }
+
     /// The toolbar node: popovers that should flow out of the bar's glass live in it.
     pub fn bar_node(&self) -> NodeId {
         self.bar

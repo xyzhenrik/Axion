@@ -169,6 +169,9 @@ pub struct Browser {
     last_scroll_y: f32,
     /// Frames saved so far by the `AXION_CAPTURE_FRAMES` debug aid.
     capture_frame: u32,
+    /// Those frames, kept in memory until the sequence is complete (saving each one at once
+    /// would stall the frame loop and change the timing being looked at).
+    captured_frames: Vec<image::RgbaImage>,
     /// The Picture in Picture window (kept once opened, hidden while unused).
     pip: Option<PipWindow>,
     /// PiP to start once the window exists (windows are made in `sync_windows`).
@@ -244,6 +247,13 @@ pub struct Browser {
     overview_at: Option<Instant>,
     address_at: Option<(Instant, String)>,
     open_at: Option<(Instant, String)>,
+    /// Capture aid "sweep:X1:Y1:X2:Y2:N": the pointer moves from one point to the other in N
+    /// steps, one per frame (start, end, steps, steps done).
+    sweep: Option<(Vec2, Vec2, u32, u32)>,
+    /// While the sidebar slides: the page's size before the slide began, and the size the
+    /// shown view was given for it (see `redraw_frame`).
+    slide_page_size: Option<Vec2>,
+    slide_view_size: Option<(ViewId, Vec2)>,
 }
 
 impl Browser {
@@ -386,6 +396,7 @@ impl Browser {
             player,
             last_scroll_y: 0.0,
             capture_frame: 0,
+            captured_frames: Vec::new(),
             pip: None,
             pip_request: None,
             instance,
@@ -441,6 +452,9 @@ impl Browser {
             tabs_changed: true,
             layout_size: Vec2::ZERO,
             capture: options.capture.clone().map(|path| (path, Instant::now() + options.capture_after)),
+            sweep: None,
+            slide_page_size: None,
+            slide_view_size: None,
             open_at: options.open.clone().filter(|_| options.capture.is_some()).map(|what| {
                 (
                     Instant::now()
@@ -505,8 +519,13 @@ impl Browser {
             self.settings.resize(&mut self.ui, size);
         }
         let view_size = self.view_size();
+        // While the sidebar slides, the shown tab's size is managed by the slide (see
+        // `redraw_frame`); resizing it here too would make Chromium render an extra size.
+        let sliding = self.slide_view_size.map(|(view, _)| view);
         for tab in self.tabs.all() {
-            self.engine.resize(tab.view, view_size);
+            if Some(tab.view) != sliding {
+                self.engine.resize(tab.view, view_size);
+            }
         }
         self.layout_size = size;
     }
@@ -3038,6 +3057,12 @@ impl Browser {
                         self.pointer_moved(Vec2::new(x, y));
                     }
                 }
+                sweep if sweep.starts_with("sweep:") => {
+                    let n: Vec<f32> = sweep.split(':').skip(1).filter_map(|v| v.parse().ok()).collect();
+                    if let [x1, y1, x2, y2, steps] = n[..] {
+                        self.sweep = Some((Vec2::new(x1, y1), Vec2::new(x2, y2), steps.max(1.0) as u32, 0));
+                    }
+                }
                 "scroll-page" => {
                     if let Some(view) = self.active_view() {
                         self.engine.run_script(view, "window.scrollBy(0, 600);", false);
@@ -3178,22 +3203,42 @@ impl Browser {
             self.edit_address();
             self.ui.set_field_text(self.chrome.address_field, &text);
         }
+        if let Some((from, to, steps, done)) = self.sweep.take() {
+            let t = done as f32 / steps as f32;
+            self.pointer_moved(from + (to - from) * t);
+            if done < steps {
+                self.sweep = Some((from, to, steps, done + 1));
+            }
+        }
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
         self.ui.animate(dt);
         let centre_x = self.page_rect().center().x;
+        let before_slide = self.page_rect().size;
         let was_sliding = self.chrome.is_sliding();
         self.chrome.animate_all(&mut self.ui, dt, centre_x);
         if was_sliding {
-            // The page and toolbar follow the sidebar frame by frame; only the shown tab is
-            // resized meanwhile, the others once the slide has settled.
+            // The page's rectangle and the toolbar follow the sidebar frame by frame, but the
+            // page itself is resized at most once while it slides: to the larger of its size
+            // before and after, so its frame always covers the rectangle (drawn cropped, never
+            // stretched or with a gap). Resizing Chromium every frame made it re-render at each
+            // size, and every new size started with an empty frame. The final size, and the
+            // other tabs, follow once the slide has settled.
             let size = self.logical_size();
             self.chrome.apply_layout(&mut self.ui, &self.config, size);
             if self.chrome.is_sliding() {
-                if let Some(view) = self.active_view() {
-                    self.engine.resize(view, self.view_size());
+                let start = *self.slide_page_size.get_or_insert(before_slide);
+                let end = self.chrome.settled_page_rect(&self.config, size).size;
+                let during = start.max(end);
+                if let Some(view) = self.active_view()
+                    && self.slide_view_size != Some((view, during))
+                {
+                    self.slide_view_size = Some((view, during));
+                    self.engine.resize(view, ViewSize { logical: during, scale: self.scale() });
                 }
             } else {
+                self.slide_page_size = None;
+                self.slide_view_size = None;
                 self.update_layout();
             }
         }
@@ -3257,12 +3302,33 @@ impl Browser {
             // page is resized (sidebar sliding) Chromium's frames lag a little, and stretching
             // the older size into the new rectangle made the page wobble and flicker.
             let tex = Vec2::new(frame.texture.width() as f32, frame.texture.height() as f32);
+            tracing::trace!(serial = frame.serial, ?tex, page = ?page_px.size, "page frame composited");
             let shown = page_px.size.min(tex);
-            let mut page = ImageDraw::new(view, Rect { origin: page_px.origin, size: shown });
-            page.uv = Rect { origin: Vec2::ZERO, size: shown / tex.max(Vec2::ONE) };
-            if !self.chrome.page_fullscreen() {
-                page.radius = self.config.layout.page_corner_radius * s;
+            let radius =
+                if self.chrome.page_fullscreen() { 0.0 } else { self.config.layout.page_corner_radius * s };
+            let texel = Vec2::ONE / tex.max(Vec2::ONE);
+            if shown.x < page_px.size.x || shown.y < page_px.size.y {
+                // The rectangle grew faster than Chromium's frames (the first frame of a new size
+                // takes a moment): the frame's right (or bottom) edge is stretched over the
+                // whole rectangle beneath it, so the uncovered part never shows the background.
+                let mut edge = ImageDraw::new(view, page_px);
+                edge.uv = if shown.x < page_px.size.x {
+                    Rect {
+                        origin: Vec2::new(1.0 - texel.x, 0.0),
+                        size: Vec2::new(texel.x, page_px.size.y * texel.y),
+                    }
+                } else {
+                    Rect {
+                        origin: Vec2::new(0.0, 1.0 - texel.y),
+                        size: Vec2::new(page_px.size.x * texel.x, texel.y),
+                    }
+                };
+                edge.radius = radius;
+                layers.push(Layer::Image(edge));
             }
+            let mut page = ImageDraw::new(view, Rect { origin: page_px.origin, size: shown });
+            page.uv = Rect { origin: Vec2::ZERO, size: shown * texel };
+            page.radius = radius;
             layers.push(Layer::Image(page));
         }
         self.ui.paint(&mut layers);
@@ -3305,14 +3371,16 @@ impl Browser {
                 std::env::var("AXION_CAPTURE_FRAMES").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
             if self.capture_frame < wanted {
                 self.capture_frame += 1;
-                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("capture").to_owned();
-                let next = path.with_file_name(format!("{stem}-{}.png", self.capture_frame));
                 if let Some((w, h, pixels)) = self.compositor.read_back()
                     && let Some(img) = image::RgbaImage::from_raw(w, h, pixels)
                 {
-                    let _ = img.save(&next);
+                    self.captured_frames.push(img);
                 }
                 return Ok(());
+            }
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("capture").to_owned();
+            for (i, img) in std::mem::take(&mut self.captured_frames).into_iter().enumerate() {
+                let _ = img.save(path.with_file_name(format!("{stem}-{}.png", i + 1)));
             }
             // The PiP window too, next to it ("shot.png" → "shot-pip.png").
             if let Some((w, h, pixels)) =
