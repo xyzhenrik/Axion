@@ -4,7 +4,7 @@
 //! chosen card back up to full size.
 
 use axion_compositor::{Icon, IconWeight, Rect as Frame};
-use axion_config::{Color, Config, SpringSpec};
+use axion_config::{Color, Config};
 use axion_engine::ViewId;
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
@@ -21,7 +21,6 @@ const DONE: u32 = 20;
 const NEW_TAB: u32 = 21;
 const PRIVATE: u32 = 22;
 const NORMAL: u32 = 23;
-const SIDEBAR: u32 = 24;
 const SEARCH: u32 = 25;
 
 /// Layout from the design board, in logical pixels.
@@ -43,8 +42,12 @@ const THUMB_RADIUS: f32 = 12.0;
 const LABEL_HEIGHT: f32 = 32.0;
 const LABEL_GAP: f32 = 12.0;
 const TOOLBAR_BOTTOM: f32 = 32.0;
-/// Safari's soft, tinted backdrop over the blurred window (the window's ground colour).
-const VEIL_OPACITY: f32 = 0.78;
+/// Width of the top bar's right group (three circles), mirrored on the left so the segmented
+/// control stays centred.
+const SIDE_GROUP_WIDTH: f32 = 3.0 * HEADER_HEIGHT + 2.0 * CIRCLE_GAP;
+/// Overview zoom and fade (Safari's is quick): response in seconds and damping.
+const ZOOM_SPRING: (f32, f32) = (0.32, 0.86);
+const FADE_SPRING: (f32, f32) = (0.22, 1.0);
 /// Animation counts as finished below these distances.
 const SETTLED_PX: f32 = 0.5;
 const SETTLED_FADE: f32 = 0.002;
@@ -55,10 +58,9 @@ pub enum OverviewAction {
     Close(usize),
     Done,
     NewTab,
-    /// The segmented control: private or normal tabs.
+    /// The segmented control moved: private or normal tabs.
     ShowPrivate,
     ShowNormal,
-    ToggleSidebar,
     ToggleSearch,
 }
 
@@ -71,7 +73,6 @@ impl OverviewAction {
             OverviewAction::NewTab => NEW_TAB,
             OverviewAction::ShowPrivate => PRIVATE,
             OverviewAction::ShowNormal => NORMAL,
-            OverviewAction::ToggleSidebar => SIDEBAR,
             OverviewAction::ToggleSearch => SEARCH,
         })
     }
@@ -82,7 +83,6 @@ impl OverviewAction {
             NEW_TAB => OverviewAction::NewTab,
             PRIVATE => OverviewAction::ShowPrivate,
             NORMAL => OverviewAction::ShowNormal,
-            SIDEBAR => OverviewAction::ToggleSidebar,
             SEARCH => OverviewAction::ToggleSearch,
             n if (CLOSE_BASE..CLOSE_BASE + 1000).contains(&n) => {
                 OverviewAction::Close((n - CLOSE_BASE) as usize)
@@ -114,6 +114,8 @@ pub struct Overview {
     search: NodeId,
     search_box: NodeId,
     segments: NodeId,
+    /// The segmented control inside `segments`: 0 private, 1 normal tabs.
+    segmented: NodeId,
     /// (segment, its label)
     private_segment: (NodeId, NodeId),
     normal_segment: (NodeId, NodeId),
@@ -130,8 +132,9 @@ pub struct Overview {
     window: Vec2,
 }
 
-fn spring(spec: SpringSpec, speed: f32) -> Spring {
-    Spring::new(spec.response * speed.max(0.05), spec.damping)
+/// One of the overview's own springs, scaled by the global motion speed.
+fn quick((response, damping): (f32, f32), speed: f32) -> Spring {
+    Spring::new(response * speed, damping)
 }
 
 fn fixed(color: Color) -> Paint {
@@ -149,8 +152,11 @@ fn row_style(gap: f32) -> Style {
 
 /// A glass circle button of the top bar; `primary` is Safari's blue "done" checkmark.
 fn glass_circle(ui: &mut Ui, parent: NodeId, action: OverviewAction, icon: Icon, primary: bool) -> NodeId {
-    let background =
-        if primary { Background::Fill(Paint::Accent, 1.0) } else { Background::Glass(GlassLevel::Thin) };
+    let background = if primary {
+        Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
+    } else {
+        Background::Glass(GlassLevel::Thin)
+    };
     let node = ui.add(
         parent,
         Widget::container().with_action(action.id()).with_radius(CAPSULE).with_background(background),
@@ -171,10 +177,10 @@ fn glass_circle(ui: &mut Ui, parent: NodeId, action: OverviewAction, icon: Icon,
 }
 
 /// One segment of the [Private | N Tabs] control; returns (segment, label).
-fn segment(ui: &mut Ui, parent: NodeId, action: OverviewAction, text: &str) -> (NodeId, NodeId) {
+fn segment(ui: &mut Ui, parent: NodeId, text: &str) -> (NodeId, NodeId) {
     let node = ui.add(
         parent,
-        Widget::container().with_action(action.id()).with_radius(CAPSULE),
+        Widget::container(),
         Style {
             size: Size { width: auto(), height: length(SEGMENT_HEIGHT) },
             padding: Rect { left: length(16.0), right: length(16.0), top: length(0.0), bottom: length(0.0) },
@@ -193,14 +199,11 @@ impl Overview {
     pub fn build(ui: &mut Ui) -> Self {
         let root = ui.root();
         // Full-window thick glass blurs the browser behind; a dark veil gives the design's look.
+        // An opaque backdrop (Safari): nothing of the window — sidebar, bars, page — shows
+        // through; the page only appears as the card that zooms in and out.
         let backdrop = ui.add(
             root,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thick)),
-            Style { position: Position::Absolute, inset: insets(0.0, 0.0, 0.0, 0.0), ..Default::default() },
-        );
-        ui.add(
-            backdrop,
-            Widget::container().with_background(Background::Fill(Paint::Ground, VEIL_OPACITY)),
+            Widget::container().with_background(Background::Fill(Paint::Ground, 1.0)),
             Style { position: Position::Absolute, inset: insets(0.0, 0.0, 0.0, 0.0), ..Default::default() },
         );
 
@@ -236,8 +239,11 @@ impl Overview {
             },
         );
         // Circles further apart than the glass merge distance stay separate drops.
-        let left = ui.add(header, Widget::container(), row_style(CIRCLE_GAP));
-        glass_circle(ui, left, OverviewAction::ToggleSidebar, Icon::Sidebar, false);
+        ui.add(
+            header,
+            Widget::container(),
+            Style { size: Size { width: length(SIDE_GROUP_WIDTH), height: auto() }, ..Default::default() },
+        );
         let centre = ui.add(
             header,
             Widget::container(),
@@ -257,8 +263,10 @@ impl Overview {
                 ..row_style(2.0)
             },
         );
-        let private_segment = segment(ui, segments, OverviewAction::ShowPrivate, "Private");
-        let normal_segment = segment(ui, segments, OverviewAction::ShowNormal, "Tabs");
+        // Tap a segment, or hold the pill and slide it across (like a Liquid Glass switch).
+        let segmented = ui.add(segments, Widget::segmented(1), row_style(2.0));
+        let private_segment = segment(ui, segmented, "Private");
+        let normal_segment = segment(ui, segmented, "Tabs");
         let search_box = ui.add(
             centre,
             Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
@@ -305,6 +313,7 @@ impl Overview {
             search,
             search_box,
             segments,
+            segmented,
             private_segment,
             normal_segment,
             grid,
@@ -334,15 +343,42 @@ impl Overview {
             self.normal_segment.1,
             &format!("{normal_count} {}", if normal_count == 1 { "Tab" } else { "Tabs" }),
         );
-        for ((node, label), selected) in [(self.private_segment, private), (self.normal_segment, !private)] {
-            if let Some(w) = ui.widget_mut(node) {
-                w.background =
-                    if selected { Background::Fill(Paint::Surface, 0.9) } else { Background::None };
-            }
+        ui.set_value(self.segmented, if private { 0.0 } else { 1.0 });
+        for ((_, label), selected) in [(self.private_segment, private), (self.normal_segment, !private)] {
             if let Some(w) = ui.widget_mut(label) {
                 w.set_paint(if selected { Paint::Label } else { Paint::Secondary });
             }
         }
+    }
+
+    /// The segmented control's node and what a new value of it means.
+    pub fn segment_action(&self, node: NodeId, value: f32) -> Option<OverviewAction> {
+        (node == self.segmented).then_some(if value < 0.5 {
+            OverviewAction::ShowPrivate
+        } else {
+            OverviewAction::ShowNormal
+        })
+    }
+
+    /// Whether the search field is showing.
+    pub fn is_searching(&self, ui: &Ui) -> bool {
+        self.is_open() && ui.is_visible(self.search_box)
+    }
+
+    /// Whether `p` (logical px) is on the search field.
+    pub fn search_contains(&self, ui: &Ui, p: Vec2) -> bool {
+        ui.frame(self.search_box).contains(p)
+    }
+
+    /// Hides the overview at once, without zooming a page out of it (e.g. into locked private
+    /// browsing, whose pages must not be seen).
+    pub fn close_instantly(&mut self, ui: &mut Ui) -> Vec<UiEvent> {
+        self.phase = Phase::Closed;
+        self.fade.snap(0.0);
+        self.ghost_view = None;
+        ui.set_visible(self.ghost, false);
+        ui.set_visible(self.root, false);
+        ui.blur()
     }
 
     /// Swaps the segmented control for the search field (and back). Returns the events of
@@ -519,6 +555,13 @@ impl Overview {
             let _ = text;
             self.cards.push(Card { tab: i, view: tab.view, image });
         }
+        // The zooming page belongs to the other group now (switched to/from Private while
+        // opening): end the zoom instead of flying a card that isn't in the grid.
+        if self.ghost_view.is_some_and(|v| !self.cards.iter().any(|c| c.view == v)) {
+            self.ghost_origin.snap(self.ghost_origin.target);
+            self.ghost_size.snap(self.ghost_size.target);
+            self.ghost_view = None;
+        }
         let rows = count.div_ceil(columns.max(1));
         self.content_height =
             rows as f32 * (thumb_height + LABEL_GAP + LABEL_HEIGHT) + rows.saturating_sub(1) as f32 * ROW_GAP;
@@ -540,14 +583,14 @@ impl Overview {
         self.rebuild(ui, tabs, favicons);
         ui.set_visible(self.root, true);
         ui.layout();
-        let motion = &config.motion;
+        let speed = config.motion.speed;
         let reduce = config.glass.reduce_motion;
-        self.fade.spring = spring(motion.smooth, motion.speed);
+        self.fade.spring = quick(FADE_SPRING, speed);
         self.fade.snap(0.0);
         self.fade.target = 1.0;
         self.ghost_view = tabs.active().map(|t| t.view);
         let target = self.card_frame(ui, tabs.active_index()).unwrap_or(page);
-        self.start_ghost(page, target, spring(motion.fling, motion.speed), reduce);
+        self.start_ghost(page, target, quick(ZOOM_SPRING, speed), reduce);
         self.phase = Phase::Opening;
         // Search starts hidden behind its button (Safari).
         ui.set_visible(self.search_box, false);
@@ -568,10 +611,11 @@ impl Overview {
         if !self.is_open() || self.phase == Phase::Closing {
             return Vec::new();
         }
-        let motion = &config.motion;
+        let speed = config.motion.speed;
         let from = self.card_frame(ui, index).unwrap_or(page);
         self.ghost_view = tabs.all().get(index).map(|t| t.view);
-        self.start_ghost(from, page, spring(motion.fling, motion.speed), config.glass.reduce_motion);
+        self.start_ghost(from, page, quick(ZOOM_SPRING, speed), config.glass.reduce_motion);
+        self.fade.spring = quick(FADE_SPRING, speed);
         self.fade.target = 0.0;
         self.phase = Phase::Closing;
         ui.blur()

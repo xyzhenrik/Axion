@@ -17,6 +17,8 @@ pub const CAPSULE: f32 = f32::INFINITY;
 pub enum Background {
     None,
     Glass(GlassLevel),
+    /// Glass tinted strongly with a colour (a primary button: still refracts and catches light).
+    TintedGlass(GlassLevel, Paint),
     /// A solid fill with an opacity multiplier.
     Fill(Paint, f32),
 }
@@ -110,6 +112,11 @@ pub enum WidgetKind {
         value: f32,
         line: bool,
     },
+    /// A segmented control: its children are the segments; the `selected` one sits on a pill
+    /// that turns into a glass lens while held and can be slid to another segment.
+    Segmented {
+        selected: usize,
+    },
     /// A texture scaled to cover the frame, cropped from the top (tab thumbnails, favicons).
     Image {
         view: Option<wgpu::TextureView>,
@@ -168,6 +175,11 @@ impl Widget {
 
     pub fn toggle(on: bool) -> Self {
         Self::new(WidgetKind::Toggle { on })
+    }
+
+    /// A segmented control (see [`WidgetKind::Segmented`]); add the segments as children.
+    pub fn segmented(selected: usize) -> Self {
+        Self::new(WidgetKind::Segmented { selected })
     }
 
     pub fn slider(value: f32) -> Self {
@@ -266,6 +278,7 @@ impl Widget {
             WidgetKind::Container
             | WidgetKind::Image { .. }
             | WidgetKind::Toggle { .. }
+            | WidgetKind::Segmented { .. }
             | WidgetKind::Slider { .. } => {}
         }
     }

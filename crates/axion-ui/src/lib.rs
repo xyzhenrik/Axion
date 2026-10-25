@@ -68,6 +68,10 @@ const PULL_STRETCH: f32 = 1.4;
 const PRESS_SETTLED: f32 = 0.001;
 /// Fading glass is grouped into this many opacity steps (each step is one glass pass).
 const GLASS_FADE_STEPS: f32 = 24.0;
+/// How strongly tinted glass takes its colour (it still refracts, blurs and catches light).
+const TINTED_GLASS_STRENGTH: f32 = 0.78;
+/// The resting pill of a segmented control, relative to the surface colour.
+const SEGMENT_PILL_OPACITY: f32 = 0.92;
 
 /// Input in logical pixels.
 #[derive(Clone, Debug, PartialEq)]
@@ -648,7 +652,10 @@ impl Ui {
             || widget.action.is_some()
             || matches!(
                 widget.kind,
-                WidgetKind::TextField(_) | WidgetKind::Toggle { .. } | WidgetKind::Slider { .. }
+                WidgetKind::TextField(_)
+                    | WidgetKind::Toggle { .. }
+                    | WidgetKind::Slider { .. }
+                    | WidgetKind::Segmented { .. }
             );
         (solid && node != self.root && rounded_contains(widget.frame, widget.radius, p)).then_some(node)
     }
@@ -685,7 +692,10 @@ impl Ui {
         Some(if matches!(widget.kind, WidgetKind::TextField(_)) {
             UiCursor::Text
         } else if self.actionable(node).is_some()
-            || matches!(widget.kind, WidgetKind::Toggle { .. } | WidgetKind::Slider { .. })
+            || matches!(
+                widget.kind,
+                WidgetKind::Toggle { .. } | WidgetKind::Slider { .. } | WidgetKind::Segmented { .. }
+            )
         {
             UiCursor::Pointer
         } else {
@@ -700,8 +710,12 @@ impl Ui {
             UiInput::PointerMove(p) => {
                 self.pointer = Some(p);
                 if let Some(node) = self.dragging {
-                    if self.is_toggle(node) {
-                        let travel = self.toggle_travel(node);
+                    if self.is_toggle(node) || self.is_segmented(node) {
+                        let travel = if self.is_toggle(node) {
+                            self.toggle_travel(node)
+                        } else {
+                            self.segment_travel(node)
+                        };
                         if let Some(knob) = self.knobs.get_mut(&node) {
                             knob.drag_to(p.x, travel);
                         }
@@ -773,6 +787,13 @@ impl Ui {
                 self.dragging = Some(hit);
                 return true;
             }
+            Some(WidgetKind::Segmented { selected }) => {
+                let pos = self.segment_pos(hit, *selected);
+                events.extend(self.blur());
+                self.knob(hit, pos).press(p.x);
+                self.dragging = Some(hit);
+                return true;
+            }
             Some(WidgetKind::Slider { value, .. }) => {
                 let value = *value;
                 events.extend(self.blur());
@@ -837,8 +858,86 @@ impl Ui {
         track.x - 2.0 * TOGGLE_INSET - knob.x
     }
 
+    fn is_segmented(&self, node: NodeId) -> bool {
+        matches!(self.widget(node).map(|w| &w.kind), Some(WidgetKind::Segmented { .. }))
+    }
+
+    /// The knob position (0–1) of segment `index` of a segmented control.
+    fn segment_pos(&self, node: NodeId, index: usize) -> f32 {
+        let count = self.tree.children(node).map_or(1, |c| c.len());
+        if count < 2 { 0.0 } else { index.min(count - 1) as f32 / (count - 1) as f32 }
+    }
+
+    /// Distance between the first and the last segment's centres (logical px).
+    fn segment_travel(&self, node: NodeId) -> f32 {
+        let children = self.tree.children(node).unwrap_or_default();
+        match (children.first(), children.last()) {
+            (Some(&a), Some(&b)) => (self.frame(b).center().x - self.frame(a).center().x).abs(),
+            _ => 1.0,
+        }
+    }
+
+    /// The selection pill of a segmented control at knob position `pos` (logical px):
+    /// between two segments it takes the in-between position and width.
+    fn segment_pill(&self, node: NodeId, pos: f32) -> Option<Rect> {
+        let children = self.tree.children(node).unwrap_or_default();
+        let n = children.len();
+        if n == 0 {
+            return None;
+        }
+        let f = pos.clamp(0.0, 1.0) * (n - 1) as f32;
+        let i = (f.floor() as usize).min(n - 1);
+        let j = (i + 1).min(n - 1);
+        let t = f - i as f32;
+        let (a, b) = (self.frame(children[i]), self.frame(children[j]));
+        let width = a.size.x + (b.size.x - a.size.x) * t;
+        let mut centre = a.center() + (b.center() - a.center()) * t;
+        // Pulled past an end: the pill follows a little (the knob is rubber-banded).
+        if pos < 0.0 || pos > 1.0 {
+            let over = if pos < 0.0 { pos } else { pos - 1.0 };
+            centre.x += over * self.segment_travel(node).max(width);
+        }
+        Some(Rect { origin: centre - Vec2::new(width, a.size.y) / 2.0, size: Vec2::new(width, a.size.y) })
+    }
+
+    /// Lets go of a held segmented control: a drag snaps to the nearest segment, a tap selects
+    /// the segment under the pointer.
+    fn release_segmented(&mut self, node: NodeId) -> Option<UiEvent> {
+        let selected = match self.widget(node).map(|w| &w.kind) {
+            Some(WidgetKind::Segmented { selected }) => *selected,
+            _ => return None,
+        };
+        let children = self.tree.children(node).unwrap_or_default();
+        let n = children.len().max(1);
+        let tapped = self.pointer.and_then(|p| children.iter().position(|&c| self.frame(c).contains(p)));
+        let knob = self.knobs.get_mut(&node)?;
+        let dragged_to = knob.pos.value;
+        let moved = knob.release(0.0);
+        let index = if moved {
+            ((dragged_to.clamp(0.0, 1.0) * (n - 1) as f32).round() as usize).min(n - 1)
+        } else {
+            tapped.unwrap_or(selected)
+        };
+        let target = if n < 2 { 0.0 } else { index as f32 / (n - 1) as f32 };
+        if let Some(knob) = self.knobs.get_mut(&node) {
+            knob.pos.target = target;
+        }
+        if index == selected {
+            return None;
+        }
+        if let Some(WidgetKind::Segmented { selected }) =
+            self.tree.get_node_context_mut(node).map(|w| &mut w.kind)
+        {
+            *selected = index;
+        }
+        Some(UiEvent::ValueChanged { node, value: index as f32 })
+    }
+
     /// Lets go of a held switch or slider.
     fn release_knob(&mut self, node: NodeId) -> Option<UiEvent> {
+        if self.is_segmented(node) {
+            return self.release_segmented(node);
+        }
         let on = match self.widget(node).map(|w| &w.kind) {
             Some(WidgetKind::Toggle { on }) => Some(*on),
             Some(WidgetKind::Slider { value, .. }) => {
@@ -898,12 +997,19 @@ impl Ui {
     }
 
     pub fn set_value(&mut self, node: NodeId, value: f32) {
-        let target = if self.is_toggle(node) { (value > 0.5) as u8 as f32 } else { value.clamp(0.0, 1.0) };
+        let target = if self.is_toggle(node) {
+            (value > 0.5) as u8 as f32
+        } else if self.is_segmented(node) {
+            self.segment_pos(node, value.max(0.0).round() as usize)
+        } else {
+            value.clamp(0.0, 1.0)
+        };
         if let Some(knob) = self.knobs.get_mut(&node) {
             knob.set(target);
         }
         match self.tree.get_node_context_mut(node).map(|w| &mut w.kind) {
             Some(WidgetKind::Toggle { on }) => *on = value > 0.5,
+            Some(WidgetKind::Segmented { selected }) => *selected = value.max(0.0).round() as usize,
             Some(WidgetKind::Slider { value: v, .. }) => *v = value.clamp(0.0, 1.0),
             _ => {}
         }
@@ -958,7 +1064,7 @@ impl Ui {
     /// The nearest glass at or above `node` (the surface a button sits on).
     fn glass_of(&self, mut node: NodeId) -> Option<NodeId> {
         loop {
-            if matches!(self.widget(node)?.background, Background::Glass(_)) {
+            if matches!(self.widget(node)?.background, Background::Glass(_) | Background::TintedGlass(..)) {
                 return Some(node);
             }
             node = self.tree.parent(node)?;
@@ -1053,21 +1159,27 @@ impl Ui {
         // Glass is drawn in one pass per (thickness, opacity) group; only shapes in the same
         // pass flow into each other.
         for stack in stacks {
-            let mut groups: Vec<(GlassLevel, f32)> = Vec::new();
+            let mut groups: Vec<(GlassLevel, f32, Option<[f32; 4]>)> = Vec::new();
             for item in &stack.glass {
-                if !groups.contains(&(item.level, item.fade)) {
-                    groups.push((item.level, item.fade));
+                let key = (item.level, item.fade, item.tint);
+                if !groups.contains(&key) {
+                    groups.push(key);
                 }
             }
-            groups.sort_by_key(|(level, fade)| (*level as u8, (fade * GLASS_FADE_STEPS) as u32));
-            for (level, fade) in groups {
+            groups.sort_by_key(|(level, fade, tint)| {
+                (*level as u8, (fade * GLASS_FADE_STEPS) as u32, tint.is_some())
+            });
+            for (level, fade, tint) in groups {
                 let shapes: Vec<GlassShape> = stack
                     .glass
                     .iter()
-                    .filter(|g| g.level == level && g.fade == fade)
+                    .filter(|g| g.level == level && g.fade == fade && g.tint == tint)
                     .map(|g| g.shape)
                     .collect();
                 let mut params = self.paint_theme().glass(level, s);
+                if let Some(tint) = tint {
+                    params.tint = [tint[0], tint[1], tint[2], TINTED_GLASS_STRENGTH];
+                }
                 if fade < 1.0 {
                     // Fading glass loses blur, tint, refraction and light together.
                     params.blur_radius *= fade;
@@ -1146,7 +1258,12 @@ impl Ui {
         let mut child_depth = depth;
         let content = &mut stacks[depth].content;
         match widget.background {
-            Background::Glass(level) => {
+            Background::Glass(_) | Background::TintedGlass(..) => {
+                let (level, tint) = match widget.background {
+                    Background::TintedGlass(level, paint) => (level, Some(theme.color(paint))),
+                    Background::Glass(level) => (level, None),
+                    _ => unreachable!("matched above"),
+                };
                 let mut shape = GlassShape::rounded_rect(bg_px.center(), bg_px.size * 0.5, bg_radius);
                 if let Some(xf) = &press_xf {
                     shape.center += xf.offset;
@@ -1155,7 +1272,7 @@ impl Ui {
                     shape.stretch = xf.stretch;
                     shape.stretch_angle = xf.angle;
                 }
-                stacks[depth + 1].glass.push(GlassItem { level, fade: quantize_fade(fade), shape });
+                stacks[depth + 1].glass.push(GlassItem { level, fade: quantize_fade(fade), tint, shape });
                 child_depth = depth + 1;
             }
             Background::Fill(paint, opacity) => {
@@ -1236,6 +1353,17 @@ impl Ui {
                 content.images.push(ImageDraw { texture: view, rect: px, uv, radius, opacity: alpha });
             }
             WidgetKind::Image { view: None, .. } => {}
+            WidgetKind::Segmented { selected } => {
+                let held = self.knobs.get(&node);
+                let pos = held.map_or_else(|| self.segment_pos(node, *selected), |k| k.pos.value);
+                let lens = held.map_or(0.0, |k| k.lens.value.clamp(0.0, 1.0));
+                if let Some(pill) = self.segment_pill(node, pos) {
+                    let surface = theme.color(Paint::Surface);
+                    let rest = [surface[0], surface[1], surface[2], SEGMENT_PILL_OPACITY];
+                    let rect = Rect { origin: pill.origin * s, size: pill.size * s };
+                    self.paint_pill(rect, rest, lens, fade, depth, stacks);
+                }
+            }
             WidgetKind::Toggle { on } => {
                 let held = self.knobs.get(&node);
                 let pos = held.map_or(if *on { 1.0 } else { 0.0 }, |k| k.pos.value);
@@ -1353,6 +1481,42 @@ impl Ui {
             stacks[depth + 1].glass.push(GlassItem {
                 level: GlassLevel::Lens,
                 fade: quantize_fade(glass),
+                tint: None,
+                shape,
+            });
+        }
+    }
+
+    /// A segmented control's selection pill (physical px): `rest` colour at rest, a glass lens
+    /// (grown like a held switch knob) while held.
+    fn paint_pill(
+        &self,
+        rect: Rect,
+        rest: [f32; 4],
+        lens: f32,
+        fade: f32,
+        depth: usize,
+        stacks: &mut [Stack<'_>],
+    ) {
+        let s = self.scale;
+        let grow = Vec2::ONE + (Vec2::new(1.12, 1.25) - Vec2::ONE) * lens;
+        let size = rect.size * grow;
+        let center = rect.center();
+        let radius = size.y / 2.0;
+        let r = Rect { origin: center - size / 2.0, size };
+        let opaque = (1.0 - lens) * fade;
+        if opaque > MIN_VISIBLE {
+            let content = &mut stacks[depth].content;
+            content.quads.push(Quad::shadow(r, radius, 1.0 * s, 4.0 * s, [0.0, 0.0, 0.0, 0.10 * opaque]));
+            content.quads.push(Quad::fill(r, radius, [rest[0], rest[1], rest[2], rest[3] * opaque]));
+        }
+        let glass = lens * fade;
+        if glass > MIN_VISIBLE {
+            let shape = GlassShape::rounded_rect(center, size / 2.0, radius);
+            stacks[depth + 1].glass.push(GlassItem {
+                level: GlassLevel::Lens,
+                fade: quantize_fade(glass),
+                tint: None,
                 shape,
             });
         }
@@ -1418,6 +1582,8 @@ struct Press {
 struct GlassItem {
     level: GlassLevel,
     fade: f32,
+    /// A strong tint colour (tinted glass), instead of the level's own.
+    tint: Option<[f32; 4]>,
     shape: GlassShape,
 }
 
@@ -1637,6 +1803,39 @@ mod tests {
         ui.layout();
         let mut layers = Vec::new();
         ui.paint(&mut layers);
+    }
+
+    #[test]
+    fn segmented_taps_and_slides() {
+        let mut ui = ui();
+        let root = ui.root();
+        let seg = ui.add(
+            root,
+            Widget::segmented(1),
+            Style { flex_direction: FlexDirection::Row, ..Default::default() },
+        );
+        let cell =
+            || Style { size: Size { width: length(100.0), height: length(30.0) }, ..Default::default() };
+        let a = ui.add(seg, Widget::container(), cell());
+        let b = ui.add(seg, Widget::container(), cell());
+        ui.layout();
+        // A tap on the other segment selects it when let go.
+        ui.handle(UiInput::PointerMove(ui.frame(a).center()));
+        ui.handle(UiInput::PointerDown);
+        let (_, events) = ui.handle(UiInput::PointerUp);
+        assert_eq!(events, vec![UiEvent::ValueChanged { node: seg, value: 0.0 }]);
+        // Holding the pill and sliding it most of the way across snaps to that segment.
+        ui.handle(UiInput::PointerMove(ui.frame(a).center()));
+        ui.handle(UiInput::PointerDown);
+        ui.handle(UiInput::PointerMove(ui.frame(a).center() + Vec2::new(70.0, 0.0)));
+        let (_, events) = ui.handle(UiInput::PointerUp);
+        assert_eq!(events, vec![UiEvent::ValueChanged { node: seg, value: 1.0 }]);
+        // A short slide snaps back: nothing changes.
+        ui.handle(UiInput::PointerMove(ui.frame(b).center()));
+        ui.handle(UiInput::PointerDown);
+        ui.handle(UiInput::PointerMove(ui.frame(b).center() - Vec2::new(20.0, 0.0)));
+        let (_, events) = ui.handle(UiInput::PointerUp);
+        assert!(events.is_empty(), "{events:?}");
     }
 
     #[test]

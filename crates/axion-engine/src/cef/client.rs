@@ -52,6 +52,46 @@ impl ViewContext {
         self.shared.events.borrow_mut().push((id, event));
     }
 
+    /// GPU paint: Chromium reuses its shared buffer as soon as `on_accelerated_paint` returns,
+    /// so the frame is copied into a texture of ours (reused while the size stays) before
+    /// returning. Keeping the imported buffer instead showed other frames, black or a single
+    /// colour once Chromium recycled it (hidden tabs, overview thumbnails, reloads).
+    fn keep_imported(&self, imported: &wgpu::Texture) {
+        let reusable = self
+            .frames
+            .texture
+            .borrow()
+            .as_ref()
+            .filter(|t| {
+                t.size() == imported.size()
+                    && t.format() == imported.format()
+                    && t.usage().contains(wgpu::TextureUsages::COPY_DST)
+            })
+            .cloned();
+        let owned = reusable.unwrap_or_else(|| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("cef gpu frame"),
+                size: imported.size(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: imported.format(),
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("cef frame copy") });
+        encoder.copy_texture_to_texture(imported.as_image_copy(), owned.as_image_copy(), imported.size());
+        let submission = self.queue.submit([encoder.finish()]);
+        // Chromium may overwrite the buffer once we return: wait for the copy.
+        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None });
+        self.store(owned);
+    }
+
     fn store(&self, texture: wgpu::Texture) {
         self.frames.texture.replace(Some(texture));
         self.frames.serial.set(self.frames.serial.get() + 1);
@@ -135,7 +175,7 @@ wrap_render_handler! {
             match unsafe { SharedTextureHandle::new(info).import_texture(&self.ctx.device, &self.ctx.queue) } {
                 Ok(texture) => {
                     frames.imported_any.set(true);
-                    self.ctx.store(texture);
+                    self.ctx.keep_imported(&texture);
                 }
                 Err(error) => {
                     if frames.import_failures.get() == 0 {
