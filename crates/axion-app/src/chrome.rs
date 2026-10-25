@@ -10,6 +10,7 @@ use axion_ui::{
 };
 use glam::Vec2;
 
+use crate::favicons::{Favicons, favicon_node};
 use crate::tabs::Tabs;
 use crate::url::display_host;
 
@@ -451,13 +452,12 @@ impl Chrome {
     }
 
     /// Rebuilds the tab lists (sidebar rows, bar pills) from the tab model.
-    pub fn sync_tabs(&mut self, ui: &mut Ui, tabs: &Tabs) {
+    pub fn sync_tabs(&mut self, ui: &mut Ui, tabs: &Tabs, favicons: &Favicons) {
         ui.clear_children(self.sidebar_list);
         ui.clear_children(self.pills);
         let tab_width = ui.theme().config().layout.tab_width;
         for (i, tab) in tabs.all().iter().enumerate() {
             let active = i == tabs.active_index();
-            let favicon = Background::Fill(Paint::Fixed(favicon_color(&tab.url)), 1.0);
 
             // Sidebar row.
             let row_bg =
@@ -480,11 +480,7 @@ impl Chrome {
                     ..center_row(12.0)
                 },
             );
-            ui.add(
-                row,
-                Widget::container().with_background(favicon).with_radius(5.0),
-                Style { size: square(18.0), flex_shrink: 0.0, ..Default::default() },
-            );
+            favicon_node(ui, row, &tab.url, 18.0, favicons);
             ui.add_label(
                 row,
                 &tab.label(),
@@ -520,11 +516,7 @@ impl Chrome {
                         ..center_row(9.0)
                     },
                 );
-                ui.add(
-                    pill,
-                    Widget::container().with_background(favicon).with_radius(5.0),
-                    Style { size: square(16.0), flex_shrink: 0.0, ..Default::default() },
-                );
+                favicon_node(ui, pill, &tab.url, 16.0, favicons);
                 let label = ui.add_label(
                     pill,
                     &tab.label(),

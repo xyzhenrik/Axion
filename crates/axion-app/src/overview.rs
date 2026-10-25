@@ -11,6 +11,7 @@ use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, Shadow, TextStyle, Ui, UiEvent, Widget};
 use glam::Vec2;
 
+use crate::favicons::{Favicons, favicon_node};
 use crate::tabs::Tabs;
 use crate::url::display_host;
 
@@ -310,7 +311,7 @@ impl Overview {
     }
 
     /// Rebuilds the cards for the tabs matching the search.
-    pub fn rebuild(&mut self, ui: &mut Ui, tabs: &Tabs) {
+    pub fn rebuild(&mut self, ui: &mut Ui, tabs: &Tabs, favicons: &Favicons) {
         ui.clear_children(self.grid);
         self.cards.clear();
         let query = ui.field_text(self.search).unwrap_or_default().trim().to_lowercase();
@@ -449,17 +450,7 @@ impl Overview {
                     ..Default::default()
                 },
             );
-            ui.add(
-                pill,
-                Widget::container()
-                    .with_background(Background::Fill(fixed(crate::chrome::favicon_color(&tab.url)), 1.0))
-                    .with_radius(5.0),
-                Style {
-                    size: Size { width: length(18.0), height: length(18.0) },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-            );
+            favicon_node(ui, pill, &tab.url, 18.0, favicons);
             let title = if label.is_empty() { display_host(&tab.url) } else { label };
             let text = ui.add_label(
                 pill,
@@ -486,6 +477,7 @@ impl Overview {
         &mut self,
         ui: &mut Ui,
         tabs: &Tabs,
+        favicons: &Favicons,
         config: &Config,
         window: Vec2,
         page: Frame,
@@ -493,7 +485,7 @@ impl Overview {
         self.window = window;
         self.scroll = 0.0;
         ui.set_field_text(self.search, "");
-        self.rebuild(ui, tabs);
+        self.rebuild(ui, tabs, favicons);
         ui.set_visible(self.root, true);
         ui.layout();
         let motion = &config.motion;
@@ -561,10 +553,10 @@ impl Overview {
         }
     }
 
-    pub fn resize(&mut self, ui: &mut Ui, tabs: &Tabs, window: Vec2) {
+    pub fn resize(&mut self, ui: &mut Ui, tabs: &Tabs, favicons: &Favicons, window: Vec2) {
         if self.is_open() && window != self.window {
             self.window = window;
-            self.rebuild(ui, tabs);
+            self.rebuild(ui, tabs, favicons);
         }
     }
 

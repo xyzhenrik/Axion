@@ -17,6 +17,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Fullscreen, Window};
 
 use crate::chrome::{Chrome, ChromeAction};
+use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::input::{self, ClickCounter};
 use crate::overview::{Overview, OverviewAction};
 use crate::suggestions::{SuggestionList, suggest};
@@ -64,6 +65,7 @@ pub struct Browser {
     chrome: Chrome,
     overview: Overview,
     suggestions: SuggestionList,
+    favicons: Favicons,
     /// History and bookmarks; `None` if the database couldn't be opened (browsing still works).
     store: Option<axion_store::Store>,
     /// Search text the overview's cards were last built for.
@@ -176,6 +178,7 @@ impl Browser {
         let queue = queue.clone();
         let chrome = Chrome::build(&mut ui, &config);
         let suggestions = SuggestionList::build(&mut ui);
+        let favicons = Favicons::new(device.clone(), queue.clone());
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
 
@@ -192,6 +195,7 @@ impl Browser {
             overview,
             suggestions,
             store,
+            favicons,
             overview_query: String::new(),
             last_frame: Instant::now(),
             tabs: Tabs::default(),
@@ -250,7 +254,7 @@ impl Browser {
         let size = self.logical_size();
         self.ui.set_viewport(size, self.scale());
         self.chrome.apply_layout(&mut self.ui, &self.config, size);
-        self.overview.resize(&mut self.ui, &self.tabs, size);
+        self.overview.resize(&mut self.ui, &self.tabs, &self.favicons, size);
         let view_size = self.view_size();
         for tab in self.tabs.all() {
             self.engine.resize(tab.view, view_size);
@@ -399,7 +403,7 @@ impl Browser {
         self.chrome.set_editing(&mut self.ui, false);
         let window = self.logical_size();
         let page = self.page_rect();
-        let events = self.overview.open(&mut self.ui, &self.tabs, &self.config, window, page);
+        let events = self.overview.open(&mut self.ui, &self.tabs, &self.favicons, &self.config, window, page);
         self.overview_query.clear();
         self.handle_ui_events(events);
     }
@@ -422,14 +426,14 @@ impl Browser {
             OverviewAction::Done => self.close_overview(self.tabs.active_index()),
             OverviewAction::Close(i) => {
                 self.close_tab(i);
-                self.overview.rebuild(&mut self.ui, &self.tabs);
+                self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
             }
             OverviewAction::NewTab => {
                 let home = self.config.general.homepage.clone();
                 if let Err(e) = self.open_tab(&home, true) {
                     tracing::error!("opening a new tab failed: {e:#}");
                 }
-                self.overview.rebuild(&mut self.ui, &self.tabs);
+                self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
                 self.close_overview(self.tabs.active_index());
             }
         }
@@ -611,7 +615,28 @@ impl Browser {
                         tracing::error!("opening {url} failed: {e:#}");
                     }
                 }
-                EngineEvent::FaviconUrlsChanged { .. } => {}
+                EngineEvent::FaviconUrlsChanged { view, urls } => {
+                    let page = self.tabs.all().iter().find(|t| t.view == view).map(|t| t.url.clone());
+                    // CEF often reports no icon links; then use the site's /favicon.ico.
+                    let icon =
+                        |page: &str| urls.first().cloned().or_else(|| crate::favicons::fallback_url(page));
+                    if let Some(page) = page
+                        && let Some(icon) = icon(&page)
+                        && self.favicons.should_fetch(&page)
+                    {
+                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                    }
+                }
+                EngineEvent::FaviconReady { view, width, height, rgba, .. } => {
+                    if let Some(page) = self.tabs.all().iter().find(|t| t.view == view).map(|t| t.url.clone())
+                    {
+                        self.favicons.insert(&page, width, height, &rgba);
+                        self.tabs_changed = true;
+                        if self.overview.is_open() {
+                            self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
+                        }
+                    }
+                }
                 EngineEvent::Closed { .. } => {}
             }
         }
@@ -890,7 +915,7 @@ impl Browser {
             self.update_layout();
         }
         if std::mem::take(&mut self.tabs_changed) {
-            self.chrome.sync_tabs(&mut self.ui, &self.tabs);
+            self.chrome.sync_tabs(&mut self.ui, &self.tabs, &self.favicons);
             let title = self.tabs.active().map(|t| t.label()).unwrap_or_default();
             self.window.set_title(
                 if title.is_empty() { "Axion".to_owned() } else { format!("{title} — Axion") }.as_str(),
@@ -911,7 +936,7 @@ impl Browser {
             let query = self.ui.field_text(self.overview.search_field()).unwrap_or_default().to_owned();
             if query != self.overview_query {
                 self.overview_query = query;
-                self.overview.rebuild(&mut self.ui, &self.tabs);
+                self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
             }
             let engine = &self.engine;
             self.overview.update(&mut self.ui, dt, |view| {

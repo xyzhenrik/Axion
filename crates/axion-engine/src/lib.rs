@@ -66,6 +66,14 @@ pub enum EngineEvent {
         view: ViewId,
         urls: Vec<String>,
     },
+    /// A favicon requested with [`Engine::fetch_favicon`] arrived (RGBA, straight alpha).
+    FaviconReady {
+        view: ViewId,
+        url: String,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
     CursorChanged {
         view: ViewId,
         cursor: CursorKind,
@@ -123,6 +131,10 @@ pub trait Engine {
     fn set_hidden(&mut self, view: ViewId, hidden: bool);
     fn set_focus(&mut self, view: ViewId, focused: bool);
     fn send_input(&mut self, view: ViewId, event: &InputEvent);
+
+    /// Downloads and decodes a favicon through the view's network stack (cache, cookies,
+    /// blocking rules apply). Arrives as [`EngineEvent::FaviconReady`].
+    fn fetch_favicon(&mut self, view: ViewId, url: &str, max_size: u32);
 
     /// Asks the view to produce a frame now (call once per compositor frame for visible views).
     fn request_frame(&mut self, view: ViewId);

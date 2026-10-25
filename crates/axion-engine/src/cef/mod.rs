@@ -18,7 +18,7 @@ use cef::*;
 pub use gpu::render_node_for;
 
 use crate::{Engine, EngineError, EngineEvent, Frame, InputEvent, ViewId, ViewSize};
-use client::{Shared, ViewContext, ViewFrames, ViewGeometry, build_client};
+use client::{FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, build_client, favicon_callback};
 use input::InputState;
 
 /// How long [`CefEngine::shutdown`] waits for views to close before giving up.
@@ -347,6 +347,17 @@ impl Engine for CefEngine {
         }
     }
 
+    fn fetch_favicon(&mut self, view: ViewId, url: &str, max_size: u32) {
+        let Some(state) = self.views.get(&view).filter(|v| !v.closing) else { return };
+        let Some(host) = state.browser.host() else { return };
+        let mut callback = favicon_callback(FaviconRequest {
+            ctx: state.ctx.clone(),
+            browser_id: state.browser_id,
+            scale: state.ctx.geometry.scale.get(),
+        });
+        host.download_image(Some(&url.into()), 1, max_size, 0, Some(&mut callback));
+    }
+
     fn request_frame(&mut self, view: ViewId) {
         if let Some(host) = self.host(view) {
             host.send_external_begin_frame();
@@ -373,6 +384,7 @@ impl Engine for CefEngine {
                 | EngineEvent::LoadingStateChanged { view, .. }
                 | EngineEvent::LoadProgress { view, .. }
                 | EngineEvent::FaviconUrlsChanged { view, .. }
+                | EngineEvent::FaviconReady { view, .. }
                 | EngineEvent::CursorChanged { view, .. }
                 | EngineEvent::FullscreenRequested { view, .. }
                 | EngineEvent::Closed { view } => *view,

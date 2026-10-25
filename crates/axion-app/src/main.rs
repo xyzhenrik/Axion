@@ -11,6 +11,7 @@
 
 mod browser;
 mod chrome;
+mod favicons;
 mod gpu;
 mod input;
 mod overview;

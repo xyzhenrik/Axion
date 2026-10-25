@@ -276,6 +276,66 @@ wrap_life_span_handler! {
     }
 }
 
+/// Receives a downloaded favicon.
+#[derive(Clone)]
+pub(super) struct FaviconRequest {
+    pub ctx: ViewContext,
+    pub browser_id: i32,
+    pub scale: f32,
+}
+
+wrap_download_image_callback! {
+    pub(super) struct FaviconCallbackBuilder {
+        request: FaviconRequest,
+    }
+
+    impl DownloadImageCallback {
+        fn on_download_image_finished(
+            &self,
+            image_url: Option<&CefString>,
+            _http_status_code: ::std::os::raw::c_int,
+            image: Option<&mut Image>,
+        ) {
+            use cef::sys::{cef_alpha_type_t, cef_color_type_t};
+
+            let Some(image) = image else { return };
+            let (mut width, mut height) = (0, 0);
+            let Some(bitmap) = image.as_bitmap(
+                self.request.scale,
+                cef_color_type_t::CEF_COLOR_TYPE_RGBA_8888.into(),
+                cef_alpha_type_t::CEF_ALPHA_TYPE_POSTMULTIPLIED.into(),
+                Some(&mut width),
+                Some(&mut height),
+            ) else {
+                return;
+            };
+            if width <= 0 || height <= 0 {
+                return;
+            }
+            let mut rgba = vec![0; bitmap.size()];
+            bitmap.data(Some(&mut rgba), 0);
+            if rgba.len() != width as usize * height as usize * 4 {
+                return;
+            }
+            let ctx = &self.request.ctx;
+            ctx.shared.events.borrow_mut().push((
+                self.request.browser_id,
+                EngineEvent::FaviconReady {
+                    view: ctx.view,
+                    url: image_url.map(|u| u.to_string()).unwrap_or_default(),
+                    width: width as u32,
+                    height: height as u32,
+                    rgba,
+                },
+            ));
+        }
+    }
+}
+
+pub(super) fn favicon_callback(request: FaviconRequest) -> DownloadImageCallback {
+    FaviconCallbackBuilder::new(request)
+}
+
 wrap_client! {
     pub(super) struct ClientBuilder {
         render: RenderHandler,
