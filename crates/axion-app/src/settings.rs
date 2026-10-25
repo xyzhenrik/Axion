@@ -718,7 +718,8 @@ mod tests {
             [Setting::TextScale, Setting::Refraction, Setting::Blur, Setting::Squash, Setting::MergeDistance]
         {
             setting.set(&mut config, 0.5);
-            assert!((setting.get(&config) - 0.5).abs() < 0.05, "{setting:?}");
+            // Values are rounded to sensible steps (text size to 0.05), so allow one step.
+            assert!((setting.get(&config) - 0.5).abs() < 0.12, "{setting:?}: {}", setting.get(&config));
         }
         Setting::ReduceMotion.set(&mut config, 1.0);
         assert!(config.glass.reduce_motion);
