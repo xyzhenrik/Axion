@@ -70,6 +70,14 @@ pub enum WidgetKind {
         value: f32,
         paint: Paint,
     },
+    /// An on/off switch (51×31, like iOS).
+    Toggle {
+        on: bool,
+    },
+    /// A horizontal slider with a value in 0–1.
+    Slider {
+        value: f32,
+    },
     /// A texture scaled to cover the frame, cropped from the top (tab thumbnails, favicons).
     Image {
         view: Option<wgpu::TextureView>,
@@ -115,6 +123,14 @@ impl Widget {
 
     pub fn icon(icon: Icon, size: f32) -> Self {
         Self::new(WidgetKind::Icon { icon, weight: IconWeight::Regular, size, paint: Paint::Label })
+    }
+
+    pub fn toggle(on: bool) -> Self {
+        Self::new(WidgetKind::Toggle { on })
+    }
+
+    pub fn slider(value: f32) -> Self {
+        Self::new(WidgetKind::Slider { value: value.clamp(0.0, 1.0) })
     }
 
     pub fn image() -> Self {
@@ -195,7 +211,10 @@ impl Widget {
             WidgetKind::Label(l) => l.paint = paint,
             WidgetKind::Icon { paint: p, .. } | WidgetKind::Progress { paint: p, .. } => *p = paint,
             WidgetKind::TextField(f) => f.paint = paint,
-            WidgetKind::Container | WidgetKind::Image { .. } => {}
+            WidgetKind::Container
+            | WidgetKind::Image { .. }
+            | WidgetKind::Toggle { .. }
+            | WidgetKind::Slider { .. } => {}
         }
     }
 

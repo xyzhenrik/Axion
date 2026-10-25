@@ -38,10 +38,28 @@ fn read_optional(path: &Path) -> Result<String, ConfigError> {
     }
 }
 
-/// Loads `config.toml`; a missing file yields the defaults.
+/// Loads `config.toml` over the defaults; a missing file yields the defaults. Partial
+/// sections (even one key of `[glass.light]`) keep every other default.
 pub fn load_config(paths: &ConfigPaths) -> Result<Config, ConfigError> {
     let text = read_optional(&paths.config)?;
-    toml::from_str(&text).map_err(|source| ConfigError::Parse { path: paths.config.clone(), source })
+    let parse_err = |source| ConfigError::Parse { path: paths.config.clone(), source };
+    let user: toml::Table = toml::from_str(&text).map_err(parse_err)?;
+    let mut merged = toml::Table::try_from(Config::default())?;
+    merge(&mut merged, user);
+    // Round-trip through text so errors (wrong types, unknown keys) carry the file's name.
+    toml::from_str(&toml::to_string(&merged)?).map_err(parse_err)
+}
+
+/// Deep-merges `over` into `base`: tables merge key by key, everything else replaces.
+fn merge(base: &mut toml::Table, over: toml::Table) {
+    for (key, value) in over {
+        match (base.get_mut(&key), value) {
+            (Some(toml::Value::Table(b)), toml::Value::Table(o)) => merge(b, o),
+            (_, value) => {
+                base.insert(key, value);
+            }
+        }
+    }
 }
 
 /// Loads `keymap.toml` merged over the default shortcuts.
@@ -53,13 +71,32 @@ pub fn load_keymap(paths: &ConfigPaths) -> Result<Keymap, ConfigError> {
 }
 
 /// Writes `config.toml` atomically (temp file + rename), creating the directory if needed.
+/// Only settings that differ from the defaults are written, so improved defaults in later
+/// versions still reach the user.
 pub fn save_config(paths: &ConfigPaths, config: &Config) -> Result<(), ConfigError> {
-    let text = toml::to_string_pretty(config)?;
+    let text = toml::to_string_pretty(&changed_settings(config)?)?;
     let write_err = |source| ConfigError::Write { path: paths.config.clone(), source };
     std::fs::create_dir_all(&paths.dir).map_err(write_err)?;
     let tmp = paths.config.with_extension("toml.tmp");
     std::fs::write(&tmp, text).map_err(write_err)?;
     std::fs::rename(&tmp, &paths.config).map_err(write_err)
+}
+
+/// `config` as a TOML table without the values that equal the defaults.
+fn changed_settings(config: &Config) -> Result<toml::Table, ConfigError> {
+    fn diff(value: &mut toml::Table, default: &toml::Table) {
+        value.retain(|key, v| match (v, default.get(key)) {
+            (toml::Value::Table(t), Some(toml::Value::Table(d))) => {
+                diff(t, d);
+                !t.is_empty()
+            }
+            (v, Some(d)) => v != d,
+            (_, None) => true,
+        });
+    }
+    let mut table = toml::Table::try_from(config)?;
+    diff(&mut table, &toml::Table::try_from(Config::default())?);
+    Ok(table)
 }
 
 #[cfg(test)]
@@ -85,6 +122,20 @@ mod tests {
         let mut config = Config::default();
         config.layout.sidebar_width = 280.0;
         save_config(&paths, &config).unwrap();
+        assert_eq!(load_config(&paths).unwrap(), config);
+        std::fs::remove_dir_all(&paths.dir).unwrap();
+    }
+
+    #[test]
+    fn saves_only_changes() {
+        let paths = ConfigPaths::in_dir(temp_dir("diff"));
+        let mut config = Config::default();
+        config.appearance.accent = crate::Color::rgb(0xE2457A);
+        config.glass.light.dispersion = 0.2;
+        save_config(&paths, &config).unwrap();
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(text.contains("accent") && text.contains("dispersion"), "{text}");
+        assert!(!text.contains("homepage") && !text.contains("bezel_width"), "{text}");
         assert_eq!(load_config(&paths).unwrap(), config);
         std::fs::remove_dir_all(&paths.dir).unwrap();
     }

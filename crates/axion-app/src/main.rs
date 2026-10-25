@@ -16,6 +16,7 @@ mod gpu;
 mod input;
 mod menu;
 mod overview;
+mod settings;
 mod suggestions;
 mod tabs;
 mod url;

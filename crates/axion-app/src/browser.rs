@@ -22,6 +22,7 @@ use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::input::{self, ClickCounter};
 use crate::menu::{Menu, MenuAction, MenuItem};
 use crate::overview::{Overview, OverviewAction};
+use crate::settings::{Outcome, SettingsAction, SettingsSheet};
 use crate::suggestions::{SuggestionList, suggest};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
 use crate::url::display_host;
@@ -30,6 +31,8 @@ use crate::url::resolve_input;
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
 /// How long before a `--capture --overview` screenshot the overview opens.
 const OVERVIEW_CAPTURE_LEAD: Duration = Duration::from_secs(2);
+/// Settings changes are written to disk once they've been still for this long.
+const CONFIG_SAVE_DELAY: Duration = Duration::from_millis(250);
 /// History rows shown in the sidebar panel.
 const PANEL_HISTORY_LIMIT: usize = 100;
 /// Chromium's zoom levels are powers of this factor.
@@ -77,6 +80,11 @@ pub struct Browser {
     overview: Overview,
     suggestions: SuggestionList,
     menu: Menu,
+    settings: SettingsSheet,
+    /// Unsaved settings changes since this time (saving is throttled while dragging).
+    config_dirty_since: Option<Instant>,
+    /// What we last wrote to config.toml, so the file watcher can ignore our own writes.
+    last_saved_config: Option<String>,
     /// URLs of the open sidebar panel's rows, by index.
     panel_urls: Vec<String>,
     favicons: Favicons,
@@ -196,6 +204,7 @@ impl Browser {
         let chrome = Chrome::build(&mut ui, &config);
         let suggestions = SuggestionList::build(&mut ui);
         let menu = Menu::build(&mut ui);
+        let settings = SettingsSheet::build(&mut ui);
         let favicons = Favicons::new(device.clone(), queue.clone());
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
@@ -213,6 +222,9 @@ impl Browser {
             overview,
             suggestions,
             menu,
+            settings,
+            config_dirty_since: None,
+            last_saved_config: None,
             panel_urls: Vec::new(),
             store,
             favicons,
@@ -279,6 +291,9 @@ impl Browser {
         self.ui.set_viewport(size, self.scale());
         self.chrome.apply_layout(&mut self.ui, &self.config, size);
         self.overview.resize(&mut self.ui, &self.tabs, &self.favicons, size);
+        if self.settings.is_open() {
+            self.settings.resize(&mut self.ui, size);
+        }
         let view_size = self.view_size();
         for tab in self.tabs.all() {
             self.engine.resize(tab.view, view_size);
@@ -413,7 +428,16 @@ impl Browser {
                     self.open_overview();
                 }
             }
-            Action::Find | Action::OpenSettings => {
+            Action::OpenSettings => {
+                if self.settings.is_open() {
+                    self.settings.close(&mut self.ui);
+                } else {
+                    self.menu.close(&mut self.ui);
+                    let window = self.logical_size();
+                    self.settings.open(&mut self.ui, &self.config, &self.keymap, window);
+                }
+            }
+            Action::Find => {
                 tracing::info!("{action} arrives in a later phase");
             }
             Action::Quit => {}
@@ -588,6 +612,24 @@ impl Browser {
                 }
                 UiEvent::Cancelled { node } if node == self.overview.search_field() => {
                     self.close_overview(self.tabs.active_index());
+                }
+                UiEvent::Clicked { action, .. } if SettingsAction::from_id(action).is_some() => {
+                    let Some(action) = SettingsAction::from_id(action) else { continue };
+                    // The backdrop's "close" also fires for clicks on the sheet's background.
+                    let on_sheet = self.pointer.is_some_and(|p| self.settings.contains(&self.ui, p));
+                    if action == SettingsAction::Close && on_sheet {
+                        continue;
+                    }
+                    let outcome = self.settings.action(&mut self.ui, action, &mut self.config, &self.keymap);
+                    self.settings_outcome(outcome);
+                }
+                UiEvent::ValueChanged { node, value } => {
+                    let outcome = self.settings.value_changed(node, value, &mut self.config);
+                    self.settings_outcome(outcome);
+                }
+                UiEvent::Submitted { node, text } if Some(node) == self.settings.homepage_field() => {
+                    self.config.general.homepage = text.trim().to_owned();
+                    self.settings_outcome(Outcome::Changed);
                 }
                 UiEvent::Clicked { action, .. } if self.menu.action(action).is_some() => {
                     let action = self.menu.action(action);
@@ -785,10 +827,44 @@ impl Browser {
         self.reload_config_if_changed();
     }
 
+    fn settings_outcome(&mut self, outcome: Outcome) {
+        match outcome {
+            Outcome::Nothing => {}
+            Outcome::Changed => {
+                // Apply at once; write to disk a moment later (sliders send many changes).
+                self.config_dirty_since.get_or_insert(Instant::now());
+                self.apply_theme();
+                self.update_layout();
+                self.tabs_changed = true;
+            }
+            Outcome::Close => self.settings.close(&mut self.ui),
+            Outcome::ClearHistory => {
+                if let Some(store) = &self.store
+                    && let Err(e) = store.clear_history_since(0)
+                {
+                    tracing::error!("clearing history failed: {e}");
+                }
+            }
+        }
+    }
+
+    fn save_config_if_due(&mut self) {
+        if self.config_dirty_since.is_some_and(|t| t.elapsed() >= CONFIG_SAVE_DELAY) {
+            self.config_dirty_since = None;
+            match axion_config::save_config(&self.paths, &self.config) {
+                Ok(()) => self.last_saved_config = std::fs::read_to_string(&self.paths.config).ok(),
+                Err(e) => tracing::error!("saving settings failed: {e}"),
+            }
+        }
+    }
+
     fn reload_config_if_changed(&mut self) {
+        self.save_config_if_due();
         let Some(watcher) = &self.watcher else { return };
         let changed = watcher.poll();
-        if changed.config {
+        let own_write = self.last_saved_config.is_some()
+            && std::fs::read_to_string(&self.paths.config).ok() == self.last_saved_config;
+        if changed.config && !own_write && self.config_dirty_since.is_none() {
             match axion_config::load_config(&self.paths) {
                 Ok(config) => {
                     tracing::info!("settings reloaded");
@@ -1010,6 +1086,14 @@ impl Browser {
     /// Returns `true` if the browser should quit.
     fn keyboard(&mut self, event: &winit::event::KeyEvent) -> bool {
         let pressed = event.state.is_pressed();
+        if pressed
+            && self.settings.is_open()
+            && self.ui.focused().is_none()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            self.settings.close(&mut self.ui);
+            return false;
+        }
         if pressed && self.menu.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.menu.close(&mut self.ui);
             return false;

@@ -32,6 +32,10 @@ const CARET_WIDTH: f32 = 1.5;
 const HOVER_ALPHA: f32 = 0.07;
 const PRESS_ALPHA: f32 = 0.13;
 const DISABLED_ALPHA: f32 = 0.4;
+/// Toggle track size and slider knob diameter (logical px), as on iOS.
+const TOGGLE_SIZE: Vec2 = Vec2::new(51.0, 31.0);
+const SLIDER_KNOB: f32 = 24.0;
+const SLIDER_TRACK: f32 = 4.0;
 /// Below this opacity a widget (and its subtree) isn't drawn.
 const MIN_VISIBLE: f32 = 0.01;
 /// Fading glass is grouped into this many opacity steps (each step is one glass pass).
@@ -72,6 +76,11 @@ pub enum UiEvent {
     PasteRequested {
         node: NodeId,
     },
+    /// A toggle (0 or 1) or slider (0–1) changed.
+    ValueChanged {
+        node: NodeId,
+        value: f32,
+    },
 }
 
 /// What the pointer is over, for choosing the mouse cursor.
@@ -95,6 +104,8 @@ pub struct Ui {
     hover: Option<NodeId>,
     pressed: Option<NodeId>,
     focus: Option<NodeId>,
+    /// A slider being dragged.
+    dragging: Option<NodeId>,
     caret_epoch: Instant,
     needs_layout: bool,
 }
@@ -117,6 +128,7 @@ impl Ui {
             hover: None,
             pressed: None,
             focus: None,
+            dragging: None,
             caret_epoch: Instant::now(),
             needs_layout: true,
         }
@@ -443,6 +455,14 @@ impl Ui {
                         let (_, h) = measure(&field.buffer);
                         Size { width: known.width.unwrap_or(0.0), height: known.height.unwrap_or(h / scale) }
                     }
+                    Some(WidgetKind::Toggle { .. }) => Size {
+                        width: known.width.unwrap_or(TOGGLE_SIZE.x),
+                        height: known.height.unwrap_or(TOGGLE_SIZE.y),
+                    },
+                    Some(WidgetKind::Slider { .. }) => Size {
+                        width: known.width.unwrap_or(0.0),
+                        height: known.height.unwrap_or(SLIDER_KNOB + 4.0),
+                    },
                     Some(WidgetKind::Icon { size, .. }) => {
                         Size { width: known.width.unwrap_or(*size), height: known.height.unwrap_or(*size) }
                     }
@@ -526,7 +546,10 @@ impl Ui {
         }
         let solid = widget.background != Background::None
             || widget.action.is_some()
-            || matches!(widget.kind, WidgetKind::TextField(_));
+            || matches!(
+                widget.kind,
+                WidgetKind::TextField(_) | WidgetKind::Toggle { .. } | WidgetKind::Slider { .. }
+            );
         (solid && node != self.root && rounded_contains(widget.frame, widget.radius, p)).then_some(node)
     }
 
@@ -551,7 +574,9 @@ impl Ui {
         let widget = self.widget(node)?;
         Some(if matches!(widget.kind, WidgetKind::TextField(_)) {
             UiCursor::Text
-        } else if self.actionable(node).is_some() {
+        } else if self.actionable(node).is_some()
+            || matches!(widget.kind, WidgetKind::Toggle { .. } | WidgetKind::Slider { .. })
+        {
             UiCursor::Pointer
         } else {
             UiCursor::Default
@@ -564,6 +589,10 @@ impl Ui {
         let consumed = match input {
             UiInput::PointerMove(p) => {
                 self.pointer = Some(p);
+                if let Some(slider) = self.dragging {
+                    events.extend(self.slide_to(slider, p));
+                    return (true, events);
+                }
                 let hit = self.hit(p);
                 self.hover = hit.and_then(|n| self.actionable(n));
                 hit.is_some() || self.pressed.is_some()
@@ -575,6 +604,9 @@ impl Ui {
             }
             UiInput::PointerDown => self.pointer_down(&mut events),
             UiInput::PointerUp => {
+                if self.dragging.take().is_some() {
+                    return (true, events);
+                }
                 let pressed = self.pressed.take();
                 if let (Some(node), Some(p)) = (pressed, self.pointer)
                     && self.hit(p).and_then(|n| self.actionable(n)) == Some(node)
@@ -609,6 +641,22 @@ impl Ui {
             events.extend(self.blur());
             return false;
         };
+        match self.widget(hit).map(|w| &w.kind) {
+            Some(WidgetKind::Toggle { on }) => {
+                let value = if *on { 0.0 } else { 1.0 };
+                self.set_value(hit, value);
+                events.extend(self.blur());
+                events.push(UiEvent::ValueChanged { node: hit, value });
+                return true;
+            }
+            Some(WidgetKind::Slider { .. }) => {
+                events.extend(self.blur());
+                self.dragging = Some(hit);
+                events.extend(self.slide_to(hit, p));
+                return true;
+            }
+            _ => {}
+        }
         let is_field = self.widget(hit).is_some_and(Widget::is_focusable);
         if is_field {
             if self.focus == Some(hit) {
@@ -627,6 +675,30 @@ impl Ui {
         }
         self.pressed = self.actionable(hit);
         true
+    }
+
+    /// Moves a slider's knob under the pointer.
+    fn slide_to(&mut self, slider: NodeId, p: Vec2) -> Option<UiEvent> {
+        let frame = self.frame(slider);
+        let inset = SLIDER_KNOB / 2.0;
+        let span = (frame.size.x - 2.0 * inset).max(1.0);
+        let value = ((p.x - frame.origin.x - inset) / span).clamp(0.0, 1.0);
+        match self.widget(slider).map(|w| &w.kind) {
+            Some(WidgetKind::Slider { value: v }) if (*v - value).abs() > f32::EPSILON => {
+                self.set_value(slider, value);
+                Some(UiEvent::ValueChanged { node: slider, value })
+            }
+            _ => None,
+        }
+    }
+
+    /// Sets a toggle (> 0.5 is on) or slider (0–1) without emitting an event.
+    pub fn set_value(&mut self, node: NodeId, value: f32) {
+        match self.tree.get_node_context_mut(node).map(|w| &mut w.kind) {
+            Some(WidgetKind::Toggle { on }) => *on = value > 0.5,
+            Some(WidgetKind::Slider { value: v }) => *v = value.clamp(0.0, 1.0),
+            _ => {}
+        }
     }
 
     fn field_key(&mut self, node: NodeId, key: &Key, m: Modifiers, events: &mut Vec<UiEvent>) {
@@ -843,6 +915,49 @@ impl Ui {
                 content.images.push(ImageDraw { texture: view, rect: px, uv, radius, opacity: alpha });
             }
             WidgetKind::Image { view: None, .. } => {}
+            WidgetKind::Toggle { on } => {
+                let base = if *on { theme.color(Paint::Accent) } else { theme.color(Paint::Label) };
+                let track = faded([base[0], base[1], base[2], if *on { 1.0 } else { 0.16 }]);
+                let size = TOGGLE_SIZE * s;
+                let origin = px.origin + (px.size - size) / 2.0;
+                content.quads.push(Quad::fill(Rect { origin, size }, size.y / 2.0, track));
+                let knob = size.y - 4.0 * s;
+                let x = if *on { origin.x + size.x - 2.0 * s - knob } else { origin.x + 2.0 * s };
+                let knob_rect = Rect::new(x, origin.y + 2.0 * s, knob, knob);
+                content.quads.push(Quad::shadow(
+                    knob_rect,
+                    knob / 2.0,
+                    2.0 * s,
+                    6.0 * s,
+                    [0.0, 0.0, 0.0, 0.18 * fade],
+                ));
+                content.quads.push(Quad::fill(knob_rect, knob / 2.0, faded([1.0, 1.0, 1.0, 1.0])));
+            }
+            WidgetKind::Slider { value } => {
+                let knob = SLIDER_KNOB * s;
+                let inset = knob / 2.0;
+                let y = px.origin.y + px.size.y / 2.0;
+                let track_h = SLIDER_TRACK * s;
+                let width = (px.size.x - 2.0 * inset).max(0.0);
+                let track = Rect::new(px.origin.x + inset, y - track_h / 2.0, width, track_h);
+                let label = theme.color(Paint::Label);
+                content.quads.push(Quad::fill(
+                    track,
+                    track_h / 2.0,
+                    faded([label[0], label[1], label[2], 0.15]),
+                ));
+                let filled = Rect { size: Vec2::new(width * value, track_h), ..track };
+                content.quads.push(Quad::fill(filled, track_h / 2.0, faded(theme.color(Paint::Accent))));
+                let knob_rect = Rect::new(px.origin.x + width * value, y - knob / 2.0, knob, knob);
+                content.quads.push(Quad::shadow(
+                    knob_rect,
+                    knob / 2.0,
+                    2.0 * s,
+                    6.0 * s,
+                    [0.0, 0.0, 0.0, 0.2 * fade],
+                ));
+                content.quads.push(Quad::fill(knob_rect, knob / 2.0, faded([1.0, 1.0, 1.0, 1.0])));
+            }
         }
 
         for child in self.tree.children(node).unwrap_or_default() {
@@ -1025,6 +1140,33 @@ mod tests {
             ui.handle(UiInput::Key { key: Key::Named("Enter".into()), modifiers: Modifiers::default() });
         assert!(consumed);
         assert_eq!(events, vec![UiEvent::Submitted { node: field, text: "rust".into() }]);
+    }
+
+    #[test]
+    fn toggles_and_sliders() {
+        let mut ui = ui();
+        let root = ui.root();
+        let toggle = ui.add(root, Widget::toggle(false), Style::default());
+        let slider = ui.add(
+            root,
+            Widget::slider(0.0),
+            Style { size: Size { width: length(224.0), height: auto() }, ..Default::default() },
+        );
+        ui.layout();
+        let t = ui.frame(toggle);
+        ui.handle(UiInput::PointerMove(t.center()));
+        let (_, events) = ui.handle(UiInput::PointerDown);
+        assert!(events.contains(&UiEvent::ValueChanged { node: toggle, value: 1.0 }));
+
+        let f = ui.frame(slider);
+        ui.handle(UiInput::PointerMove(Vec2::new(f.origin.x + 12.0, f.center().y)));
+        ui.handle(UiInput::PointerDown);
+        // Drag to the middle of the track (the knob is inset 12 px on each side).
+        let (_, events) = ui.handle(UiInput::PointerMove(Vec2::new(f.origin.x + 112.0, f.center().y)));
+        assert_eq!(events, vec![UiEvent::ValueChanged { node: slider, value: 0.5 }]);
+        ui.handle(UiInput::PointerUp);
+        let (_, events) = ui.handle(UiInput::PointerMove(Vec2::new(f.origin.x + 200.0, f.center().y)));
+        assert!(events.is_empty(), "no drag after release");
     }
 
     #[test]
