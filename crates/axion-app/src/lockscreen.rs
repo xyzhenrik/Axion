@@ -1,6 +1,7 @@
 //! Private browsing while locked (Safari, iPadOS 26): the page area shows a grey lock,
 //! "“Private Browsing” is locked" and a blue Unlock button. Unlock brings up a glass alert
-//! card (scaling up and fading in) that asks for the password — where Safari asks for Touch ID.
+//! card (scaling up and fading in) that asks for the account password — where Safari asks for
+//! Touch ID.
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{Color, Config};
@@ -23,6 +24,8 @@ pub struct LockScreen {
     alert_layer: NodeId,
     alert: NodeId,
     field: NodeId,
+    /// The alert's line that names the account.
+    text: NodeId,
     error: NodeId,
     visible: bool,
     alert_open: bool,
@@ -134,7 +137,7 @@ impl LockScreen {
         );
         ui.add(alert, Widget::icon(Icon::Lock, 30.0).with_paint(Paint::Accent), Style::default());
         ui.add_label(alert, "Unlock “Private Browsing”", TextStyle::BodyEmphasis, Style::default());
-        secondary(ui, alert, "Enter your password to see your private tabs.", TextStyle::Footnote);
+        let text = secondary(ui, alert, "", TextStyle::Footnote);
         let field_box = ui.add(
             alert,
             Widget::container().with_background(Background::Fill(Paint::Label, 0.07)).with_radius(12.0),
@@ -185,11 +188,18 @@ impl LockScreen {
             alert_layer,
             alert,
             field,
+            text,
             error,
             visible: false,
             alert_open: false,
             appear: Animated::new(0.0, Spring::SNAPPY),
         }
+    }
+
+    /// Names the account whose password unlocks.
+    pub fn set_account(&self, ui: &mut Ui, name: &str) {
+        let text = format!("Enter the password of “{name}”.");
+        ui.set_text(self.text, &text);
     }
 
     pub fn field(&self) -> NodeId {

@@ -5,10 +5,11 @@
 //!   light pill with close, Shields, address, reload and page menu — and actions (share, new
 //!   tab, tab overview);
 //! - a full-height sidebar: header buttons, the tab list, Private, and a "Saved" section with
-//!   bookmarks, reading list and history. Docked in wide windows, floating otherwise.
+//!   bookmarks, reading list and history; Now Playing and the account button sit at its
+//!   bottom. Docked in wide windows, floating otherwise.
 
 use axion_compositor::{Icon, IconWeight, Rect as Frame};
-use axion_config::{Config, SidebarMode, TabBarStyle};
+use axion_config::{Color, Config, SidebarMode, TabBarStyle};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Align, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
@@ -27,6 +28,9 @@ pub struct NowPlaying {
 }
 
 const NOW_PLAYING_HEIGHT: f32 = 60.0;
+/// The account button at the bottom of the sidebar, and its avatar.
+const ACCOUNT_HEIGHT: f32 = 48.0;
+const ACCOUNT_AVATAR: f32 = 30.0;
 /// The separate tab bar's row of tabs, and its gap to the toolbar.
 const TAB_STRIP_HEIGHT: f32 = 38.0;
 /// Tint of the capsule under the tabs that aren't open.
@@ -91,6 +95,8 @@ pub enum ChromeAction {
     PanelButton(usize, usize),
     /// Opens the Passwords sheet.
     Passwords,
+    /// The account button: opens the account menu.
+    Account,
 }
 
 const SELECT_TAB_BASE: u32 = 1000;
@@ -103,7 +109,7 @@ const PANEL_BUTTON_BASE: u32 = 13_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 26] = [
+    const SIMPLE: [ChromeAction; 27] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -130,6 +136,7 @@ impl ChromeAction {
         ChromeAction::Downloads,
         ChromeAction::DownloadsButton,
         ChromeAction::Passwords,
+        ChromeAction::Account,
     ];
 
     fn id(self) -> ActionId {
@@ -146,7 +153,7 @@ impl ChromeAction {
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=26 => Some(Self::SIMPLE[n as usize - 1]),
+            n @ 1..=27 => Some(Self::SIMPLE[n as usize - 1]),
             n if (PANEL_BUTTON_BASE..PANEL_BUTTON_BASE + 1000 * PANEL_BUTTONS as u32).contains(&n) => {
                 let k = (n - PANEL_BUTTON_BASE) as usize;
                 Some(ChromeAction::PanelButton(k / PANEL_BUTTONS, k % PANEL_BUTTONS))
@@ -221,6 +228,10 @@ const SLIDE_SETTLED: f32 = 0.3;
 const TAB_INDENT: f32 = 18.0;
 
 pub struct Chrome {
+    account: NodeId,
+    account_avatar: NodeId,
+    account_initials: NodeId,
+    account_name: NodeId,
     now_playing: NodeId,
     now_playing_title: NodeId,
     now_playing_subtitle: NodeId,
@@ -584,15 +595,24 @@ impl Chrome {
         );
         ui.set_visible(panel, false);
 
-        // Now Playing: at the bottom of the sidebar while a tab plays media.
-        let now_playing = ui.add(
+        // Pinned to the bottom of the sidebar: Now Playing (while a tab plays media) above the
+        // account button.
+        let footer = ui.add(
             sidebar,
+            Widget::container(),
+            Style {
+                margin: Rect { left: length(0.0), right: length(0.0), top: auto(), bottom: length(0.0) },
+                flex_shrink: 0.0,
+                ..column(8.0)
+            },
+        );
+        let now_playing = ui.add(
+            footer,
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thin))
                 .with_radius(NOW_PLAYING_RADIUS)
                 .with_action(ChromeAction::NowPlaying.id()),
             Style {
-                margin: Rect { left: length(0.0), right: length(0.0), top: auto(), bottom: length(0.0) },
                 size: Size { width: auto(), height: length(NOW_PLAYING_HEIGHT) },
                 padding: padding(14.0, 8.0, 0.0, 0.0),
                 ..row(12.0)
@@ -622,6 +642,37 @@ impl Chrome {
             40.0,
         );
         ui.set_visible(now_playing, false);
+        // The account button (like Claude's app): avatar with initials, then the name.
+        let account = ui.add(
+            footer,
+            Widget::container().with_action(ChromeAction::Account.id()).with_radius(CAPSULE),
+            Style {
+                size: Size { width: auto(), height: length(ACCOUNT_HEIGHT) },
+                padding: padding(6.0, 12.0, 0.0, 0.0),
+                ..row(10.0)
+            },
+        );
+        let account_avatar = ui.add(
+            account,
+            Widget::container().with_background(Background::Fill(Paint::Accent, 1.0)).with_radius(CAPSULE),
+            Style {
+                size: square(ACCOUNT_AVATAR),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        let account_initials = ui.add_label(account_avatar, "", TextStyle::Callout, Style::default());
+        if let Some(w) = ui.widget_mut(account_initials) {
+            w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
+        }
+        let account_name = ui.add_label(account, "", TextStyle::BodyEmphasis, shrinking_label());
+        ui.add(
+            account,
+            Widget::icon(Icon::ChevronUpDown, 15.0).with_paint(Paint::Secondary),
+            Style::default(),
+        );
 
         // ---- toolbar ----
         let bar = ui.add(
@@ -804,6 +855,10 @@ impl Chrome {
             ui.set_children(root, &planes);
         }
         let mut chrome = Self {
+            account,
+            account_avatar,
+            account_initials,
+            account_name,
             now_playing,
             now_playing_title,
             now_playing_subtitle,
@@ -1332,6 +1387,25 @@ impl Chrome {
     }
 
     /// Shows the Now Playing card (`None` hides it).
+    /// Shows the current account on the account button.
+    pub fn set_account(&self, ui: &mut Ui, name: &str, initials: &str, color: Color) {
+        ui.set_text(self.account_name, name);
+        ui.set_text(self.account_initials, initials);
+        if let Some(w) = ui.widget_mut(self.account_avatar) {
+            w.background = Background::Fill(Paint::Fixed(color), 1.0);
+        }
+    }
+
+    /// The account button (logical px), where the account menu rises from.
+    pub fn account_frame(&self, ui: &Ui) -> Frame {
+        ui.frame(self.account)
+    }
+
+    /// The sidebar, the plane the account menu's glass belongs to.
+    pub fn sidebar_node(&self) -> NodeId {
+        self.sidebar
+    }
+
     pub fn set_now_playing(&self, ui: &mut Ui, now: Option<&NowPlaying>) {
         ui.set_visible(self.now_playing, now.is_some());
         let Some(now) = now else { return };

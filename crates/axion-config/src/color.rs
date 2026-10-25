@@ -12,6 +12,17 @@ pub struct Color {
     pub a: u8,
 }
 
+/// The accent colours from the design system ("Foundations"): Settings › Appearance offers
+/// them as the accent, and accounts use them for their avatars.
+pub const ACCENT_SWATCHES: [Color; 6] = [
+    Color::rgb(0x2E6BFF),
+    Color::rgb(0x5B5BF0),
+    Color::rgb(0xE2457A),
+    Color::rgb(0xF2742B),
+    Color::rgb(0x1F9D57),
+    Color::rgb(0x5E636E),
+];
+
 impl Color {
     pub const fn rgb(hex: u32) -> Self {
         Self { r: (hex >> 16) as u8, g: (hex >> 8) as u8, b: hex as u8, a: 255 }

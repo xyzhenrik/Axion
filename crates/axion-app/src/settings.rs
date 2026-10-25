@@ -5,12 +5,15 @@ use std::path::PathBuf;
 
 use axion_compositor::Icon;
 use axion_config::{
-    Action as KeyAction, ClearRange, Color, Config, Keymap, RemoveDownloads, ShieldLevel, TabBarStyle,
-    ThemeMode,
+    ACCENT_SWATCHES, Action as KeyAction, ClearRange, Color, Config, Keymap, RemoveDownloads, ShieldLevel,
+    TabBarStyle, ThemeMode,
 };
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
+use zeroize::Zeroizing;
+
+use crate::passwords::MIN_MASTER_LENGTH;
 
 mod search;
 
@@ -39,10 +42,13 @@ pub const SEARCH_ENGINES: [(&str, &str); 5] = [
 ];
 
 /// Accent colours from the design system.
-const ACCENTS: [u32; 6] = [0x2E6BFF, 0x5B5BF0, 0xE2457A, 0xF2742B, 0x1F9D57, 0x5E636E];
+const ACCENTS: [Color; 6] = ACCENT_SWATCHES;
+/// The avatar on the Account page.
+const AVATAR_SIZE: f32 = 52.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
+    Account,
     General,
     Appearance,
     LiquidGlass,
@@ -56,7 +62,8 @@ pub enum Category {
 }
 
 impl Category {
-    const ALL: [Category; 10] = [
+    const ALL: [Category; 11] = [
+        Category::Account,
         Category::General,
         Category::Appearance,
         Category::LiquidGlass,
@@ -71,6 +78,7 @@ impl Category {
 
     fn title(self) -> &'static str {
         match self {
+            Category::Account => "Account",
             Category::General => "General",
             Category::Appearance => "Appearance",
             Category::LiquidGlass => "Liquid Glass",
@@ -86,6 +94,7 @@ impl Category {
 
     fn icon(self) -> Icon {
         match self {
+            Category::Account => Icon::Person,
             Category::General => Icon::Settings,
             Category::Appearance => Icon::Sidebar,
             Category::LiquidGlass => Icon::Overview,
@@ -160,7 +169,7 @@ impl Setting {
             Setting::Dispersion => "Colour dispersion",
             Setting::Squash => "Squash when moving",
             Setting::MergeDistance => "Merge distance",
-            Setting::LockPrivateTabs => "Lock private tabs with a password",
+            Setting::LockPrivateTabs => "Lock private tabs with the account password",
             Setting::LockAfter => "Lock after time in background",
             Setting::HideAdElements => "Hide empty ad spaces",
             Setting::BlockPopups => "Block popups opened without a click",
@@ -418,8 +427,12 @@ pub enum SettingsAction {
     SearchEngine(usize),
     Accent(usize),
     ClearHistory,
+    /// Sets or changes the account password from the fields on the page.
     SetPassword,
-    RemovePassword,
+    SaveAccountName,
+    /// Index into the accent swatches.
+    AccountColor(usize),
+    DeleteAccount,
     ShieldLevel(ShieldLevel),
     UpdateFilterLists,
     TabBar(TabBarStyle),
@@ -439,8 +452,10 @@ pub enum SettingsAction {
     ExportPasswords,
 }
 
-/// Remove buttons of the trusted player sites (one id per row).
+/// Remove buttons of the trusted player sites (one id per row, up to `CATEGORY_BASE`).
 const TRUSTED_SITE_BASE: u32 = 200;
+/// The pages in the list on the left.
+const CATEGORY_BASE: u32 = 900;
 
 /// Remove buttons of the sites with data, and how many sites are listed.
 const SITE_DATA_BASE: u32 = 100;
@@ -474,7 +489,7 @@ impl SettingsAction {
                 + match self {
                     SettingsAction::Close => 0,
                     SettingsAction::Category(c) => {
-                        10 + Category::ALL.iter().position(|&x| x == c).unwrap_or(0) as u32
+                        CATEGORY_BASE + Category::ALL.iter().position(|&x| x == c).unwrap_or(0) as u32
                     }
                     SettingsAction::Theme(ThemeMode::Auto) => 20,
                     SettingsAction::Theme(ThemeMode::Light) => 21,
@@ -483,7 +498,9 @@ impl SettingsAction {
                     SettingsAction::Accent(i) => 40 + i as u32,
                     SettingsAction::ClearHistory => 50,
                     SettingsAction::SetPassword => 51,
-                    SettingsAction::RemovePassword => 52,
+                    SettingsAction::SaveAccountName => 52,
+                    SettingsAction::DeleteAccount => 53,
+                    SettingsAction::AccountColor(i) => 54 + i as u32,
                     SettingsAction::ShieldLevel(level) => {
                         60 + SHIELD_LEVELS.iter().position(|(_, l)| *l == level).unwrap_or(0) as u32
                     }
@@ -516,7 +533,9 @@ impl SettingsAction {
         let n = id.0.checked_sub(ACTION_BASE)?;
         Some(match n {
             0 => SettingsAction::Close,
-            10..=19 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
+            n if (CATEGORY_BASE..CATEGORY_BASE + Category::ALL.len() as u32).contains(&n) => {
+                SettingsAction::Category(Category::ALL[(n - CATEGORY_BASE) as usize])
+            }
             20 => SettingsAction::Theme(ThemeMode::Auto),
             21 => SettingsAction::Theme(ThemeMode::Light),
             22 => SettingsAction::Theme(ThemeMode::Dark),
@@ -526,7 +545,9 @@ impl SettingsAction {
             40..=49 if ((n - 40) as usize) < ACCENTS.len() => SettingsAction::Accent((n - 40) as usize),
             50 => SettingsAction::ClearHistory,
             51 => SettingsAction::SetPassword,
-            52 => SettingsAction::RemovePassword,
+            52 => SettingsAction::SaveAccountName,
+            53 => SettingsAction::DeleteAccount,
+            54..=59 if ((n - 54) as usize) < ACCENTS.len() => SettingsAction::AccountColor((n - 54) as usize),
             60..=62 => SettingsAction::ShieldLevel(SHIELD_LEVELS[(n - 60) as usize].1),
             63 => SettingsAction::UpdateFilterLists,
             70 => SettingsAction::TabBar(TabBarStyle::Separate),
@@ -544,7 +565,7 @@ impl SettingsAction {
             n if (SITE_DATA_BASE..SITE_DATA_BASE + SITE_DATA_LIMIT as u32).contains(&n) => {
                 SettingsAction::RemoveSiteData((n - SITE_DATA_BASE) as usize)
             }
-            n if (TRUSTED_SITE_BASE..TRUSTED_SITE_BASE + 800).contains(&n) => {
+            n if (TRUSTED_SITE_BASE..CATEGORY_BASE).contains(&n) => {
                 SettingsAction::RemoveTrustedSite((n - TRUSTED_SITE_BASE) as usize)
             }
             _ => return None,
@@ -559,8 +580,15 @@ pub enum Outcome {
     Changed,
     Close,
     ClearHistory,
-    SetPassword(String),
-    RemovePassword,
+    /// Set the account password (`current: None`: it has none yet) or change it.
+    SetAccountPassword {
+        current: Option<Zeroizing<String>>,
+        new: Zeroizing<String>,
+    },
+    RenameAccount(String),
+    AccountColor(Color),
+    /// Delete the current account (confirmed) and switch to another one.
+    DeleteAccount,
     UpdateFilterLists,
     /// The Data & Downloads page opened: measure the cache and list the sites with data.
     DataPage,
@@ -592,8 +620,15 @@ pub struct SettingsSheet {
     homepage: Option<NodeId>,
     /// The "add a trusted player site" field (Media page).
     trusted_site: Option<NodeId>,
-    password: Option<NodeId>,
-    has_password: bool,
+    /// The account password fields (current, new, confirm) where shown.
+    password_fields: Option<PasswordFields>,
+    account_name: Option<NodeId>,
+    account: AccountInfo,
+    /// The last result of setting the account password (an error, or that it worked).
+    account_status: Option<String>,
+    confirm_delete: bool,
+    /// The page must be rebuilt after a change (a toggle that shows more rows).
+    rebuild: bool,
     /// The import/export file field (Passwords page) and the last import/export result.
     passwords_file: Option<NodeId>,
     passwords_status: Option<String>,
@@ -765,8 +800,12 @@ impl SettingsSheet {
             values: Vec::new(),
             homepage: None,
             trusted_site: None,
-            password: None,
-            has_password: false,
+            password_fields: None,
+            account_name: None,
+            account: AccountInfo::default(),
+            account_status: None,
+            confirm_delete: false,
+            rebuild: false,
             passwords_file: None,
             passwords_status: None,
             memory_used: None,
@@ -791,13 +830,29 @@ impl SettingsSheet {
         ui.frame(self.sheet).contains(p)
     }
 
-    /// Whether a private browsing password exists (changes the Privacy page).
-    pub fn set_has_password(&mut self, has_password: bool) {
-        self.has_password = has_password;
+    /// The current account, shown on the Account page (and whether it has a password, which
+    /// changes the Privacy page).
+    pub fn set_account(&mut self, account: AccountInfo) {
+        self.account = account;
     }
 
+    /// The result of setting or changing the account password.
+    pub fn set_account_status(&mut self, status: Option<String>) {
+        self.account_status = status;
+    }
+
+    /// The field whose Enter sets the password (the last of them).
     pub fn password_field(&self) -> Option<NodeId> {
-        self.password
+        self.password_fields.as_ref().map(|f| f.confirm)
+    }
+
+    pub fn account_name_field(&self) -> Option<NodeId> {
+        self.account_name
+    }
+
+    /// Whether the page should be rebuilt after the last change (then clears the flag).
+    pub fn take_rebuild(&mut self) -> bool {
+        std::mem::take(&mut self.rebuild)
     }
 
     pub fn trusted_site_field(&self) -> Option<NodeId> {
@@ -881,6 +936,8 @@ impl SettingsSheet {
         self.confirm_clear = false;
         self.confirm_clear_data = false;
         self.confirm_remove_all = false;
+        self.confirm_delete = false;
+        self.account_status = None;
         ui.set_visible(self.root, false);
     }
 
@@ -914,7 +971,8 @@ impl SettingsSheet {
         }
         self.homepage = None;
         self.trusted_site = None;
-        self.password = None;
+        self.password_fields = None;
+        self.account_name = None;
         self.passwords_file = None;
         if !self.query.is_empty() {
             self.show_results(ui, config);
@@ -977,35 +1035,7 @@ impl SettingsSheet {
                     .position(|&m| m == config.appearance.theme);
                 segmented(ui, row_node, &themes, current);
                 let row_node = self.row(ui, "Accent colour");
-                for (i, &hex) in ACCENTS.iter().enumerate() {
-                    let selected = config.appearance.accent == Color::rgb(hex);
-                    let swatch = ui.add(
-                        row_node,
-                        Widget::container()
-                            .with_action(SettingsAction::Accent(i).id())
-                            .with_radius(CAPSULE)
-                            .with_background(if selected {
-                                Background::Fill(Paint::Label, 0.9)
-                            } else {
-                                Background::None
-                            }),
-                        Style {
-                            size: Size { width: length(30.0), height: length(30.0) },
-                            justify_content: JustifyContent::CENTER,
-                            ..row(0.0)
-                        },
-                    );
-                    ui.add(
-                        swatch,
-                        Widget::container()
-                            .with_background(Background::Fill(Paint::Fixed(Color::rgb(hex)), 1.0))
-                            .with_radius(CAPSULE),
-                        Style {
-                            size: Size { width: length(24.0), height: length(24.0) },
-                            ..Default::default()
-                        },
-                    );
-                }
+                swatches(ui, row_node, config.appearance.accent, SettingsAction::Accent);
                 for setting in [Setting::AdaptToPage, Setting::TextScale, Setting::PageCorner] {
                     self.control(ui, config, setting);
                 }
@@ -1163,35 +1193,20 @@ impl SettingsSheet {
                 pill_button(ui, row_node, "Update Now", SettingsAction::UpdateFilterLists, false);
             }
             Category::Privacy => {
-                let label =
-                    if self.has_password { "Change private tabs password" } else { "Private tabs password" };
-                let row_node = self.row(ui, label);
-                let field_box = ui.add(
-                    row_node,
-                    Widget::container()
-                        .with_background(Background::Fill(Paint::Label, 0.06))
-                        .with_radius(12.0),
-                    Style {
-                        size: Size { width: auto(), height: length(38.0) },
-                        padding: padding(12.0, 0.0),
-                        ..row(0.0)
-                    },
-                );
-                let field = ui.add_text_field(
-                    field_box,
-                    "New password",
-                    TextStyle::Body,
-                    Style { size: Size { width: length(200.0), height: length(22.0) }, ..Default::default() },
-                );
-                ui.set_secure(field, true);
-                self.password = Some(field);
-                pill_button(ui, row_node, "Save", SettingsAction::SetPassword, false);
-                if self.has_password {
-                    pill_button(ui, row_node, "Remove", SettingsAction::RemovePassword, true);
+                self.control(ui, config, Setting::LockPrivateTabs);
+                if config.privacy.lock_private_tabs && !self.account.has_password {
+                    // The lock needs the account password: offer to create it right here.
+                    self.password_rows(ui);
+                    let note = self.account_status.clone().unwrap_or_else(|| {
+                        format!(
+                            "Create a password for “{}” to lock private tabs. It also protects Passwords.",
+                            self.account.name
+                        )
+                    });
+                    self.note(ui, &note);
+                    self.section(ui, "");
                 }
-                for setting in [Setting::LockPrivateTabs, Setting::LockAfter] {
-                    self.control(ui, config, setting);
-                }
+                self.control(ui, config, Setting::LockAfter);
                 let row_node = self.row(ui, "Browsing history");
                 let text = if self.confirm_clear { "Click again to clear" } else { "Clear History…" };
                 let button = ui.add(
@@ -1259,7 +1274,92 @@ impl SettingsSheet {
                 self.note(ui, &note);
             }
             Category::Data => self.data_page(ui, config),
+            Category::Account => self.account_page(ui),
         }
+    }
+
+    /// Settings › Account: the current account's name, avatar colour and password, and
+    /// deleting it.
+    fn account_page(&mut self, ui: &mut Ui) {
+        let account = self.account.clone();
+        let parent = self.group_for_row(ui);
+        let header = ui.add(
+            parent,
+            Widget::container(),
+            Style {
+                size: Size { width: auto(), height: length(AVATAR_SIZE + 24.0) },
+                flex_shrink: 0.0,
+                ..row(14.0)
+            },
+        );
+        avatar(ui, header, &account.initials, account.color, AVATAR_SIZE);
+        let names = ui.add(
+            header,
+            Widget::container(),
+            Style { flex_direction: FlexDirection::Column, ..grow_label() },
+        );
+        ui.add_label(names, &account.name, TextStyle::Title2, Style::default());
+        let detail = match account.count {
+            0 | 1 => "The only account on this computer".to_owned(),
+            n => format!("One of {n} accounts on this computer"),
+        };
+        let label = ui.add_label(names, &detail, TextStyle::Footnote, Style::default());
+        if let Some(w) = ui.widget_mut(label) {
+            w.set_paint(Paint::Secondary);
+        }
+        self.note(
+            ui,
+            "Each account has its own tabs, history, bookmarks, passwords, website data and settings.",
+        );
+
+        self.section(ui, "Profile");
+        let row_node = self.row(ui, "Name");
+        let field = text_field(ui, row_node, "Name", 220.0, false);
+        ui.set_field_text(field, &account.name);
+        self.account_name = Some(field);
+        pill_button(ui, row_node, "Save", SettingsAction::SaveAccountName, false);
+        let row_node = self.row(ui, "Colour");
+        swatches(ui, row_node, account.color, SettingsAction::AccountColor);
+
+        self.section(ui, "Password");
+        self.password_rows(ui);
+        match self.account_status.clone() {
+            Some(status) => self.note(ui, &status),
+            None => {
+                self.note(ui, "One password for the whole account: it unlocks Passwords and private tabs.");
+                self.note(ui, "Axion can't recover it if you forget it.");
+            }
+        }
+
+        self.section(ui, "Delete");
+        if account.count > 1 {
+            let row_node = self.row(ui, "Delete this account and its data");
+            let text = if self.confirm_delete { "Click Again to Delete" } else { "Delete Account…" };
+            destructive_button(ui, row_node, text, SettingsAction::DeleteAccount, self.confirm_delete);
+            self.note(ui, "Removes its tabs, history, bookmarks, passwords, website data and settings.");
+            self.note(ui, "Axion then opens another account.");
+        } else {
+            self.row(ui, "The only account can't be deleted");
+            self.note(ui, "Add another account first, with the account button at the bottom of the sidebar.");
+        }
+    }
+
+    /// The fields to set the account password, or to change it.
+    fn password_rows(&mut self, ui: &mut Ui) {
+        let current = if self.account.has_password {
+            let row_node = self.row(ui, "Current password");
+            Some(text_field(ui, row_node, "Required", 220.0, true))
+        } else {
+            None
+        };
+        let row_node = self.row(ui, "New password");
+        let new = text_field(ui, row_node, &format!("At least {MIN_MASTER_LENGTH} characters"), 220.0, true);
+        let row_node = self.row(ui, "Confirm new password");
+        let confirm = text_field(ui, row_node, "Repeat it", 220.0, true);
+        let row_node = self.row(ui, "");
+        let text = if self.account.has_password { "Change Password" } else { "Set Password" };
+        pill_button(ui, row_node, text, SettingsAction::SetPassword, false);
+        self.password_fields = Some(PasswordFields { current, new, confirm });
     }
 
     /// Data & Downloads (Safari's Downloads and "Clear History and Website Data", Chrome's
@@ -1601,6 +1701,8 @@ impl SettingsSheet {
         match self.controls.iter().find(|(n, _)| *n == node) {
             Some(&(_, setting)) => {
                 setting.set(config, value);
+                // The Privacy page shows the password fields while the lock has no password.
+                self.rebuild |= setting == Setting::LockPrivateTabs;
                 // Live while dragging.
                 for &(_, label) in self.values.iter().filter(|(s, _)| *s == setting) {
                     ui.set_text(label, &setting.display(config));
@@ -1625,6 +1727,8 @@ impl SettingsSheet {
                 self.category = category;
                 self.query.clear();
                 ui.set_field_text(self.search, "");
+                self.confirm_delete = false;
+                self.account_status = None;
                 self.confirm_clear = false;
                 self.confirm_clear_data = false;
                 self.confirm_remove_all = false;
@@ -1678,8 +1782,28 @@ impl SettingsSheet {
                 Outcome::Changed
             }
             SettingsAction::Accent(i) => {
-                config.appearance.accent = Color::rgb(ACCENTS[i]);
+                config.appearance.accent = ACCENTS[i];
                 Outcome::Changed
+            }
+            SettingsAction::AccountColor(i) => {
+                self.account.color = ACCENTS[i];
+                Outcome::AccountColor(ACCENTS[i])
+            }
+            SettingsAction::SaveAccountName => {
+                let name =
+                    self.account_name.and_then(|f| ui.field_text(f)).unwrap_or_default().trim().to_owned();
+                if name.is_empty() {
+                    return Outcome::Nothing;
+                }
+                return Outcome::RenameAccount(name);
+            }
+            SettingsAction::DeleteAccount => {
+                self.confirm_delete = !self.confirm_delete;
+                if self.confirm_delete {
+                    Outcome::Nothing
+                } else {
+                    return Outcome::DeleteAccount;
+                }
             }
             SettingsAction::ShieldLevel(level) => {
                 config.shields.default_level = level;
@@ -1707,18 +1831,25 @@ impl SettingsSheet {
                 }
             }
             SettingsAction::SetPassword => {
-                let password = self.password.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned();
-                if password.is_empty() {
+                let Some(fields) = self.password_fields else { return Outcome::Nothing };
+                let text = |node: NodeId| Zeroizing::new(ui.field_text(node).unwrap_or_default().to_owned());
+                let (current, new, confirm) =
+                    (fields.current.map(text), text(fields.new), text(fields.confirm));
+                let problem = if current.as_ref().is_some_and(|c| c.is_empty()) {
+                    Some("Enter the current password first.".to_owned())
+                } else if new.chars().count() < MIN_MASTER_LENGTH {
+                    Some(format!("Use at least {MIN_MASTER_LENGTH} characters."))
+                } else if *new != *confirm {
+                    Some("The new passwords don't match.".to_owned())
+                } else {
+                    None
+                };
+                if let Some(problem) = problem {
+                    self.account_status = Some(problem);
+                    self.show(ui, config, keymap);
                     return Outcome::Nothing;
                 }
-                self.has_password = true;
-                self.show(ui, config, keymap);
-                return Outcome::SetPassword(password);
-            }
-            SettingsAction::RemovePassword => {
-                self.has_password = false;
-                self.show(ui, config, keymap);
-                return Outcome::RemovePassword;
+                return Outcome::SetAccountPassword { current, new };
             }
             SettingsAction::OpenPasswords => return Outcome::OpenPasswords,
             SettingsAction::ImportPasswords | SettingsAction::ExportPasswords => {
@@ -1790,6 +1921,100 @@ fn destructive_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsA
     if let Some(w) = ui.widget_mut(label) {
         w.set_paint(Paint::Fixed(if confirming { Color::rgb(0xFFFFFF) } else { DESTRUCTIVE }));
     }
+}
+
+/// The current account as the Account page shows it.
+#[derive(Clone, Debug)]
+pub struct AccountInfo {
+    pub name: String,
+    pub initials: String,
+    pub color: Color,
+    pub has_password: bool,
+    /// How many accounts there are (the only one can't be deleted).
+    pub count: usize,
+}
+
+impl Default for AccountInfo {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            initials: String::new(),
+            color: ACCENTS[0],
+            has_password: false,
+            count: 1,
+        }
+    }
+}
+
+/// The account password fields on the page.
+#[derive(Clone, Copy, Debug)]
+struct PasswordFields {
+    current: Option<NodeId>,
+    new: NodeId,
+    confirm: NodeId,
+}
+
+/// A text field in a rounded box, `width` wide; `secure` hides what is typed.
+fn text_field(ui: &mut Ui, parent: NodeId, placeholder: &str, width: f32, secure: bool) -> NodeId {
+    let field_box = ui.add(
+        parent,
+        Widget::container().with_background(Background::Fill(Paint::Label, 0.06)).with_radius(12.0),
+        Style { size: Size { width: auto(), height: length(38.0) }, padding: padding(12.0, 0.0), ..row(0.0) },
+    );
+    let field = ui.add_text_field(
+        field_box,
+        placeholder,
+        TextStyle::Body,
+        Style { size: Size { width: length(width), height: length(22.0) }, ..Default::default() },
+    );
+    ui.set_secure(field, secure);
+    field
+}
+
+/// The accent swatches, `current` ringed; a click sends `action(index)`.
+fn swatches(ui: &mut Ui, parent: NodeId, current: Color, action: fn(usize) -> SettingsAction) {
+    for (i, &color) in ACCENTS.iter().enumerate() {
+        let selected = current == color;
+        let swatch = ui.add(
+            parent,
+            Widget::container().with_action(action(i).id()).with_radius(CAPSULE).with_background(
+                if selected { Background::Fill(Paint::Label, 0.9) } else { Background::None },
+            ),
+            Style {
+                size: Size { width: length(30.0), height: length(30.0) },
+                justify_content: JustifyContent::CENTER,
+                ..row(0.0)
+            },
+        );
+        ui.add(
+            swatch,
+            Widget::container()
+                .with_background(Background::Fill(Paint::Fixed(color), 1.0))
+                .with_radius(CAPSULE),
+            Style { size: Size { width: length(24.0), height: length(24.0) }, ..Default::default() },
+        );
+    }
+}
+
+/// A round avatar: the account's initials on its colour.
+pub fn avatar(ui: &mut Ui, parent: NodeId, initials: &str, color: Color, side: f32) -> NodeId {
+    let circle = ui.add(
+        parent,
+        Widget::container().with_background(Background::Fill(Paint::Fixed(color), 1.0)).with_radius(CAPSULE),
+        Style {
+            size: Size { width: length(side), height: length(side) },
+            flex_shrink: 0.0,
+            justify_content: JustifyContent::CENTER,
+            align_items: AlignItems::CENTER,
+            ..Default::default()
+        },
+    );
+    let style = if side >= 40.0 { TextStyle::Title2 } else { TextStyle::Callout };
+    let label = ui.add_label(circle, initials, style, Style::default());
+    if let Some(w) = ui.widget_mut(label) {
+        w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
+    }
+    circle
 }
 
 /// A segmented control: options as capsules, the current one filled.
@@ -1969,6 +2194,13 @@ mod tests {
             SettingsAction::RemoveSiteData(99),
             SettingsAction::Category(Category::Passwords),
             SettingsAction::ExportPasswords,
+            SettingsAction::Category(Category::Account),
+            SettingsAction::Category(Category::General),
+            SettingsAction::AccountColor(5),
+            SettingsAction::SaveAccountName,
+            SettingsAction::DeleteAccount,
+            SettingsAction::SetPassword,
+            SettingsAction::RemoveTrustedSite(600),
         ] {
             assert_eq!(SettingsAction::from_id(action.id()), Some(action));
         }

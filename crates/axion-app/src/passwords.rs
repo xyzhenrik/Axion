@@ -63,7 +63,10 @@ const PROMPT_RADIUS: f32 = 22.0;
 const PROMPT_GAP: f32 = 10.0;
 /// Most logins the fill prompt lists.
 const PROMPT_LOGINS: usize = 3;
-const MIN_MASTER_LENGTH: usize = 8;
+/// The account password (the vault's master password) is at least this long.
+pub const MIN_MASTER_LENGTH: usize = 8;
+/// The password capture aids give throwaway test accounts.
+pub const TEST_PASSWORD: &str = "test-only-pass";
 const GENERATOR_RANGE: (f32, f32) = (8.0, 64.0);
 const HIDDEN: &str = "••••••••••";
 const ERROR: Color = Color::rgb(0xD0362B);
@@ -239,6 +242,8 @@ pub struct Passwords {
     prompt: Prompt,
     /// Sites whose unlock prompt was dismissed ("Not Now"); not offered again this session.
     unlock_dismissed: HashSet<String>,
+    /// The account's name, for the unlock texts (its password is the master password).
+    account: String,
 }
 
 fn padding(h: f32, v: f32) -> Rect<LengthPercentage> {
@@ -390,8 +395,9 @@ fn scale_in(ui: &mut Ui, node: NodeId, k: f32) {
 }
 
 impl Passwords {
-    /// Builds the sheet and prompt and opens the vault at `path` (locked).
-    pub fn build(ui: &mut Ui, path: &Path) -> Self {
+    /// Builds the sheet and prompt and opens the vault at `path` (locked). The vault's master
+    /// password is the password of the account named `account`.
+    pub fn build(ui: &mut Ui, path: &Path, account: &str) -> Self {
         let vault = Vault::open(path).inspect_err(|e| tracing::error!("passwords unavailable: {e}")).ok();
         let prompt = Prompt::build(ui);
         let root = ui.add(
@@ -530,7 +536,7 @@ impl Passwords {
             margin: Rect { left: length(0.0), right: length(0.0), top: length(6.0), bottom: length(0.0) },
             ..row(0.0)
         };
-        let alert_field = field_box(ui, alert, "Master password", field_style.clone());
+        let alert_field = field_box(ui, alert, "Account password", field_style.clone());
         ui.set_secure(alert_field, true);
         let confirm_field = field_box(ui, alert, "Repeat password", field_style);
         ui.set_secure(confirm_field, true);
@@ -585,6 +591,7 @@ impl Passwords {
             pending: None,
             prompt,
             unlock_dismissed: HashSet::new(),
+            account: account.to_owned(),
         }
     }
 
@@ -594,6 +601,77 @@ impl Passwords {
 
     pub fn is_unlocked(&self) -> bool {
         self.vault.as_ref().is_some_and(Vault::is_unlocked)
+    }
+
+    /// Whether the account has a password (the vault is set up).
+    pub fn has_password(&self) -> bool {
+        self.vault.as_ref().is_some_and(Vault::is_set_up)
+    }
+
+    /// The account was renamed.
+    pub fn set_account_name(&mut self, name: &str) {
+        name.clone_into(&mut self.account);
+    }
+
+    /// Something was done that counts as using the account (resets the auto-lock timer).
+    pub fn touch(&mut self) {
+        if let Some(vault) = &mut self.vault
+            && vault.is_unlocked()
+        {
+            vault.touch();
+        }
+    }
+
+    /// Unlocks with the account password from elsewhere (the private tabs' lock screen): the
+    /// sheet, a waiting unlock prompt and a pending save carry on as if unlocked here.
+    pub fn unlock_with(&mut self, ui: &mut Ui, config: &Config, password: &str) -> Result<(), VaultError> {
+        let vault = self.vault.as_mut().ok_or(VaultError::NotSetUp)?;
+        vault.unlock(password)?;
+        tracing::info!("account unlocked");
+        self.after_unlock(ui, config);
+        Ok(())
+    }
+
+    /// Creates the account password (sets up the vault, which leaves it unlocked).
+    pub fn set_up_password(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        password: &str,
+    ) -> Result<(), VaultError> {
+        let vault = self.vault.as_mut().ok_or(VaultError::NotSetUp)?;
+        vault.setup(password)?;
+        tracing::info!("account password set");
+        self.after_unlock(ui, config);
+        Ok(())
+    }
+
+    /// Changes the account password: the vault is re-encrypted with it (and left unlocked).
+    pub fn change_password(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        old: &str,
+        new: &str,
+    ) -> Result<(), VaultError> {
+        let vault = self.vault.as_mut().ok_or(VaultError::NotSetUp)?;
+        vault.change_password(old, new)?;
+        tracing::info!("account password changed");
+        self.after_unlock(ui, config);
+        Ok(())
+    }
+
+    fn after_unlock(&mut self, ui: &mut Ui, config: &Config) {
+        if let Some(pending) = self.pending.take() {
+            self.save_login(pending);
+        }
+        if let Some(PromptState::Unlock { view, url }) = &self.prompt.state {
+            let (view, url) = (*view, url.clone());
+            if !self.show_fill(ui, config, view, &url) {
+                self.prompt.hide();
+            }
+        }
+        let _ = self.refresh(ui, config);
     }
 
     /// Whether `p` (logical px) is on the sheet or the unlock card (the backdrop closes).
@@ -681,17 +759,17 @@ impl Passwords {
         let (title, text, note, button) = match &self.vault {
             None => ("Passwords Unavailable", "The password vault couldn't be opened.", "", "Close"),
             Some(_) if set_up => {
-                ("Unlock Passwords", "Enter your master password to continue.", "", "Unlock")
+                ("Unlock Passwords", "Enter the password of “{}” to continue.", "", "Unlock")
             }
             Some(_) => (
                 "Set Up Passwords",
-                "Choose a master password to encrypt them.",
-                "Axion can't recover it if you forget it.",
+                "Choose a password for “{}”.",
+                "It encrypts Passwords and locks private tabs.",
                 "Create",
             ),
         };
         ui.set_text(self.alert_title, title);
-        ui.set_text(self.alert_text, text);
+        ui.set_text(self.alert_text, &text.replace("{}", &self.account));
         ui.set_text(self.alert_note, note);
         ui.set_visible(self.alert_note, !note.is_empty());
         ui.set_text(self.alert_button, button);
@@ -1566,7 +1644,7 @@ impl Passwords {
                 icon_button(ui, header, PROMPT_CLOSE, Icon::Close, 28.0);
                 let line =
                     ui.add(root, Widget::container(), Style { padding: padding(2.0, 0.0), ..row(8.0) });
-                let field = field_box(ui, line, "Master password", Style { flex_grow: 1.0, ..row(0.0) });
+                let field = field_box(ui, line, "Account password", Style { flex_grow: 1.0, ..row(0.0) });
                 ui.set_secure(field, true);
                 // The field takes the room; the button keeps its natural width.
                 let label = capsule_button(ui, line, PROMPT_UNLOCK, "Unlock", true);
@@ -1709,10 +1787,10 @@ impl Passwords {
     /// clearly fake entries.
     pub fn seed_test_data(&mut self) {
         let Some(vault) = &mut self.vault else { return };
-        if !vault.is_set_up() && vault.setup("test-only-pass").is_err() {
+        if !vault.is_set_up() && vault.setup(TEST_PASSWORD).is_err() {
             return;
         }
-        if !vault.is_unlocked() && vault.unlock("test-only-pass").is_err() {
+        if !vault.is_unlocked() && vault.unlock(TEST_PASSWORD).is_err() {
             return;
         }
         if !vault.items().is_empty() {
@@ -1770,7 +1848,7 @@ impl Passwords {
             // The unlock prompt, with the test vault's password typed in.
             "unlock" => {
                 if let Some(field) = self.prompt.field {
-                    ui.set_field_text(field, "test-only-pass");
+                    ui.set_field_text(field, TEST_PASSWORD);
                 }
                 PROMPT_UNLOCK
             }

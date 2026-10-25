@@ -49,15 +49,18 @@ crates/
   axion-config/      settings schema (design-token defaults), TOML load/save, live reload, keymap
   axion-shields/     adblock-rust engine + list cache, popup/redirect/cookie policy, tracking params
                      (the engine asks it through `axion_engine::RequestPolicy`, glue in app/shields.rs)
-  axion-store/       SQLite: history, bookmarks, meta, per-site settings (session restore planned)
+  axion-store/       SQLite: history, bookmarks, meta, per-site settings, session
+  axion-accounts/    local accounts: shared accounts.toml, per-account directories, migration
+                     (switching relaunches; UI in app/accounts.rs, chrome.rs, settings.rs)
   axion-tabs/        tab lifecycle planner (freeze/discard by idle time + memory budget), PSS monitor
   axion-media/       media bridge script (bridge.js) + its protocol; controls live in app/player.rs,
                      MPRIS in app/mpris.rs
 ```
 
 Dependency direction: `app` → everything; `ui` → `compositor`, `glass`, `config`;
-`compositor` → `glass`; `engine`, `shields`, `tabs`, `store`, `config` must **not** depend on
-UI/rendering crates (`engine` uses wgpu only to hand out frame textures).
+`compositor` → `glass`; `accounts` → `config`; `engine`, `shields`, `tabs`, `store`, `config`,
+`accounts` must **not** depend on UI/rendering crates (`engine` uses wgpu only to hand out
+frame textures).
 
 ### Rendering model
 
@@ -122,7 +125,8 @@ cargo run -p axion-glass --example playground --release -- --bench # GPU time pe
 cargo run -p axion-glass --example playground --release -- --capture=out.png  # offscreen screenshot
 AXION_GPU=low ...            # force the integrated GPU
 AXION_OSR=software|gpu ...   # force page frame sharing off/on (default: on for NVIDIA only)
-AXION_CONFIG_DIR / AXION_PROFILE_DIR   # use throwaway settings/profile (do this for test runs)
+AXION_CONFIG_DIR / AXION_PROFILE_DIR   # use throwaway settings/profile bases (do this for test runs)
+axion --account=ID           # open that account (else the last one used; ids in accounts.toml)
 AXION_MONITOR=HDMI-A-1 ...   # open on that monitor (X11/XWayland only: run with `env -u WAYLAND_DISPLAY`)
 AXION_CHROMIUM_SWITCHES=autoplay-policy=no-user-gesture-required ...   # extra Chromium switches (comma-separated)
 axion url1 url2 --overview --capture=out.png   # several tabs; screenshot of the tab overview

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use axion_accounts::{Accounts, Bases};
 use axion_compositor::Icon;
 use axion_compositor::{Compositor, ImageDraw, Layer, Rect, Scene};
 use axion_config::{Action, Config, ConfigPaths, ConfigWatcher, Key, Keymap, Modifiers, ThemeMode};
@@ -19,6 +20,7 @@ use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Fullscreen, Window};
 
+use crate::accounts::{AddAccountSheet, Relaunch, SheetAction};
 use crate::chrome::{Chrome, ChromeAction, NowPlaying, PanelItem};
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
@@ -27,7 +29,7 @@ use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
 use crate::lockscreen::LockScreen;
-use crate::menu::{Menu, MenuAction, MenuItem};
+use crate::menu::{ACCOUNT_MENU_BASE, MAX_ITEMS, Menu, MenuAction, MenuItem, PAGE_MENU_BASE, Placement};
 use crate::mpris::{Mpris, MprisCommand, Track};
 use crate::overview::{Overview, OverviewAction};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
@@ -37,7 +39,7 @@ use crate::player::{
     PlayerOverlay,
 };
 use crate::private::PrivateLock;
-use crate::settings::{Category, Outcome, SettingsAction, SettingsSheet};
+use crate::settings::{AccountInfo, Category, Outcome, SettingsAction, SettingsSheet};
 use crate::shields::ShieldsState;
 use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
 use crate::suggestions::{SuggestionList, suggest};
@@ -139,6 +141,11 @@ pub struct Options {
     pub capture_after: Duration,
     /// Initial window size in logical pixels.
     pub size: Option<(f64, f64)>,
+    /// Initial window position (physical px; X11 only), and whether it starts maximized.
+    pub position: Option<(i32, i32)>,
+    pub maximized: bool,
+    /// The account to open (`--account=ID`); the last one used otherwise.
+    pub account: Option<String>,
 }
 
 pub struct Browser {
@@ -198,6 +205,15 @@ pub struct Browser {
     /// The other tab group (normal tabs while in private mode, and vice versa).
     parked: Tabs,
     private_mode: bool,
+    /// The accounts file and the account this window shows.
+    accounts: Accounts,
+    account_id: String,
+    account_menu: Menu,
+    add_account: AddAccountSheet,
+    /// Set when switching accounts: the window closes and Axion starts again in the other one.
+    relaunch: Option<Relaunch>,
+    /// Whether the account (its vault) was unlocked last time we looked; private tabs follow.
+    account_unlocked: bool,
     lock: PrivateLock,
     lock_screen: LockScreen,
     /// Whether the lock screen is up, and where (to only relayout on change).
@@ -232,7 +248,12 @@ pub struct Browser {
 
 impl Browser {
     pub fn new(event_loop: &ActiveEventLoop, options: Options) -> Result<Self> {
-        let paths = ConfigPaths::discover()?;
+        let mut accounts = Accounts::load(Bases::discover()?, unix_now())?;
+        let account_id = accounts.select(options.account.as_deref())?;
+        let account_paths = accounts.paths(&account_id)?;
+        let account_name = accounts.get(&account_id).map(|a| a.name.clone()).unwrap_or_default();
+        tracing::info!(account = %account_id, profile = %account_paths.profile.display(), "opening account");
+        let paths = ConfigPaths::in_dir(account_paths.config.clone());
         let config = axion_config::load_config(&paths).unwrap_or_else(|e| {
             tracing::error!("{e}; using defaults");
             Config::default()
@@ -249,11 +270,15 @@ impl Browser {
                     .with_inner_size(winit::dpi::LogicalSize::<f64>::from(
                         options.size.unwrap_or(DEFAULT_WINDOW_SIZE),
                     ))
-                    .with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 360.0)),
+                    .with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 360.0))
+                    .with_maximized(options.maximized),
             )?,
         );
 
-        place_on_monitor(event_loop, &window);
+        match options.position {
+            Some((x, y)) => window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y)),
+            None => place_on_monitor(event_loop, &window),
+        }
         let (instance, surface, adapter, device, queue) = crate::gpu::init(event_loop, &window)?;
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
@@ -287,10 +312,11 @@ impl Browser {
         if !accelerated {
             tracing::info!(driver = %info.driver, "using software paint for pages (set AXION_OSR=gpu to force GPU sharing)");
         }
-        let profile = profile_dir()?;
+        let profile = account_paths.profile;
         let store = axion_store::Store::open(&profile.join("axion.sqlite"))
             .inspect_err(|e| tracing::error!("history unavailable: {e}"))
             .ok();
+        PrivateLock::drop_old_password(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
         let downloads = Downloads::new(profile.clone());
         let vault_path = profile.join("vault.sqlite");
@@ -327,16 +353,19 @@ impl Browser {
         let player = PlayerOverlay::build(&mut ui);
         let chrome = Chrome::build(&mut ui, &config);
         let suggestions = SuggestionList::build(&mut ui, chrome.bar_node());
-        let menu = Menu::build(&mut ui, chrome.bar_node());
+        let menu = Menu::build(&mut ui, chrome.bar_node(), PAGE_MENU_BASE, Placement::Below);
+        // In the sidebar's plane, rising from the account button at its bottom.
+        let account_menu = Menu::build(&mut ui, chrome.sidebar_node(), ACCOUNT_MENU_BASE, Placement::Above);
         let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
         let settings = SettingsSheet::build(&mut ui);
-        let passwords = Passwords::build(&mut ui, &vault_path);
-        let lock = PrivateLock::load(store.as_ref());
+        let passwords = Passwords::build(&mut ui, &vault_path, &account_name);
+        let lock = PrivateLock::new();
         let favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
+        let add_account = AddAccountSheet::build(&mut ui);
 
         let mut browser = Self {
             window,
@@ -386,6 +415,12 @@ impl Browser {
             tabs: Tabs::default(),
             parked: Tabs::default(),
             private_mode: false,
+            accounts,
+            account_id,
+            account_menu,
+            add_account,
+            relaunch: None,
+            account_unlocked: false,
             lock,
             lock_screen,
             lock_shown: None,
@@ -425,6 +460,7 @@ impl Browser {
                     + options.capture_after.saturating_sub(options.lead.unwrap_or(OVERVIEW_CAPTURE_LEAD))
             }),
         };
+        browser.show_account();
         browser.update_layout();
         browser.engine.set_color_scheme(browser.dark);
         let mut urls = options.urls;
@@ -639,7 +675,8 @@ impl Browser {
                 } else {
                     self.menu.close(&mut self.ui, &self.config);
                     self.shields_popover.close(&mut self.ui, &self.config);
-                    self.settings.set_has_password(self.lock.has_password());
+                    self.account_menu.close(&mut self.ui, &self.config);
+                    self.settings.set_account(self.account_info());
                     self.settings.set_memory_used(self.memory.used());
                     let window = self.logical_size();
                     self.settings.open(&mut self.ui, &self.config, &self.keymap, window);
@@ -664,8 +701,182 @@ impl Browser {
         }
     }
 
+    /// Private tabs are shown and locked: the lock screen covers them.
     fn is_locked(&self) -> bool {
-        self.private_mode && self.config.privacy.lock_private_tabs && self.lock.is_locked()
+        self.private_mode && self.private_locked()
+    }
+
+    /// Private tabs are locked (shown or not): the lock is on, the account has a password and
+    /// isn't unlocked.
+    fn private_locked(&self) -> bool {
+        self.config.privacy.lock_private_tabs && self.passwords.has_password() && self.lock.is_locked()
+    }
+
+    // ---- accounts ----
+
+    fn account(&self) -> Option<&axion_accounts::Account> {
+        self.accounts.get(&self.account_id)
+    }
+
+    fn account_info(&self) -> AccountInfo {
+        let account = self.account();
+        AccountInfo {
+            name: account.map(|a| a.name.clone()).unwrap_or_default(),
+            initials: account.map(|a| a.initials()).unwrap_or_default(),
+            color: account.map_or(axion_config::ACCENT_SWATCHES[0], |a| a.color),
+            has_password: self.passwords.has_password(),
+            count: self.accounts.all().len(),
+        }
+    }
+
+    /// Shows the current account wherever it appears (account button, lock screen, settings).
+    fn show_account(&mut self) {
+        let info = self.account_info();
+        self.chrome.set_account(&mut self.ui, &info.name, &info.initials, info.color);
+        self.lock_screen.set_account(&mut self.ui, &info.name);
+        self.passwords.set_account_name(&info.name);
+        self.settings.set_account(info);
+    }
+
+    fn toggle_account_menu(&mut self) {
+        if self.account_menu.is_open() {
+            self.account_menu.close(&mut self.ui, &self.config);
+            return;
+        }
+        self.menu.close(&mut self.ui, &self.config);
+        self.shields_popover.close(&mut self.ui, &self.config);
+        self.downloads_popover.close(&mut self.ui, &self.config);
+        // The actions below the list must fit in the menu.
+        let shown = MAX_ITEMS - 3;
+        let mut items: Vec<MenuItem> = self
+            .accounts
+            .all()
+            .iter()
+            .take(shown)
+            .enumerate()
+            .map(|(i, a)| {
+                let current = a.id == self.account_id;
+                MenuItem::account(a.initials(), a.color, &a.name, current, MenuAction::SwitchAccount(i))
+            })
+            .collect();
+        items.push(MenuItem::new(Icon::PersonAdd, "Add Account…", MenuAction::AddAccount).separated());
+        items.push(MenuItem::new(Icon::Settings, "Account Settings…", MenuAction::AccountSettings));
+        if self.passwords.has_password() {
+            items.push(MenuItem::new(Icon::Lock, "Lock", MenuAction::LockAccount));
+        }
+        let anchor = self.chrome.account_frame(&self.ui);
+        let window = self.logical_size();
+        self.account_menu.open(&mut self.ui, &self.config, anchor, window, items);
+    }
+
+    fn open_add_account(&mut self) {
+        self.account_menu.close(&mut self.ui, &self.config);
+        if self.settings.is_open() {
+            self.settings.close(&mut self.ui);
+        }
+        if let Some(view) = self.active_view() {
+            self.engine.set_focus(view, false);
+        }
+        let events = self.add_account.open(&mut self.ui, &self.config);
+        self.handle_ui_events(events);
+    }
+
+    fn add_account_action(&mut self, action: SheetAction) {
+        match action {
+            SheetAction::Cancel => self.add_account.close(&mut self.ui),
+            SheetAction::Create => {
+                let Some(name) = self.add_account.name(&mut self.ui) else { return };
+                match self.accounts.add(&name, unix_now()) {
+                    Ok(id) => {
+                        tracing::info!(account = %id, "account added");
+                        self.add_account.close(&mut self.ui);
+                        self.switch_account(&id);
+                    }
+                    Err(e) => tracing::error!("adding the account failed: {e}"),
+                }
+            }
+        }
+    }
+
+    fn open_account_settings(&mut self) {
+        self.account_menu.close(&mut self.ui, &self.config);
+        self.settings.set_category(Category::Account);
+        if self.settings.is_open() {
+            self.settings.set_account(self.account_info());
+            self.refresh_settings();
+        } else {
+            self.run(Action::OpenSettings);
+        }
+    }
+
+    /// Switches to account `id`. For now Axion relaunches into it (one Chromium profile per
+    /// process): the window closes, the session is saved and Chromium shuts down, then the
+    /// new process starts where this window was (see `crate::accounts`).
+    pub fn switch_account(&mut self, id: &str) {
+        if id == self.account_id || self.accounts.get(id).is_none() {
+            return;
+        }
+        let size = self.window.inner_size().to_logical::<f64>(self.window.scale_factor());
+        // Capture aid: the relaunched window takes the screenshot this one would have.
+        let capture = self.capture.as_ref().map(|(path, _)| {
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("capture");
+            path.with_file_name(format!("{stem}-switched.png"))
+        });
+        self.relaunch = Some(Relaunch {
+            account: id.to_owned(),
+            size: (size.width, size.height),
+            position: self.window.outer_position().ok().map(|p| (p.x, p.y)),
+            maximized: self.window.is_maximized(),
+            capture,
+        });
+        self.capture = None;
+        // The next start of a plain `axion` opens it too.
+        if let Err(e) = self.accounts.select(Some(id)) {
+            tracing::warn!("remembering the account failed: {e}");
+        }
+        tracing::info!(from = %self.account_id, to = %id, "switching account");
+    }
+
+    /// Whether the window should close (an account switch is under way).
+    pub fn wants_exit(&self) -> bool {
+        self.relaunch.is_some()
+    }
+
+    /// The relaunch to start once this browser is dropped (Chromium shut down).
+    pub fn take_relaunch(&mut self) -> Option<Relaunch> {
+        self.relaunch.take()
+    }
+
+    /// Locks private tabs and Passwords now (the account menu's Lock, or a private tabs'
+    /// auto-lock).
+    fn lock_account(&mut self) {
+        let outcome = self.passwords.lock(&mut self.ui, &self.config);
+        self.passwords_outcome(outcome);
+        self.lock.lock_now();
+        self.account_unlocked = false;
+        tracing::info!("account locked");
+        self.update_lock();
+    }
+
+    /// Private tabs follow the vault: it was unlocked (Passwords, a fill prompt) or locked
+    /// (its auto-lock) elsewhere.
+    fn sync_account_lock(&mut self) {
+        let unlocked = self.passwords.is_unlocked();
+        if unlocked == self.account_unlocked {
+            return;
+        }
+        self.account_unlocked = unlocked;
+        if unlocked {
+            self.lock.unlock();
+        } else {
+            self.lock.lock_now();
+        }
+        self.update_lock();
+    }
+
+    /// Whether any private tabs are open (shown or not).
+    fn has_private_tabs(&self) -> bool {
+        if self.private_mode { !self.tabs.is_empty() } else { !self.parked.is_empty() }
     }
 
     // ---- media ----
@@ -1310,8 +1521,8 @@ impl Browser {
 
     /// Shows or hides the lock screen and hides private tab titles while locked.
     fn update_lock(&mut self) {
-        let has_lock = self.config.privacy.lock_private_tabs && self.lock.has_password();
-        let hidden = has_lock && self.lock.is_locked();
+        let has_lock = self.config.privacy.lock_private_tabs && self.passwords.has_password();
+        let hidden = self.private_locked();
         self.chrome.set_private(&mut self.ui, self.private_mode, has_lock, hidden);
         let locked = self.is_locked();
         let page = locked.then(|| self.page_rect());
@@ -1331,15 +1542,23 @@ impl Browser {
         self.tabs_changed = true;
     }
 
+    /// The lock screen's password: unlocks the account (private tabs and Passwords).
     fn try_unlock(&mut self) {
-        let password = self.lock_screen.password(&self.ui);
-        if self.lock.unlock(&password) {
-            self.update_lock();
-            if let Some(view) = self.active_view() {
-                self.engine.set_focus(view, true);
+        let password = zeroize::Zeroizing::new(self.lock_screen.password(&self.ui));
+        match self.passwords.unlock_with(&mut self.ui, &self.config, &password) {
+            Ok(()) => {
+                self.lock.unlock();
+                self.account_unlocked = true;
+                self.update_lock();
+                if let Some(view) = self.active_view() {
+                    self.engine.set_focus(view, true);
+                }
             }
-        } else {
-            self.lock_screen.wrong_password(&mut self.ui);
+            Err(axion_vault::VaultError::WrongPassword) => self.lock_screen.wrong_password(&mut self.ui),
+            Err(e) => {
+                tracing::error!("unlocking the account failed: {e}");
+                self.lock_screen.wrong_password(&mut self.ui);
+            }
         }
     }
 
@@ -1390,7 +1609,7 @@ impl Browser {
                     self.sync_overview_mode();
                     return;
                 }
-                if want_private && self.config.privacy.lock_private_tabs && self.lock.is_locked() {
+                if want_private && self.private_locked() {
                     // Locked private tabs must never be seen: leave the overview at once (no
                     // zoom of a private page), then the lock screen takes over.
                     let events = self.overview.close_instantly(&mut self.ui);
@@ -1522,12 +1741,25 @@ impl Browser {
             MenuItem::new(Icon::Reload, "Reload Without Cache", MenuAction::HardReload),
             MenuItem::new(Icon::Settings, "Settings", MenuAction::Settings),
         ];
+        self.account_menu.close(&mut self.ui, &self.config);
         let anchor = self.chrome.page_menu_frame(&self.ui);
-        let width = self.logical_size().x;
-        self.menu.open(&mut self.ui, &self.config, anchor, width, items);
+        let window = self.logical_size();
+        self.menu.open(&mut self.ui, &self.config, anchor, window, items);
     }
 
     fn menu_action(&mut self, action: MenuAction) {
+        match action {
+            MenuAction::SwitchAccount(i) => {
+                if let Some(id) = self.accounts.all().get(i).map(|a| a.id.clone()) {
+                    self.switch_account(&id);
+                }
+                return;
+            }
+            MenuAction::AddAccount => return self.open_add_account(),
+            MenuAction::AccountSettings => return self.open_account_settings(),
+            MenuAction::LockAccount => return self.lock_account(),
+            _ => {}
+        }
         let Some(tab) = self.tabs.active() else { return };
         let (url, title) = (tab.url.clone(), tab.label());
         match action {
@@ -1556,6 +1788,10 @@ impl Browser {
             MenuAction::ZoomReset => self.run(Action::ZoomReset),
             MenuAction::HardReload => self.run(Action::HardReload),
             MenuAction::Settings => self.run(Action::OpenSettings),
+            MenuAction::SwitchAccount(_)
+            | MenuAction::AddAccount
+            | MenuAction::AccountSettings
+            | MenuAction::LockAccount => {}
         }
     }
 
@@ -1734,6 +1970,29 @@ impl Browser {
                     self.handle_ui_events(events);
                 }
                 UiEvent::Submitted { node, .. } if node == self.lock_screen.field() => self.try_unlock(),
+                UiEvent::Submitted { node, .. } if Some(node) == self.settings.account_name_field() => {
+                    let action = SettingsAction::SaveAccountName;
+                    let outcome = self.settings.action(&mut self.ui, action, &mut self.config, &self.keymap);
+                    self.settings_outcome(outcome);
+                }
+                UiEvent::Submitted { node, .. } if node == self.add_account.field() => {
+                    self.add_account_action(SheetAction::Create);
+                }
+                UiEvent::Clicked { action, .. } if self.add_account.action(action).is_some() => {
+                    let Some(action) = self.add_account.action(action) else { continue };
+                    let on_sheet = self.pointer.is_some_and(|p| self.add_account.contains(&self.ui, p));
+                    if action == SheetAction::Cancel && on_sheet {
+                        continue;
+                    }
+                    self.add_account_action(action);
+                }
+                UiEvent::Clicked { action, .. } if self.account_menu.action(action).is_some() => {
+                    let action = self.account_menu.action(action);
+                    self.account_menu.close(&mut self.ui, &self.config);
+                    if let Some(action) = action {
+                        self.menu_action(action);
+                    }
+                }
                 UiEvent::Clicked { action, .. } if self.menu.action(action).is_some() => {
                     let action = self.menu.action(action);
                     self.menu.close(&mut self.ui, &self.config);
@@ -1805,6 +2064,7 @@ impl Browser {
                     Some(ChromeAction::Bookmarks) => self.show_panel(Panel::Bookmarks),
                     Some(ChromeAction::History) => self.show_panel(Panel::History),
                     Some(ChromeAction::Passwords) => self.open_passwords(),
+                    Some(ChromeAction::Account) => self.toggle_account_menu(),
                     Some(ChromeAction::ReadingList) => self.show_panel(Panel::ReadingList),
                     Some(ChromeAction::ClosePanel) => {
                         self.panel_urls.clear();
@@ -2053,10 +2313,12 @@ impl Browser {
         self.passwords_outcome(outcome);
         self.reload_config_if_changed();
         self.apply_lifecycle();
-        if self.config.privacy.lock_private_tabs {
+        self.sync_account_lock();
+        // Private tabs lock after the window was away; that locks the whole account.
+        if self.config.privacy.lock_private_tabs && self.has_private_tabs() && self.passwords.has_password() {
             let after = Duration::from_secs_f32(self.config.privacy.lock_after_seconds.max(0.0));
             if self.lock.tick(after) {
-                self.update_lock();
+                self.lock_account();
             }
         }
         self.save_session_if_due(false);
@@ -2069,6 +2331,9 @@ impl Browser {
             Outcome::Changed => {
                 // Apply at once; write to disk a moment later (sliders send many changes).
                 self.config_dirty_since.get_or_insert(Instant::now());
+                if self.settings.take_rebuild() {
+                    self.refresh_settings();
+                }
                 self.engine.set_download_options(Downloads::options(&self.config));
                 self.apply_shields_config();
                 self.apply_theme();
@@ -2076,22 +2341,61 @@ impl Browser {
                 self.tabs_changed = true;
             }
             Outcome::Close => self.settings.close(&mut self.ui),
-            Outcome::SetPassword(password) => {
-                // Changing the password ends the private session, like removing it.
-                if self.lock.has_password() {
-                    self.close_private_tabs();
-                }
-                if self.lock.set_password(self.store.as_ref(), Some(&password)) {
-                    tracing::info!("private browsing password set");
-                }
-                self.settings.set_has_password(self.lock.has_password());
+            Outcome::SetAccountPassword { current, new } => {
+                let (ui, config) = (&mut self.ui, &self.config);
+                let (result, done) = match &current {
+                    Some(old) => (self.passwords.change_password(ui, config, old, &new), "Password changed."),
+                    None => (self.passwords.set_up_password(ui, config, &new), "Password set."),
+                };
+                let status = match result {
+                    Ok(()) => {
+                        if current.is_some() {
+                            // A new password ends the private session (its tabs close).
+                            self.close_private_tabs();
+                        }
+                        self.lock.unlock();
+                        self.account_unlocked = true;
+                        done.to_owned()
+                    }
+                    Err(axion_vault::VaultError::WrongPassword) => {
+                        "The current password is wrong.".to_owned()
+                    }
+                    Err(e) => {
+                        tracing::error!("setting the account password failed: {e}");
+                        e.to_string()
+                    }
+                };
+                self.settings.set_account_status(Some(status));
+                self.settings.set_account(self.account_info());
                 self.update_lock();
+                self.refresh_settings();
             }
-            Outcome::RemovePassword => {
-                self.close_private_tabs();
-                self.lock.set_password(self.store.as_ref(), None);
-                self.settings.set_has_password(false);
-                self.update_lock();
+            Outcome::RenameAccount(name) => {
+                match self.accounts.rename(&self.account_id, &name) {
+                    Ok(_) => self.show_account(),
+                    Err(e) => tracing::error!("renaming the account failed: {e}"),
+                }
+                self.refresh_settings();
+            }
+            Outcome::AccountColor(color) => {
+                if let Err(e) = self.accounts.set_color(&self.account_id, color) {
+                    tracing::error!("saving the account colour failed: {e}");
+                }
+                self.show_account();
+                self.refresh_settings();
+            }
+            Outcome::DeleteAccount => {
+                let next = self.accounts.all().iter().find(|a| a.id != self.account_id).map(|a| a.id.clone());
+                let Some(next) = next else { return };
+                let id = self.account_id.clone();
+                self.settings.close(&mut self.ui);
+                self.switch_account(&next);
+                match self.accounts.remove(&id) {
+                    Ok(()) => {
+                        tracing::info!(account = %id, "account deleted; its data goes at the next start")
+                    }
+                    Err(e) => tracing::error!("deleting the account failed: {e}"),
+                }
             }
             Outcome::UpdateFilterLists => self.shields.update_lists(),
             Outcome::OpenPasswords => self.open_passwords(),
@@ -2332,8 +2636,12 @@ impl Browser {
             WindowEvent::Focused(focused) => {
                 if self.config.privacy.lock_private_tabs {
                     let after = Duration::from_secs_f32(self.config.privacy.lock_after_seconds.max(0.0));
-                    self.lock.window_focused(focused, after);
-                    self.update_lock();
+                    if self.lock.window_focused(focused, after)
+                        && self.has_private_tabs()
+                        && self.passwords.has_password()
+                    {
+                        self.lock_account();
+                    }
                 }
                 if let Some(view) = self.active_view()
                     && self.ui.focused().is_none()
@@ -2403,9 +2711,17 @@ impl Browser {
             _ => return,
         };
 
+        if pressed && self.private_mode && !self.is_locked() {
+            // Using private tabs counts as using the account (its auto-lock waits).
+            self.passwords.touch();
+        }
         if pressed && self.menu.is_open() && !self.menu.contains(&self.ui, p) {
             // A click outside only dismisses the menu.
             self.menu.close(&mut self.ui, &self.config);
+            return;
+        }
+        if pressed && self.account_menu.is_open() && !self.account_menu.contains(&self.ui, p) {
+            self.account_menu.close(&mut self.ui, &self.config);
             return;
         }
         if pressed
@@ -2493,8 +2809,19 @@ impl Browser {
             self.lock_screen.close_alert(&mut self.ui);
             return false;
         }
+        if pressed && self.private_mode && !self.is_locked() {
+            self.passwords.touch();
+        }
         if pressed && self.menu.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.menu.close(&mut self.ui, &self.config);
+            return false;
+        }
+        if pressed && self.account_menu.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.account_menu.close(&mut self.ui, &self.config);
+            return false;
+        }
+        if pressed && self.add_account.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.add_account.close(&mut self.ui);
             return false;
         }
         if pressed
@@ -2800,12 +3127,45 @@ impl Browser {
                         }
                     }
                 }
-                "private-locked" => {
-                    // Capture aid: lock private browsing with a throwaway test password.
-                    self.lock.set_password(self.store.as_ref(), Some("capture-test"));
+                // Capture aid (throwaway profiles only): give the account a test password, then
+                // show the locked private tabs.
+                "private-locked" if std::env::var_os("AXION_PROFILE_DIR").is_some() => {
+                    self.set_test_password();
                     self.toggle_private_mode();
-                    self.lock.lock_now();
-                    self.update_lock();
+                    self.lock_account();
+                }
+                "account-password" if std::env::var_os("AXION_PROFILE_DIR").is_some() => {
+                    self.set_test_password()
+                }
+                "account-menu" => self.toggle_account_menu(),
+                "add-account" => self.open_add_account(),
+                // Capture aid: type "add-account-name:NAME" into the open Add Account sheet.
+                name if name.starts_with("add-account-name:") => {
+                    self.add_account.set_name(&mut self.ui, &name["add-account-name:".len()..]);
+                }
+                "add-account-create" => self.add_account_action(SheetAction::Create),
+                "account-settings" => self.open_account_settings(),
+                "privacy-settings" => {
+                    self.settings.set_category(Category::Privacy);
+                    self.run(Action::OpenSettings);
+                }
+                "lock-account" => self.lock_account(),
+                // Capture aid (throwaway profiles only): delete this account (relaunches).
+                "delete-account" if std::env::var_os("AXION_PROFILE_DIR").is_some() => {
+                    self.settings_outcome(Outcome::DeleteAccount);
+                }
+                // Capture aid (throwaway profiles only): unlock the lock screen with the test
+                // password, as if typed.
+                "unlock-private-test" if std::env::var_os("AXION_PROFILE_DIR").is_some() => {
+                    self.ui.set_field_text(self.lock_screen.field(), crate::passwords::TEST_PASSWORD);
+                    self.try_unlock();
+                }
+                // Capture aid: switch to the account at index N of the list (relaunches).
+                switch if switch.starts_with("switch-account:") => {
+                    let index = switch["switch-account:".len()..].parse::<usize>().ok();
+                    if let Some(id) = index.and_then(|i| self.accounts.all().get(i)).map(|a| a.id.clone()) {
+                        self.switch_account(&id);
+                    }
                 }
                 "unlock-alert" => {
                     let events = self.lock_screen.action(&mut self.ui, &self.config, LockScreen::SHOW_ALERT);
@@ -2838,6 +3198,8 @@ impl Browser {
             }
         }
         self.menu.animate(&mut self.ui, dt);
+        self.account_menu.animate(&mut self.ui, dt);
+        self.add_account.animate(&mut self.ui, dt);
         self.shields_popover.animate(&mut self.ui, dt);
         self.downloads_popover.animate(&mut self.ui, dt);
         self.lock_screen.animate(&mut self.ui, dt);
@@ -3032,6 +3394,16 @@ impl Browser {
         }
     }
 
+    /// Capture aid (throwaway profiles only): the account gets the vault's test password.
+    fn set_test_password(&mut self) {
+        if !self.passwords.has_password() {
+            let _ =
+                self.passwords.set_up_password(&mut self.ui, &self.config, crate::passwords::TEST_PASSWORD);
+            self.settings.set_account(self.account_info());
+            self.sync_account_lock();
+        }
+    }
+
     pub fn request_redraw(&self) {
         self.window.request_redraw();
     }
@@ -3149,13 +3521,4 @@ fn is_dark(config: &Config, window: &Window, desktop_dark: Option<bool>) -> bool
         ThemeMode::Dark => true,
         ThemeMode::Auto => desktop_dark.unwrap_or(window.theme() == Some(winit::window::Theme::Dark)),
     }
-}
-
-/// `~/.local/share/axion/profile` (or `AXION_PROFILE_DIR`).
-fn profile_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("AXION_PROFILE_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
-    let dirs = directories::ProjectDirs::from("", "", "axion").context("no home directory")?;
-    Ok(dirs.data_dir().join("profile"))
 }

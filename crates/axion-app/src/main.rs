@@ -1,14 +1,16 @@
 //! Axion — a Liquid Glass web browser.
 //!
 //! ```bash
-//! axion [url…] [--capture=out.png] [--size=1440x900] [--overview] [--address=TEXT] [--open=menu|history|bookmarks|settings|private|private-locked] [--lead=MS]
+//! axion [url…] [--account=ID] [--capture=out.png] [--size=1440x900] [--position=X,Y] [--maximized] [--overview] [--address=TEXT] [--open=menu|history|bookmarks|settings|private|private-locked|account-menu|…] [--lead=MS]
 //! ```
 //!
 //! Environment: `AXION_GPU=low` uses the integrated GPU, `AXION_OSR=software` disables GPU
 //! frame sharing, `AXION_NO_SANDBOX=1` disables Chromium's sandbox, `AXION_CONFIG_DIR` and
-//! `AXION_PROFILE_DIR` move settings and browsing data, `AXION_MONITOR=HDMI-A-1` opens the
-//! window on that monitor (X11/XWayland only).
+//! `AXION_PROFILE_DIR` move the bases of settings and browsing data (each account has its own
+//! directory in them, see `axion-accounts`), `AXION_MONITOR=HDMI-A-1` opens the window on that
+//! monitor (X11/XWayland only).
 
+mod accounts;
 mod browser;
 mod chrome;
 mod desktop;
@@ -77,6 +79,12 @@ fn main() -> Result<()> {
             let (w, h) = s.split_once('x')?;
             Some((w.parse().ok()?, h.parse().ok()?))
         }),
+        position: args.iter().find_map(|a| a.strip_prefix("--position=")).and_then(|s| {
+            let (x, y) = s.split_once(',')?;
+            Some((x.parse().ok()?, y.parse().ok()?))
+        }),
+        maximized: args.iter().any(|a| a == "--maximized"),
+        account: args.iter().find_map(|a| a.strip_prefix("--account=")).map(str::to_owned),
     };
 
     let event_loop = EventLoop::new()?;
@@ -84,8 +92,13 @@ fn main() -> Result<()> {
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App { options: Some(options), browser: None, error: None };
     event_loop.run_app(&mut app)?;
-    // Dropping the browser shuts Chromium down cleanly.
+    let relaunch = app.browser.as_mut().and_then(Browser::take_relaunch);
+    // Dropping the browser saves the session and shuts Chromium down cleanly.
     drop(app.browser.take());
+    // Switching accounts: Axion starts again in the other one.
+    if let Some(relaunch) = relaunch {
+        relaunch.spawn()?;
+    }
     match app.error {
         Some(e) if e.downcast_ref::<CaptureDone>().is_none() => Err(e),
         _ => Ok(()),
@@ -128,6 +141,10 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(browser) = &mut self.browser {
+            if browser.wants_exit() {
+                event_loop.exit();
+                return;
+            }
             browser.sync_windows(event_loop);
             browser.pump();
             browser.request_redraw();

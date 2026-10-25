@@ -44,8 +44,17 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
 
 ### 2.3b Private browsing
 - Private tabs (separate in-memory profile: no history, cookies or cache kept on disk).
-- The "Private" section can be **locked with a password** (like Safari's locked private
-  browsing); unlocking asks for it after the browser was in the background or restarted.
+- The "Private" section can be **locked with the account password** (like Safari's locked
+  private browsing); unlocking asks for it after the browser was in the background.
+
+### 2.3c Local accounts
+- Each account is a fully separate profile (like Chrome's): tabs, private tabs, history,
+  bookmarks, downloads list, favicons, password vault, website data, Shields site settings and
+  its own `config.toml`/`keymap.toml`.
+- One password per account: it is the vault's master password and the private tabs' lock;
+  asked only when needed (locked private tabs, Passwords, filling/saving a password).
+- Account button at the bottom of the sidebar (avatar + name) with a glass menu: accounts,
+  Add Account…, Account Settings…, Lock.
 
 ### 2.4 Tabs & memory
 - Lifecycle states: **Active → Background → Frozen → Discarded**.
@@ -91,7 +100,7 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
 - Themes: accent colour, light/dark/auto, glass parameters, density, corner radius.
 
 ## 3. Out of scope for v0.1
-Extensions, sync, reader mode, profiles, Windows/macOS builds, touchscreen polish.
+Extensions, sync, reader mode, Windows/macOS builds, touchscreen polish.
 
 ## 4. Roadmap
 
@@ -143,8 +152,12 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [x] Toolbar and sidebar rebuilt after iPadOS 26 Safari (see decisions log).
 - [x] Tab overview with snapshots and zoom transition.
 - [x] Page menu (≡) with bookmark/zoom/copy link; Bookmarks/History/Reading List panels.
-- [x] Private tabs (in-memory CEF context, dark chrome) with Argon2 password lock after N s in
-  the background (`[privacy]`), lock screen, settings to set/remove the password.
+- [x] Private tabs (in-memory CEF context, dark chrome) with a lock after N s in the
+  background (`[privacy]`), lock screen; the lock uses the account password.
+- [x] Local accounts (`axion-accounts`): separate profiles, account button + menu in the
+  sidebar, Add Account sheet, Settings › Account (name, colour, password, delete), switching
+  by relaunching, migration of the pre-accounts profile.
+- [ ] Switch accounts in-process (several CEF request contexts) instead of relaunching.
 - [x] Settings sheet (General, Appearance, Liquid Glass, Keyboard, Privacy), changes live.
 - [ ] Share sheet (Share currently copies the link), reading list entries, tab groups.
 - [ ] Tab pills: open/close/reorder with physics.
@@ -301,6 +314,19 @@ Windows/macOS, touchscreen-first mode.
   Settings › Media (`media.trusted_player_sites` in config.toml). Old keys `own_controls` /
   `replace_site_players` are accepted and ignored; `own_fullscreen_controls` became
   `fullscreen_player`.
+
+- 2026-10-25: **Local accounts.** Shared `<config base>/accounts.toml` lists the accounts and
+  the last one used; each account's data lives in `<profile base>/accounts/<id>/` and its
+  settings in `<config base>/accounts/<id>/` (bases: `~/.config/axion`,
+  `~/.local/share/axion/profile`, or `AXION_CONFIG_DIR`/`AXION_PROFILE_DIR`). The first start
+  moves the old profile and `config.toml`/`keymap.toml` into a first account (named after
+  `$USER`); if a move fails the account keeps the old directories in place (paths stored in
+  accounts.toml), and while the old profile is in use (Chromium's `SingletonLock`) the move
+  waits for the next start. The account password is the vault's master password and the
+  private tabs' lock — unlocking or locking either does both; the old separate private
+  password is dropped. Switching relaunches Axion (`--account=ID`, same size/position) after
+  Chromium shut down, since CEF allows one root cache path per process. Deleted accounts'
+  directories are removed at the next start.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

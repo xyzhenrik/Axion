@@ -12,18 +12,7 @@ pub struct ConfigPaths {
 }
 
 impl ConfigPaths {
-    /// `$XDG_CONFIG_HOME/axion` (usually `~/.config/axion`), or `AXION_CONFIG_DIR` if set.
-    pub fn discover() -> Result<Self, ConfigError> {
-        let dir = match std::env::var_os("AXION_CONFIG_DIR") {
-            Some(dir) => PathBuf::from(dir),
-            None => directories::ProjectDirs::from("", "", "axion")
-                .ok_or(ConfigError::NoHome)?
-                .config_dir()
-                .to_path_buf(),
-        };
-        Ok(Self::in_dir(dir))
-    }
-
+    /// The files in `dir` (an account's configuration directory, see `axion-accounts`).
     pub fn in_dir(dir: PathBuf) -> Self {
         Self { config: dir.join("config.toml"), keymap: dir.join("keymap.toml"), dir }
     }

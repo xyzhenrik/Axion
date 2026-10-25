@@ -10,6 +10,7 @@ publish = false
 
 [workspace.dependencies]
 axion-compositor = { path = "crates/axion-compositor" }
+axion-accounts = { path = "crates/axion-accounts" }
 axion-config = { path = "crates/axion-config" }
 axion-engine = { path = "crates/axion-engine" }
 axion-glass = { path = "crates/axion-glass" }

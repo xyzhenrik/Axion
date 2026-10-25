@@ -1,0 +1,18 @@
+[package]
+name = "axion-accounts"
+description = "Axion's local accounts: the shared accounts file, per-account directories and migration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+axion-config.workspace = true
+directories = "6"
+serde = { version = "1", features = ["derive"] }
+thiserror.workspace = true
+toml = "1"
+tracing.workspace = true
+
+[lints]
+workspace = true

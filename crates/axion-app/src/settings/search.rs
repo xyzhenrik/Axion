@@ -38,6 +38,57 @@ use Category as C;
 use Setting as S;
 
 pub const INDEX: &[Entry] = &[
+    page(
+        C::Account,
+        "Account",
+        &["accounts", "profile", "profiles", "user", "konto", "konten", "profil", "benutzer", "nutzer"],
+    ),
+    page(
+        C::Account,
+        "Account name",
+        &["rename", "name", "kontoname", "umbenennen", "name ändern", "profilname", "benutzername"],
+    ),
+    page(C::Account, "Account colour", &["avatar", "color", "initials", "farbe", "profilbild", "kontofarbe"]),
+    page(
+        C::Account,
+        "Account password",
+        &[
+            "password",
+            "change password",
+            "set password",
+            "master password",
+            "private tabs",
+            "passwort",
+            "passwort ändern",
+            "passwort festlegen",
+            "kennwort",
+            "hauptpasswort",
+            "masterpasswort",
+            "kontopasswort",
+        ],
+    ),
+    page(
+        C::Account,
+        "Switch or add accounts",
+        &[
+            "switch account",
+            "add account",
+            "new account",
+            "new profile",
+            "wechseln",
+            "konto wechseln",
+            "profil wechseln",
+            "benutzer wechseln",
+            "konto hinzufügen",
+            "neues konto",
+            "neues profil",
+        ],
+    ),
+    page(
+        C::Account,
+        "Delete account",
+        &["remove account", "delete profile", "konto löschen", "profil löschen", "entfernen", "löschen"],
+    ),
     page(C::General, "Homepage", &["start page", "new tab", "startseite", "home"]),
     page(C::General, "Search engine", &["google", "duckduckgo", "bing", "suchmaschine", "default search"]),
     page(
@@ -96,8 +147,11 @@ pub const INDEX: &[Entry] = &[
     control(C::Shields, S::StripTracking, &["utm", "fbclid", "tracking", "privacy", "links"]),
     control(C::Shields, S::ThirdPartyCookies, &["cookies", "tracking", "privacy", "datenschutz"]),
     page(C::Shields, "Filter lists", &["easylist", "update", "lists", "listen", "adblock"]),
-    page(C::Privacy, "Private tabs password", &["password", "passwort", "lock", "incognito", "privat"]),
-    control(C::Privacy, S::LockPrivateTabs, &["password", "passwort", "lock", "incognito", "sperren"]),
+    control(
+        C::Privacy,
+        S::LockPrivateTabs,
+        &["password", "passwort", "lock", "incognito", "privat", "sperren", "account", "konto"],
+    ),
     control(C::Privacy, S::LockAfter, &["timeout", "auto lock", "sperren", "time"]),
     page(C::Privacy, "Browsing history", &["clear", "delete", "verlauf", "löschen", "history", "data"]),
     page(
@@ -261,6 +315,11 @@ mod tests {
         assert!(titles("speicherort").contains(&"Download location"));
         assert!(titles("kreditkarte").contains(&"Saved passwords, cards and addresses"));
         assert!(titles("ausfüllen").contains(&"Offer to fill saved passwords"));
+        assert!(titles("konto").contains(&"Account"));
+        assert!(titles("profil wechseln").contains(&"Switch or add accounts"));
+        assert!(titles("passwort ändern").contains(&"Account password"));
+        assert!(titles("benutzer").contains(&"Account"));
+        assert!(titles("konto löschen").contains(&"Delete account"));
     }
 
     #[test]
