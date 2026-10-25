@@ -9,9 +9,11 @@
 //! near edge (the neck, facing the anchor) sinks into the anchor's glass first
 //! (`motion.drain_neck`), while the far edge and the sides retract after it on
 //! `motion.drain`. The neck stays inside the glass it flows into the whole way, so the body
-//! never detaches; it ends as a drop shrinking to the anchor's centre, the point deepest inside
-//! the glass it drains into (a drop near that glass's rim would still bulge it through the
-//! smooth union), and only then is it removed.
+//! never detaches. The body first shoots back to a small drop at the anchor's rim on an
+//! underdamped spring, so it plunges in and recoils out once (`motion.drain`); once that
+//! settles, the drop flows on into the anchor's centre (`motion.drain_absorb`), the point
+//! deepest inside the glass it drains into (a drop near that glass's rim would still bulge it
+//! through the smooth union), and only then is it removed.
 
 use axion_compositor::Rect as Frame;
 use axion_config::{Config, SpringSpec};
@@ -19,6 +21,8 @@ use axion_physics::{Animated, Spring};
 use glam::Vec2;
 
 const SETTLED_PX: f32 = 0.4;
+/// The recoil counts as over (and the drop flows on in) once every edge is this close.
+const RECOIL_SETTLED_PX: f32 = 1.5;
 
 /// Edge indices: left, top, right, bottom.
 const LEFT: usize = 0;
@@ -41,6 +45,12 @@ pub struct Drip {
     anchor: Frame,
     target: Frame,
     phase: Phase,
+    /// Closing, after the recoil: the drop flows into the anchor's centre.
+    absorbing: bool,
+    absorb_spring: Spring,
+    /// Closing: the edge facing away from the anchor, and whether it is recoiling out yet.
+    far: usize,
+    recoiling: bool,
 }
 
 /// A spring from the config, at the configured speed (Reduce Motion: quick, no overshoot).
@@ -89,6 +99,10 @@ impl Drip {
             anchor: Frame::default(),
             target: Frame::default(),
             phase: Phase::Closed,
+            absorbing: false,
+            absorb_spring: Spring::SNAPPY,
+            far: BOTTOM,
+            recoiling: false,
         }
     }
 
@@ -101,6 +115,7 @@ impl Drip {
     /// Opening: every edge on the liquid spring, so the shape grows as one.
     fn open_springs(&mut self, config: &Config) {
         let liquid = spring(config, config.motion.liquid);
+        self.absorbing = false;
         for edge in &mut self.edges {
             edge.spring = liquid;
         }
@@ -167,8 +182,38 @@ impl Drip {
         for (i, edge) in self.edges.iter_mut().enumerate() {
             edge.spring = if i == near { neck } else { drain };
         }
-        self.set_targets(Frame { origin: self.anchor.center(), size: Vec2::ZERO });
+        self.absorb_spring = spring(config, config.motion.drain_absorb);
+        self.far = (near + 2) % 4;
+        self.recoiling = false;
+        self.absorbing = config.glass.reduce_motion;
+        if self.absorbing {
+            self.set_targets(Frame { origin: self.anchor.center(), size: Vec2::ZERO });
+        } else {
+            self.set_targets(self.rim_drop(near, config.motion.drain_drop));
+        }
         self.phase = Phase::Closing;
+    }
+
+    /// +1 when the far edge moves away from the anchor with growing values, else −1.
+    fn outward(&self) -> f32 {
+        if self.far == RIGHT || self.far == BOTTOM { 1.0 } else { -1.0 }
+    }
+
+    /// The small drop the body recoils into: just inside the anchor's rim facing the glass,
+    /// at most the anchor's size. At rest it is hidden in the anchor's glass; only the
+    /// recoil's overshoot bulges out of the rim.
+    fn rim_drop(&self, near: usize, size: f32) -> Frame {
+        let (a, c) = (self.anchor, self.anchor.center());
+        let rim = match near {
+            // The glass's left edge faces the anchor: the anchor's right rim.
+            LEFT => Vec2::new(a.origin.x + a.size.x, c.y),
+            TOP => Vec2::new(c.x, a.origin.y + a.size.y),
+            RIGHT => Vec2::new(a.origin.x, c.y),
+            _ => Vec2::new(c.x, a.origin.y),
+        };
+        let size = Vec2::splat(size).min(a.size);
+        let inward = (c - rim).normalize_or_zero() * size / 2.0;
+        Frame { origin: rim + inward - size / 2.0, size }
     }
 
     pub fn phase(&self) -> Phase {
@@ -182,10 +227,28 @@ impl Drip {
         for edge in &mut self.edges {
             edge.step(dt);
         }
+        if self.phase == Phase::Closing && !self.absorbing {
+            // Away from the anchor is +x/+y for the right/bottom edge, −x/−y for left/top.
+            if self.edges[self.far].velocity * self.outward() > 0.0 {
+                self.recoiling = true;
+            }
+        }
+        let recoil_over = self.recoiling && self.edges[self.far].velocity * self.outward() <= 0.0;
+        if self.phase == Phase::Closing
+            && !self.absorbing
+            && (recoil_over || self.edges.iter().all(|e| e.is_settled(RECOIL_SETTLED_PX)))
+        {
+            // The recoil peaked: the drop flows on into the anchor from there.
+            self.absorbing = true;
+            for edge in &mut self.edges {
+                edge.spring = self.absorb_spring;
+            }
+            self.set_targets(Frame { origin: self.anchor.center(), size: Vec2::ZERO });
+        }
         let settled = self.edges.iter().all(|e| e.is_settled(SETTLED_PX));
         self.phase = match self.phase {
             Phase::Opening if settled => Phase::Open,
-            Phase::Closing if settled => Phase::Closed,
+            Phase::Closing if settled && self.absorbing => Phase::Closed,
             phase => phase,
         };
         self.phase
@@ -269,6 +332,33 @@ mod tests {
         // It ends inside the anchor.
         assert!(last.size.x <= anchor.size.x && last.size.y <= anchor.size.y);
         assert!(anchor.contains(last.center()));
+    }
+
+    #[test]
+    fn body_recoils_out_of_the_rim_before_it_is_absorbed() {
+        let config = Config::default();
+        let mut drip = Drip::new();
+        let anchor = Frame::new(300.0, 10.0, 34.0, 34.0);
+        let target = Frame::new(100.0, 56.0, 280.0, 300.0);
+        drip.open(&config, anchor, target);
+        for _ in 0..360 {
+            drip.step(1.0 / 120.0);
+        }
+        drip.close(&config);
+        let rim = anchor.origin.y + anchor.size.y;
+        // The far (bottom) edge plunges above the rim's drop, then comes back out below it.
+        let (mut deepest, mut rebound) = (f32::MAX, f32::MIN);
+        while drip.step(1.0 / 120.0) != Phase::Closed {
+            let bottom = drip.frame().origin.y + drip.frame().size.y;
+            if bottom < deepest {
+                deepest = bottom;
+            } else if !drip.absorbing {
+                rebound = rebound.max(bottom);
+            }
+        }
+        let rest = rim;
+        assert!(deepest < rest - 1.0, "no plunge: {deepest} vs {rest}");
+        assert!(rebound > deepest + 1.0, "no recoil: {deepest} → {rebound}");
     }
 
     #[test]
