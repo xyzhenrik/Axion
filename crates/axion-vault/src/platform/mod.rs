@@ -84,6 +84,18 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     })
 }
 
+/// Overwrites a secret file with zeros, flushes that to disk, then unlinks it. (On
+/// copy-on-write or journalling file systems old blocks may survive; this is best effort.)
+pub fn wipe_and_remove(path: &Path) -> io::Result<()> {
+    let len = std::fs::metadata(path)?.len();
+    let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+    let len = usize::try_from(len).map_err(|_| io::Error::other("file too large"))?;
+    file.write_all(&vec![0; len])?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::remove_file(path)
+}
+
 /// Warns when a secret file is readable by others (it still works).
 pub fn warn_if_shared(path: &Path) {
     #[cfg(unix)]

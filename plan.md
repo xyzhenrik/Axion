@@ -350,8 +350,10 @@ Windows/macOS, touchscreen-first mode.
   sealed object, blob in `~/.local/share/axion/device.tpm`), else a 0600 `device.key` there.
   Password-only vaults upgrade on their next unlock (one transaction). Settings › Passwords
   exports a portable copy encrypted with the password alone and restores such exports (into
-  the unlocked vault, or as the vault of an account without password). Open: moving a
-  file key into the TPM once the user gains access to it.
+  the unlocked vault, or as the vault of an account without password). A key file made
+  without TPM access moves into the TPM at the first start where it is usable (same secret,
+  `device.tpm` verified by unsealing before `device.key` is zeroed and removed; retried each
+  start on failure).
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

@@ -7,8 +7,9 @@
 //! permission, a TPM error, or a build without the `tpm` feature) the secret is a file of its
 //! own (`device.key`, mode 0600 in a 0700 directory). Both live in `$XDG_DATA_HOME/axion`
 //! (or `AXION_DEVICE_KEY_DIR`), outside every profile and account, so a backup or copy of a
-//! profile doesn't carry it. Once created, a device key keeps its backend: a sealed key is never
-//! silently replaced by a file one (that would look like another device to every vault).
+//! profile doesn't carry it. A sealed key is never replaced by a file one (that would look like
+//! another device to every vault); a key file moves into the TPM, same secret, once the TPM
+//! becomes usable (see [`SystemDeviceKey`]).
 //!
 //! The secret is never logged; only the backend is.
 
@@ -86,10 +87,38 @@ pub enum Backend {
     File,
 }
 
+/// Seals and unseals the device secret: the platform TPM, or a fake in tests.
+pub trait Sealer: Send + Sync {
+    /// Seals `secret`; the blob opens only with this sealer.
+    fn seal(&self, secret: &DeviceSecret) -> Result<Vec<u8>, DeviceKeyError>;
+    fn unseal(&self, blob: &[u8]) -> Result<DeviceSecret, DeviceKeyError>;
+}
+
+/// This machine's TPM (see `platform::tpm`).
+pub struct PlatformTpm;
+
+impl Sealer for PlatformTpm {
+    fn seal(&self, secret: &DeviceSecret) -> Result<Vec<u8>, DeviceKeyError> {
+        platform::tpm::seal(secret)
+    }
+
+    fn unseal(&self, blob: &[u8]) -> Result<DeviceSecret, DeviceKeyError> {
+        platform::tpm::unseal(blob)
+    }
+}
+
 /// The real device key: TPM-sealed where possible, a private file otherwise. Loaded once,
 /// then kept in memory for the rest of the process.
+///
+/// A key file made while the TPM was unusable moves into the TPM once it is usable: the same
+/// secret is sealed (so no vault needs re-encrypting), `device.tpm` is written and read back
+/// through the TPM, and only when that matches byte for byte is `device.key` overwritten with
+/// zeros and removed. On any failure the key file stays in use and the move is retried at the
+/// next start.
 pub struct SystemDeviceKey {
     dir: PathBuf,
+    tpm: Box<dyn Sealer>,
+    /// Whether to create or move keys into the TPM (an existing sealed key always needs it).
     use_tpm: bool,
     loaded: Mutex<Option<(DeviceSecret, Backend)>>,
 }
@@ -97,13 +126,18 @@ pub struct SystemDeviceKey {
 impl SystemDeviceKey {
     /// The device key in `dir`, TPM first.
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, use_tpm: true, loaded: Mutex::new(None) }
+        Self::with_sealer(dir, Box::new(PlatformTpm))
     }
 
-    /// The device key in `dir`, never using the TPM to create one (an existing sealed key
-    /// still needs it).
+    /// The device key in `dir`, sealed by `tpm`.
+    pub fn with_sealer(dir: PathBuf, tpm: Box<dyn Sealer>) -> Self {
+        Self { dir, tpm, use_tpm: true, loaded: Mutex::new(None) }
+    }
+
+    /// The device key in `dir`, never using the TPM to create one or to move a key file into
+    /// (an existing sealed key still needs it).
     pub fn file_only(dir: PathBuf) -> Self {
-        Self { dir, use_tpm: false, loaded: Mutex::new(None) }
+        Self { dir, tpm: Box::new(PlatformTpm), use_tpm: false, loaded: Mutex::new(None) }
     }
 
     /// The device key in its usual place: `AXION_DEVICE_KEY_DIR`, else `$XDG_DATA_HOME/axion`.
@@ -125,21 +159,34 @@ impl SystemDeviceKey {
         let plain = self.dir.join(PLAIN_FILE);
         if sealed.exists() {
             let blob = std::fs::read(&sealed)?;
-            return Ok((platform::tpm::unseal(&blob)?, Backend::Tpm));
+            return Ok((self.tpm.unseal(&blob)?, Backend::Tpm));
         }
         if plain.exists() {
-            return Ok((read_plain(&plain)?, Backend::File));
+            let secret = read_plain(&plain)?;
+            if self.use_tpm {
+                match self.move_into_tpm(&secret, &sealed, &plain) {
+                    Ok(()) => {
+                        tracing::info!("device key: moved from the key file into the TPM");
+                        return Ok((secret, Backend::Tpm));
+                    }
+                    Err(e) => tracing::warn!(
+                        "device key: can't move the key file into the TPM ({e}); keeping the file, \
+                         trying again next start"
+                    ),
+                }
+            }
+            return Ok((secret, Backend::File));
         }
         platform::create_private_dir(&self.dir)?;
         if self.use_tpm {
-            match create_sealed(&sealed) {
+            match self.create_sealed(&sealed) {
                 Ok(secret) => return Ok((secret, Backend::Tpm)),
                 Err(e) => tracing::info!("device key: no usable TPM ({e}); using a key file"),
             }
             // Another process may have sealed one meanwhile.
             if sealed.exists() {
                 let blob = std::fs::read(&sealed)?;
-                return Ok((platform::tpm::unseal(&blob)?, Backend::Tpm));
+                return Ok((self.tpm.unseal(&blob)?, Backend::Tpm));
             }
         }
         let secret: DeviceSecret = Zeroizing::new(crypto::random_bytes());
@@ -148,6 +195,54 @@ impl SystemDeviceKey {
             return Ok((read_plain(&plain)?, Backend::File));
         }
         Ok((secret, Backend::File))
+    }
+
+    /// Seals a new secret and stores the blob, after checking it unseals.
+    fn create_sealed(&self, path: &Path) -> Result<DeviceSecret, DeviceKeyError> {
+        let secret: DeviceSecret = Zeroizing::new(crypto::random_bytes());
+        let blob = self.tpm.seal(&secret)?;
+        if *self.tpm.unseal(&blob)? != *secret {
+            return Err(DeviceKeyError::Tpm("the sealed key doesn't read back".into()));
+        }
+        if !platform::write_private_new(path, &blob)? {
+            // Another process sealed one first: use that.
+            return self.tpm.unseal(&std::fs::read(path)?);
+        }
+        Ok(secret)
+    }
+
+    /// Seals the key file's `secret` into `sealed`, verifies it from disk and only then wipes
+    /// the key file. On failure `sealed` is gone again and the key file untouched.
+    fn move_into_tpm(
+        &self,
+        secret: &DeviceSecret,
+        sealed: &Path,
+        plain: &Path,
+    ) -> Result<(), DeviceKeyError> {
+        let blob = self.tpm.seal(secret)?;
+        if !platform::write_private_new(sealed, &blob)? {
+            return Err(DeviceKeyError::Tpm("another sealed key appeared meanwhile".into()));
+        }
+        let verified = std::fs::read(sealed)
+            .map_err(DeviceKeyError::from)
+            .and_then(|blob| self.tpm.unseal(&blob))
+            .and_then(|back| {
+                if *back == **secret {
+                    Ok(())
+                } else {
+                    Err(DeviceKeyError::Tpm("the sealed key doesn't match the key file".into()))
+                }
+            });
+        if let Err(e) = verified {
+            // Never leave a sealed key that isn't this device's key: it would win next time.
+            let _ = std::fs::remove_file(sealed);
+            return Err(e);
+        }
+        // The sealed key now wins; a failure here only leaves a stale (zeroed) file behind.
+        if let Err(e) = platform::wipe_and_remove(plain) {
+            tracing::warn!("device key: sealed, but the old key file couldn't be removed: {e}");
+        }
+        Ok(())
     }
 }
 
@@ -165,20 +260,6 @@ impl DeviceKey for SystemDeviceKey {
         *loaded = Some((secret.clone(), backend));
         Ok(secret)
     }
-}
-
-/// Seals a new secret with the TPM and stores the blob, after checking it unseals.
-fn create_sealed(path: &Path) -> Result<DeviceSecret, DeviceKeyError> {
-    let secret: DeviceSecret = Zeroizing::new(crypto::random_bytes());
-    let blob = platform::tpm::seal(&secret)?;
-    if *platform::tpm::unseal(&blob)? != *secret {
-        return Err(DeviceKeyError::Tpm("the sealed key doesn't read back".into()));
-    }
-    if !platform::write_private_new(path, &blob)? {
-        // Another process sealed one first: use that.
-        return platform::tpm::unseal(&std::fs::read(path)?);
-    }
-    Ok(secret)
 }
 
 fn read_plain(path: &Path) -> Result<DeviceSecret, DeviceKeyError> {
@@ -205,6 +286,96 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("axion-device-key-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// A pretend TPM: the blob is the secret XOR 0x5a behind a tag.
+    #[derive(Clone, Copy)]
+    enum FakeTpm {
+        Works,
+        SealFails,
+        /// Unseals a different secret than was sealed.
+        Mismatch,
+    }
+
+    impl Sealer for FakeTpm {
+        fn seal(&self, secret: &DeviceSecret) -> Result<Vec<u8>, DeviceKeyError> {
+            if let FakeTpm::SealFails = self {
+                return Err(DeviceKeyError::Tpm("test: no access".into()));
+            }
+            Ok(b"FAKE".iter().copied().chain(secret.iter().map(|b| b ^ 0x5a)).collect())
+        }
+
+        fn unseal(&self, blob: &[u8]) -> Result<DeviceSecret, DeviceKeyError> {
+            let body = blob.strip_prefix(b"FAKE".as_slice()).ok_or(DeviceKeyError::Damaged)?;
+            let mut secret: [u8; KEY_LEN] = body.try_into().map_err(|_| DeviceKeyError::Damaged)?;
+            secret.iter_mut().for_each(|b| *b ^= 0x5a);
+            if let FakeTpm::Mismatch = self {
+                secret[0] ^= 1;
+            }
+            Ok(Zeroizing::new(secret))
+        }
+    }
+
+    fn fake(dir: &Path, tpm: FakeTpm) -> SystemDeviceKey {
+        SystemDeviceKey::with_sealer(dir.to_owned(), Box::new(tpm))
+    }
+
+    /// A key file from a start without TPM access.
+    fn key_file(name: &str) -> (PathBuf, DeviceSecret) {
+        let dir = scratch(name);
+        let secret = SystemDeviceKey::file_only(dir.clone()).secret().unwrap();
+        assert!(dir.join(PLAIN_FILE).exists());
+        (dir, secret)
+    }
+
+    #[test]
+    fn a_key_file_moves_into_the_tpm() {
+        let (dir, secret) = key_file("move");
+        let moved = fake(&dir, FakeTpm::Works);
+        assert_eq!(*moved.secret().unwrap(), *secret, "the same secret: no vault re-encryption");
+        assert_eq!(moved.backend(), Some(Backend::Tpm));
+        assert!(!dir.join(PLAIN_FILE).exists(), "the key file is gone");
+        assert!(dir.join(SEALED_FILE).exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join(SEALED_FILE)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        // Next start: the sealed key, same secret.
+        let next = fake(&dir, FakeTpm::Works);
+        assert_eq!(*next.secret().unwrap(), *secret);
+        assert_eq!(next.backend(), Some(Backend::Tpm));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_seal_keeps_the_key_file() {
+        let (dir, secret) = key_file("seal-fails");
+        let raw = std::fs::read(dir.join(PLAIN_FILE)).unwrap();
+        let key = fake(&dir, FakeTpm::SealFails);
+        assert_eq!(*key.secret().unwrap(), *secret);
+        assert_eq!(key.backend(), Some(Backend::File));
+        assert_eq!(std::fs::read(dir.join(PLAIN_FILE)).unwrap(), raw);
+        assert!(!dir.join(SEALED_FILE).exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_mismatch_keeps_the_key_file_and_retries_later() {
+        let (dir, secret) = key_file("mismatch");
+        let raw = std::fs::read(dir.join(PLAIN_FILE)).unwrap();
+        let key = fake(&dir, FakeTpm::Mismatch);
+        assert_eq!(*key.secret().unwrap(), *secret);
+        assert_eq!(key.backend(), Some(Backend::File));
+        assert_eq!(std::fs::read(dir.join(PLAIN_FILE)).unwrap(), raw);
+        assert!(!dir.join(SEALED_FILE).exists(), "no wrong sealed key left behind");
+        // The next start, with a working TPM, moves it.
+        let next = fake(&dir, FakeTpm::Works);
+        assert_eq!(*next.secret().unwrap(), *secret);
+        assert_eq!(next.backend(), Some(Backend::Tpm));
+        assert!(!dir.join(PLAIN_FILE).exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

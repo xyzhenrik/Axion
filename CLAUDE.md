@@ -141,7 +141,8 @@ axion url --after=20 --capture=out.png        # capture after 20 s instead of 8
   **Never force `AXION_OSR=gpu` on the AMD iGPU** while investigating: it has caused a GPU
   context loss (hard recovery) on the user's machine.
 - The password vault is device-bound (`axion-vault`: Argon2id(password) + a device key, TPM-sealed
-  where `/dev/tpmrm0` is accessible, else `device.key`, both outside the profile). Building
+  where `/dev/tpmrm0` is accessible, else `device.key`, both outside the profile; a key file
+  moves into the TPM once it becomes usable). Building
   without libtss2: `--no-default-features` (drops the `tpm` feature). Never touch the user's
   real `~/.local/share/axion/device.tpm|device.key`: losing it makes the vault unreadable.
 - Test runs of the browser use a throwaway `AXION_PROFILE_DIR`/`AXION_CONFIG_DIR`/`AXION_DEVICE_KEY_DIR` in the
