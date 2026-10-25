@@ -526,9 +526,9 @@ impl Compositor {
         })
     }
 
-    /// Measures the average lightness (0–1) of `region` (0–1 texture coordinates) of `texture`.
-    /// Non-blocking: returns the most recent finished measurement, which lags a frame or two.
-    pub fn probe_luminance(&mut self, texture: &wgpu::TextureView, region: Rect) -> Option<f32> {
+    /// Measures the average colour (sRGB, 0–1) of `region` (0–1 texture coordinates) of
+    /// `texture`. Non-blocking: returns the latest finished measurement (a frame or two old).
+    pub fn probe_color(&mut self, texture: &wgpu::TextureView, region: Rect) -> Option<[f32; 3]> {
         self.probe.update(&self.device, &self.queue, texture, region);
         self.probe.latest()
     }

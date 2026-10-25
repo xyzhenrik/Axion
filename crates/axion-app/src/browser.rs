@@ -35,6 +35,8 @@ const MAX_FRAME_RATE: u32 = 120;
 const PROBE_HEIGHT: f32 = 48.0;
 /// The chrome turns dark below this page lightness, and light again above `LIGHT_ABOVE`.
 const DARK_BELOW: f32 = 0.4;
+/// Fraction of the way the window tint moves towards the page colour per frame.
+const TINT_EASE: f32 = 0.2;
 const LIGHT_ABOVE: f32 = 0.6;
 /// PCI vendor id of NVIDIA, the one driver where zero-copy frame import is verified.
 const NVIDIA_VENDOR_ID: u32 = 0x10DE;
@@ -89,6 +91,8 @@ pub struct Browser {
     tabs_changed: bool,
     layout_size: Vec2,
     capture: Option<(PathBuf, Instant)>,
+    /// The page's top-edge colour, used as the window background (`appearance.tint_from_page`).
+    page_tint: Option<[f32; 4]>,
     /// When to open the overview for a `--capture --overview` screenshot.
     overview_at: Option<Instant>,
     address_at: Option<(Instant, String)>,
@@ -198,6 +202,7 @@ impl Browser {
             favicons,
             overview_query: String::new(),
             last_frame: Instant::now(),
+            page_tint: None,
             tabs: Tabs::default(),
             config,
             keymap,
@@ -502,6 +507,24 @@ impl Browser {
                     Some(ChromeAction::NewTab) => self.run(Action::NewTab),
                     Some(ChromeAction::Overview) => self.run(Action::TabOverview),
                     Some(ChromeAction::Shield) => tracing::info!("the Shields popover arrives in Phase 4"),
+                    Some(ChromeAction::Share) => {
+                        // Until the share sheet exists: copy the address.
+                        let url = self.tabs.active().map(|t| t.url.clone());
+                        if let (Some(url), Some(clipboard)) = (url, &mut self.clipboard) {
+                            let _ = clipboard.set_text(url);
+                            tracing::info!("address copied");
+                        }
+                    }
+                    Some(ChromeAction::ToggleTabsSection) => self.chrome.toggle_section(&mut self.ui, true),
+                    Some(ChromeAction::ToggleSavedSection) => self.chrome.toggle_section(&mut self.ui, false),
+                    Some(
+                        action @ (ChromeAction::PageMenu
+                        | ChromeAction::NewTabGroup
+                        | ChromeAction::Private
+                        | ChromeAction::Bookmarks
+                        | ChromeAction::ReadingList
+                        | ChromeAction::History),
+                    ) => tracing::info!("{action:?} arrives in a later phase"),
                     Some(ChromeAction::SelectTab(i)) => self.select_tab(i),
                     Some(ChromeAction::CloseTab(i)) => self.close_tab(i),
                     None => {}
@@ -664,16 +687,30 @@ impl Browser {
         }
     }
 
-    /// Flips the chrome between light and dark to stay legible over the page's top edge, which
-    /// is what sits behind the bar (with hysteresis so it doesn't flicker).
+    /// Follows the page's top edge: tints the window around the page with its colour (like
+    /// Safari) and flips the chrome light/dark to stay legible (with hysteresis).
     fn adapt_appearance(&mut self, page: &wgpu::TextureView, texture: &wgpu::Texture) {
-        if !self.config.appearance.adapt_to_page || self.config.appearance.theme != ThemeMode::Auto {
+        let appearance = &self.config.appearance;
+        let adapt = appearance.adapt_to_page && appearance.theme == ThemeMode::Auto;
+        if !appearance.tint_from_page && !adapt {
+            self.page_tint = None;
             return;
         }
         let edge = (PROBE_HEIGHT * self.scale() / texture.height() as f32).min(1.0);
-        let Some(lightness) = self.compositor.probe_luminance(page, Rect::new(0.0, 0.0, 1.0, edge)) else {
+        let Some(color) = self.compositor.probe_color(page, Rect::new(0.0, 0.0, 1.0, edge)) else { return };
+        if self.config.appearance.tint_from_page {
+            // Ease towards the new colour so navigations don't flash.
+            let target = [color[0], color[1], color[2], 1.0];
+            let current = self.page_tint.unwrap_or(target);
+            self.page_tint = Some(std::array::from_fn(|i| current[i] + (target[i] - current[i]) * TINT_EASE));
+        } else {
+            self.page_tint = None;
+        }
+        if !adapt {
             return;
-        };
+        }
+        // Rec. 709 luma of the sRGB-encoded colour: what the eye judges as light or dark.
+        let lightness = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
         let dark = if self.dark { lightness < LIGHT_ABOVE } else { lightness < DARK_BELOW };
         if dark != self.dark {
             self.dark = dark;
@@ -999,7 +1036,8 @@ impl Browser {
                 .collect();
             tracing::trace!(?kinds, "layers");
         }
-        let scene = Scene { clear: theme.color(Paint::Ground), layers };
+        let clear = self.page_tint.filter(|_| !self.overview.is_open()).unwrap_or(theme.color(Paint::Ground));
+        let scene = Scene { clear, layers };
         let size = (self.surface_config.width, self.surface_config.height);
         self.compositor.render(&scene, &mut self.ui.fonts(), &output, size);
         drop(scene);

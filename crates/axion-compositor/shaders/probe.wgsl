@@ -1,5 +1,5 @@
-// Average luminance of a texture region, rendered into a single pixel. Used to adapt the
-// chrome's appearance to the page behind it.
+// Average colour of a texture region, rendered into a single pixel. Used to tint the window
+// around the page and to pick the chrome's light/dark appearance.
 
 struct Probe {
     // u, v, width, height of the region in 0–1.
@@ -20,14 +20,12 @@ const GRID: i32 = 12;
 
 @fragment
 fn fs_main() -> @location(0) vec4f {
-    var sum = 0.0;
+    var sum = vec3f(0.0);
     for (var y = 0; y < GRID; y++) {
         for (var x = 0; x < GRID; x++) {
             let t = (vec2f(f32(x), f32(y)) + 0.5) / f32(GRID);
-            let c = textureSampleLevel(tex, samp, probe.region.xy + t * probe.region.zw, 0.0).rgb;
-            // Rec. 709 luma on the sRGB-encoded values: what the eye judges as light/dark.
-            sum += dot(c, vec3f(0.2126, 0.7152, 0.0722));
+            sum += textureSampleLevel(tex, samp, probe.region.xy + t * probe.region.zw, 0.0).rgb;
         }
     }
-    return vec4f(vec3f(sum / f32(GRID * GRID)), 1.0);
+    return vec4f(sum / f32(GRID * GRID), 1.0);
 }

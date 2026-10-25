@@ -56,6 +56,8 @@ pub struct Appearance {
     pub text_scale: f32,
     /// Switch the chrome between light and dark to stay legible over the page behind it.
     pub adapt_to_page: bool,
+    /// Give the window around the page the page's own background colour (like Safari).
+    pub tint_from_page: bool,
 }
 
 impl Default for Appearance {
@@ -67,6 +69,7 @@ impl Default for Appearance {
             font_family: "Inter".into(),
             text_scale: 1.0,
             adapt_to_page: true,
+            tint_from_page: true,
         }
     }
 }

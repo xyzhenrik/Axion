@@ -42,6 +42,11 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
 - Per-site shield panel (glass popover from the address bar) with counters and toggles:
   Off / Standard / Aggressive.
 
+### 2.3b Private browsing
+- Private tabs (separate in-memory profile: no history, cookies or cache kept on disk).
+- The "Private" section can be **locked with a password** (like Safari's locked private
+  browsing); unlocking asks for it after the browser was in the background or restarted.
+
 ### 2.4 Tabs & memory
 - Lifecycle states: **Active → Background → Frozen → Discarded**.
 - Freeze after N minutes in background (`Page.setWebLifecycleState: frozen`).
@@ -135,10 +140,12 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
   tested; screenshots come from `--capture`). IME and touchpad gestures still open.
 
 ### Phase 2 — Safari UI
-- [ ] Address field suggestions (history/bookmarks, search), real favicons (download + cache).
+- [x] Address field suggestions (history/bookmarks, search), real favicons (download + cache).
+- [x] Toolbar and sidebar rebuilt after iPadOS 26 Safari (see decisions log).
+- [x] Tab overview with snapshots and zoom transition.
+- [ ] Page menu (≡), share sheet, private tabs with password lock, bookmarks/history panels.
 - [ ] Tab pills: open/close/reorder with physics.
 - [ ] Sidebar (overlay + docked), responsive breakpoints.
-- [ ] Tab overview with snapshots and zoom transition.
 - [ ] Settings sheet.
 
 ### Phase 3 — Liquid Glass integration
@@ -199,6 +206,15 @@ Windows/macOS, touchscreen-first mode.
   The window itself keeps the system title bar and square corners (a frameless rounded window
   with own window buttons was tried and dropped — not wanted).
 - 2026-10-25: Default search engine DuckDuckGo (configurable `general.search_url`).
+
+- 2026-10-25: The chrome follows **iPadOS 26 Safari** (user's reference screenshots): three
+  toolbar glass groups (navigation · one capsule with all tabs as equal segments, the active
+  one a light pill with close/Shields/address/reload/page menu · share/new tab/overview), and a
+  full-height flush sidebar (tab list, Private, Saved: Bookmarks, Reading List, History).
+  Differences on purpose: back/forward buttons stay (desktop), no iCloud.
+- 2026-10-25: The window area around the page takes the **page's top colour** (solid, measured
+  on the GPU; `appearance.tint_from_page`), like Safari. The page itself still never shows
+  behind the bar.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

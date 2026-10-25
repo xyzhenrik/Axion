@@ -1,5 +1,5 @@
-//! Measures how light the content behind the chrome is, without stalling the frame: the GPU
-//! averages the region into one pixel, which is read back asynchronously a frame or two later.
+//! Measures the average colour of a page region without stalling the frame: the GPU averages
+//! the region into one pixel, which is read back asynchronously a frame or two later.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -29,7 +29,7 @@ pub(crate) struct LuminanceProbe {
     target: wgpu::Texture,
     readback: wgpu::Buffer,
     state: Arc<AtomicU8>,
-    latest: Option<f32>,
+    latest: Option<[f32; 3]>,
 }
 
 impl LuminanceProbe {
@@ -138,7 +138,7 @@ impl LuminanceProbe {
             PENDING => return,
             READY => {
                 if let Ok(data) = self.readback.slice(..).get_mapped_range() {
-                    self.latest = Some(data[0] as f32 / 255.0);
+                    self.latest = Some([data[0], data[1], data[2]].map(|c| c as f32 / 255.0));
                 }
                 self.readback.unmap();
                 self.state.store(IDLE, Ordering::Release);
@@ -201,7 +201,7 @@ impl LuminanceProbe {
         });
     }
 
-    pub fn latest(&self) -> Option<f32> {
+    pub fn latest(&self) -> Option<[f32; 3]> {
         self.latest
     }
 }

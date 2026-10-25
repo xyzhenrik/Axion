@@ -245,6 +245,17 @@ impl Ui {
         self.needs_layout = true;
     }
 
+    /// Replaces `node`'s children with `children` (existing nodes, in this order). Nodes that
+    /// are dropped from the list stay alive; remove them with [`Ui::remove`].
+    pub fn set_children(&mut self, node: NodeId, children: &[NodeId]) {
+        let _ = self.tree.set_children(node, children);
+        self.needs_layout = true;
+    }
+
+    pub fn children(&self, node: NodeId) -> Vec<NodeId> {
+        self.tree.children(node).unwrap_or_default()
+    }
+
     pub fn clear_children(&mut self, node: NodeId) {
         for child in self.tree.children(node).unwrap_or_default() {
             self.remove(child);
