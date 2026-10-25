@@ -294,6 +294,21 @@ pub struct Layout {
     pub page_corner_radius: f32,
     /// Gap between the page and the window's edges (and a floating sidebar's side).
     pub page_margin: f32,
+    /// Tabs in their own row under the address bar, or in one compact row with it.
+    pub tab_bar: TabBarStyle,
+    /// Scrolling down collapses the bars into a small pill with the site's name.
+    pub hide_bar_on_scroll: bool,
+}
+
+/// Safari's two tab bar layouts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TabBarStyle {
+    /// Address bar row, and the tabs in a row below it.
+    Separate,
+    /// One row: the tabs, the current one holding the address.
+    #[default]
+    Compact,
 }
 
 impl Default for Layout {
@@ -309,6 +324,8 @@ impl Default for Layout {
             tab_width: 150.0,
             page_corner_radius: 10.0,
             page_margin: 8.0,
+            tab_bar: TabBarStyle::Compact,
+            hide_bar_on_scroll: true,
         }
     }
 }
@@ -398,6 +415,10 @@ pub struct Tabs {
     pub keep_media_awake: bool,
     /// Reopen the last session's tabs at start (they load when first shown).
     pub restore_session: bool,
+    /// Tabs opened from links start in the background.
+    pub open_links_in_background: bool,
+    /// Close tabs not looked at for this many days (0: never).
+    pub close_after_days: u32,
     /// How often memory use is measured and the tab rules are applied.
     pub check_interval_seconds: f32,
 }
@@ -411,6 +432,8 @@ impl Default for Tabs {
             memory_budget_mb: 0,
             keep_media_awake: true,
             restore_session: true,
+            open_links_in_background: true,
+            close_after_days: 0,
             check_interval_seconds: 5.0,
         }
     }

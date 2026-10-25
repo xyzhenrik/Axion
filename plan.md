@@ -219,7 +219,9 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [ ] **H.264/AAC**: the prebuilt CEF has no proprietary codecs (ffmpeg is inside
       libcef.so). `tools/build-cef.sh` builds CEF 156.0.14 with them (hours, ~100 GB);
       then point `CEF_PATH` at the result. Needed for most hosters (aniworld's VOE is x264).
-- [ ] PiP window (own floating glass window, physics, corner snapping) — next.
+- [x] Picture in Picture as its own borderless OS window: drag anywhere on screen, always on
+      top (X11 window level; KDE Wayland via a KWin script — untested on Wayland so far).
+      The video keeps playing from its hidden tab (takeover, still rendering).
 - [x] Playback priority: playing tabs are never frozen/unloaded (bridge state); VA-API
       on by default (`chrome://gpu`: Video Decode hardware accelerated); fullscreen controls
       disappear entirely while hidden, so no glass is drawn over playing video.
@@ -237,6 +239,18 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [ ] Downloads, find-in-page, zoom, context menus, permissions prompts (all glass).
 - [ ] Packaging: AUR / Flatpak / AppImage.
 - [ ] Crash handling, logging, first-run onboarding.
+
+### Safari parity pass (2026-10-25, from the user's recordings — docs/reference/safari-ipados26.md)
+- [x] Liquid Glass switch/slider knobs: lens while held, rubber band, frost back.
+- [x] Player like Safari's: corner circles, volume capsule, centre ±10/play, progress capsule,
+      speed menu; audio indicator in the address field (click mutes the tab).
+- [x] Locked private browsing view + unlock alert card.
+- [x] Tab overview top bar [Private | N Tabs], +, search, blue done; light backdrop.
+- [x] Grouped settings (cards, sections, notes), scrolling with clipping; Safari's tab options:
+      separate/compact tab bar, colour in tab bar, hide bars on scroll (pill with the host),
+      open new tabs in background, close tabs after a day/week/month.
+- [ ] Page menu items (translate, find on page, reader, request mobile site), address dropdown
+      sections ("Google suggestions", "Bookmarks, History and Tabs").
 
 ## 5. Later (v0.2+)
 Chrome extension subset, encrypted sync, reader mode, profiles, Servo backend,

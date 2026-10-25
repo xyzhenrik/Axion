@@ -19,11 +19,18 @@ const SELECT_BASE: u32 = 3000;
 const CLOSE_BASE: u32 = 4000;
 const DONE: u32 = 20;
 const NEW_TAB: u32 = 21;
+const PRIVATE: u32 = 22;
+const NORMAL: u32 = 23;
+const SIDEBAR: u32 = 24;
+const SEARCH: u32 = 25;
 
 /// Layout from the design board, in logical pixels.
-const TOP: f32 = 28.0;
-const HEADER_HEIGHT: f32 = 52.0;
-const GRID_TOP: f32 = 128.0;
+const TOP: f32 = 14.0;
+const HEADER_HEIGHT: f32 = 44.0;
+const HEADER_SIDE: f32 = 16.0;
+const GRID_TOP: f32 = 84.0;
+const SEGMENT_HEIGHT: f32 = 34.0;
+const CIRCLE_GAP: f32 = 18.0;
 const SIDE_MIN: f32 = 48.0;
 const COLUMN_GAP: f32 = 40.0;
 const ROW_GAP: f32 = 36.0;
@@ -32,18 +39,12 @@ const CARD_MAX_WIDTH: f32 = 420.0;
 const MAX_COLUMNS: usize = 4;
 /// Thumbnail height / width (233 / 373 in the design).
 const THUMB_ASPECT: f32 = 0.625;
-const THUMB_RADIUS: f32 = 20.0;
+const THUMB_RADIUS: f32 = 12.0;
 const LABEL_HEIGHT: f32 = 32.0;
 const LABEL_GAP: f32 = 12.0;
 const TOOLBAR_BOTTOM: f32 = 32.0;
-/// The design's dark glass over the blurred window.
-const DIM: Color = Color::rgb(0x080A12);
-const DIM_OPACITY: f32 = 0.45;
-const DARK_PILL: Color = Color::rgb(0x1E2028);
-const DARK_PILL_OPACITY: f32 = 0.62;
-const ON_DARK: Color = Color::rgb(0xF5F6F8);
-/// Accent ring around the current tab's card.
-const RING: f32 = 3.0;
+/// Safari's soft, tinted backdrop over the blurred window (the window's ground colour).
+const VEIL_OPACITY: f32 = 0.78;
 /// Animation counts as finished below these distances.
 const SETTLED_PX: f32 = 0.5;
 const SETTLED_FADE: f32 = 0.002;
@@ -54,6 +55,11 @@ pub enum OverviewAction {
     Close(usize),
     Done,
     NewTab,
+    /// The segmented control: private or normal tabs.
+    ShowPrivate,
+    ShowNormal,
+    ToggleSidebar,
+    ToggleSearch,
 }
 
 impl OverviewAction {
@@ -63,6 +69,10 @@ impl OverviewAction {
             OverviewAction::Close(i) => CLOSE_BASE + i as u32,
             OverviewAction::Done => DONE,
             OverviewAction::NewTab => NEW_TAB,
+            OverviewAction::ShowPrivate => PRIVATE,
+            OverviewAction::ShowNormal => NORMAL,
+            OverviewAction::ToggleSidebar => SIDEBAR,
+            OverviewAction::ToggleSearch => SEARCH,
         })
     }
 
@@ -70,6 +80,10 @@ impl OverviewAction {
         Some(match id.0 {
             DONE => OverviewAction::Done,
             NEW_TAB => OverviewAction::NewTab,
+            PRIVATE => OverviewAction::ShowPrivate,
+            NORMAL => OverviewAction::ShowNormal,
+            SIDEBAR => OverviewAction::ToggleSidebar,
+            SEARCH => OverviewAction::ToggleSearch,
             n if (CLOSE_BASE..CLOSE_BASE + 1000).contains(&n) => {
                 OverviewAction::Close((n - CLOSE_BASE) as usize)
             }
@@ -98,6 +112,11 @@ pub struct Overview {
     phase: Phase,
     root: NodeId,
     search: NodeId,
+    search_box: NodeId,
+    segments: NodeId,
+    /// (segment, its label)
+    private_segment: (NodeId, NodeId),
+    normal_segment: (NodeId, NodeId),
     grid: NodeId,
     ghost: NodeId,
     cards: Vec<Card>,
@@ -119,6 +138,53 @@ fn fixed(color: Color) -> Paint {
     Paint::Fixed(color)
 }
 
+fn row_style(gap: f32) -> Style {
+    Style {
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::CENTER,
+        gap: Size { width: length(gap), height: length(0.0) },
+        ..Default::default()
+    }
+}
+
+/// A glass circle button of the top bar; `primary` is Safari's blue "done" checkmark.
+fn glass_circle(ui: &mut Ui, parent: NodeId, action: OverviewAction, icon: Icon, primary: bool) -> NodeId {
+    let background =
+        if primary { Background::Fill(Paint::Accent, 1.0) } else { Background::Glass(GlassLevel::Thin) };
+    let node = ui.add(
+        parent,
+        Widget::container().with_action(action.id()).with_radius(CAPSULE).with_background(background),
+        Style {
+            size: Size { width: length(HEADER_HEIGHT), height: length(HEADER_HEIGHT) },
+            justify_content: JustifyContent::CENTER,
+            ..row_style(0.0)
+        },
+    );
+    let glyph = Widget::icon(icon, 20.0);
+    let glyph = if primary {
+        glyph.with_paint(fixed(Color::rgb(0xFFFFFF))).with_icon_weight(IconWeight::Bold)
+    } else {
+        glyph
+    };
+    ui.add(node, glyph, Style::default());
+    node
+}
+
+/// One segment of the [Private | N Tabs] control; returns (segment, label).
+fn segment(ui: &mut Ui, parent: NodeId, action: OverviewAction, text: &str) -> (NodeId, NodeId) {
+    let node = ui.add(
+        parent,
+        Widget::container().with_action(action.id()).with_radius(CAPSULE),
+        Style {
+            size: Size { width: auto(), height: length(SEGMENT_HEIGHT) },
+            padding: Rect { left: length(16.0), right: length(16.0), top: length(0.0), bottom: length(0.0) },
+            ..row_style(0.0)
+        },
+    );
+    let label = ui.add_label(node, text, TextStyle::Callout, Style::default());
+    (node, label)
+}
+
 fn insets(left: f32, right: f32, top: f32, bottom: f32) -> Rect<LengthPercentageAuto> {
     Rect { left: length(left), right: length(right), top: length(top), bottom: length(bottom) }
 }
@@ -134,7 +200,7 @@ impl Overview {
         );
         ui.add(
             backdrop,
-            Widget::container().with_background(Background::Fill(fixed(DIM), DIM_OPACITY)),
+            Widget::container().with_background(Background::Fill(Paint::Ground, VEIL_OPACITY)),
             Style { position: Position::Absolute, inset: insets(0.0, 0.0, 0.0, 0.0), ..Default::default() },
         );
 
@@ -150,39 +216,67 @@ impl Overview {
             },
         );
 
+        // Top bar (Safari): sidebar · [Private | N Tabs] · new tab, search, done.
         let header = ui.add(
             backdrop,
             Widget::container(),
             Style {
                 position: Position::Absolute,
-                inset: Rect { left: length(0.0), right: length(0.0), top: length(TOP), bottom: auto() },
-                justify_content: JustifyContent::CENTER,
+                inset: Rect {
+                    left: length(HEADER_SIDE),
+                    right: length(HEADER_SIDE),
+                    top: length(TOP),
+                    bottom: auto(),
+                },
+                size: Size { width: auto(), height: length(HEADER_HEIGHT) },
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::CENTER,
+                justify_content: JustifyContent::SPACE_BETWEEN,
                 ..Default::default()
             },
         );
-        let search_box = ui.add(
+        // Circles further apart than the glass merge distance stay separate drops.
+        let left = ui.add(header, Widget::container(), row_style(CIRCLE_GAP));
+        glass_circle(ui, left, OverviewAction::ToggleSidebar, Icon::Sidebar, false);
+        let centre = ui.add(
             header,
-            Widget::container()
-                .with_background(Background::Fill(fixed(DARK_PILL), DARK_PILL_OPACITY))
-                .with_radius(CAPSULE),
+            Widget::container(),
+            Style { flex_grow: 1.0, justify_content: JustifyContent::CENTER, ..row_style(0.0) },
+        );
+        let segments = ui.add(
+            centre,
+            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
             Style {
-                size: Size { width: length(420.0), height: length(HEADER_HEIGHT) },
-                flex_direction: FlexDirection::Row,
-                align_items: AlignItems::CENTER,
-                gap: Size { width: length(10.0), height: length(0.0) },
+                size: Size { width: auto(), height: length(SEGMENT_HEIGHT + 6.0) },
                 padding: Rect {
-                    left: length(18.0),
-                    right: length(18.0),
+                    left: length(3.0),
+                    right: length(3.0),
+                    top: length(3.0),
+                    bottom: length(3.0),
+                },
+                ..row_style(2.0)
+            },
+        );
+        let private_segment = segment(ui, segments, OverviewAction::ShowPrivate, "Private");
+        let normal_segment = segment(ui, segments, OverviewAction::ShowNormal, "Tabs");
+        let search_box = ui.add(
+            centre,
+            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
+            Style {
+                size: Size { width: length(360.0), height: length(SEGMENT_HEIGHT + 6.0) },
+                padding: Rect {
+                    left: length(14.0),
+                    right: length(14.0),
                     top: length(0.0),
                     bottom: length(0.0),
                 },
-                ..Default::default()
+                ..row_style(8.0)
             },
         );
-        ui.add(search_box, Widget::icon(Icon::Search, 19.0).with_paint(fixed(ON_DARK)), Style::default());
+        ui.add(search_box, Widget::icon(Icon::Search, 17.0).with_paint(Paint::Secondary), Style::default());
         let search = ui.add_text_field(
             search_box,
-            "Search tabs",
+            "Search Tabs",
             TextStyle::Body,
             Style {
                 flex_grow: 1.0,
@@ -190,81 +284,11 @@ impl Overview {
                 ..Default::default()
             },
         );
-        if let Some(w) = ui.widget_mut(search) {
-            w.set_paint(fixed(ON_DARK));
-        }
-
-        let toolbar = ui.add(
-            backdrop,
-            Widget::container(),
-            Style {
-                position: Position::Absolute,
-                inset: Rect {
-                    left: length(0.0),
-                    right: length(0.0),
-                    top: auto(),
-                    bottom: length(TOOLBAR_BOTTOM),
-                },
-                justify_content: JustifyContent::CENTER,
-                ..Default::default()
-            },
-        );
-        let bar = ui.add(
-            toolbar,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
-            Style {
-                size: Size { width: auto(), height: length(56.0) },
-                flex_direction: FlexDirection::Row,
-                align_items: AlignItems::CENTER,
-                gap: Size { width: length(6.0), height: length(0.0) },
-                padding: Rect {
-                    left: length(7.0),
-                    right: length(7.0),
-                    top: length(0.0),
-                    bottom: length(0.0),
-                },
-                ..Default::default()
-            },
-        );
-        let new_tab = ui.add(
-            bar,
-            Widget::container().with_action(OverviewAction::NewTab.id()).with_radius(CAPSULE),
-            Style {
-                size: Size { width: length(44.0), height: length(44.0) },
-                align_items: AlignItems::CENTER,
-                justify_content: JustifyContent::CENTER,
-                ..Default::default()
-            },
-        );
-        ui.add(new_tab, Widget::icon(Icon::Plus, 22.0), Style::default());
-        let done = ui.add(
-            bar,
-            Widget::container()
-                .with_action(OverviewAction::Done.id())
-                .with_radius(CAPSULE)
-                .with_background(Background::Fill(Paint::Accent, 1.0))
-                .with_shadow(Shadow { offset_y: 6.0, blur: 18.0, opacity: 0.25 }),
-            Style {
-                size: Size { width: auto(), height: length(44.0) },
-                padding: Rect {
-                    left: length(22.0),
-                    right: length(22.0),
-                    top: length(0.0),
-                    bottom: length(0.0),
-                },
-                align_items: AlignItems::CENTER,
-                ..Default::default()
-            },
-        );
-        let done_label = ui.add_label(
-            done,
-            "Done",
-            TextStyle::BodyEmphasis,
-            Style { flex_shrink: 0.0, ..Default::default() },
-        );
-        if let Some(w) = ui.widget_mut(done_label) {
-            w.set_paint(fixed(ON_DARK));
-        }
+        ui.set_visible(search_box, false);
+        let right = ui.add(header, Widget::container(), row_style(CIRCLE_GAP));
+        glass_circle(ui, right, OverviewAction::NewTab, Icon::Plus, false);
+        glass_circle(ui, right, OverviewAction::ToggleSearch, Icon::Search, false);
+        glass_circle(ui, right, OverviewAction::Done, Icon::Check, true);
 
         // The zooming page, above everything and outside the fading backdrop.
         let ghost = ui.add(
@@ -279,6 +303,10 @@ impl Overview {
             phase: Phase::Closed,
             root: backdrop,
             search,
+            search_box,
+            segments,
+            private_segment,
+            normal_segment,
             grid,
             ghost,
             cards: Vec::new(),
@@ -298,6 +326,37 @@ impl Overview {
 
     pub fn search_field(&self) -> NodeId {
         self.search
+    }
+
+    /// Shows which group of tabs is listed: the selected segment is the lighter pill.
+    pub fn set_mode(&mut self, ui: &mut Ui, private: bool, normal_count: usize) {
+        ui.set_text(
+            self.normal_segment.1,
+            &format!("{normal_count} {}", if normal_count == 1 { "Tab" } else { "Tabs" }),
+        );
+        for ((node, label), selected) in [(self.private_segment, private), (self.normal_segment, !private)] {
+            if let Some(w) = ui.widget_mut(node) {
+                w.background =
+                    if selected { Background::Fill(Paint::Surface, 0.9) } else { Background::None };
+            }
+            if let Some(w) = ui.widget_mut(label) {
+                w.set_paint(if selected { Paint::Label } else { Paint::Secondary });
+            }
+        }
+    }
+
+    /// Swaps the segmented control for the search field (and back). Returns the events of
+    /// focusing it.
+    pub fn toggle_search(&mut self, ui: &mut Ui) -> Vec<UiEvent> {
+        let searching = !ui.is_visible(self.search_box);
+        ui.set_visible(self.search_box, searching);
+        ui.set_visible(self.segments, !searching);
+        if searching {
+            ui.focus(self.search)
+        } else {
+            ui.set_field_text(self.search, "");
+            ui.blur()
+        }
     }
 
     fn columns(&self) -> (usize, f32, f32) {
@@ -349,19 +408,16 @@ impl Overview {
                     ..Default::default()
                 },
             );
-            // The accent ring of the current tab is a slightly larger fill behind the thumbnail.
-            let ring = if active {
-                Background::Fill(Paint::Accent, 1.0)
-            } else {
-                Background::Fill(fixed(Color::rgb(0xFFFFFF)), 0.18)
-            };
-            let ring_width = if active { RING } else { 0.5 };
+            // A hairline around every card (Safari marks no current card).
+            let _ = active;
+            let ring = Background::Fill(Paint::Hairline, 1.0);
+            let ring_width = 0.5;
             let frame = ui.add(
                 card,
                 Widget::container()
                     .with_background(ring)
                     .with_radius(THUMB_RADIUS + ring_width)
-                    .with_shadow(Shadow { offset_y: 18.0, blur: 50.0, opacity: 0.45 })
+                    .with_shadow(Shadow { offset_y: 8.0, blur: 24.0, opacity: 0.18 })
                     .with_action(OverviewAction::Select(i).id()),
                 Style {
                     size: Size {
@@ -391,7 +447,7 @@ impl Overview {
                     .with_radius(THUMB_RADIUS),
                 Style { size: thumb_size, flex_shrink: 0.0, ..Default::default() },
             );
-            // The thumbnail; the close button sits in its bottom-left corner as a child (taffy
+            // The thumbnail; the close button sits in its top-right corner as a child (taffy
             // resolves absolute children inside wrapping grids against the wrong box).
             let image = ui.add(
                 placeholder,
@@ -399,13 +455,13 @@ impl Overview {
                 Style {
                     size: thumb_size,
                     flex_direction: FlexDirection::Column,
-                    justify_content: JustifyContent::END,
-                    align_items: AlignItems::START,
+                    justify_content: JustifyContent::START,
+                    align_items: AlignItems::END,
                     padding: Rect {
-                        left: length(10.0),
-                        right: length(10.0),
-                        top: length(10.0),
-                        bottom: length(10.0),
+                        left: length(8.0),
+                        right: length(8.0),
+                        top: length(8.0),
+                        bottom: length(8.0),
                     },
                     ..Default::default()
                 },
@@ -417,7 +473,7 @@ impl Overview {
                     .with_radius(CAPSULE)
                     .with_action(OverviewAction::Close(i).id()),
                 Style {
-                    size: Size { width: length(30.0), height: length(30.0) },
+                    size: Size { width: length(24.0), height: length(24.0) },
                     flex_shrink: 0.0,
                     align_items: AlignItems::CENTER,
                     justify_content: JustifyContent::CENTER,
@@ -426,15 +482,13 @@ impl Overview {
             );
             ui.add(
                 close,
-                Widget::icon(Icon::Close, 14.0).with_icon_weight(IconWeight::Bold),
+                Widget::icon(Icon::Close, 12.0).with_icon_weight(IconWeight::Bold),
                 Style::default(),
             );
 
             let pill = ui.add(
                 card,
-                Widget::container()
-                    .with_background(Background::Fill(fixed(DARK_PILL), DARK_PILL_OPACITY))
-                    .with_radius(CAPSULE),
+                Widget::container(),
                 Style {
                     size: Size { width: auto(), height: length(LABEL_HEIGHT) },
                     max_size: Size { width: length(width), height: auto() },
@@ -450,7 +504,7 @@ impl Overview {
                     ..Default::default()
                 },
             );
-            favicon_node(ui, pill, &tab.url, 18.0, favicons);
+            favicon_node(ui, pill, &tab.url, 16.0, favicons);
             let title = if label.is_empty() { display_host(&tab.url) } else { label };
             let text = ui.add_label(
                 pill,
@@ -462,9 +516,7 @@ impl Overview {
                     ..Default::default()
                 },
             );
-            if let Some(w) = ui.widget_mut(text) {
-                w.set_paint(fixed(ON_DARK));
-            }
+            let _ = text;
             self.cards.push(Card { tab: i, view: tab.view, image });
         }
         let rows = count.div_ceil(columns.max(1));
@@ -497,7 +549,11 @@ impl Overview {
         let target = self.card_frame(ui, tabs.active_index()).unwrap_or(page);
         self.start_ghost(page, target, spring(motion.fling, motion.speed), reduce);
         self.phase = Phase::Opening;
-        ui.focus(self.search)
+        // Search starts hidden behind its button (Safari).
+        ui.set_visible(self.search_box, false);
+        ui.set_visible(self.segments, true);
+        ui.set_field_text(self.search, "");
+        ui.blur()
     }
 
     /// Closes the overview, zooming tab `index`'s card (now the active tab) back up to `page`.

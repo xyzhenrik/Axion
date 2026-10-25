@@ -102,6 +102,8 @@ pub struct Content<'a> {
     pub images: Vec<ImageDraw<'a>>,
     pub icons: Vec<IconDraw>,
     pub text: Vec<glyphon::TextArea<'a>>,
+    /// Draw only inside this rectangle (physical px), e.g. a scrolled list.
+    pub clip: Option<Rect>,
 }
 
 impl Content<'_> {
@@ -478,6 +480,16 @@ impl Compositor {
         }
 
         let mut pass = begin_pass(encoder, "content", target);
+        if let Some(clip) = content.clip {
+            let x = clip.origin.x.max(0.0).floor();
+            let y = clip.origin.y.max(0.0).floor();
+            let right = (clip.origin.x + clip.size.x).min(viewport.x).ceil();
+            let bottom = (clip.origin.y + clip.size.y).min(viewport.y).ceil();
+            if right <= x || bottom <= y {
+                return;
+            }
+            pass.set_scissor_rect(x as u32, y as u32, (right - x) as u32, (bottom - y) as u32);
+        }
         if let Some(buffer) = &quad_buffer {
             pass.set_pipeline(&self.quad_pipeline);
             pass.set_bind_group(0, &self.quad_bind_group, &[]);

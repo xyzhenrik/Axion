@@ -58,6 +58,12 @@ struct SiteClick {
 /// How long a click into a site player gets to start it before we click again.
 const SITE_CLICK_RETRY: Duration = Duration::from_millis(1200);
 const SITE_CLICK_TRIES: u32 = 3;
+const DAY_SECONDS: i64 = 24 * 60 * 60;
+/// Scrolling more than this (CSS px) between two reports hides or shows the bars …
+const SCROLL_THRESHOLD: f32 = 10.0;
+/// … and near the top of the page they always show.
+const SCROLL_SHOW_NEAR_TOP: f32 = 40.0;
+
 /// Time between the steps of a capture's `--open=a,b`.
 const OPEN_STEP_INTERVAL: Duration = Duration::from_millis(2500);
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
@@ -114,6 +120,8 @@ pub struct Browser {
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
     player: PlayerOverlay,
+    /// The active page's last reported scroll position (CSS px).
+    last_scroll_y: f32,
     /// The Picture in Picture window (kept once opened, hidden while unused).
     pip: Option<PipWindow>,
     /// PiP to start once the window exists (windows are made in `sync_windows`).
@@ -289,6 +297,7 @@ impl Browser {
             shields,
             shields_popover,
             player,
+            last_scroll_y: 0.0,
             pip: None,
             pip_request: None,
             instance,
@@ -443,6 +452,11 @@ impl Browser {
     }
 
     fn on_active_changed(&mut self, previous: Option<ViewId>) {
+        self.last_scroll_y = 0.0;
+        if let Some(tab) = self.tabs.active_mut() {
+            tab.last_viewed = unix_now();
+        }
+        self.set_bars_collapsed(false);
         if let Some(view) = previous {
             self.engine.set_focus(view, false);
             self.engine.set_hidden(view, true);
@@ -681,6 +695,11 @@ impl Browser {
                 }
                 self.update_now_playing();
             }
+            axion_media::Message::Scroll { y } => {
+                if Some(view) == self.active_view() {
+                    self.page_scrolled(y);
+                }
+            }
             axion_media::Message::DoubleClick { id } => {
                 let fullscreen = self.player.mode() != PlayerMode::Fullscreen;
                 let command = axion_media::Command::new(&id, axion_media::Action::Fullscreen(fullscreen));
@@ -913,6 +932,32 @@ impl Browser {
         }
     }
 
+    /// Hides the bars while the page scrolls down and brings them back when it scrolls up
+    /// (Safari's "hide tab bar when scrolling").
+    fn page_scrolled(&mut self, y: f32) {
+        let dy = y - self.last_scroll_y;
+        self.last_scroll_y = y;
+        if !self.config.layout.hide_bar_on_scroll || self.overview.is_open() {
+            return;
+        }
+        let collapse = if y <= SCROLL_SHOW_NEAR_TOP || dy < -SCROLL_THRESHOLD {
+            false
+        } else if dy > SCROLL_THRESHOLD {
+            true
+        } else {
+            return;
+        };
+        self.set_bars_collapsed(collapse);
+    }
+
+    fn set_bars_collapsed(&mut self, collapse: bool) {
+        if self.chrome.set_collapsed(collapse, &self.config) {
+            let host = self.tabs.active().map(|t| display_host(&t.url)).unwrap_or_default();
+            self.chrome.set_mini_host(&mut self.ui, &host);
+            self.update_layout();
+        }
+    }
+
     fn update_player(&mut self, dt: f32) {
         self.retry_site_click();
         self.update_pip();
@@ -941,7 +986,24 @@ impl Browser {
             return false;
         }
         let size = self.view_size();
-        for (i, (url, title)) in saved.iter().enumerate() {
+        // Tabs not looked at for longer than the setting allows don't come back.
+        let max_age = i64::from(self.config.tabs.close_after_days) * DAY_SECONDS;
+        let now = unix_now();
+        let mut kept: usize = 0;
+        let mut active_kept = 0;
+        for (i, saved_tab) in saved.iter().enumerate() {
+            let (url, title) = (&saved_tab.url, &saved_tab.title);
+            if max_age > 0
+                && i != active
+                && saved_tab.last_viewed > 0
+                && now - saved_tab.last_viewed > max_age
+            {
+                continue;
+            }
+            if i == active {
+                active_kept = kept;
+            }
+            kept += 1;
             let view = if i == active {
                 match self.engine.create_view(url, size, false) {
                     Ok(view) => view,
@@ -955,15 +1017,21 @@ impl Browser {
             };
             let mut tab = Tab::new(view, url);
             tab.title.clone_from(title);
+            if saved_tab.last_viewed > 0 {
+                tab.last_viewed = saved_tab.last_viewed;
+            }
             if self.engine.is_discarded(view) {
                 tab.lifecycle = Lifecycle::Discarded;
                 tab.loading = false;
             }
             self.tabs.insert(tab, true);
         }
-        self.tabs.select(active.min(saved.len() - 1));
+        if kept == 0 {
+            return false;
+        }
+        self.tabs.select(active_kept.min(kept - 1));
         self.on_active_changed(None);
-        tracing::info!(tabs = saved.len(), "session restored");
+        tracing::info!(tabs = kept, "session restored");
         true
     }
 
@@ -974,8 +1042,15 @@ impl Browser {
         }
         self.session_dirty = false;
         let normal = if self.private_mode { &self.parked } else { &self.tabs };
-        let tabs: Vec<(String, String)> =
-            normal.all().iter().map(|t| (t.url.clone(), t.title.clone())).collect();
+        let tabs: Vec<axion_store::SessionTab> = normal
+            .all()
+            .iter()
+            .map(|t| axion_store::SessionTab {
+                url: t.url.clone(),
+                title: t.title.clone(),
+                last_viewed: t.last_viewed,
+            })
+            .collect();
         let active = normal.active_index();
         if let Some(store) = &mut self.store
             && let Err(e) = store.save_session(&tabs, active)
@@ -1036,6 +1111,7 @@ impl Browser {
                 loading: t.loading || t.needs_snapshot,
             })
             .collect();
+        self.close_unused_tabs();
         let used = self.memory.used();
         for transition in axion_tabs::plan(&lifecycle::policy(&self.config), &infos, now, used) {
             let (view, state) = match transition {
@@ -1053,6 +1129,29 @@ impl Browser {
                 tab.lifecycle = state;
                 tab.playing_media = false;
             }
+        }
+    }
+
+    /// Closes background tabs not looked at for longer than `tabs.close_after_days` (Safari's
+    /// "Close Tabs"), except ones playing media.
+    fn close_unused_tabs(&mut self) {
+        let days = self.config.tabs.close_after_days;
+        if days == 0 || self.private_mode {
+            return;
+        }
+        let cutoff = unix_now() - i64::from(days) * DAY_SECONDS;
+        let active = self.tabs.active_index();
+        let stale: Vec<usize> = self
+            .tabs
+            .all()
+            .iter()
+            .enumerate()
+            .filter(|(i, t)| *i != active && t.last_viewed < cutoff && !t.playing_media)
+            .map(|(i, _)| i)
+            .collect();
+        for i in stale.into_iter().rev() {
+            tracing::info!(url = %self.tabs.all()[i].url, "closing a tab not looked at for {days} days");
+            self.close_tab(i);
         }
     }
 
@@ -1099,8 +1198,7 @@ impl Browser {
             self.chrome.set_editing(&mut self.ui, false);
         }
         let radius = self.config.layout.page_corner_radius;
-        let events = self.lock_screen.show(&mut self.ui, page, radius);
-        self.handle_ui_events(events);
+        self.lock_screen.show(&mut self.ui, page, radius);
         self.tabs_changed = true;
     }
 
@@ -1126,6 +1224,7 @@ impl Browser {
         let events = self.overview.open(&mut self.ui, &self.tabs, &self.favicons, &self.config, window, page);
         self.overview_query.clear();
         self.handle_ui_events(events);
+        self.sync_overview_mode();
     }
 
     /// Closes the overview into tab `index`, which becomes the active tab.
@@ -1156,7 +1255,30 @@ impl Browser {
                 self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
                 self.close_overview(self.tabs.active_index());
             }
+            OverviewAction::ShowPrivate | OverviewAction::ShowNormal => {
+                if (action == OverviewAction::ShowPrivate) != self.private_mode {
+                    self.toggle_private_mode();
+                }
+                if self.is_locked() {
+                    // Locked private tabs are never shown: the lock screen takes over.
+                    self.close_overview(self.tabs.active_index());
+                    return;
+                }
+                self.sync_overview_mode();
+                self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
+            }
+            OverviewAction::ToggleSidebar => self.run(Action::ToggleSidebar),
+            OverviewAction::ToggleSearch => {
+                let events = self.overview.toggle_search(&mut self.ui);
+                self.handle_ui_events(events);
+                self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
+            }
         }
+    }
+
+    fn sync_overview_mode(&mut self) {
+        let normal = if self.private_mode { self.parked.len() } else { self.tabs.len() };
+        self.overview.set_mode(&mut self.ui, self.private_mode, normal);
     }
 
     fn show_panel(&mut self, panel: Panel) {
@@ -1393,6 +1515,10 @@ impl Browser {
                     self.settings_outcome(Outcome::Changed);
                 }
                 UiEvent::Clicked { action, .. } if LockScreen::is_unlock(action) => self.try_unlock(),
+                UiEvent::Clicked { action, .. } if LockScreen::is_lock_action(action) => {
+                    let events = self.lock_screen.action(&mut self.ui, &self.config, action);
+                    self.handle_ui_events(events);
+                }
                 UiEvent::Submitted { node, .. } if node == self.lock_screen.field() => self.try_unlock(),
                 UiEvent::Clicked { action, .. } if self.menu.action(action).is_some() => {
                     let action = self.menu.action(action);
@@ -1469,6 +1595,7 @@ impl Browser {
                             self.tabs_changed = true;
                         }
                     }
+                    Some(ChromeAction::ExpandBars) => self.set_bars_collapsed(false),
                     Some(ChromeAction::NowPlaying) => {
                         if let Some(view) = self.now_playing {
                             self.show_view(view);
@@ -1597,7 +1724,9 @@ impl Browser {
                         self.count_blocked(opener, url);
                         continue;
                     }
-                    let activate = kind != NewViewKind::BackgroundTab;
+                    // Ctrl/middle-click opens in the background unless the setting says otherwise.
+                    let activate =
+                        kind != NewViewKind::BackgroundTab || !self.config.tabs.open_links_in_background;
                     if let Err(e) = self.open_tab(&url, activate) {
                         tracing::error!("opening {url} failed: {e:#}");
                     }
@@ -1784,6 +1913,8 @@ impl Browser {
                 };
                 if self.overview.is_open() {
                     self.overview.scroll_by(&mut self.ui, delta.y);
+                } else if self.settings.is_open() {
+                    self.settings.scroll_by(&mut self.ui, delta.y);
                 } else if let (Some(p), Some(view)) = (self.pointer, self.active_view())
                     && !self.ui.covers(p)
                     && self.page_rect().contains(p)
@@ -1931,6 +2062,13 @@ impl Browser {
             && input::key(event) == Some(Key::Named("Escape".into()))
         {
             self.settings.close(&mut self.ui);
+            return false;
+        }
+        if pressed
+            && self.lock_screen.is_alert_open()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            self.lock_screen.close_alert(&mut self.ui);
             return false;
         }
         if pressed && self.menu.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
@@ -2089,6 +2227,13 @@ impl Browser {
                     }
                 }
                 // Capture aid: open the player's speed menu.
+                // Capture aid: scroll the page down by 600 px.
+                "scroll-page" => {
+                    if let Some(view) = self.active_view() {
+                        self.engine.run_script(view, "window.scrollBy(0, 600);", false);
+                    }
+                }
+                "settings-scroll" => self.settings.scroll_by(&mut self.ui, -400.0),
                 "player-speed" => {
                     let _ = self.player.click(&mut self.ui, PlayerControl::Speed, &self.config);
                 }
@@ -2140,6 +2285,10 @@ impl Browser {
                     self.lock.lock_now();
                     self.update_lock();
                 }
+                "unlock-alert" => {
+                    let events = self.lock_screen.action(&mut self.ui, &self.config, LockScreen::SHOW_ALERT);
+                    self.handle_ui_events(events);
+                }
                 other => tracing::warn!("--open={other} is not a known view"),
             }
         }
@@ -2150,9 +2299,11 @@ impl Browser {
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
         self.ui.animate(dt);
-        self.chrome.animate(&mut self.ui, dt);
+        let centre_x = self.page_rect().center().x;
+        self.chrome.animate_all(&mut self.ui, dt, centre_x);
         self.menu.animate(&mut self.ui, dt);
         self.shields_popover.animate(&mut self.ui, dt);
+        self.lock_screen.animate(&mut self.ui, dt);
         self.update_player(dt);
         self.suggestions.animate(&mut self.ui, dt);
         if self.overview.is_open() {

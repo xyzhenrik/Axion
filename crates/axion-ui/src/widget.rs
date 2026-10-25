@@ -135,6 +135,8 @@ pub struct Widget {
     /// Draws the widget's own background (glass, fill, shadow) in this rectangle (absolute,
     /// logical px) instead of its layout frame — for animating glass without relayout.
     pub visual_frame: Option<Rect>,
+    /// Children are drawn only inside this widget's frame (scrolling lists).
+    pub clip: bool,
     /// Absolute frame in logical pixels, updated by layout.
     pub(crate) frame: Rect,
 }
@@ -151,6 +153,7 @@ impl Widget {
             selected: false,
             opacity: 1.0,
             visual_frame: None,
+            clip: false,
             frame: Rect::default(),
         }
     }
@@ -226,6 +229,11 @@ impl Widget {
 
     pub fn with_background(mut self, background: Background) -> Self {
         self.background = background;
+        self
+    }
+
+    pub fn with_clip(mut self) -> Self {
+        self.clip = true;
         self
     }
 

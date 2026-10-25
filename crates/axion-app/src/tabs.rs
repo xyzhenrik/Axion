@@ -35,6 +35,8 @@ pub struct Tab {
     pub playing_media: bool,
     /// Muted from the address bar's speaker.
     pub muted: bool,
+    /// When the tab was last shown (unix seconds), for closing unused tabs.
+    pub last_viewed: i64,
     /// The page's media, as the bridge last reported it.
     pub media: Option<axion_media::PageMedia>,
 }
@@ -59,6 +61,9 @@ impl Tab {
             playing_media: false,
             media: None,
             muted: false,
+            last_viewed: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs() as i64),
         }
     }
 

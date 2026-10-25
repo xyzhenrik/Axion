@@ -624,6 +624,9 @@ impl Ui {
             return None;
         }
         let widget = self.widget(node)?;
+        if widget.clip && !widget.frame.contains(p) {
+            return None;
+        }
         let children = self.tree.children(node).unwrap_or_default();
         for child in children.into_iter().rev() {
             if let Some(hit) = self.hit_in(child, p) {
@@ -1041,6 +1044,7 @@ impl Ui {
             if !stack.content.is_empty() {
                 layers.push(Layer::Content(stack.content));
             }
+            layers.extend(stack.after);
         }
     }
 
@@ -1235,6 +1239,22 @@ impl Ui {
             }
         }
 
+        if widget.clip {
+            // The subtree as its own layers, each cut to this widget's frame.
+            let mut sub: Vec<Stack<'a>> = Vec::new();
+            for child in self.tree.children(node).unwrap_or_default() {
+                self.paint_node(child, child_depth, dim, fade, &mut sub);
+            }
+            let mut layers = Vec::new();
+            self.flush(sub, &mut layers);
+            for layer in &mut layers {
+                if let Layer::Content(content) = layer {
+                    content.clip = Some(px);
+                }
+            }
+            stacks[child_depth].after.extend(layers);
+            return;
+        }
         for child in self.tree.children(node).unwrap_or_default() {
             self.paint_node(child, child_depth, dim, fade, stacks);
         }
@@ -1324,6 +1344,8 @@ impl Ui {
 struct Stack<'a> {
     content: Content<'a>,
     glass: Vec<GlassItem>,
+    /// Layers of clipped subtrees on this stack, drawn after its content.
+    after: Vec<Layer<'a>>,
 }
 
 struct GlassItem {

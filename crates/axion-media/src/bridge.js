@@ -290,6 +290,18 @@
     schedule();
   });
   window.addEventListener('scroll', schedule, { passive: true, capture: true });
+  // The top frame's scroll position, for the browser's bars (hide while scrolling down).
+  if (isTop) {
+    var lastScroll = -1, scrollTimer = 0;
+    window.addEventListener('scroll', function () {
+      if (scrollTimer) return;
+      scrollTimer = setTimeout(function () {
+        scrollTimer = 0;
+        var y = Math.round(window.scrollY);
+        if (y !== lastScroll) { lastScroll = y; log(MARK + JSON.stringify({ t: 'scroll', y: y })); }
+      }, 60);
+    }, { passive: true });
+  }
   window.addEventListener('resize', schedule);
   window.addEventListener('pagehide', function () {
     media.clear(); children.clear();

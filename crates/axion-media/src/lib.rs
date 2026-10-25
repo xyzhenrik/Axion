@@ -166,6 +166,10 @@ pub enum Message {
     DoubleClick {
         id: String,
     },
+    /// The page scrolled to this vertical position (CSS px).
+    Scroll {
+        y: f32,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -181,6 +185,7 @@ pub enum ParseError {
 enum Wire {
     State(PageMedia),
     Event { event: WireEvent },
+    Scroll { y: f32 },
 }
 
 #[derive(Deserialize)]
@@ -197,6 +202,7 @@ pub fn parse(console_message: &str) -> Result<Option<Message>, ParseError> {
         Wire::State(state) => Some(Message::State(state)),
         Wire::Event { event } if event.e == "dblclick" => Some(Message::DoubleClick { id: event.id }),
         Wire::Event { .. } => None,
+        Wire::Scroll { y } => Some(Message::Scroll { y }),
     })
 }
 

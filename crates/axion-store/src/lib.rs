@@ -42,7 +42,18 @@ const MIGRATIONS: &[&str] = &[
     // 4: the open tabs, for session restore
     "CREATE TABLE session_tabs (position INTEGER PRIMARY KEY, url TEXT NOT NULL,
         title TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 0);",
+    // 5: when each open tab was last looked at (for closing unused tabs)
+    "ALTER TABLE session_tabs ADD COLUMN last_viewed INTEGER NOT NULL DEFAULT 0;",
 ];
+
+/// A saved tab of the session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionTab {
+    pub url: String,
+    pub title: String,
+    /// Unix seconds.
+    pub last_viewed: i64,
+}
 
 /// Seconds per day, for the recency buckets.
 const DAY: i64 = 86_400;
@@ -227,34 +238,41 @@ impl Store {
 
     // ---- session ----
 
-    /// Replaces the saved session with these tabs (url, title); `active` is an index into them.
-    pub fn save_session(&mut self, tabs: &[(String, String)], active: usize) -> Result<()> {
+    /// Replaces the saved session with these tabs; `active` is an index into them.
+    pub fn save_session(&mut self, tabs: &[SessionTab], active: usize) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM session_tabs", [])?;
         {
-            let mut insert = tx
-                .prepare("INSERT INTO session_tabs (position, url, title, active) VALUES (?1, ?2, ?3, ?4)")?;
-            for (i, (url, title)) in tabs.iter().enumerate() {
-                insert.execute(params![i as i64, url, title, i == active])?;
+            let mut insert = tx.prepare(
+                "INSERT INTO session_tabs (position, url, title, active, last_viewed) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (i, tab) in tabs.iter().enumerate() {
+                insert.execute(params![i as i64, tab.url, tab.title, i == active, tab.last_viewed])?;
             }
         }
         tx.commit()?;
         Ok(())
     }
 
-    /// The saved session's tabs (url, title) and the active one's index.
-    pub fn session(&self) -> Result<(Vec<(String, String)>, usize)> {
-        let mut stmt = self.conn.prepare("SELECT url, title, active FROM session_tabs ORDER BY position")?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?)))?;
+    /// The saved session's tabs and the active one's index.
+    pub fn session(&self) -> Result<(Vec<SessionTab>, usize)> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT url, title, active, last_viewed FROM session_tabs ORDER BY position")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                SessionTab { url: r.get(0)?, title: r.get(1)?, last_viewed: r.get(3)? },
+                r.get::<_, bool>(2)?,
+            ))
+        })?;
         let mut tabs = Vec::new();
         let mut active = 0;
         for row in rows {
-            let (url, title, is_active) = row?;
+            let (tab, is_active) = row?;
             if is_active {
                 active = tabs.len();
             }
-            tabs.push((url, title));
+            tabs.push(tab);
         }
         Ok((tabs, active))
     }
@@ -435,7 +453,9 @@ mod tests {
     fn session_round_trip() {
         let mut s = store();
         assert_eq!(s.session().unwrap(), (vec![], 0));
-        let tabs = vec![("https://a/".to_owned(), "A".to_owned()), ("https://b/".to_owned(), "B".to_owned())];
+        let tab =
+            |url: &str, title: &str| SessionTab { url: url.into(), title: title.into(), last_viewed: 7 };
+        let tabs = vec![tab("https://a/", "A"), tab("https://b/", "B")];
         s.save_session(&tabs, 1).unwrap();
         assert_eq!(s.session().unwrap(), (tabs.clone(), 1));
         s.save_session(&tabs[..1], 0).unwrap();

@@ -2,7 +2,7 @@
 //! categories on the left. Every change is written to `config.toml` at once.
 
 use axion_compositor::Icon;
-use axion_config::{Action as KeyAction, Color, Config, Keymap, ShieldLevel, ThemeMode};
+use axion_config::{Action as KeyAction, Color, Config, Keymap, ShieldLevel, TabBarStyle, ThemeMode};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
@@ -12,7 +12,11 @@ const SHEET_MAX: Vec2 = Vec2::new(920.0, 660.0);
 const SHEET_MARGIN: f32 = 32.0;
 const SHEET_RADIUS: f32 = 30.0;
 const NAV_WIDTH: f32 = 230.0;
-const ROW_HEIGHT: f32 = 52.0;
+const ROW_HEIGHT: f32 = 46.0;
+/// Grouped list (Safari's settings): rounded cards of rows with hairline separators.
+const GROUP_RADIUS: f32 = 14.0;
+const GROUP_INSET: f32 = 16.0;
+const GROUP_GAP: f32 = 22.0;
 const BACKDROP_DIM: f32 = 0.28;
 
 pub const SEARCH_ENGINES: [(&str, &str); 5] = [
@@ -104,6 +108,8 @@ enum Setting {
     MemoryBudget,
     KeepMediaAwake,
     RestoreSession,
+    HideBarOnScroll,
+    OpenInBackground,
     OwnControls,
     ReplaceSitePlayers,
     OwnFullscreenControls,
@@ -115,7 +121,7 @@ enum Setting {
 impl Setting {
     fn label(self) -> &'static str {
         match self {
-            Setting::TintFromPage => "Window takes the page's colour",
+            Setting::TintFromPage => "Colour in tab bar",
             Setting::AdaptToPage => "Light or dark chrome to match the page",
             Setting::TextScale => "Text size",
             Setting::PageCorner => "Page corner radius",
@@ -139,6 +145,8 @@ impl Setting {
             Setting::MemoryBudget => "Memory budget (automatic – all memory)",
             Setting::KeepMediaAwake => "Keep tabs playing audio awake",
             Setting::RestoreSession => "Reopen last session's tabs at start",
+            Setting::HideBarOnScroll => "Hide tab bar when scrolling",
+            Setting::OpenInBackground => "Open new tabs in background",
             Setting::OwnControls => "Axion's controls for page videos",
             Setting::ReplaceSitePlayers => "Also instead of sites' own players (not YouTube, Twitch…)",
             Setting::OwnFullscreenControls => "Axion's controls in fullscreen, also over site players",
@@ -165,6 +173,8 @@ impl Setting {
                 | Setting::KeepMediaAwake
                 | Setting::RestoreSession
                 | Setting::OwnControls
+                | Setting::HideBarOnScroll
+                | Setting::OpenInBackground
                 | Setting::ReplaceSitePlayers
                 | Setting::OwnFullscreenControls
                 | Setting::HardwareDecoding
@@ -209,6 +219,8 @@ impl Setting {
             Setting::KeepMediaAwake => return c.tabs.keep_media_awake as u8 as f32,
             Setting::RestoreSession => return c.tabs.restore_session as u8 as f32,
             Setting::OwnControls => return c.media.own_controls as u8 as f32,
+            Setting::HideBarOnScroll => return c.layout.hide_bar_on_scroll as u8 as f32,
+            Setting::OpenInBackground => return c.tabs.open_links_in_background as u8 as f32,
             Setting::ReplaceSitePlayers => return c.media.replace_site_players as u8 as f32,
             Setting::OwnFullscreenControls => return c.media.own_fullscreen_controls as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
@@ -250,6 +262,8 @@ impl Setting {
             Setting::KeepMediaAwake => c.tabs.keep_media_awake = on,
             Setting::RestoreSession => c.tabs.restore_session = on,
             Setting::OwnControls => c.media.own_controls = on,
+            Setting::HideBarOnScroll => c.layout.hide_bar_on_scroll = on,
+            Setting::OpenInBackground => c.tabs.open_links_in_background = on,
             Setting::ReplaceSitePlayers => c.media.replace_site_players = on,
             Setting::OwnFullscreenControls => c.media.own_fullscreen_controls = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
@@ -298,7 +312,12 @@ pub enum SettingsAction {
     RemovePassword,
     ShieldLevel(ShieldLevel),
     UpdateFilterLists,
+    TabBar(TabBarStyle),
+    CloseAfter(u32),
 }
+
+const CLOSE_AFTER: [(&str, u32); 4] =
+    [("Manually", 0), ("After a Day", 1), ("After a Week", 7), ("After a Month", 30)];
 
 const SHIELD_LEVELS: [(&str, ShieldLevel); 3] =
     [("Off", ShieldLevel::Off), ("Standard", ShieldLevel::Standard), ("Aggressive", ShieldLevel::Aggressive)];
@@ -324,6 +343,11 @@ impl SettingsAction {
                         60 + SHIELD_LEVELS.iter().position(|(_, l)| *l == level).unwrap_or(0) as u32
                     }
                     SettingsAction::UpdateFilterLists => 63,
+                    SettingsAction::TabBar(TabBarStyle::Separate) => 70,
+                    SettingsAction::TabBar(TabBarStyle::Compact) => 71,
+                    SettingsAction::CloseAfter(days) => {
+                        72 + CLOSE_AFTER.iter().position(|(_, d)| *d == days).unwrap_or(0) as u32
+                    }
                 },
         )
     }
@@ -345,6 +369,9 @@ impl SettingsAction {
             52 => SettingsAction::RemovePassword,
             60..=62 => SettingsAction::ShieldLevel(SHIELD_LEVELS[(n - 60) as usize].1),
             63 => SettingsAction::UpdateFilterLists,
+            70 => SettingsAction::TabBar(TabBarStyle::Separate),
+            71 => SettingsAction::TabBar(TabBarStyle::Compact),
+            72..=75 => SettingsAction::CloseAfter(CLOSE_AFTER[(n - 72) as usize].1),
             _ => return None,
         })
     }
@@ -367,8 +394,14 @@ pub struct SettingsSheet {
     sheet: NodeId,
     nav: Vec<(Category, NodeId)>,
     content: NodeId,
+    /// The clipped area `content` scrolls in.
+    viewport: NodeId,
+    scroll: f32,
+    shown_category: Category,
     category: Category,
     controls: Vec<(NodeId, Setting)>,
+    /// The card rows are added to; a new one starts with the next row after `section`.
+    group: Option<NodeId>,
     homepage: Option<NodeId>,
     password: Option<NodeId>,
     has_password: bool,
@@ -461,11 +494,29 @@ impl SettingsSheet {
             ui.add_label(item, category.title(), TextStyle::Body, grow_label());
             nav.push((category, item));
         }
-        let content = ui.add(
+        // The page scrolls inside a clipped viewport.
+        let viewport = ui.add(
             sheet,
-            Widget::container(),
+            Widget::container().with_clip(),
             Style {
                 flex_grow: 1.0,
+                flex_basis: length(0.0),
+                flex_direction: FlexDirection::Column,
+                // The page keeps its natural height (taller than the viewport when it scrolls).
+                justify_content: JustifyContent::START,
+                overflow: axion_ui::taffy::Point {
+                    x: axion_ui::taffy::Overflow::Hidden,
+                    y: axion_ui::taffy::Overflow::Hidden,
+                },
+                ..Default::default()
+            },
+        );
+        let content = ui.add(
+            viewport,
+            Widget::container(),
+            Style {
+                flex_shrink: 0.0,
+                size: Size { width: percent(1.0), height: auto() },
                 flex_direction: FlexDirection::Column,
                 gap: Size { width: length(0.0), height: length(4.0) },
                 padding: padding(28.0, 26.0),
@@ -478,12 +529,16 @@ impl SettingsSheet {
             sheet,
             nav,
             content,
+            viewport,
+            scroll: 0.0,
+            shown_category: Category::General,
             category: Category::General,
             controls: Vec::new(),
             homepage: None,
             password: None,
             has_password: false,
             memory_used: None,
+            group: None,
             confirm_clear: false,
             open: false,
         }
@@ -522,6 +577,21 @@ impl SettingsSheet {
         self.memory_used = used;
     }
 
+    /// Scrolls the page by `dy` logical px (wheel: positive scrolls up).
+    pub fn scroll_by(&mut self, ui: &mut Ui, dy: f32) {
+        let max = (ui.frame(self.content).size.y - ui.frame(self.viewport).size.y).max(0.0);
+        let scroll = (self.scroll - dy).clamp(0.0, max);
+        self.set_scroll(ui, scroll);
+    }
+
+    fn set_scroll(&mut self, ui: &mut Ui, scroll: f32) {
+        self.scroll = scroll;
+        let mut style = ui.style(self.content);
+        style.margin =
+            Rect { left: length(0.0), right: length(0.0), top: length(-scroll), bottom: length(0.0) };
+        ui.set_style(self.content, style);
+    }
+
     /// Shows this category next time the sheet opens (or now, if open).
     pub fn set_category(&mut self, category: Category) {
         self.category = category;
@@ -555,6 +625,11 @@ impl SettingsSheet {
         }
         ui.clear_children(self.content);
         self.controls.clear();
+        self.group = None;
+        if self.category != self.shown_category {
+            self.shown_category = self.category;
+            self.set_scroll(ui, 0.0);
+        }
         self.homepage = None;
         self.password = None;
         ui.add_label(
@@ -643,9 +718,7 @@ impl SettingsSheet {
                         },
                     );
                 }
-                for setting in
-                    [Setting::TintFromPage, Setting::AdaptToPage, Setting::TextScale, Setting::PageCorner]
-                {
+                for setting in [Setting::AdaptToPage, Setting::TextScale, Setting::PageCorner] {
                     self.control(ui, config, setting);
                 }
             }
@@ -692,6 +765,19 @@ impl SettingsSheet {
                 }
             }
             Category::Tabs => {
+                self.tab_bar_choice(ui, config);
+                for setting in [Setting::TintFromPage, Setting::HideBarOnScroll, Setting::OpenInBackground] {
+                    self.control(ui, config, setting);
+                }
+                let row_node = self.row(ui, "Close tabs");
+                let options: Vec<(&str, ActionId)> = CLOSE_AFTER
+                    .iter()
+                    .map(|(name, days)| (*name, SettingsAction::CloseAfter(*days).id()))
+                    .collect();
+                let current = CLOSE_AFTER.iter().position(|(_, d)| *d == config.tabs.close_after_days);
+                segmented(ui, row_node, &options, current);
+                self.note(ui, "Axion can close tabs you haven't looked at for a while.");
+                self.section(ui, "Memory");
                 for setting in [
                     Setting::FreezeAfter,
                     Setting::DiscardAfter,
@@ -807,15 +893,149 @@ impl SettingsSheet {
         }
     }
 
-    fn row(&self, ui: &mut Ui, label: &str) -> NodeId {
+    fn row(&mut self, ui: &mut Ui, label: &str) -> NodeId {
         self.row_with_height(ui, label, ROW_HEIGHT)
     }
 
-    fn row_with_height(&self, ui: &mut Ui, label: &str, height: f32) -> NodeId {
-        let row_node = ui.add(
-            self.content,
+    /// Safari's two tab bar layouts as small pictures with a radio mark under each.
+    fn tab_bar_choice(&mut self, ui: &mut Ui, config: &Config) {
+        let parent = self.group_for_row(ui);
+        let choices = ui.add(
+            parent,
             Widget::container(),
-            Style { size: Size { width: auto(), height: length(height) }, ..row(10.0) },
+            Style {
+                justify_content: JustifyContent::CENTER,
+                padding: padding(0.0, 14.0),
+                flex_shrink: 0.0,
+                ..row(64.0)
+            },
+        );
+        for (style, name) in [(TabBarStyle::Separate, "Separate"), (TabBarStyle::Compact, "Compact")] {
+            let selected = config.layout.tab_bar == style;
+            let choice = ui.add(
+                choices,
+                Widget::container().with_action(SettingsAction::TabBar(style).id()).with_radius(12.0),
+                Style {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::CENTER,
+                    gap: Size { width: length(0.0), height: length(6.0) },
+                    padding: padding(8.0, 6.0),
+                    ..Default::default()
+                },
+            );
+            tab_bar_picture(ui, choice, style, selected);
+            ui.add_label(choice, name, TextStyle::Footnote, Style::default());
+            let radio = if selected {
+                Widget::icon(Icon::Check, 12.0).with_paint(Paint::Fixed(Color::rgb(0xFFFFFF)))
+            } else {
+                Widget::container()
+            };
+            let mark = ui.add(
+                choice,
+                Widget::container().with_radius(CAPSULE).with_background(if selected {
+                    Background::Fill(Paint::Accent, 1.0)
+                } else {
+                    Background::Fill(Paint::Label, 0.12)
+                }),
+                Style {
+                    size: Size { width: length(20.0), height: length(20.0) },
+                    justify_content: JustifyContent::CENTER,
+                    ..row(0.0)
+                },
+            );
+            ui.add(mark, radio, Style::default());
+        }
+    }
+
+    /// Starts a new group of rows, with a small grey title above it (empty: none).
+    fn section(&mut self, ui: &mut Ui, title: &str) {
+        self.group = None;
+        if !title.is_empty() {
+            let label = ui.add_label(
+                self.content,
+                &title.to_uppercase(),
+                TextStyle::Caption,
+                Style {
+                    margin: Rect {
+                        left: length(GROUP_INSET),
+                        right: length(0.0),
+                        top: length(GROUP_GAP),
+                        bottom: length(6.0),
+                    },
+                    ..Default::default()
+                },
+            );
+            if let Some(w) = ui.widget_mut(label) {
+                w.set_paint(Paint::Secondary);
+            }
+        }
+    }
+
+    /// Small grey text under the current group.
+    fn note(&mut self, ui: &mut Ui, text: &str) {
+        self.group = None;
+        let label = ui.add_label(
+            self.content,
+            text,
+            TextStyle::Footnote,
+            Style {
+                margin: Rect {
+                    left: length(GROUP_INSET),
+                    right: length(0.0),
+                    top: length(6.0),
+                    bottom: length(0.0),
+                },
+                ..Default::default()
+            },
+        );
+        if let Some(w) = ui.widget_mut(label) {
+            w.set_paint(Paint::Secondary);
+        }
+    }
+
+    /// The card the next row goes in (with a separator above it if the card has rows).
+    fn group_for_row(&mut self, ui: &mut Ui) -> NodeId {
+        if let Some(group) = self.group {
+            ui.add(
+                group,
+                Widget::container().with_background(Background::Fill(Paint::Hairline, 1.0)),
+                Style {
+                    size: Size { width: auto(), height: length(0.5) },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+            );
+            return group;
+        }
+        let first = ui.children(self.content).len() <= 1;
+        let group = ui.add(
+            self.content,
+            Widget::container()
+                .with_background(Background::Fill(Paint::Surface, 0.85))
+                .with_radius(GROUP_RADIUS),
+            Style {
+                flex_direction: FlexDirection::Column,
+                flex_shrink: 0.0,
+                padding: padding(GROUP_INSET, 0.0),
+                margin: Rect {
+                    left: length(0.0),
+                    right: length(0.0),
+                    top: length(if first { 0.0 } else { 8.0 }),
+                    bottom: length(0.0),
+                },
+                ..Default::default()
+            },
+        );
+        self.group = Some(group);
+        group
+    }
+
+    fn row_with_height(&mut self, ui: &mut Ui, label: &str, height: f32) -> NodeId {
+        let parent = self.group_for_row(ui);
+        let row_node = ui.add(
+            parent,
+            Widget::container(),
+            Style { size: Size { width: auto(), height: length(height) }, flex_shrink: 0.0, ..row(10.0) },
         );
         ui.add_label(row_node, label, TextStyle::Body, grow_label());
         row_node
@@ -879,6 +1099,14 @@ impl SettingsSheet {
                 Outcome::Changed
             }
             SettingsAction::UpdateFilterLists => return Outcome::UpdateFilterLists,
+            SettingsAction::TabBar(style) => {
+                config.layout.tab_bar = style;
+                Outcome::Changed
+            }
+            SettingsAction::CloseAfter(days) => {
+                config.tabs.close_after_days = days;
+                Outcome::Changed
+            }
             SettingsAction::SetPassword => {
                 let password = self.password.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned();
                 if password.is_empty() {
@@ -991,6 +1219,54 @@ fn humanize(name: &str) -> String {
     let text = name.replace('_', " ");
     let mut chars = text.chars();
     chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+/// A tiny picture of a browser window with the given tab bar layout.
+fn tab_bar_picture(ui: &mut Ui, parent: NodeId, style: TabBarStyle, selected: bool) {
+    let accent = if selected { Paint::Accent } else { Paint::Secondary };
+    let window = ui.add(
+        parent,
+        Widget::container()
+            .with_background(Background::Fill(Paint::Surface, 1.0))
+            .with_radius(8.0)
+            .with_shadow(axion_ui::Shadow { offset_y: 1.0, blur: 4.0, opacity: 0.15 }),
+        Style {
+            size: Size { width: length(96.0), height: length(64.0) },
+            flex_direction: FlexDirection::Column,
+            gap: Size { width: length(0.0), height: length(3.0) },
+            padding: padding(5.0, 5.0),
+            ..Default::default()
+        },
+    );
+    let bar = |ui: &mut Ui, parent: NodeId, width: Dimension, opacity: f32| {
+        ui.add(
+            parent,
+            Widget::container().with_background(Background::Fill(accent, opacity)).with_radius(CAPSULE),
+            Style { size: Size { width, height: length(5.0) }, flex_shrink: 0.0, ..Default::default() },
+        );
+    };
+    match style {
+        TabBarStyle::Separate => {
+            let top = ui.add(
+                window,
+                Widget::container(),
+                Style { justify_content: JustifyContent::CENTER, ..row(0.0) },
+            );
+            bar(ui, top, length(40.0), 0.9);
+            let tabs = ui.add(window, Widget::container(), row(3.0));
+            for opacity in [0.9, 0.35, 0.35] {
+                let slot = ui.add(tabs, Widget::container(), Style { flex_grow: 1.0, ..Default::default() });
+                bar(ui, slot, percent(1.0), opacity);
+            }
+        }
+        TabBarStyle::Compact => {
+            let tabs = ui.add(window, Widget::container(), row(3.0));
+            for (opacity, grow) in [(0.9, 2.0), (0.35, 1.0), (0.35, 1.0)] {
+                let slot = ui.add(tabs, Widget::container(), Style { flex_grow: grow, ..Default::default() });
+                bar(ui, slot, percent(1.0), opacity);
+            }
+        }
+    }
 }
 
 fn system_memory_mb() -> f32 {

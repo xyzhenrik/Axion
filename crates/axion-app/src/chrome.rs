@@ -8,7 +8,7 @@
 //!   bookmarks, reading list and history. Docked in wide windows, floating otherwise.
 
 use axion_compositor::{Icon, IconWeight, Rect as Frame};
-use axion_config::{Color, Config, SidebarMode};
+use axion_config::{Color, Config, SidebarMode, TabBarStyle};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{
@@ -29,6 +29,14 @@ pub struct NowPlaying {
 }
 
 const NOW_PLAYING_HEIGHT: f32 = 60.0;
+/// The separate tab bar's row of tabs, and its gap to the toolbar.
+const TAB_STRIP_HEIGHT: f32 = 40.0;
+const TAB_STRIP_GAP: f32 = 8.0;
+/// The pill with the site's name while the bars are hidden.
+const MINI_HEIGHT: f32 = 28.0;
+const MINI_TOP: f32 = 6.0;
+/// The address field's widest size with the separate tab bar.
+const SEPARATE_ADDRESS_MAX: f32 = 680.0;
 const ADDRESS_FAVICON: f32 = 18.0;
 const NOW_PLAYING_RADIUS: f32 = 20.0;
 
@@ -55,6 +63,8 @@ pub enum ChromeAction {
     ClosePanel,
     /// The speaker in the address field: mutes or unmutes the active tab.
     MuteTab,
+    /// The small pill shown while the bars are hidden: brings them back.
+    ExpandBars,
     /// The Now Playing card: open its tab.
     NowPlaying,
     NowPlayingToggle,
@@ -69,7 +79,7 @@ const CLOSE_TAB_BASE: u32 = 2000;
 const PANEL_ITEM_BASE: u32 = 7000;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 21] = [
+    const SIMPLE: [ChromeAction; 22] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -91,6 +101,7 @@ impl ChromeAction {
         ChromeAction::NowPlaying,
         ChromeAction::NowPlayingToggle,
         ChromeAction::MuteTab,
+        ChromeAction::ExpandBars,
     ];
 
     fn id(self) -> ActionId {
@@ -104,7 +115,7 @@ impl ChromeAction {
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=21 => Some(Self::SIMPLE[n as usize - 1]),
+            n @ 1..=22 => Some(Self::SIMPLE[n as usize - 1]),
             n if (PANEL_ITEM_BASE..PANEL_ITEM_BASE + 1000).contains(&n) => {
                 Some(ChromeAction::OpenPanelItem((n - PANEL_ITEM_BASE) as usize))
             }
@@ -191,6 +202,19 @@ pub struct Chrome {
     back: NodeId,
     forward: NodeId,
     tab_capsule: NodeId,
+    /// Where the address segment goes with the separate tab bar.
+    address_slot: NodeId,
+    /// The separate tab bar's row of tabs.
+    tab_strip: NodeId,
+    tab_bar: TabBarStyle,
+    mini: NodeId,
+    mini_label: NodeId,
+    /// The bars are hidden (scrolled away) …
+    collapsed: bool,
+    /// … animated 0 (shown) → 1 (hidden).
+    collapse: Animated<f32>,
+    /// The bar's resting top inset (logical px), for the collapse animation.
+    bar_top: f32,
     /// The active tab's segment; persistent so typing survives tab-list rebuilds.
     address: NodeId,
     address_close: NodeId,
@@ -504,6 +528,13 @@ impl Chrome {
         let (forward, _) =
             icon_button(ui, nav, ChromeAction::Forward, Widget::icon(Icon::Forward, 21.0), BUTTON);
 
+        // Separate tab bar: the address segment sits here, centred between the groups.
+        let address_slot = ui.add(
+            bar,
+            Widget::container(),
+            Style { flex_grow: 1.0, flex_shrink: 1.0, justify_content: JustifyContent::CENTER, ..row(0.0) },
+        );
+        ui.set_visible(address_slot, false);
         let tab_capsule = ui.add(
             bar,
             Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
@@ -576,6 +607,34 @@ impl Chrome {
         );
 
         let actions = glass_group(ui, bar);
+        // Separate tab bar: the row of tabs under the toolbar.
+        let tab_strip = ui.add(
+            root,
+            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
+            Style {
+                position: Position::Absolute,
+                size: Size { width: auto(), height: length(TAB_STRIP_HEIGHT) },
+                padding: padding(4.0, 4.0, 0.0, 0.0),
+                ..row(4.0)
+            },
+        );
+        ui.set_visible(tab_strip, false);
+        // While scrolling down the bars give way to this pill with the site's name (Safari).
+        let mini = ui.add(
+            root,
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thin))
+                .with_radius(CAPSULE)
+                .with_action(ChromeAction::ExpandBars.id()),
+            Style {
+                position: Position::Absolute,
+                size: Size { width: auto(), height: length(MINI_HEIGHT) },
+                padding: padding(16.0, 16.0, 0.0, 0.0),
+                ..row(0.0)
+            },
+        );
+        let mini_label = ui.add_label(mini, "", TextStyle::Footnote, Style::default());
+        ui.set_visible(mini, false);
         icon_button(ui, actions, ChromeAction::Share, Widget::icon(Icon::Share, 21.0), BUTTON);
         icon_button(ui, actions, ChromeAction::NewTab, Widget::icon(Icon::Plus, 22.0), BUTTON);
         let (overview, _) =
@@ -624,6 +683,14 @@ impl Chrome {
             back,
             forward,
             tab_capsule,
+            address_slot,
+            tab_strip,
+            tab_bar: TabBarStyle::Compact,
+            mini,
+            mini_label,
+            collapsed: false,
+            collapse: Animated::new(0.0, Spring::SMOOTH),
+            bar_top: 0.0,
             address,
             address_close,
             address_label,
@@ -761,6 +828,63 @@ impl Chrome {
         }
     }
 
+    /// Hides the bars (scrolling down) or shows them again. Returns whether that changed, so
+    /// the page can be resized.
+    pub fn set_collapsed(&mut self, collapsed: bool, config: &Config) -> bool {
+        if collapsed == self.collapsed {
+            return false;
+        }
+        self.collapsed = collapsed;
+        let motion = &config.motion;
+        self.collapse.spring = if config.glass.reduce_motion {
+            Spring::new(0.2, 1.0)
+        } else {
+            Spring::new(motion.smooth.response * motion.speed, motion.smooth.damping)
+        };
+        self.collapse.target = if collapsed { 1.0 } else { 0.0 };
+        true
+    }
+
+    /// The site shown in the pill while the bars are hidden.
+    pub fn set_mini_host(&self, ui: &mut Ui, host: &str) {
+        ui.set_text(self.mini_label, host);
+    }
+
+    fn animate_collapse(&mut self, ui: &mut Ui, dt: f32, centre_x: f32) {
+        self.collapse.step(dt);
+        let k = self.collapse.value.clamp(0.0, 1.0);
+        let shift = k * (self.bar_top + 2.0 * (TAB_STRIP_HEIGHT + TAB_STRIP_GAP) + 56.0);
+        for (node, top) in [(self.bar, self.bar_top), (self.tab_strip, self.bar_top + 56.0 + TAB_STRIP_GAP)] {
+            let mut style = ui.style(node);
+            style.inset.top = length(top - shift);
+            ui.set_style(node, style);
+            ui.set_opacity(node, 1.0 - k);
+        }
+        let visible = k > 0.01 && !self.page_fullscreen;
+        ui.set_visible(self.mini, visible);
+        if visible {
+            let width = ui.frame(self.mini).size.x;
+            let mut style = ui.style(self.mini);
+            style.inset = Rect {
+                left: length((centre_x - width / 2.0).max(0.0)),
+                right: auto(),
+                top: length(MINI_TOP),
+                bottom: auto(),
+            };
+            ui.set_style(self.mini, style);
+            ui.set_opacity(self.mini, k);
+        }
+    }
+
+    /// Advances the sidebar's slide and the bars' collapse. Call every frame.
+    /// `centre_x`: the page's horizontal centre, where the pill sits while the bars are hidden.
+    pub fn animate_all(&mut self, ui: &mut Ui, dt: f32, centre_x: f32) {
+        if !self.collapse.is_settled(0.001) || self.collapsed {
+            self.animate_collapse(ui, dt, centre_x);
+        }
+        self.animate(ui, dt);
+    }
+
     /// Advances the sidebar's slide. Call every frame.
     pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
         if self.slide.is_settled(SLIDE_SETTLED) {
@@ -791,9 +915,36 @@ impl Chrome {
 
         let bar_left = if self.docked && show_sidebar { l.sidebar_width + m } else { m };
         let mut bar_style = ui.style(self.bar);
+        self.bar_top = m;
         bar_style.inset = Rect { left: length(bar_left), right: length(m), top: length(m), bottom: auto() };
         bar_style.display = if self.page_fullscreen { Display::None } else { Display::Flex };
         ui.set_style(self.bar, bar_style);
+
+        // Separate tab bar: the address alone in the toolbar, the tabs in a row below.
+        self.tab_bar = l.tab_bar;
+        let separate = l.tab_bar == TabBarStyle::Separate;
+        ui.set_visible(self.tab_capsule, !separate);
+        ui.set_visible(self.address_slot, separate);
+        ui.set_visible(self.tab_strip, separate && !self.page_fullscreen);
+        let mut strip = ui.style(self.tab_strip);
+        strip.inset = Rect {
+            left: length(bar_left),
+            right: length(m),
+            top: length(m + l.bar_height + TAB_STRIP_GAP),
+            bottom: auto(),
+        };
+        ui.set_style(self.tab_strip, strip);
+        let mut address = ui.style(self.address);
+        if separate {
+            address.flex_grow = 1.0;
+            address.max_size = Size { width: length(SEPARATE_ADDRESS_MAX), height: auto() };
+            address.min_size = Size { width: length(0.0), height: auto() };
+        } else {
+            address.flex_grow = ACTIVE_SEGMENT_GROW;
+            address.max_size = Size { width: auto(), height: auto() };
+            address.min_size = Size { width: length(ACTIVE_SEGMENT_MIN), height: auto() };
+        }
+        ui.set_style(self.address, address);
 
         // The sidebar slides in and out on a spring (see `animate`).
         let hidden_x = -(l.sidebar_width + SLIDE_OVERSHOOT);
@@ -843,7 +994,12 @@ impl Chrome {
         } else {
             l.page_margin
         };
-        let top = l.margin + l.bar_height + l.margin / 2.0;
+        let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 };
+        let top = if self.collapsed {
+            MINI_TOP + MINI_HEIGHT + l.page_margin / 2.0
+        } else {
+            l.margin + l.bar_height + strip + l.margin / 2.0
+        };
         let origin = Vec2::new(left, top);
         let size = window - origin - Vec2::splat(l.page_margin);
         Frame { origin, size: size.max(Vec2::ONE) }
@@ -900,46 +1056,66 @@ impl Chrome {
 
     /// Rebuilds the tab segments and sidebar rows from the tab model.
     pub fn sync_tabs(&mut self, ui: &mut Ui, tabs: &Tabs, favicons: &Favicons) {
-        // Toolbar: one segment per inactive tab; the persistent address segment sits at the
-        // active tab's position.
         for pill in std::mem::take(&mut self.pills) {
             ui.remove(pill);
         }
         let narrow = self.mode == Mode::Narrow;
+        let separate = self.tab_bar == TabBarStyle::Separate;
         let mut order = Vec::with_capacity(tabs.len());
         for (i, tab) in tabs.all().iter().enumerate() {
-            if i == tabs.active_index() {
+            let active = i == tabs.active_index();
+            if active && !separate {
+                // Compact: the persistent address segment sits at the active tab's position.
                 order.push(self.address);
                 continue;
             }
+            let parent = if separate { self.tab_strip } else { self.tab_capsule };
+            let background = if active { Background::Fill(Paint::Surface, 0.92) } else { Background::None };
+            let height = if separate { TAB_STRIP_HEIGHT - 8.0 } else { SEGMENT_HEIGHT };
             let pill = ui.add(
-                self.tab_capsule,
-                Widget::container().with_action(ChromeAction::SelectTab(i).id()).with_radius(CAPSULE),
+                parent,
+                Widget::container()
+                    .with_action(ChromeAction::SelectTab(i).id())
+                    .with_radius(CAPSULE)
+                    .with_background(background),
                 Style {
                     flex_grow: 1.0,
                     flex_shrink: 1.0,
                     flex_basis: length(0.0),
                     min_size: Size { width: length(56.0), height: auto() },
-                    size: Size { width: auto(), height: length(SEGMENT_HEIGHT) },
-                    padding: padding(14.0, 14.0, 0.0, 0.0),
+                    size: Size { width: auto(), height: length(height) },
+                    padding: padding(if active { 6.0 } else { 14.0 }, 14.0, 0.0, 0.0),
+                    justify_content: if separate { JustifyContent::CENTER } else { JustifyContent::START },
                     ..row(9.0)
                 },
             );
-            favicon_node(ui, pill, &tab.url, 18.0, favicons);
-            ui.add_label(pill, &tab.label(), TextStyle::Callout, shrinking_label());
-            ui.set_visible(pill, !narrow);
+            if active {
+                close_dot(ui, pill, ChromeAction::CloseTab(i), 24.0);
+            }
+            favicon_node(ui, pill, &tab.url, 16.0, favicons);
+            let style = if active { TextStyle::BodyEmphasis } else { TextStyle::Callout };
+            ui.add_label(pill, &tab.label(), style, shrinking_label());
+            ui.set_visible(pill, !narrow || separate);
             self.pills.push(pill);
             order.push(pill);
         }
-        ui.set_children(self.tab_capsule, &order);
+        if separate {
+            ui.set_children(self.tab_capsule, &[]);
+            ui.set_children(self.tab_strip, &order);
+            ui.set_children(self.address_slot, &[self.address]);
+        } else {
+            ui.set_children(self.address_slot, &[]);
+            ui.set_children(self.tab_capsule, &order);
+        }
+        if let Some(w) = ui.widget_mut(self.address_close) {
+            w.action = Some(ChromeAction::CloseTab(tabs.active_index()).id());
+        }
+        ui.set_visible(self.address_close, !separate);
         ui.clear_children(self.address_favicon);
         if let Some(tab) = tabs.active() {
             favicon_node(ui, self.address_favicon, &tab.url, ADDRESS_FAVICON, favicons);
         }
         ui.set_visible(self.address_favicon, !self.locked);
-        if let Some(w) = ui.widget_mut(self.address_close) {
-            w.action = Some(ChromeAction::CloseTab(tabs.active_index()).id());
-        }
 
         // Sidebar: "N Tabs" and one row per tab; the active one is a pill with a close button.
         let count = tabs.len();
