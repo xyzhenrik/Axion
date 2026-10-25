@@ -242,8 +242,7 @@ wrap_display_handler! {
         }
 
         fn on_favicon_urlchange(&self, browser: Option<&mut Browser>, icon_urls: Option<&mut CefStringList>) {
-            // Cloning a borrowed list stays borrowed, so iterating doesn't free CEF's copy.
-            let urls = icon_urls.map(|l| l.clone().into_iter().collect()).unwrap_or_default();
+            let urls = icon_urls.map(string_list).unwrap_or_default();
             self.ctx.emit(browser, EngineEvent::FaviconUrlsChanged { view: self.ctx.view, urls });
         }
 
@@ -375,7 +374,15 @@ wrap_download_image_callback! {
         ) {
             use cef::sys::{cef_alpha_type_t, cef_color_type_t};
 
-            let Some(image) = image else { return };
+            let ctx = &self.request.ctx;
+            let url = image_url.map(|u| u.to_string()).unwrap_or_default();
+            let failed = || {
+                ctx.shared
+                    .events
+                    .borrow_mut()
+                    .push((self.request.browser_id, EngineEvent::FaviconFailed { view: ctx.view, url: url.clone() }));
+            };
+            let Some(image) = image else { return failed() };
             let (mut width, mut height) = (0, 0);
             let Some(bitmap) = image.as_bitmap(
                 self.request.scale,
@@ -384,28 +391,51 @@ wrap_download_image_callback! {
                 Some(&mut width),
                 Some(&mut height),
             ) else {
-                return;
+                return failed();
             };
             if width <= 0 || height <= 0 {
-                return;
+                return failed();
             }
             let mut rgba = vec![0; bitmap.size()];
             bitmap.data(Some(&mut rgba), 0);
             if rgba.len() != width as usize * height as usize * 4 {
-                return;
+                return failed();
             }
-            let ctx = &self.request.ctx;
             ctx.shared.events.borrow_mut().push((
                 self.request.browser_id,
                 EngineEvent::FaviconReady {
                     view: ctx.view,
-                    url: image_url.map(|u| u.to_string()).unwrap_or_default(),
+                    url,
                     width: width as u32,
                     height: height as u32,
                     rgba,
                 },
             ));
         }
+    }
+}
+
+/// The strings of a list CEF lends to a callback. (The `cef` crate's `clone().into_iter()`
+/// of a borrowed list yields nothing, so the list is read in place.)
+fn string_list(list: &mut CefStringList) -> Vec<String> {
+    let raw: *mut cef::sys::_cef_string_list_t = list.into();
+    if raw.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `raw` is the live list CEF passed to the running callback; each value is a copy
+    // we own and clear after converting it.
+    unsafe {
+        (0..cef::sys::cef_string_list_size(raw))
+            .filter_map(|i| {
+                let mut value = std::mem::zeroed();
+                if cef::sys::cef_string_list_value(raw, i, &mut value) == 0 {
+                    return None;
+                }
+                let text = CefString::from(std::ptr::from_ref(&value)).to_string();
+                cef::sys::cef_string_utf16_clear(&mut value);
+                Some(text)
+            })
+            .collect()
     }
 }
 

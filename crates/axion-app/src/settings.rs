@@ -223,7 +223,7 @@ impl Setting {
             Setting::FreezeAfter => (0.0, 60.0),
             Setting::HideControlsAfter => (1.0, 10.0),
             Setting::DiscardAfter => (0.0, 480.0),
-            Setting::MemoryBudget => (0.0, system_memory_mb()),
+            Setting::MemoryBudget => (0.0, memory_slider_max_mb()),
             _ => (0.0, 1.0),
         }
     }
@@ -1685,8 +1685,13 @@ fn trim_number(v: f32) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-fn system_memory_mb() -> f32 {
-    axion_tabs::system_memory().map_or(16384.0, |b| (b / (1024 * 1024)) as f32)
+/// The memory slider's upper end: budgets above this are unrealistic for tabs (a typed
+/// value in the config can still go higher).
+const MEMORY_SLIDER_MAX_MB: f32 = 6144.0;
+
+fn memory_slider_max_mb() -> f32 {
+    let system = axion_tabs::system_memory().map_or(f32::MAX, |b| (b / (1024 * 1024)) as f32);
+    MEMORY_SLIDER_MAX_MB.min(system)
 }
 
 /// 1536 MiB → "1.5 GB".
