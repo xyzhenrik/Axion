@@ -95,13 +95,15 @@ Provide a "Reduce Transparency" / "Reduce Motion" setting that degrades graceful
 ## Commands
 
 ```bash
-cargo run -p axion-app            # run the browser (downloads CEF on first build)
+cargo run -p axion-app            # run the browser (not yet; CEF downloads into third_party/cef on first build)
 cargo test --workspace            # all tests
 cargo run -p axion-glass --example playground --release            # glass playground, no CEF needed
 cargo run -p axion-glass --example playground --release -- --demo  # scripted drag (merge/stretch)
 cargo run -p axion-glass --example playground --release -- --bench # GPU time per 1440p frame
 cargo run -p axion-glass --example playground --release -- --capture=out.png  # offscreen screenshot
 AXION_GPU=low ...                                                  # force the integrated GPU
+cargo run -p axion-spike-cef --release -- [url]                    # CEF page under glass (F1: lens)
+cargo run -p axion-spike-cef --release -- --capture=out.png        # offscreen screenshot after load
 ```
 
 ## Things to watch

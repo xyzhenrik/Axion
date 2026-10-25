@@ -92,16 +92,23 @@ Extensions, sync, reader mode, profiles, Windows/macOS builds, touchscreen polis
 ## 4. Roadmap
 
 ### Phase 0 — De-risking spikes (do first)
-- [ ] **CEF OSR spike**: open one page with CEF (`cef` crate / cef-rs), receive frames via
+- [x] **CEF OSR spike**: open one page with CEF (`cef` crate / cef-rs), receive frames via
   `OnAcceleratedPaint` dmabuf, import into wgpu (Vulkan external memory), display under winit
   on Wayland. Measure latency + CPU. Fallback: `OnPaint` CPU upload.
+  Result (2026-10-25, CEF 156 / Chromium 156, `crates/axion-spike-cef`): dma-buf import works on
+  NVIDIA, ~0.7–1.2 ms per imported frame (copy + GPU wait). Importing across GPUs (CEF on NVIDIA,
+  wgpu on the AMD iGPU) fails with a DRM-modifier error, so the spike falls back to software paint
+  automatically. **Follow-up:** pin Chromium's GPU process to wgpu's adapter instead of falling back;
+  avoid the per-frame copy + wait (keep CEF's texture alive until our composite is submitted).
 - [ ] **Input forwarding spike**: mouse, keyboard (incl. IME), scroll, touchpad gestures into CEF.
+  *(mouse, wheel, keys and text implemented in the spike, not yet verified by hand; IME and
+  touchpad gestures still open)*
 - [x] **Glass playground**: standalone wgpu example with a static image backdrop — SDF shapes,
   merging, refraction, blur, specular. Get the look right *before* integration.
   Result (2026-10-25): 1440p frame = 7.6 ms on Radeon 610M (2 CU iGPU), 0.55 ms on RTX 3070 Ti.
 - [ ] Decide: wayland pointer-gestures via winit or smithay-client-toolkit.
 
-Exit criteria: a page renders at 60+ fps with one glass capsule refracting it.
+Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. ✅ (spike, 2026-10-25)
 
 ### Phase 1 — Skeleton
 - [ ] Cargo workspace with all crates, CI (fmt, clippy, test). *(workspace started: axion-glass, axion-physics)*
