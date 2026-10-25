@@ -1262,18 +1262,27 @@ impl Browser {
                 self.close_overview(self.tabs.active_index());
             }
             OverviewAction::ShowPrivate | OverviewAction::ShowNormal => {
-                if (action == OverviewAction::ShowPrivate) != self.private_mode {
-                    self.toggle_private_mode();
-                }
-                if self.is_locked() {
-                    // Locked private tabs are never shown: the lock screen takes over.
-                    self.close_overview(self.tabs.active_index());
+                let want_private = action == OverviewAction::ShowPrivate;
+                if want_private == self.private_mode {
+                    self.sync_overview_mode();
                     return;
+                }
+                if want_private && self.config.privacy.lock_private_tabs && self.lock.is_locked() {
+                    // Locked private tabs must never be seen: leave the overview at once (no
+                    // zoom of a private page), then the lock screen takes over.
+                    let events = self.overview.close_instantly(&mut self.ui);
+                    self.handle_ui_events(events);
+                    self.toggle_private_mode();
+                    return;
+                }
+                self.toggle_private_mode();
+                // The other group's pages stay hidden behind the overview until one is picked.
+                if let Some(view) = self.active_view() {
+                    self.engine.set_focus(view, false);
                 }
                 self.sync_overview_mode();
                 self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
             }
-            OverviewAction::ToggleSidebar => self.run(Action::ToggleSidebar),
             OverviewAction::ToggleSearch => {
                 let events = self.overview.toggle_search(&mut self.ui);
                 self.handle_ui_events(events);
@@ -1513,7 +1522,15 @@ impl Browser {
                     }
                 }
                 UiEvent::Cancelled { node } if node == self.overview.search_field() => {
-                    self.close_overview(self.tabs.active_index());
+                    // Escape in the search field closes the search, not the overview.
+                    self.overview_action(OverviewAction::ToggleSearch);
+                }
+                UiEvent::ValueChanged { node, value }
+                    if self.overview.segment_action(node, value).is_some() =>
+                {
+                    if let Some(action) = self.overview.segment_action(node, value) {
+                        self.overview_action(action);
+                    }
                 }
                 UiEvent::Clicked { action, .. } if SettingsAction::from_id(action).is_some() => {
                     let Some(action) = SettingsAction::from_id(action) else { continue };
@@ -2067,6 +2084,15 @@ impl Browser {
             self.shields_popover.close(&mut self.ui, &self.config);
             return;
         }
+        if button == winit::event::MouseButton::Left
+            && pressed
+            && self.overview.is_searching(&self.ui)
+            && !self.overview.search_contains(&self.ui, p)
+            && self.ui.hit_action(p).is_none()
+        {
+            // A click elsewhere in the overview puts the search away.
+            self.overview_action(OverviewAction::ToggleSearch);
+        }
         if button == winit::event::MouseButton::Left {
             if pressed {
                 let (consumed, events) = self.ui.handle(UiInput::PointerDown);
@@ -2346,6 +2372,9 @@ impl Browser {
                     self.run(Action::OpenSettings);
                 }
                 "private" => self.toggle_private_mode(),
+                // Capture aid: switch the open overview to the private or normal tabs.
+                "overview-private" => self.overview_action(OverviewAction::ShowPrivate),
+                "overview-normal" => self.overview_action(OverviewAction::ShowNormal),
                 "private-locked" => {
                     // Capture aid: lock private browsing with a throwaway test password.
                     self.lock.set_password(self.store.as_ref(), Some("capture-test"));
