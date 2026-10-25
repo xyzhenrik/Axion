@@ -20,6 +20,7 @@ mod lockscreen;
 mod menu;
 mod mpris;
 mod overview;
+mod pip;
 mod player;
 mod private;
 mod settings;
@@ -104,8 +105,12 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let Some(browser) = &mut self.browser else { return };
+        if browser.is_pip_window(id) {
+            browser.pip_window_event(event);
+            return;
+        }
         match browser.window_event(event) {
             Ok(true) => {}
             Ok(false) => event_loop.exit(),
@@ -116,8 +121,9 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(browser) = &mut self.browser {
+            browser.sync_windows(event_loop);
             browser.pump();
             browser.request_redraw();
         }

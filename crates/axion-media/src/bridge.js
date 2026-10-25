@@ -143,7 +143,7 @@
     }
     return {
       id: el.__axId, kind: el.tagName === 'VIDEO' ? 'video' : 'audio',
-      x: r.left, y: r.top, w: r.width, h: r.height,
+      x: r.left, y: r.top, w: r.width, h: r.height, vw: el.videoWidth || 0, vh: el.videoHeight || 0,
       paused: el.paused, ended: el.ended, time: el.currentTime || 0,
       duration: isFinite(el.duration) ? el.duration : 0, live: el.duration === Infinity,
       volume: el.volume, muted: el.muted, rate: el.playbackRate, buffered: buffered,

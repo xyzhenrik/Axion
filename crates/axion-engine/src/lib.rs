@@ -160,6 +160,8 @@ pub trait Engine {
     /// Runs JavaScript in the view's top frame; with `user_gesture` as if the user had just
     /// clicked (needed for fullscreen and unmuted playback).
     fn run_script(&mut self, view: ViewId, script: &str, user_gesture: bool);
+    /// Mutes or unmutes everything the view plays.
+    fn set_audio_muted(&mut self, view: ViewId, muted: bool);
     /// Pauses a hidden view completely (no JavaScript, timers or loading) or resumes it.
     fn set_frozen(&mut self, view: ViewId, frozen: bool);
     /// Closes the view's page to free its memory, keeping its URL and last frame (still

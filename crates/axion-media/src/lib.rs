@@ -64,6 +64,9 @@ pub struct Player {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// The video's own size in pixels (0 while unknown, and for audio).
+    pub vw: f32,
+    pub vh: f32,
     pub paused: bool,
     pub ended: bool,
     /// Seconds.
@@ -97,6 +100,17 @@ impl Player {
     /// Playing and audible.
     pub fn is_audible(&self) -> bool {
         self.is_playing() && !self.muted && self.volume > 0.0
+    }
+
+    /// Width / height of the picture: the video's own, else its element's.
+    pub fn aspect(&self) -> f32 {
+        if self.vw > 0.0 && self.vh > 0.0 {
+            self.vw / self.vh
+        } else if self.w > 0.0 && self.h > 0.0 {
+            self.w / self.h
+        } else {
+            16.0 / 9.0
+        }
     }
 
     pub fn area(&self) -> f32 {

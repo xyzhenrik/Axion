@@ -33,6 +33,8 @@ pub struct Tab {
     pub hidden_since: Option<Instant>,
     /// Plays audible media.
     pub playing_media: bool,
+    /// Muted from the address bar's speaker.
+    pub muted: bool,
     /// The page's media, as the bridge last reported it.
     pub media: Option<axion_media::PageMedia>,
 }
@@ -56,6 +58,7 @@ impl Tab {
             hidden_since: Some(Instant::now()),
             playing_media: false,
             media: None,
+            muted: false,
         }
     }
 

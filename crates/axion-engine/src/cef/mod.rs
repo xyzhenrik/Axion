@@ -369,6 +369,12 @@ impl Engine for CefEngine {
         }
     }
 
+    fn set_audio_muted(&mut self, view: ViewId, muted: bool) {
+        if let Some(host) = self.host(view) {
+            host.set_audio_muted(muted as _);
+        }
+    }
+
     fn set_frozen(&mut self, view: ViewId, frozen: bool) {
         let Some(host) = self.host(view) else { return };
         let Some(mut params) = dictionary_value_create() else { return };

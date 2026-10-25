@@ -53,6 +53,8 @@ pub enum ChromeAction {
     ReadingList,
     History,
     ClosePanel,
+    /// The speaker in the address field: mutes or unmutes the active tab.
+    MuteTab,
     /// The Now Playing card: open its tab.
     NowPlaying,
     NowPlayingToggle,
@@ -67,7 +69,7 @@ const CLOSE_TAB_BASE: u32 = 2000;
 const PANEL_ITEM_BASE: u32 = 7000;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 20] = [
+    const SIMPLE: [ChromeAction; 21] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -88,6 +90,7 @@ impl ChromeAction {
         ChromeAction::ClosePanel,
         ChromeAction::NowPlaying,
         ChromeAction::NowPlayingToggle,
+        ChromeAction::MuteTab,
     ];
 
     fn id(self) -> ActionId {
@@ -101,7 +104,7 @@ impl ChromeAction {
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=20 => Some(Self::SIMPLE[n as usize - 1]),
+            n @ 1..=21 => Some(Self::SIMPLE[n as usize - 1]),
             n if (PANEL_ITEM_BASE..PANEL_ITEM_BASE + 1000).contains(&n) => {
                 Some(ChromeAction::OpenPanelItem((n - PANEL_ITEM_BASE) as usize))
             }
@@ -198,6 +201,8 @@ pub struct Chrome {
     shield: NodeId,
     shield_glyph: NodeId,
     address_favicon: NodeId,
+    audio_button: NodeId,
+    audio_icon: NodeId,
     progress: NodeId,
     /// Inactive tab segments, rebuilt by `sync_tabs`.
     pills: Vec<NodeId>,
@@ -537,6 +542,15 @@ impl Chrome {
             Widget::container(),
             Style { size: square(ADDRESS_FAVICON), flex_shrink: 0.0, ..Default::default() },
         );
+        // While the tab plays sound (Safari: a blue speaker in the address field).
+        let (audio_button, audio_icon) = icon_button(
+            ui,
+            address,
+            ChromeAction::MuteTab,
+            Widget::icon(Icon::Volume, 18.0).with_paint(Paint::Accent),
+            30.0,
+        );
+        ui.set_visible(audio_button, false);
         let address_label = ui.add_label(address, "", TextStyle::BodyEmphasis, shrinking_label());
         ui.set_label_align(address_label, Align::Start);
         let address_field = ui.add_text_field(
@@ -619,6 +633,8 @@ impl Chrome {
             shield,
             shield_glyph,
             address_favicon,
+            audio_button,
+            audio_icon,
             progress,
             pills: Vec::new(),
             overview,
@@ -859,6 +875,12 @@ impl Chrome {
 
     pub fn shield_frame(&self, ui: &Ui) -> Frame {
         ui.frame(self.shield)
+    }
+
+    /// The address field's speaker: shown while the active tab plays sound or is muted.
+    pub fn set_audio(&self, ui: &mut Ui, playing: bool, muted: bool) {
+        ui.set_visible(self.audio_button, (playing || muted) && !self.locked);
+        ui.set_icon(self.audio_icon, if muted { Icon::Muted } else { Icon::Volume });
     }
 
     /// Green while Shields protect the page, grey when they are off for its site.

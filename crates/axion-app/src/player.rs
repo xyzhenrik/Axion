@@ -1,40 +1,74 @@
-//! Axion's own media controls (design: "In-page player", "Fullscreen player"): a dark glass
-//! capsule over the page's video, driven through the media bridge.
+//! Axion's own media controls, laid out like Safari's player on iPadOS 26 (see
+//! docs/reference/safari-ipados26.md): dark glass circles for close / fullscreen and
+//! Picture-in-Picture at the top left, a volume capsule at the top right, skip back, play/pause
+//! and skip forward in the middle, the progress capsule along the bottom and a speed button
+//! (with its menu) above it. Driven through the media bridge.
 //!
 //! Inline, they replace the native controls of `<video controls>` elements and the UI of sites'
 //! own players (hidden by the bridge), and show while the video is paused or the pointer is
-//! over it. In fullscreen they sit over every video, also
-//! ones with a site's own player, and hide after a moment without pointer movement.
+//! over it. In fullscreen they hide after a moment without pointer movement.
 
 use std::time::{Duration, Instant};
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
 use axion_engine::ViewId;
-use axion_media::{Action, Command, Kind, PageMedia, Player, SessionInfo, format_time};
+use axion_media::{Action, Command, Kind, PageMedia, Player, format_time};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, Align, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
 
 const ACTION_BASE: u32 = 9500;
+const SPEED_CHOICE_BASE: u32 = ACTION_BASE + 50;
 /// Smaller videos keep their page's look; controls wouldn't fit.
 const MIN_SIZE: Vec2 = Vec2::new(220.0, 124.0);
-/// Below this width the time labels and speed button are left out.
+/// Below this width the skip buttons, times and volume are left out.
 const COMPACT_WIDTH: f32 = 400.0;
-/// Sizes (logical px), kept compact so the controls cover little of the video.
-const BUTTON: f32 = 32.0;
-const PLAY_BUTTON: f32 = 34.0;
-const SKIP_BUTTON: f32 = 36.0;
-const CORNER_BUTTON: f32 = 30.0;
 /// Icon size relative to its button.
-const ICON_RATIO: f32 = 0.56;
-/// Bar: (distance to the video's sides, to its bottom, height) inline and fullscreen.
-const INLINE_BAR: (f32, f32, f32) = (12.0, 12.0, 44.0);
-const FULLSCREEN_BAR: (f32, f32, f32) = (48.0, 28.0, 52.0);
+const ICON_RATIO: f32 = 0.5;
 /// After scrubbing, page reports still carry the old time for a moment; ignore them.
 const SCRUB_SETTLE: Duration = Duration::from_millis(600);
 const SETTLED: f32 = 0.01;
+const SPEED_MENU_WIDTH: f32 = 200.0;
+const SPEED_ROW: f32 = 34.0;
+/// Space between neighbouring glass circles: wide enough that they don't flow into each other.
+const CIRCLE_GAP: f32 = 16.0;
+
+/// Sizes (logical px) per layout, measured on Safari's fullscreen player; inline is smaller.
+#[derive(Clone, Copy)]
+struct Metrics {
+    margin: f32,
+    corner: f32,
+    volume: Vec2,
+    skip: f32,
+    play: f32,
+    centre_gap: f32,
+    bar_height: f32,
+    small: f32,
+}
+
+const FULLSCREEN: Metrics = Metrics {
+    margin: 18.0,
+    corner: 38.0,
+    volume: Vec2::new(184.0, 38.0),
+    skip: 56.0,
+    play: 82.0,
+    centre_gap: 46.0,
+    bar_height: 40.0,
+    small: 32.0,
+};
+
+const INLINE: Metrics = Metrics {
+    margin: 12.0,
+    corner: 32.0,
+    volume: Vec2::new(150.0, 32.0),
+    skip: 46.0,
+    play: 64.0,
+    centre_gap: 34.0,
+    bar_height: 34.0,
+    small: 28.0,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
@@ -44,10 +78,14 @@ pub enum Control {
     Mute,
     Speed,
     Captions,
+    /// Enter fullscreen inline, close (leave fullscreen) in fullscreen.
     Fullscreen,
+    PictureInPicture,
+    /// An entry of the speed menu (index into `media.playback_speeds`).
+    SpeedChoice(usize),
 }
 
-const CONTROLS: [Control; 7] = [
+const CONTROLS: [Control; 8] = [
     Control::PlayPause,
     Control::SkipBack,
     Control::SkipForward,
@@ -55,14 +93,21 @@ const CONTROLS: [Control; 7] = [
     Control::Speed,
     Control::Captions,
     Control::Fullscreen,
+    Control::PictureInPicture,
 ];
 
 impl Control {
     fn id(self) -> ActionId {
-        ActionId(ACTION_BASE + CONTROLS.iter().position(|&c| c == self).unwrap_or(0) as u32)
+        match self {
+            Control::SpeedChoice(i) => ActionId(SPEED_CHOICE_BASE + i as u32),
+            simple => ActionId(ACTION_BASE + CONTROLS.iter().position(|&c| c == simple).unwrap_or(0) as u32),
+        }
     }
 
     pub fn from_id(id: ActionId) -> Option<Self> {
+        if let Some(i) = id.0.checked_sub(SPEED_CHOICE_BASE).filter(|&i| i < 32) {
+            return Some(Control::SpeedChoice(i as usize));
+        }
         CONTROLS.get(id.0.checked_sub(ACTION_BASE)? as usize).copied()
     }
 }
@@ -85,31 +130,35 @@ pub struct Context<'a> {
     pub pointer: Option<Vec2>,
     /// The page made something fullscreen.
     pub page_fullscreen: bool,
-    /// Shown in fullscreen when the page gives no media session title.
-    pub page_title: &'a str,
-    pub host: &'a str,
+}
+
+/// What the browser should do after a click on the controls.
+pub enum Outcome {
+    Command(ViewId, Command),
+    PictureInPicture(ViewId, Player),
+    Nothing,
 }
 
 pub struct PlayerOverlay {
     root: NodeId,
-    title_pill: NodeId,
-    title: NodeId,
-    subtitle: NodeId,
-    corner: NodeId,
-    bar: NodeId,
+    top_left: NodeId,
+    first_icon: NodeId,
+    volume_capsule: NodeId,
+    volume: NodeId,
+    mute_icon: NodeId,
+    centre: NodeId,
     skip_back: NodeId,
-    skip_forward: NodeId,
+    play: NodeId,
     play_icon: NodeId,
+    skip_forward: NodeId,
+    side_buttons: NodeId,
+    captions: NodeId,
+    speed_menu: NodeId,
+    speed_menu_open: bool,
+    bar: NodeId,
     time: NodeId,
     scrubber: NodeId,
     remaining: NodeId,
-    mute_icon: NodeId,
-    speed: NodeId,
-    speed_label: NodeId,
-    captions: NodeId,
-    /// Exit fullscreen, in the bar (fullscreen only).
-    exit: NodeId,
-    fullscreen_icon: NodeId,
     opacity: Animated<f32>,
     mode: Mode,
     /// The layout the nodes have now: mode and whether it's the compact (narrow) one.
@@ -119,6 +168,7 @@ pub struct PlayerOverlay {
     last_pointer: Option<Vec2>,
     last_activity: Instant,
     scrubbed_at: Option<Instant>,
+    volume_set_at: Option<Instant>,
     /// The site player whose video was asked to cover the site's own fullscreen UI.
     takeover: Option<String>,
 }
@@ -136,30 +186,64 @@ fn square(side: f32) -> Size<Dimension> {
     Size { width: length(side), height: length(side) }
 }
 
-fn button(
+fn absolute(
+    left: LengthPercentageAuto,
+    top: LengthPercentageAuto,
+    right: LengthPercentageAuto,
+    bottom: LengthPercentageAuto,
+) -> Style {
+    Style { position: Position::Absolute, inset: Rect { left, right, top, bottom }, ..Default::default() }
+}
+
+/// A dark glass circle with an icon (and, for the skip buttons, the seconds inside it).
+fn circle(
     ui: &mut Ui,
     parent: NodeId,
     control: Control,
     icon: Icon,
     side: f32,
-    filled: bool,
+    text: Option<&str>,
 ) -> (NodeId, NodeId) {
-    let mut widget = Widget::container().with_action(control.id()).with_radius(CAPSULE);
-    if filled {
-        widget = widget.with_background(Background::Fill(Paint::Label, 0.18));
-    }
     let node = ui.add(
         parent,
-        widget,
+        Widget::container()
+            .with_action(control.id())
+            .with_radius(CAPSULE)
+            .with_background(Background::Glass(GlassLevel::Thick)),
         Style { size: square(side), flex_shrink: 0.0, justify_content: JustifyContent::CENTER, ..row(0.0) },
     );
-    let glyph =
-        ui.add(node, Widget::icon(icon, side * ICON_RATIO).with_paint(Paint::Label), Style::default());
+    let glyph_side = side * ICON_RATIO;
+    let glyph = ui.add(node, Widget::icon(icon, glyph_side).with_paint(Paint::Label), Style::default());
+    if let Some(text) = text {
+        // Drawn over the icon: same width, pulled back over it with a negative margin.
+        let label = ui.add_label(
+            node,
+            text,
+            TextStyle::Caption,
+            Style {
+                size: Size { width: length(glyph_side), height: length(glyph_side) },
+                margin: Rect {
+                    left: length(-glyph_side),
+                    right: length(0.0),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+        );
+        ui.set_label_align(label, Align::Center);
+    }
     (node, glyph)
 }
 
-fn label(ui: &mut Ui, parent: NodeId, text: &str, style: TextStyle) -> NodeId {
-    ui.add_label(parent, text, style, Style { flex_shrink: 0.0, ..Default::default() })
+fn time_label(ui: &mut Ui, parent: NodeId, text: &str) -> NodeId {
+    let label =
+        ui.add_label(parent, text, TextStyle::Caption, Style { flex_shrink: 0.0, ..Default::default() });
+    if let Some(w) = ui.widget_mut(label) {
+        w.set_paint(Paint::Secondary);
+    }
+    label
 }
 
 impl PlayerOverlay {
@@ -171,121 +255,134 @@ impl PlayerOverlay {
         );
         ui.set_plane_dark(root, true);
 
-        let title_pill = ui.add(
+        // Top left: close / fullscreen and Picture-in-Picture.
+        let top_left = ui.add(root, Widget::container(), Style { ..row(CIRCLE_GAP) });
+        let (_, first_icon) =
+            circle(ui, top_left, Control::Fullscreen, Icon::Fullscreen, FULLSCREEN.corner, None);
+        circle(ui, top_left, Control::PictureInPicture, Icon::PictureInPicture, FULLSCREEN.corner, None);
+
+        // Top right: volume.
+        let volume_capsule = ui.add(
             root,
             Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(CAPSULE),
             Style {
-                position: Position::Absolute,
-                inset: Rect { left: length(24.0), top: length(20.0), right: auto(), bottom: auto() },
-                size: Size { width: auto(), height: length(44.0) },
-                max_size: Size { width: percent(0.6), height: auto() },
+                padding: Rect {
+                    left: length(14.0),
+                    right: length(4.0),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
+                ..row(6.0)
+            },
+        );
+        let volume = ui.add(
+            volume_capsule,
+            Widget::line_slider(1.0),
+            Style {
+                flex_grow: 1.0,
+                min_size: Size { width: length(40.0), height: auto() },
+                ..Default::default()
+            },
+        );
+        let mute = ui.add(
+            volume_capsule,
+            Widget::container().with_action(Control::Mute.id()).with_radius(CAPSULE),
+            Style {
+                size: square(30.0),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                ..row(0.0)
+            },
+        );
+        let mute_icon =
+            ui.add(mute, Widget::icon(Icon::Volume, 18.0).with_paint(Paint::Label), Style::default());
+
+        // Centre: skip back, play/pause, skip forward. The row covers the video but takes no
+        // clicks itself (no background, no action).
+        let centre = ui.add(
+            root,
+            Widget::container(),
+            Style {
+                size: Size { width: percent(1.0), height: percent(1.0) },
+                justify_content: JustifyContent::CENTER,
+                ..row(FULLSCREEN.centre_gap)
+            },
+        );
+        let (skip_back, _) =
+            circle(ui, centre, Control::SkipBack, Icon::SkipBack, FULLSCREEN.skip, Some("10"));
+        let (play, play_icon) = circle(ui, centre, Control::PlayPause, Icon::Pause, FULLSCREEN.play, None);
+        let (skip_forward, _) =
+            circle(ui, centre, Control::SkipForward, Icon::SkipForward, FULLSCREEN.skip, Some("10"));
+
+        // Above the bar at the right: captions and speed.
+        let side_buttons = ui.add(root, Widget::container(), Style { ..row(CIRCLE_GAP) });
+        let (captions, _) =
+            circle(ui, side_buttons, Control::Captions, Icon::Captions, FULLSCREEN.small, None);
+        circle(ui, side_buttons, Control::Speed, Icon::Gauge, FULLSCREEN.small, None);
+        let speed_menu = ui.add(
+            root,
+            Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(18.0),
+            Style {
+                size: Size { width: length(SPEED_MENU_WIDTH), height: auto() },
+                flex_direction: FlexDirection::Column,
+                padding: Rect {
+                    left: length(6.0),
+                    right: length(6.0),
+                    top: length(8.0),
+                    bottom: length(6.0),
+                },
+                ..Default::default()
+            },
+        );
+        ui.set_visible(speed_menu, false);
+
+        // Bottom: elapsed, progress, remaining in one capsule.
+        let bar = ui.add(
+            root,
+            Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(CAPSULE),
+            Style {
                 padding: Rect {
                     left: length(16.0),
                     right: length(16.0),
                     top: length(0.0),
                     bottom: length(0.0),
                 },
-                flex_direction: FlexDirection::Column,
-                justify_content: JustifyContent::CENTER,
-                ..Default::default()
+                ..row(10.0)
             },
         );
-        let title = ui.add_label(title_pill, "", TextStyle::Callout, Style::default());
-        let subtitle = ui.add_label(title_pill, "", TextStyle::Footnote, Style::default());
-        if let Some(w) = ui.widget_mut(subtitle) {
-            w.set_paint(Paint::Secondary);
-        }
-
-        let corner = ui.add(
-            root,
-            Widget::container().with_background(Background::Glass(GlassLevel::Regular)).with_radius(CAPSULE),
-            Style {
-                position: Position::Absolute,
-                inset: Rect { right: length(12.0), top: length(12.0), left: auto(), bottom: auto() },
-                padding: Rect {
-                    left: length(3.0),
-                    right: length(3.0),
-                    top: length(3.0),
-                    bottom: length(3.0),
-                },
-                ..row(2.0)
-            },
-        );
-        let (_, fullscreen_icon) =
-            button(ui, corner, Control::Fullscreen, Icon::Fullscreen, CORNER_BUTTON, false);
-
-        // Thick glass: the controls must stay legible over any video.
-        let bar = ui.add(
-            root,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(CAPSULE),
-            Style {
-                position: Position::Absolute,
-                padding: Rect {
-                    left: length(6.0),
-                    right: length(8.0),
-                    top: length(0.0),
-                    bottom: length(0.0),
-                },
-                ..row(4.0)
-            },
-        );
-        let (skip_back, _) = button(ui, bar, Control::SkipBack, Icon::SkipBack, SKIP_BUTTON, false);
-        let (_, play_icon) = button(ui, bar, Control::PlayPause, Icon::Pause, PLAY_BUTTON, true);
-        let (skip_forward, _) = button(ui, bar, Control::SkipForward, Icon::SkipForward, SKIP_BUTTON, false);
-        let time = label(ui, bar, "0:00", TextStyle::Footnote);
+        let time = time_label(ui, bar, "0:00");
         let scrubber = ui.add(
             bar,
-            Widget::slider(0.0),
+            Widget::line_slider(0.0),
             Style {
                 flex_grow: 1.0,
                 flex_shrink: 1.0,
                 min_size: Size { width: length(40.0), height: auto() },
-                margin: Rect { left: length(8.0), right: length(8.0), top: length(0.0), bottom: length(0.0) },
                 ..Default::default()
             },
         );
-        let remaining = label(ui, bar, "-0:00", TextStyle::Footnote);
-        let (_, mute_icon) = button(ui, bar, Control::Mute, Icon::Volume, BUTTON, false);
-        let speed = ui.add(
-            bar,
-            Widget::container().with_action(Control::Speed.id()).with_radius(CAPSULE),
-            Style {
-                size: Size { width: auto(), height: length(28.0) },
-                min_size: Size { width: length(BUTTON), height: auto() },
-                padding: Rect {
-                    left: length(8.0),
-                    right: length(8.0),
-                    top: length(0.0),
-                    bottom: length(0.0),
-                },
-                justify_content: JustifyContent::CENTER,
-                flex_shrink: 0.0,
-                ..row(0.0)
-            },
-        );
-        let speed_label = ui.add_label(speed, "1×", TextStyle::Footnote, Style::default());
-        let (captions, _) = button(ui, bar, Control::Captions, Icon::Captions, BUTTON, false);
-        let (exit, _) = button(ui, bar, Control::Fullscreen, Icon::ExitFullscreen, BUTTON, false);
+        let remaining = time_label(ui, bar, "-0:00");
         ui.set_visible(root, false);
         Self {
             root,
-            title_pill,
-            title,
-            subtitle,
-            corner,
-            bar,
+            top_left,
+            first_icon,
+            volume_capsule,
+            volume,
+            mute_icon,
+            centre,
             skip_back,
-            skip_forward,
+            play,
             play_icon,
+            skip_forward,
+            side_buttons,
+            captions,
+            speed_menu,
+            speed_menu_open: false,
+            bar,
             time,
             scrubber,
             remaining,
-            mute_icon,
-            speed,
-            speed_label,
-            captions,
-            exit,
-            fullscreen_icon,
             opacity: Animated::new(0.0, Spring::SNAPPY),
             mode: Mode::Hidden,
             layout: None,
@@ -293,6 +390,7 @@ impl PlayerOverlay {
             last_pointer: None,
             last_activity: Instant::now(),
             scrubbed_at: None,
+            volume_set_at: None,
             takeover: None,
         }
     }
@@ -304,6 +402,11 @@ impl PlayerOverlay {
     /// The scrubber node, whose value changes seek.
     pub fn scrubber(&self) -> NodeId {
         self.scrubber
+    }
+
+    /// The volume slider node.
+    pub fn volume(&self) -> NodeId {
+        self.volume
     }
 
     /// The controls are showing (fullscreen ones may have hidden themselves).
@@ -327,6 +430,7 @@ impl PlayerOverlay {
         self.mode = mode;
         let (Some(player), Some(view), Some(rect)) = (player, cx.view, rect) else {
             self.target = None;
+            self.close_speed_menu(ui);
             self.fade(ui, false, dt);
             return;
         };
@@ -336,21 +440,24 @@ impl PlayerOverlay {
             self.apply_layout(ui, layout.0, layout.1);
         }
         self.place(ui, rect);
-        self.show_state(ui, &player, cx);
+        self.show_state(ui, &player);
         let pointer_inside = cx.pointer.is_some_and(|p| rect.contains(p));
         let recently_active =
             now.duration_since(self.last_activity).as_secs_f32() < config.media.hide_controls_after_seconds;
-        let scrubbing = ui.dragging() == Some(self.scrubber);
-        let visible = scrubbing
+        let held = ui.dragging().is_some_and(|n| n == self.scrubber || n == self.volume);
+        let visible = held
+            || self.speed_menu_open
             || !player.is_playing()
             || match mode {
                 Mode::Fullscreen => recently_active,
                 _ => pointer_inside && recently_active,
             };
         self.target = Some((view, player));
+        if !visible {
+            self.close_speed_menu(ui);
+        }
         self.fade(ui, visible, dt);
     }
-
     fn choose(&self, config: &Config, cx: &Context<'_>) -> (Mode, Option<Player>, Option<Frame>) {
         let Some(media) = cx.media else { return (Mode::Hidden, None, None) };
         if cx.page_fullscreen {
@@ -391,20 +498,72 @@ impl PlayerOverlay {
 
     fn apply_layout(&self, ui: &mut Ui, mode: Mode, compact: bool) {
         let fullscreen = mode == Mode::Fullscreen;
-        let (side, bottom, height) = if fullscreen { FULLSCREEN_BAR } else { INLINE_BAR };
-        let mut style = ui.style(self.bar);
-        style.inset = Rect { left: length(side), right: length(side), bottom: length(bottom), top: auto() };
-        style.size = Size { width: auto(), height: length(height) };
-        ui.set_style(self.bar, style);
-        ui.set_visible(self.title_pill, fullscreen);
-        ui.set_visible(self.corner, !fullscreen);
-        ui.set_visible(self.skip_back, fullscreen);
-        ui.set_visible(self.skip_forward, fullscreen);
-        ui.set_visible(self.exit, fullscreen);
+        let m = if fullscreen { FULLSCREEN } else { INLINE };
+        let set = |ui: &mut Ui, node: NodeId, f: &dyn Fn(&mut Style)| {
+            let mut style = ui.style(node);
+            f(&mut style);
+            ui.set_style(node, style);
+        };
+        set(ui, self.top_left, &|st| {
+            *st = Style { ..absolute(length(m.margin), length(m.margin), auto(), auto()) };
+            st.flex_direction = FlexDirection::Row;
+            st.align_items = AlignItems::CENTER;
+            st.gap = Size { width: length(CIRCLE_GAP), height: length(0.0) };
+        });
+        for node in ui.children(self.top_left) {
+            set(ui, node, &|st| st.size = square(m.corner));
+        }
+        set(ui, self.volume_capsule, &|st| {
+            st.position = Position::Absolute;
+            st.inset = Rect { left: auto(), top: length(m.margin), right: length(m.margin), bottom: auto() };
+            st.size = Size { width: length(m.volume.x), height: length(m.volume.y) };
+        });
+        set(ui, self.centre, &|st| {
+            st.position = Position::Absolute;
+            st.inset = Rect { left: length(0.0), top: length(0.0), right: auto(), bottom: auto() };
+            st.gap = Size { width: length(m.centre_gap), height: length(0.0) };
+        });
+        for node in [self.skip_back, self.skip_forward] {
+            set(ui, node, &|st| st.size = square(m.skip));
+        }
+        set(ui, self.play, &|st| st.size = square(m.play));
+        set(ui, self.bar, &|st| {
+            st.position = Position::Absolute;
+            st.inset = Rect {
+                left: length(m.margin),
+                top: auto(),
+                right: length(m.margin),
+                bottom: length(m.margin),
+            };
+            st.size = Size { width: auto(), height: length(m.bar_height) };
+        });
+        set(ui, self.side_buttons, &|st| {
+            st.position = Position::Absolute;
+            st.inset = Rect {
+                left: auto(),
+                top: auto(),
+                right: length(m.margin),
+                bottom: length(m.margin + m.bar_height + CIRCLE_GAP),
+            };
+        });
+        for node in ui.children(self.side_buttons) {
+            set(ui, node, &|st| st.size = square(m.small));
+        }
+        set(ui, self.speed_menu, &|st| {
+            st.position = Position::Absolute;
+            st.inset = Rect {
+                left: auto(),
+                top: auto(),
+                right: length(m.margin),
+                bottom: length(m.margin + m.bar_height + m.small + 2.0 * CIRCLE_GAP),
+            };
+        });
+        ui.set_visible(self.skip_back, !compact);
+        ui.set_visible(self.skip_forward, !compact);
+        ui.set_visible(self.volume_capsule, !compact);
         ui.set_visible(self.time, !compact);
         ui.set_visible(self.remaining, !compact);
-        ui.set_visible(self.speed, !compact);
-        ui.set_icon(self.fullscreen_icon, if fullscreen { Icon::ExitFullscreen } else { Icon::Fullscreen });
+        ui.set_icon(self.first_icon, if fullscreen { Icon::Close } else { Icon::Fullscreen });
     }
 
     fn place(&self, ui: &mut Ui, rect: Frame) {
@@ -417,34 +576,27 @@ impl PlayerOverlay {
         }
     }
 
-    fn show_state(&mut self, ui: &mut Ui, player: &Player, cx: &Context<'_>) {
+    fn show_state(&mut self, ui: &mut Ui, player: &Player) {
         ui.set_icon(self.play_icon, if player.is_playing() { Icon::Pause } else { Icon::Play });
-        ui.set_icon(
-            self.mute_icon,
-            if player.muted || player.volume == 0.0 { Icon::Muted } else { Icon::Volume },
-        );
+        let silent = player.muted || player.volume == 0.0;
+        ui.set_icon(self.mute_icon, if silent { Icon::Muted } else { Icon::Volume });
         ui.set_text(self.time, &format_time(player.time));
         let remaining = if player.live {
             "Live".to_owned()
         } else {
-            format!("-{}", format_time(player.duration - player.time))
+            format!("−{}", format_time(player.duration - player.time))
         };
         ui.set_text(self.remaining, &remaining);
-        ui.set_text(self.speed_label, &format_rate(player.rate));
         ui.set_visible(self.captions, !player.captions.is_empty());
         let scrubbing = ui.dragging() == Some(self.scrubber)
             || self.scrubbed_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
         if !scrubbing && player.duration > 0.0 {
             ui.set_value(self.scrubber, (player.time / player.duration) as f32);
         }
-        if self.mode == Mode::Fullscreen {
-            let session = cx.media.and_then(|m| m.session.clone()).unwrap_or_default();
-            let SessionInfo { title, artist, .. } = session;
-            let title = if title.is_empty() { cx.page_title.to_owned() } else { title };
-            let subtitle =
-                if artist.is_empty() { cx.host.to_owned() } else { format!("{artist} · {}", cx.host) };
-            ui.set_text(self.title, &title);
-            ui.set_text(self.subtitle, &subtitle);
+        let adjusting = ui.dragging() == Some(self.volume)
+            || self.volume_set_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
+        if !adjusting {
+            ui.set_value(self.volume, if player.muted { 0.0 } else { player.volume as f32 });
         }
     }
 
@@ -456,8 +608,104 @@ impl PlayerOverlay {
         ui.set_opacity(self.root, self.opacity.value.clamp(0.0, 1.0));
     }
 
+    fn close_speed_menu(&mut self, ui: &mut Ui) {
+        if self.speed_menu_open {
+            self.speed_menu_open = false;
+            ui.set_visible(self.speed_menu, false);
+        }
+    }
+
+    /// Opens the speed menu ("Playback Speed", fastest first, the current one checked).
+    fn toggle_speed_menu(&mut self, ui: &mut Ui, config: &Config) {
+        if self.speed_menu_open {
+            self.close_speed_menu(ui);
+            return;
+        }
+        let Some((_, player)) = &self.target else { return };
+        let rate = player.rate;
+        ui.clear_children(self.speed_menu);
+        let header = ui.add_label(
+            self.speed_menu,
+            "Playback Speed",
+            TextStyle::Footnote,
+            Style {
+                margin: Rect {
+                    left: length(12.0),
+                    right: length(0.0),
+                    top: length(0.0),
+                    bottom: length(4.0),
+                },
+                ..Default::default()
+            },
+        );
+        if let Some(w) = ui.widget_mut(header) {
+            w.set_paint(Paint::Secondary);
+        }
+        let mut speeds: Vec<(usize, f32)> =
+            config.media.playback_speeds.iter().copied().enumerate().collect();
+        speeds.sort_by(|a, b| b.1.total_cmp(&a.1));
+        for (i, speed) in speeds {
+            let row_node = ui.add(
+                self.speed_menu,
+                Widget::container().with_action(Control::SpeedChoice(i).id()).with_radius(10.0),
+                Style {
+                    size: Size { width: auto(), height: length(SPEED_ROW) },
+                    padding: Rect {
+                        left: length(8.0),
+                        right: length(12.0),
+                        top: length(0.0),
+                        bottom: length(0.0),
+                    },
+                    ..row(6.0)
+                },
+            );
+            let slot = ui.add(
+                row_node,
+                Widget::container(),
+                Style { size: square(16.0), flex_shrink: 0.0, ..Default::default() },
+            );
+            if (f64::from(speed) - rate).abs() < 0.01 {
+                ui.add(slot, Widget::icon(Icon::Check, 16.0).with_paint(Paint::Label), Style::default());
+            }
+            ui.add_label(row_node, &format_rate(f64::from(speed)), TextStyle::Body, Style::default());
+        }
+        ui.set_visible(self.speed_menu, true);
+        self.speed_menu_open = true;
+    }
+
+    /// What a click on one of the controls does.
+    pub fn click(&mut self, ui: &mut Ui, control: Control, config: &Config) -> Outcome {
+        self.wake();
+        match control {
+            Control::Speed => {
+                self.toggle_speed_menu(ui, config);
+                return Outcome::Nothing;
+            }
+            Control::PictureInPicture => {
+                self.close_speed_menu(ui);
+                return match &self.target {
+                    Some((view, player)) => Outcome::PictureInPicture(*view, player.clone()),
+                    None => Outcome::Nothing,
+                };
+            }
+            Control::SpeedChoice(_) => self.close_speed_menu(ui),
+            _ => {}
+        }
+        match self.command(control, config) {
+            Some((view, command)) => Outcome::Command(view, command),
+            None => Outcome::Nothing,
+        }
+    }
+
+    /// The volume slider moved.
+    pub fn volume_command(&mut self, value: f32) -> Option<(ViewId, Command)> {
+        let (view, player) = self.target.as_ref()?;
+        self.volume_set_at = Some(Instant::now());
+        Some((*view, Command::new(&player.id, Action::Volume(f64::from(value)))))
+    }
+
     /// The bridge command for a click on one of the controls.
-    pub fn command(&self, control: Control, config: &Config) -> Option<(ViewId, Command)> {
+    fn command(&self, control: Control, config: &Config) -> Option<(ViewId, Command)> {
         let (view, player) = self.target.as_ref()?;
         let action = match control {
             Control::PlayPause => Action::Toggle,
@@ -467,6 +715,8 @@ impl PlayerOverlay {
             Control::Speed => Action::Rate(next_rate(&config.media.playback_speeds, player.rate)),
             Control::Captions => Action::Caption(next_caption(player)),
             Control::Fullscreen => Action::Fullscreen(self.mode != Mode::Fullscreen),
+            Control::SpeedChoice(i) => Action::Rate(f64::from(*config.media.playback_speeds.get(i)?)),
+            Control::PictureInPicture => return None,
         };
         Some((*view, Command::new(&player.id, action)))
     }
@@ -597,7 +847,7 @@ mod tests {
 
     #[test]
     fn control_ids_round_trip() {
-        for c in CONTROLS {
+        for c in CONTROLS.into_iter().chain([Control::SpeedChoice(0), Control::SpeedChoice(5)]) {
             assert_eq!(Control::from_id(c.id()), Some(c));
         }
     }

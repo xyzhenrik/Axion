@@ -6,12 +6,12 @@ use anyhow::Result;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
+/// The GPU objects the browser's windows share.
+pub type Gpu = (wgpu::Instance, wgpu::Surface<'static>, wgpu::Adapter, wgpu::Device, wgpu::Queue);
+
 /// Creates the surface and a Vulkan device. Picks the discrete GPU unless `AXION_GPU=low`, and
 /// enables zero-copy frame import from Chromium when the driver supports it.
-pub fn init(
-    event_loop: &ActiveEventLoop,
-    window: &Arc<Window>,
-) -> Result<(wgpu::Surface<'static>, wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+pub fn init(event_loop: &ActiveEventLoop, window: &Arc<Window>) -> Result<Gpu> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         // CEF's frame sharing on Linux needs Vulkan external memory.
         backends: wgpu::Backends::VULKAN,
@@ -38,5 +38,5 @@ pub fn init(
         required_features: adapter.features() & wanted,
         ..Default::default()
     }))?;
-    Ok((surface, adapter, device, queue))
+    Ok((instance, surface, adapter, device, queue))
 }

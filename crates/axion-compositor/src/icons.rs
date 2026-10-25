@@ -80,6 +80,8 @@ icons! {
     SkipBack => "M4 12a8 8 0 1 0 2.34-5.66M4 4v5h5",
     SkipForward => "M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5",
     ExitFullscreen => "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5",
+    Gauge => "M4.5 16.5a7.5 7.5 0 1 1 15 0M12 16.5l3.5-4.5M7.5 16.5h.01M16.5 16.5h.01",
+    Check => "M5 12.5l4.5 4.5L19 7.5",
 }
 
 /// Packs icon and weight into glyphon's custom glyph id.

@@ -104,14 +104,18 @@ pub enum WidgetKind {
     Toggle {
         on: bool,
     },
-    /// A horizontal slider with a value in 0–1.
+    /// A horizontal slider with a value in 0–1. A `line` slider has no knob: a thin track
+    /// that fills with the label colour and thickens while dragged (media progress, volume).
     Slider {
         value: f32,
+        line: bool,
     },
     /// A texture scaled to cover the frame, cropped from the top (tab thumbnails, favicons).
     Image {
         view: Option<wgpu::TextureView>,
         size: (u32, u32),
+        /// Only this part of the texture (0–1 coordinates), stretched over the frame.
+        crop: Option<axion_compositor::Rect>,
     },
 }
 
@@ -164,11 +168,16 @@ impl Widget {
     }
 
     pub fn slider(value: f32) -> Self {
-        Self::new(WidgetKind::Slider { value: value.clamp(0.0, 1.0) })
+        Self::new(WidgetKind::Slider { value: value.clamp(0.0, 1.0), line: false })
+    }
+
+    /// A knobless line slider (see [`WidgetKind::Slider`]).
+    pub fn line_slider(value: f32) -> Self {
+        Self::new(WidgetKind::Slider { value: value.clamp(0.0, 1.0), line: true })
     }
 
     pub fn image() -> Self {
-        Self::new(WidgetKind::Image { view: None, size: (1, 1) })
+        Self::new(WidgetKind::Image { view: None, size: (1, 1), crop: None })
     }
 
     pub fn progress(paint: Paint) -> Self {

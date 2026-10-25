@@ -27,7 +27,11 @@ use crate::lockscreen::LockScreen;
 use crate::menu::{Menu, MenuAction, MenuItem};
 use crate::mpris::{Mpris, MprisCommand, Track};
 use crate::overview::{Overview, OverviewAction};
-use crate::player::{Context as PlayerContext, Control as PlayerControl, Mode as PlayerMode, PlayerOverlay};
+use crate::pip::{PipOutcome, PipWindow};
+use crate::player::{
+    Context as PlayerContext, Control as PlayerControl, Mode as PlayerMode, Outcome as PlayerOutcome,
+    PlayerOverlay,
+};
 use crate::private::PrivateLock;
 use crate::settings::{Category, Outcome, SettingsAction, SettingsSheet};
 use crate::shields::ShieldsState;
@@ -110,6 +114,12 @@ pub struct Browser {
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
     player: PlayerOverlay,
+    /// The Picture in Picture window (kept once opened, hidden while unused).
+    pip: Option<PipWindow>,
+    /// PiP to start once the window exists (windows are made in `sync_windows`).
+    pip_request: Option<(ViewId, axion_media::Player)>,
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
     site_click: Option<SiteClick>,
     /// The tab whose media the Now Playing card and the desktop (MPRIS) show.
     now_playing: Option<ViewId>,
@@ -188,7 +198,7 @@ impl Browser {
         );
 
         place_on_monitor(event_loop, &window);
-        let (surface, adapter, device, queue) = crate::gpu::init(event_loop, &window)?;
+        let (instance, surface, adapter, device, queue) = crate::gpu::init(event_loop, &window)?;
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
         // Pages arrive as 8-bit sRGB-encoded BGRA and the compositor blends in that space, so
@@ -279,6 +289,10 @@ impl Browser {
             shields,
             shields_popover,
             player,
+            pip: None,
+            pip_request: None,
+            instance,
+            adapter: adapter.clone(),
             site_click: None,
             now_playing: None,
             mpris: if config.media.desktop_integration { Mpris::start() } else { None },
@@ -650,7 +664,11 @@ impl Browser {
             axion_media::Message::State(media) => {
                 let playing = media.primary().is_some_and(axion_media::Player::is_playing);
                 if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
-                    tab.playing_media = media.is_audible();
+                    let audible = media.is_audible();
+                    if audible != tab.playing_media {
+                        self.tabs_changed = true;
+                    }
+                    tab.playing_media = audible;
                     tab.media = Some(media);
                 }
                 // The tab that started playing last is the one the desktop controls.
@@ -766,11 +784,139 @@ impl Browser {
         }
     }
 
+    fn start_pip(&mut self, view: ViewId, player: axion_media::Player) {
+        if let Some(old) = self.pip_view().filter(|&v| v != view) {
+            self.end_pip(old, None, false);
+        }
+        if self.chrome.page_fullscreen() {
+            let leave = axion_media::Command::new(&player.id, axion_media::Action::Fullscreen(false));
+            self.media_command(view, &leave);
+        }
+        match &mut self.pip {
+            Some(pip) => pip.show(view, player),
+            None => self.pip_request = Some((view, player)),
+        }
+    }
+
+    fn pip_view(&self) -> Option<ViewId> {
+        self.pip.as_ref().and_then(|p| p.view)
+    }
+
+    /// Opens windows that need the event loop (the PiP window).
+    pub fn sync_windows(&mut self, event_loop: &ActiveEventLoop) {
+        let Some((view, player)) = self.pip_request.take() else { return };
+        if self.pip.is_none() {
+            match PipWindow::new(
+                event_loop,
+                &self.instance,
+                &self.adapter,
+                &self.device,
+                &self.queue,
+                &self.config,
+            ) {
+                Ok(pip) => self.pip = Some(pip),
+                Err(e) => {
+                    tracing::error!("Picture in Picture failed: {e:#}");
+                    return;
+                }
+            }
+        }
+        if let Some(pip) = &mut self.pip {
+            pip.show(view, player);
+        }
+    }
+
+    pub fn is_pip_window(&self, id: winit::window::WindowId) -> bool {
+        self.pip.as_ref().is_some_and(|p| p.id() == id)
+    }
+
+    pub fn pip_window_event(&mut self, event: WindowEvent) {
+        let Some(pip) = &mut self.pip else { return };
+        match pip.window_event(event, &self.config) {
+            Some(PipOutcome::Command(view, command)) => self.media_command(view, &command),
+            Some(PipOutcome::Close(view, id)) => self.end_pip(view, Some(&id), false),
+            Some(PipOutcome::BackToTab(view)) => {
+                self.end_pip(view, None, true);
+                self.window.focus_window();
+            }
+            None => {}
+        }
+    }
+
+    /// Ends PiP; `pause` with the player's id pauses the video (the × button).
+    fn end_pip(&mut self, view: ViewId, pause: Option<&str>, show_tab: bool) {
+        let takeover =
+            self.pip.as_ref().filter(|p| p.takeover).and_then(|p| p.player.as_ref()).map(|p| p.id.clone());
+        if let Some(id) = takeover {
+            self.media_command(view, &axion_media::Command::new(&id, axion_media::Action::Takeover(false)));
+        }
+        if let Some(id) = pause {
+            self.media_command(view, &axion_media::Command::new(id, axion_media::Action::Pause));
+        }
+        if let Some(pip) = &mut self.pip {
+            pip.hide();
+        }
+        if show_tab {
+            self.show_view(view);
+        } else if Some(view) != self.active_view() {
+            self.engine.set_hidden(view, true);
+        }
+    }
+
+    /// Keeps the PiP picture current: the video's part of its tab while that tab is shown,
+    /// otherwise the whole (hidden, still rendering) tab, where the video covers the page.
+    fn update_pip(&mut self) {
+        let Some(view) = self.pip_view() else { return };
+        let id = self.pip.as_ref().and_then(|p| p.player.as_ref()).map(|p| p.id.clone()).unwrap_or_default();
+        let found = find_tab(&self.tabs, &self.parked, view).map(|tab| {
+            let dpr =
+                tab.media.as_ref().map_or(self.scale(), |m| if m.dpr > 0.0 { m.dpr } else { self.scale() });
+            (tab.media.as_ref().and_then(|m| m.get(&id)).cloned(), dpr)
+        });
+        let Some((Some(player), dpr)) = found else {
+            // The tab closed or its page went away: PiP ends with it.
+            if let Some(pip) = &mut self.pip {
+                pip.hide();
+            }
+            return;
+        };
+        let shown = Some(view) == self.active_view() && !self.overview.is_open();
+        let takeover = self.pip.as_ref().is_some_and(|p| p.takeover);
+        if shown && takeover {
+            self.media_command(view, &axion_media::Command::new(&id, axion_media::Action::Takeover(false)));
+        } else if !shown && !takeover {
+            self.media_command(view, &axion_media::Command::new(&id, axion_media::Action::Takeover(true)));
+            self.engine.set_hidden(view, false);
+            // A hidden-then-shown view only renders again after a resize.
+            self.engine.resize(view, self.view_size());
+        }
+        if !shown {
+            self.engine.request_frame(view);
+        }
+        let picture = self.engine.frame(view).map(|frame| {
+            let tex = Vec2::new(frame.texture.width() as f32, frame.texture.height() as f32);
+            let uv = if !shown {
+                letterbox(tex, player.aspect())
+            } else {
+                let r = Rect::new(player.x * dpr, player.y * dpr, player.w * dpr, player.h * dpr);
+                let min = (r.origin / tex).clamp(Vec2::ZERO, Vec2::ONE);
+                let max = ((r.origin + r.size) / tex).clamp(Vec2::ZERO, Vec2::ONE);
+                Rect { origin: min, size: (max - min).max(Vec2::splat(0.001)) }
+            };
+            let size = (frame.texture.width(), frame.texture.height());
+            ((frame.texture.create_view(&Default::default()), size), uv)
+        });
+        if let Some(pip) = &mut self.pip {
+            pip.takeover = !shown;
+            pip.player = Some(player);
+            pip.render(picture);
+        }
+    }
+
     fn update_player(&mut self, dt: f32) {
         self.retry_site_click();
+        self.update_pip();
         let tab = self.tabs.active().filter(|_| !self.overview.is_open() && !self.is_locked());
-        let host = tab.map(|t| display_host(&t.url)).unwrap_or_default();
-        let title = tab.map(|t| t.label()).unwrap_or_default();
         let cx = PlayerContext {
             view: tab.map(|t| t.view),
             media: tab.and_then(|t| t.media.as_ref()),
@@ -778,8 +924,6 @@ impl Browser {
             scale: self.scale(),
             pointer: self.pointer,
             page_fullscreen: self.chrome.page_fullscreen(),
-            page_title: &title,
-            host: &host,
         };
         self.player.update(&mut self.ui, &self.config, &cx, dt);
         if let Some((view, command)) = self.player.takeover_command() {
@@ -877,6 +1021,7 @@ impl Browser {
             return;
         }
         self.lifecycle_checked = now;
+        let pip_view = self.pip_view();
         let infos: Vec<TabInfo<ViewId>> = self
             .tabs
             .all()
@@ -886,7 +1031,7 @@ impl Browser {
                 key: t.view,
                 lifecycle: t.lifecycle,
                 hidden_since: t.hidden_since,
-                playing_media: t.playing_media,
+                playing_media: t.playing_media || Some(t.view) == pip_view,
                 // A background tab still waiting for its overview snapshot counts as loading.
                 loading: t.loading || t.needs_snapshot,
             })
@@ -1222,10 +1367,15 @@ impl Browser {
                     }
                 }
                 UiEvent::Clicked { action, .. } if PlayerControl::from_id(action).is_some() => {
-                    let command =
-                        PlayerControl::from_id(action).and_then(|c| self.player.command(c, &self.config));
-                    if let Some((view, command)) = command {
-                        self.player.wake();
+                    let Some(control) = PlayerControl::from_id(action) else { continue };
+                    match self.player.click(&mut self.ui, control, &self.config) {
+                        PlayerOutcome::Command(view, command) => self.media_command(view, &command),
+                        PlayerOutcome::PictureInPicture(view, player) => self.start_pip(view, player),
+                        PlayerOutcome::Nothing => {}
+                    }
+                }
+                UiEvent::ValueChanged { node, value } if node == self.player.volume() => {
+                    if let Some((view, command)) = self.player.volume_command(value) {
                         self.media_command(view, &command);
                     }
                 }
@@ -1311,6 +1461,14 @@ impl Browser {
                     }
                     Some(ChromeAction::Private) => self.toggle_private_mode(),
                     Some(ChromeAction::NewTabGroup) => tracing::info!("tab groups arrive in a later phase"),
+                    Some(ChromeAction::MuteTab) => {
+                        if let Some(tab) = self.tabs.active_mut() {
+                            tab.muted = !tab.muted;
+                            let (view, muted) = (tab.view, tab.muted);
+                            self.engine.set_audio_muted(view, muted);
+                            self.tabs_changed = true;
+                        }
+                    }
                     Some(ChromeAction::NowPlaying) => {
                         if let Some(view) = self.now_playing {
                             self.show_view(view);
@@ -1580,6 +1738,9 @@ impl Browser {
     }
 
     fn apply_theme(&mut self) {
+        if let Some(pip) = &mut self.pip {
+            pip.set_theme(&self.config);
+        }
         self.dark = is_dark(&self.config, &self.window);
         // Private browsing is always dark, like Safari's.
         self.ui.set_theme(Theme::new(&self.config, self.dark || self.private_mode));
@@ -1863,11 +2024,13 @@ impl Browser {
             self.session_dirty = true;
             self.session_changed = Instant::now();
             self.chrome.sync_tabs(&mut self.ui, &self.tabs, &self.favicons);
+            let audio = self.tabs.active().map_or((false, false), |t| (t.playing_media, t.muted));
+            self.chrome.set_audio(&mut self.ui, audio.0, audio.1);
             let level = self.tabs.active().map(|t| self.shields.level(&t.url));
             self.chrome.set_shield_active(&mut self.ui, level.is_some_and(|l| l != Level::Off));
             let title = self.tabs.active().map(|t| t.label()).unwrap_or_default();
             self.window.set_title(
-                if title.is_empty() { "Axion".to_owned() } else { format!("{title} — Axion") }.as_str(),
+                if title.is_empty() { "Axion".to_owned() } else { format!("Axion - {title}") }.as_str(),
             );
         }
         let now = Instant::now();
@@ -1897,12 +2060,37 @@ impl Browser {
                         self.media_command(view, &axion_media::Command::new(&id, axion_media::Action::Probe));
                     }
                 }
+                // Capture aid: press at window position X1:Y1 and drag to X2:Y2 without releasing
+                // ("drag:X1:Y1:X2:Y2", logical px) — shows held controls.
+                drag if drag.starts_with("drag:") => {
+                    let n: Vec<f32> = drag.split(':').skip(1).filter_map(|v| v.parse().ok()).collect();
+                    if let [x1, y1, x2, y2] = n[..] {
+                        let (_, _) = self.ui.handle(UiInput::PointerMove(Vec2::new(x1, y1)));
+                        let (_, events) = self.ui.handle(UiInput::PointerDown);
+                        self.handle_ui_events(events);
+                        let (_, events) = self.ui.handle(UiInput::PointerMove(Vec2::new(x2, y2)));
+                        self.handle_ui_events(events);
+                    }
+                }
                 // Capture aid: a real click at page position "click:X:Y" (logical px).
                 click if click.starts_with("click:") => {
                     let mut parts = click.split(':').skip(1).filter_map(|n| n.parse::<f32>().ok());
                     if let (Some(x), Some(y), Some(view)) = (parts.next(), parts.next(), self.active_view()) {
                         self.click_page(view, Vec2::new(x, y));
                     }
+                }
+                // Capture aid: start Picture in Picture for the page's main video.
+                "player-pip" => {
+                    let target = self
+                        .active_view()
+                        .zip(self.active_view().and_then(|v| self.primary_player(v)).cloned());
+                    if let Some((view, player)) = target {
+                        self.start_pip(view, player);
+                    }
+                }
+                // Capture aid: open the player's speed menu.
+                "player-speed" => {
+                    let _ = self.player.click(&mut self.ui, PlayerControl::Speed, &self.config);
                 }
                 // Capture aid: scroll the page's main player into view.
                 "scroll-player" => {
@@ -1925,7 +2113,9 @@ impl Browser {
                         controls.push(PlayerControl::Fullscreen);
                     }
                     for control in controls {
-                        if let Some((view, command)) = self.player.command(control, &self.config) {
+                        if let PlayerOutcome::Command(view, command) =
+                            self.player.click(&mut self.ui, control, &self.config)
+                        {
                             self.media_command(view, &command);
                         }
                     }
@@ -2049,6 +2239,18 @@ impl Browser {
                 .save(path)
                 .with_context(|| format!("saving {}", path.display()))?;
             tracing::info!(path = %path.display(), "saved screenshot");
+            // The PiP window too, next to it ("shot.png" → "shot-pip.png").
+            if let Some((w, h, pixels)) =
+                self.pip.as_ref().filter(|p| p.is_active()).and_then(PipWindow::read_back)
+            {
+                let pip_path = path.with_file_name(format!(
+                    "{}-pip.png",
+                    path.file_stem().and_then(|s| s.to_str()).unwrap_or("capture")
+                ));
+                if let Some(img) = image::RgbaImage::from_raw(w, h, pixels) {
+                    let _ = img.save(&pip_path);
+                }
+            }
             bail!(CaptureDone);
         }
         Ok(())
@@ -2169,6 +2371,17 @@ fn media_replace(config: &Config) -> axion_media::Replace {
         site_players: media.own_controls && media.replace_site_players,
         trusted_sites: media.trusted_player_sites.clone(),
     }
+}
+
+/// The part (0–1) of a frame of size `tex` that shows a video of `aspect` letterboxed in it.
+fn letterbox(tex: Vec2, aspect: f32) -> Rect {
+    let frame_aspect = tex.x / tex.y.max(1.0);
+    let size = if aspect > frame_aspect {
+        Vec2::new(1.0, frame_aspect / aspect)
+    } else {
+        Vec2::new(aspect / frame_aspect, 1.0)
+    };
+    Rect { origin: (Vec2::ONE - size) / 2.0, size }
 }
 
 /// A per-run secret that keeps the media bridge's frame messages apart from the page's.
