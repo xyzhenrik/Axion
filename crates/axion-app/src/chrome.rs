@@ -8,7 +8,7 @@
 //!   bookmarks, reading list and history. Docked in wide windows, floating otherwise.
 
 use axion_compositor::{Icon, IconWeight, Rect as Frame};
-use axion_config::{Color, Config, SidebarMode, TabBarStyle};
+use axion_config::{Config, SidebarMode, TabBarStyle};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Align, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
@@ -342,14 +342,6 @@ fn glass_group(ui: &mut Ui, parent: NodeId) -> NodeId {
             ..row(2.0)
         },
     )
-}
-
-/// A favicon stand-in: a rounded square in a colour derived from the host (as in the design).
-pub fn favicon_color(url: &str) -> Color {
-    const COLORS: [u32; 8] = [0xF2742B, 0x2E6BFF, 0x7C5CFF, 0x1F9D57, 0xE2457A, 0x1C5FA6, 0xD98A06, 0x8E3FA6];
-    let host = display_host(url);
-    let hash = host.bytes().fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
-    Color::rgb(COLORS[hash as usize % COLORS.len()])
 }
 
 /// A sidebar row: accent icon, label, optional trailing glyph. Returns (label, trailing).

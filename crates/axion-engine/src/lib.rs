@@ -72,6 +72,11 @@ pub enum EngineEvent {
         urls: Vec<String>,
     },
     /// A favicon requested with [`Engine::fetch_favicon`] arrived (RGBA, straight alpha).
+    /// A favicon requested with [`Engine::fetch_favicon`] couldn't be loaded or decoded.
+    FaviconFailed {
+        view: ViewId,
+        url: String,
+    },
     FaviconReady {
         view: ViewId,
         url: String,
