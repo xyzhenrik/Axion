@@ -259,6 +259,8 @@ pub struct Chrome {
     /// Private tab titles are hidden (a lock is set and locked), in either mode.
     private_hidden: bool,
     sections: NodeId,
+    sections_viewport: NodeId,
+    sections_scroll: f32,
     panel: NodeId,
     panel_title: NodeId,
     /// The panel header's clear button and its label ("Clear History…").
@@ -474,8 +476,29 @@ impl Chrome {
             );
             ui.add(button, Widget::icon(icon, 22.0), Style::default());
         }
-        // The normal sidebar content; a panel (bookmarks, history) replaces it when open.
-        let sections = ui.add(sidebar, Widget::container(), column(2.0));
+        // The normal sidebar content; a panel (bookmarks, history) replaces it when open. It
+        // scrolls in a clipped viewport, so the footer (account) stays pinned and rows slide
+        // away behind its edge.
+        let sections_viewport = ui.add(
+            sidebar,
+            Widget::container().with_clip(),
+            Style {
+                flex_grow: 1.0,
+                flex_basis: length(0.0),
+                min_size: Size { width: auto(), height: length(0.0) },
+                flex_direction: FlexDirection::Column,
+                overflow: axion_ui::taffy::Point {
+                    x: axion_ui::taffy::Overflow::Hidden,
+                    y: axion_ui::taffy::Overflow::Hidden,
+                },
+                ..Default::default()
+            },
+        );
+        let sections = ui.add(
+            sections_viewport,
+            Widget::container(),
+            Style { flex_shrink: 0.0, size: Size { width: percent(1.0), height: auto() }, ..column(2.0) },
+        );
         let (tab_group_label, tab_group_chevron) = sidebar_row(
             ui,
             sections,
@@ -879,6 +902,8 @@ impl Chrome {
             locked: false,
             private_hidden: false,
             sections,
+            sections_viewport,
+            sections_scroll: 0.0,
             panel,
             panel_title,
             panel_clear,
@@ -1112,7 +1137,7 @@ impl Chrome {
                 icon_button(ui, row_node, ChromeAction::DeletePanelItem(i), glyph, 30.0);
             }
         }
-        ui.set_visible(self.sections, false);
+        ui.set_visible(self.sections_viewport, false);
         ui.set_visible(self.panel, true);
     }
 
@@ -1145,6 +1170,31 @@ impl Chrome {
         self.is_panel_open(ui) && ui.frame(self.panel_viewport).contains(p)
     }
 
+    /// Whether `p` (logical px) is over the sidebar's scrolling sections.
+    pub fn sections_contains(&self, ui: &Ui, p: Vec2) -> bool {
+        ui.is_visible(self.sidebar)
+            && ui.is_visible(self.sections_viewport)
+            && ui.frame(self.sections_viewport).contains(p)
+    }
+
+    /// Scrolls the sidebar's sections by `dy` logical px (wheel: positive scrolls up).
+    pub fn scroll_sections(&mut self, ui: &mut Ui, dy: f32) {
+        let max = (ui.frame(self.sections).size.y - ui.frame(self.sections_viewport).size.y).max(0.0);
+        let scroll = (self.sections_scroll - dy).clamp(0.0, max);
+        if scroll == self.sections_scroll {
+            return;
+        }
+        self.sections_scroll = scroll;
+        let mut style = ui.style(self.sections);
+        style.margin = Rect {
+            left: length(0.0),
+            right: length(0.0),
+            top: length(-self.sections_scroll),
+            bottom: length(0.0),
+        };
+        ui.set_style(self.sections, style);
+    }
+
     /// Scrolls the panel's list by `dy` logical px (wheel: positive scrolls up).
     pub fn scroll_panel(&mut self, ui: &mut Ui, dy: f32) {
         let max = (ui.frame(self.panel_list).size.y - ui.frame(self.panel_viewport).size.y).max(0.0);
@@ -1162,7 +1212,7 @@ impl Chrome {
 
     pub fn close_panel(&mut self, ui: &mut Ui) {
         ui.set_visible(self.panel, false);
-        ui.set_visible(self.sections, true);
+        ui.set_visible(self.sections_viewport, true);
     }
 
     /// Marks private mode in the sidebar, and whether a password lock exists (lock icon).

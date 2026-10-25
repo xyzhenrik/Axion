@@ -1864,6 +1864,11 @@ impl Browser {
         if let Some(view) = self.active_view() {
             self.engine.set_focus(view, false);
         }
+        // Editing starts from the shown tab's address: the field keeps its text while focused,
+        // so a tab opened just now (new tab) would otherwise show the previous tab's.
+        if let Some(url) = self.tabs.active().map(|t| t.url.clone()) {
+            self.ui.set_field_text(self.chrome.address_field, &url);
+        }
         let events = self.chrome.set_editing(&mut self.ui, true);
         self.handle_ui_events(events);
     }
@@ -2619,6 +2624,8 @@ impl Browser {
                     self.settings.scroll_by(&mut self.ui, delta.y);
                 } else if self.pointer.is_some_and(|p| self.chrome.panel_contains(&self.ui, p)) {
                     self.chrome.scroll_panel(&mut self.ui, delta.y);
+                } else if self.pointer.is_some_and(|p| self.chrome.sections_contains(&self.ui, p)) {
+                    self.chrome.scroll_sections(&mut self.ui, delta.y);
                 } else if let (Some(p), Some(view)) = (self.pointer, self.active_view())
                     && !self.ui.covers(p)
                     && self.page_rect().contains(p)
@@ -3007,6 +3014,12 @@ impl Browser {
                         self.click_page(view, Vec2::new(x, y));
                     }
                 }
+                // Capture aid: scroll the sidebar by "scroll-sidebar:DY" (negative: down).
+                scroll if scroll.starts_with("scroll-sidebar:") => {
+                    if let Ok(dy) = scroll["scroll-sidebar:".len()..].parse::<f32>() {
+                        self.chrome.scroll_sections(&mut self.ui, dy);
+                    }
+                }
                 // Capture aid: search the open settings for "settings-search:TEXT".
                 query if query.starts_with("settings-search:") => {
                     let field = self.settings.search_field();
@@ -3221,6 +3234,8 @@ impl Browser {
             });
         }
         self.settings.poll_search(&mut self.ui, &self.config, &self.keymap);
+        // Keeps the sidebar's scroll in range when its content got shorter (tabs closed).
+        self.chrome.scroll_sections(&mut self.ui, 0.0);
         self.update_suggestions();
         self.ui.layout();
         if let Some(view) = self.active_view() {

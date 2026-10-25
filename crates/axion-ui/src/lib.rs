@@ -69,8 +69,6 @@ const PRESS_MAX_SIZE: f32 = 200.0;
 const PULL_LIMIT: f32 = 5.0;
 /// … and how much it stretches toward it (relative to the pull over the glass's size).
 const PULL_STRETCH: f32 = 1.4;
-/// Content under held glass moves this share of the glass's pull.
-const CONTENT_FOLLOW: f32 = 0.4;
 const PRESS_SETTLED: f32 = 0.001;
 /// Fading glass is grouped into this many opacity steps (each step is one glass pass).
 const GLASS_FADE_STEPS: f32 = 24.0;
@@ -1292,13 +1290,11 @@ impl Ui {
             let along = Vec2::ONE + dir * e;
             let across = Vec2::ONE - Vec2::new(dir.y, dir.x) * e * 0.5;
             PressXf {
-                center: bg_px.center(),
                 scale: press.scale.value,
                 offset,
                 stretch: Vec2::new(1.0 + e, 1.0 / (1.0 + e)),
                 angle: offset.y.atan2(offset.x),
                 content_scale: press.scale.value * along * across,
-                content_offset: offset * CONTENT_FOLLOW,
             }
         });
         let mark = press_xf.as_ref().map(|_| marks(stacks));
@@ -1636,24 +1632,20 @@ struct GlassItem {
 
 /// The press transform of held glass (physical px).
 struct PressXf {
-    center: Vec2,
     scale: f32,
     offset: Vec2,
     stretch: Vec2,
     angle: f32,
-    /// The content's own deformation: it stretches with the glass (per axis) and moves
-    /// only part of the way, so it looks pulled rather than carried along.
+    /// The content's own deformation: every icon, label and fill stays where it is and
+    /// stretches about its own centre with the glass (per axis), so it looks distorted by
+    /// the glass rather than moved.
     content_scale: Vec2,
-    content_offset: Vec2,
 }
 
 impl PressXf {
-    fn point(&self, p: Vec2) -> Vec2 {
-        self.center + (p - self.center) * self.content_scale + self.content_offset
-    }
-
     fn rect(&self, r: Rect) -> Rect {
-        Rect { origin: self.point(r.origin), size: r.size * self.content_scale }
+        let size = r.size * self.content_scale;
+        Rect { origin: r.center() - size / 2.0, size }
     }
 
     /// For text, which only scales uniformly.
@@ -1698,13 +1690,17 @@ fn transform_since(stacks: &mut [Stack<'_>], mark: &[Mark], xf: &PressXf, from_d
             i.rect = xf.rect(i.rect);
         }
         for t in c.text.iter_mut().skip(m.text) {
-            let p = xf.point(Vec2::new(t.left, t.top));
+            // Text scales uniformly about the centre of its box.
+            let b = &mut t.bounds;
+            let center = Vec2::new(b.left as f32 + b.right as f32, b.top as f32 + b.bottom as f32) / 2.0;
+            let u = xf.uniform();
+            let about = |p: Vec2| center + (p - center) * u;
+            let p = about(Vec2::new(t.left, t.top));
             t.left = p.x;
             t.top = p.y;
-            t.scale *= xf.uniform();
-            let b = &mut t.bounds;
-            let tl = xf.point(Vec2::new(b.left as f32, b.top as f32));
-            let br = xf.point(Vec2::new(b.right as f32, b.bottom as f32));
+            t.scale *= u;
+            let tl = about(Vec2::new(b.left as f32, b.top as f32));
+            let br = about(Vec2::new(b.right as f32, b.bottom as f32));
             *b = glyphon::TextBounds {
                 left: tl.x.floor() as i32,
                 top: tl.y.floor() as i32,
