@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Axion — Tab overview</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=Fraunces:opsz,wght@9..144,600;9..144,700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:inherit}a:hover{color:inherit}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+input{font:inherit;color:inherit}
+.i{fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.gd{background:rgba(30,32,40,.42);-webkit-backdrop-filter:blur(22px) saturate(170%) brightness(.95);backdrop-filter:blur(22px) saturate(170%) brightness(.95);box-shadow:inset 0 1px 0 rgba(255,255,255,.34),inset 0 -1px 0 rgba(255,255,255,.08),inset 0 0 0 .5px rgba(255,255,255,.2),inset 14px 14px 24px -16px rgba(255,255,255,.34),0 16px 44px rgba(0,0,0,.45)}
+.serif{font-family:Fraunces,Georgia,serif}
+.thumb{position:relative;height:233px;border-radius:20px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.45),0 0 0 .5px rgba(255,255,255,.18)}
+</style>
+</helmet>
+<div style="width: 1600px; height: 1000px; position: relative; overflow: hidden; font-family: Inter, system-ui, sans-serif; color: #F5F6F8; background: #0E0F14">
+  <div aria-hidden="true" style="position: absolute; left: -60px; top: -60px; width: 1720px; height: 1120px; filter: blur(44px) saturate(1.35) brightness(.5)">
+    <div style="position: absolute; left: 60px; top: 60px; width: 1600px; height: 1000px">
+      <dc-import name="Window" hint-size="1600px,1000px"></dc-import>
+    </div>
+  </div>
+  <div style="position: absolute; inset: 0; background: rgba(8,10,18,.25)"></div>
+
+  <header style="position: absolute; left: 0; right: 0; top: 28px; display: flex; justify-content: center; gap: 16px">
+    <div class="gd" role="tablist" aria-label="Tab Groups" style="height: 52px; border-radius: 999px; display: flex; align-items: center; gap: 4px; padding: 0 6px; box-sizing: border-box">
+      <button role="tab" aria-selected="true" style="height: 40px; border-radius: 999px; padding: 0 16px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; background: rgba(255,255,255,.22); box-shadow: 0 2px 8px rgba(0,0,0,.2)"><span style="width: 9px; height: 9px; border-radius: 50%; background: #F2742B"></span>Trip planning<span style="font-weight: 500; color: #C9CED8">6</span></button>
+      <button role="tab" aria-selected="false" style="height: 40px; border-radius: 999px; padding: 0 16px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; color: #D5D9E1"><span style="width: 9px; height: 9px; border-radius: 50%; background: #5B8CFF"></span>Personal</button>
+      <button role="tab" aria-selected="false" style="height: 40px; border-radius: 999px; padding: 0 16px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; color: #D5D9E1"><span style="width: 9px; height: 9px; border-radius: 50%; background: #9C84FF"></span>Work</button>
+      <button role="tab" aria-selected="false" style="height: 40px; border-radius: 999px; padding: 0 16px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; color: #D5D9E1"><svg class="i" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M6 11h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1zM8 11V7a4 4 0 0 1 8 0v4"></path></svg>Private</button>
+    </div>
+    <label class="gd" style="width: 420px; height: 52px; border-radius: 999px; display: flex; align-items: center; gap: 10px; padding: 0 18px; box-sizing: border-box">
+      <svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true" style="color: #C9CED8"><path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM16.2 16.2L20.5 20.5"></path></svg>
+      <input type="search" placeholder="Search tabs" aria-label="Search tabs" style="flex: 1; border: 0; outline: 0; background: transparent; font-size: 15px">
+    </label>
+  </header>
+
+  <section aria-label="Tabs in Trip planning" style="position: absolute; left: 200px; right: 200px; top: 128px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 40px; row-gap: 36px">
+
+    <article style="display: flex; flex-direction: column; gap: 12px">
+      <div class="thumb" style="box-shadow: 0 0 0 3px {{accent}}, 0 0 0 7px rgba(46,107,255,.28), 0 18px 50px rgba(0,0,0,.45)">
+        <div style="position: absolute; inset: 0; background: #FFB070"></div>
+        <div style="position: absolute; left: 250px; top: 40px; width: 52px; height: 52px; border-radius: 50%; background: #FFE38A"></div>
+        <div style="position: absolute; left: 0; right: 0; top: 70px; height: 100px; background: #EC6A8A; clip-path: polygon(0 70%, 12% 38%, 24% 58%, 36% 12%, 50% 50%, 62% 26%, 76% 60%, 88% 14%, 100% 40%, 100% 100%, 0 100%)"></div>
+        <div style="position: absolute; left: 0; right: 0; top: 110px; height: 80px; background: #8E3FA6; clip-path: polygon(0 50%, 14% 28%, 30% 64%, 44% 18%, 60% 60%, 76% 30%, 100% 58%, 100% 100%, 0 100%)"></div>
+        <div style="position: absolute; left: 0; right: 0; top: 150px; height: 50px; background: #33296E"></div>
+        <div style="position: absolute; left: 0; right: 0; top: 190px; bottom: 0; background: #FFF8F0"></div>
+        <div class="serif" style="position: absolute; left: 18px; top: 22px; width: 200px; font-size: 18px; line-height: 21px; font-weight: 700; color: #FFFFFF">Nine slow days along the northern coast</div>
+        <button class="gd" aria-label="Close Tidewater" style="position: absolute; left: 10px; bottom: 10px; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" style="stroke-width: 2.2"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"></path></svg></button>
+      </div>
+      <div class="gd" style="align-self: center; height: 32px; border-radius: 999px; display: flex; align-items: center; gap: 8px; padding: 0 14px 0 8px; font-size: 13px; font-weight: 600"><span style="width: 18px; height: 18px; border-radius: 5px; background: #F2742B"></span>Tidewater — Nine slow days</div>
+    </article>
+
+    <article style="display: flex; flex-direction: column; gap: 12px">
+      <div class="thumb" style="background: #FFFFFF">
+        <div style="position: absolute; left: 0; top: 0; bottom: 0; width: 86px; background: #F1EEFF"></div>
+        <div style="position: absolute; left: 14px; top: 18px; width: 56px; height: 10px; border-radius: 3px; background: #7C5CFF"></div>
+        <div style="position: absolute; left: 14px; top: 44px; width: 52px; height: 6px; border-radius: 3px; background: #CFC6F5"></div>
+        <div style="position: absolute; left: 14px; top: 60px; width: 44px; height: 6px; border-radius: 3px; background: #CFC6F5"></div>
+        <div style="position: absolute; left: 14px; top: 76px; width: 58px; height: 6px; border-radius: 3px; background: #CFC6F5"></div>
+        <div style="position: absolute; left: 110px; top: 22px; font-size: 18px; font-weight: 700; color: #1B1830">Getting started</div>
+        <div style="position: absolute; left: 110px; top: 58px; right: 24px; height: 7px; border-radius: 3px; background: #E3E1EC"></div>
+        <div style="position: absolute; left: 110px; top: 74px; right: 60px; height: 7px; border-radius: 3px; background: #E3E1EC"></div>
+        <div style="position: absolute; left: 110px; top: 100px; right: 24px; height: 74px; border-radius: 10px; background: #1B1830"></div>
+        <div style="position: absolute; left: 124px; top: 116px; width: 120px; height: 6px; border-radius: 3px; background: #9C84FF"></div>
+        <div style="position: absolute; left: 124px; top: 132px; width: 170px; height: 6px; border-radius: 3px; background: #6FD3A8"></div>
+        <div style="position: absolute; left: 110px; top: 192px; right: 40px; height: 7px; border-radius: 3px; background: #E3E1EC"></div>
+        <button class="gd" aria-label="Close Kestrel Docs" style="position: absolute; left: 10px; bottom: 10px; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" style="stroke-width: 2.2"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"></path></svg></button>
+      </div>
+      <div class="gd" style="align-self: center; height: 32px; border-radius: 999px; display: flex; align-items: center; gap: 8px; padding: 0 14px 0 8px; font-size: 13px; font-weight: 600"><span style="width: 18px; height: 18px; border-radius: 5px; background: #7C5CFF"></span>Kestrel Docs — Getting started</div>
+    </article>
+
+    <article style="display: flex; flex-direction: column; gap: 12px">
+      <div class="thumb" style="background: #0F3B36">
+        <div style="position: absolute; left: 22px; top: 26px; width: 110px; height: 110px; border-radius: 16px; background: #1F9D57; overflow: hidden">
+          <div style="position: absolute; left: 20px; top: 16px; width: 50px; height: 50px; border-radius: 50%; background: #FFD66B"></div>
+          <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 36px; background: #0E5E8C"></div>
+        </div>
+        <div style="position: absolute; left: 150px; top: 36px; font-size: 12px; font-weight: 700; letter-spacing: .1em; color: #6FD3A8">EPISODE 14</div>
+        <div style="position: absolute; left: 150px; top: 56px; width: 180px; font-size: 18px; line-height: 22px; font-weight: 700; color: #FFFFFF">Low Tide Sessions</div>
+        <div style="position: absolute; left: 22px; right: 22px; top: 160px; height: 44px; display: flex; align-items: center; gap: 4px">
+          <sc-for list="{{wave}}" as="w" hint-placeholder-count="40">
+            <span style="flex: 1; border-radius: 2px; background: {{w.color}}; height: {{w.h}}"></span>
+          </sc-for>
+        </div>
+        <button class="gd" aria-label="Close Field Radio" style="position: absolute; left: 10px; bottom: 10px; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" style="stroke-width: 2.2"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"></path></svg></button>
+        <div class="gd" style="position: absolute; right: 10px; top: 10px; height: 28px; border-radius: 999px; display: flex; align-items: center; gap: 6px; padding: 0 10px; font-size: 12px; font-weight: 600"><svg class="i" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M4 9.5h3.5L12.5 5.5v13l-5-4H4zM16 9a4.5 4.5 0 0 1 0 6"></path></svg>Playing</div>
+      </div>
+      <div class="gd" style="align-self: center; height: 32px; border-radius: 999px; display: flex; align-items: center; gap: 8px; padding: 0 14px 0 8px; font-size: 13px; font-weight: 600"><span style="width: 18px; height: 18px; border-radius: 5px; background: #1F9D57"></span>Field Radio</div>
+    </article>
+
+    <article style="display: flex; flex-direction: column; gap: 12px">
+      <div class="thumb" style="background: #FFF0F4">
+        <div style="position: absolute; left: 18px; top: 16px; font-size: 16px; font-weight: 800; color: #9E1F4E; letter-spacing: -0.01em">Harbour Market</div>
+        <div style="position: absolute; left: 18px; right: 18px; top: 48px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px">
+          <div style="height: 76px; border-radius: 10px; background: #E2457A"></div>
+          <div style="height: 76px; border-radius: 10px; background: #FFC93C"></div>
+          <div style="height: 76px; border-radius: 10px; background: #2E6BFF"></div>
+          <div style="height: 76px; border-radius: 10px; background: #18A874"></div>
+          <div style="height: 76px; border-radius: 10px; background: #F2742B"></div>
+          <div style="height: 76px; border-radius: 10px; background: #8E3FA6"></div>
+          <div style="height: 76px; border-radius: 10px; background: #FFB070"></div>
+          <div style="height: 76px; border-radius: 10px; background: #1C5FA6"></div>
+        </div>
+        <button class="gd" aria-label="Close Harbour Market" style="position: absolute; left: 10px; bottom: 10px; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" style="stroke-width: 2.2"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"></path></svg></button>
+      </div>
+      <div class="gd" style="align-self: center; height: 32px; border-radius: 999px; display: flex; align-items: center; gap: 8px; padding: 0 14px 0 8px; font-size: 13px; font-weight: 600"><span style="width: 18px; height: 18px; border-radius: 5px; background: #E2457A"></span>Harbour Market — Smoked fish</div>
+    </article>
+
+    <article style="display: flex; flex-direction: column; gap: 12px">
+      <div class="thumb" style="background: #F2F6FC">
+        <div style="position: absolute; left: 0; right: 0; top: 0; height: 52px; background: #1C5FA6"></div>
+        <div style="position: absolute; left: 18px; top: 16px; font-size: 16px; font-weight: 700; color: #FFFFFF">Ferry timetables</div>
+        <div style="position: absolute; left: 18px; right: 18px; top: 66px; display: flex; flex-direction: column; gap: 8px">
+          <sc-for list="{{ferries}}" as="f" hint-placeholder-count="5">
+            <div style="height: 22px; border-radius: 6px; background: #FFFFFF; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; font-size: 11px; color: #1B2A44; font-variant-numeric: tabular-nums; box-shadow: 0 0 0 1px #DCE5F2"><span style="font-weight: 600">{{f.route}}</span><span>{{f.time}}</span></div>
+          </sc-for>
+        </div>
+        <button class="gd" aria-label="Close Ferry timetables" style="position: absolute; left: 10px; bottom: 10px; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" style="stroke-width: 2.2"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"></path></svg></button>
+      </div>
+      <div class="gd" style="align-self: center; height: 32px; border-radius: 999px; display: flex; align-items: center; gap: 8px; padding: 0 14px 0 8px; font-size: 13px; font-weight: 600"><span style="width: 18px; height: 18px; border-radius: 5px; background: #1C5FA6"></span>Ferry timetables — northern routes</div>
+    </article>
+
+    <article style="display: flex; flex-direction: column; gap: 12px">
+      <div class="thumb" style="background: #3D7BD9">
+        <div style="position: absolute; left: 22px; top: 22px; font-size: 14px; font-weight: 600; color: #DDE9FF">Svolvær</div>
+        <div style="position: absolute; left: 22px; top: 40px; font-size: 64px; line-height: 70px; font-weight: 300; color: #FFFFFF">9°</div>
+        <div style="position: absolute; right: 34px; top: 30px; width: 70px; height: 70px; border-radius: 50%; background: #FFD66B"></div>
+        <div style="position: absolute; right: 18px; top: 66px; width: 110px; height: 40px; border-radius: 20px; background: #EAF1FF"></div>
+        <div style="position: absolute; left: 18px; right: 18px; top: 136px; height: 76px; border-radius: 14px; background: rgba(255,255,255,.18); display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: center; text-align: center; font-size: 12px; color: #FFFFFF; font-variant-numeric: tabular-nums">
+          <span>Mon<br>9°</span><span>Tue<br>7°</span><span>Wed<br>8°</span><span>Thu<br>11°</span><span>Fri<br>10°</span>
+        </div>
+        <button class="gd" aria-label="Close Weather" style="position: absolute; left: 10px; bottom: 10px; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" style="stroke-width: 2.2"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"></path></svg></button>
+      </div>
+      <div class="gd" style="align-self: center; height: 32px; border-radius: 999px; display: flex; align-items: center; gap: 8px; padding: 0 14px 0 8px; font-size: 13px; font-weight: 600"><span style="width: 18px; height: 18px; border-radius: 5px; background: #D98A06"></span>Weather · Svolvær, 10-day</div>
+    </article>
+  </section>
+
+  <div class="gd" role="toolbar" aria-label="Tab overview actions" style="position: absolute; left: 50%; bottom: 32px; transform: translateX(-50%); height: 56px; border-radius: 999px; display: flex; align-items: center; gap: 6px; padding: 0 7px; box-sizing: border-box">
+    <button aria-label="New tab" style="width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+    <button aria-haspopup="menu" style="height: 44px; border-radius: 999px; padding: 0 14px; display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600"><span style="width: 9px; height: 9px; border-radius: 50%; background: #F2742B"></span>Trip planning<svg class="i" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+    <button style="height: 44px; border-radius: 999px; padding: 0 22px; font-size: 15px; font-weight: 700; color: #FFFFFF; background: {{accent}}; box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 6px 18px rgba(46,107,255,.4)">Done</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#2E6BFF","options":["#2E6BFF","#5B5BF0","#E2457A","#F2742B"]},"$preview":{"width":1600,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var wave = [];
+    for (var i = 0; i < 40; i++) {
+      var h = 8 + Math.round(Math.abs(Math.sin(i * 0.7) * Math.cos(i * 0.23)) * 34);
+      wave.push({ h: h + 'px', color: i < 16 ? '#6FD3A8' : 'rgba(255,255,255,.35)' });
+    }
+    return {
+      accent: this.props.accent ?? '#2E6BFF',
+      wave: wave,
+      ferries: [
+        { route: 'Bodø → Moskenes', time: '07:15  ·  3 h 15' },
+        { route: 'Moskenes → Bodø', time: '11:00  ·  3 h 20' },
+        { route: 'Svolvær → Skutvik', time: '13:40  ·  1 h 50' },
+        { route: 'Skutvik → Svolvær', time: '16:05  ·  1 h 50' },
+        { route: 'Bodø → Moskenes', time: '19:30  ·  3 h 15' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

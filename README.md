@@ -3,7 +3,10 @@
 A fast, privacy-first web browser for Linux with an iPadOS-Safari-inspired interface
 and real **Liquid Glass** — written in Rust.
 
-> **Status:** early planning. Nothing to run yet. See [plan.md](plan.md).
+> **Status:** early development — the browser runs (tabs, address bar, sidebar, Liquid Glass
+> chrome), most features are still to come. See [plan.md](plan.md).
+
+![Liquid Glass playground](docs/glass-playground.png)
 
 ## Highlights (planned)
 
@@ -21,11 +24,21 @@ Rust · Chromium (CEF, off-screen rendering) · wgpu · winit
 
 ## Building
 
-Requirements (planned): Rust stable, a Vulkan-capable GPU, Wayland or X11.
+Requirements: Rust stable, cmake, ninja, a C++ compiler, a Vulkan-capable GPU, Wayland or X11.
+The first build downloads Chromium Embedded Framework (~1 GB) into `third_party/cef`.
 
 ```bash
-cargo run -p axion-app
+cargo run -p axion-app --release -- https://example.com
 ```
+
+Try the glass on its own (no Chromium needed):
+
+```bash
+cargo run -p axion-glass --example playground --release
+```
+
+Settings live in `~/.config/axion/config.toml`, shortcuts in `~/.config/axion/keymap.toml`
+(both optional, reloaded live).
 
 ## License
 

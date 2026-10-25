@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Axion — Foundations</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2E6BFF}a:hover{color:#1D4FD1}
+.i{fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.gl{background:rgba(255,255,255,.48);-webkit-backdrop-filter:blur(26px) saturate(185%) brightness(1.05);backdrop-filter:blur(26px) saturate(185%) brightness(1.05);box-shadow:inset 0 1px 0 rgba(255,255,255,.95),inset 0 -1px 0 rgba(255,255,255,.4),inset 0 0 0 .5px rgba(255,255,255,.6),inset 14px 14px 26px -18px rgba(255,255,255,1),inset -12px -12px 26px -20px rgba(255,255,255,.7),0 14px 40px rgba(12,20,40,.20),0 1px 3px rgba(12,20,40,.12)}
+.gd{background:rgba(22,24,30,.50);-webkit-backdrop-filter:blur(26px) saturate(160%) brightness(.85);backdrop-filter:blur(26px) saturate(160%) brightness(.85);box-shadow:inset 0 1px 0 rgba(255,255,255,.32),inset 0 -1px 0 rgba(255,255,255,.08),inset 0 0 0 .5px rgba(255,255,255,.18),inset 14px 14px 26px -18px rgba(255,255,255,.34),0 16px 44px rgba(0,0,0,.45)}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+</style>
+</helmet>
+<div style="width: 1600px; height: 2240px; box-sizing: border-box; padding: 80px; background: #F3F4F7; color: #111318; font-family: Inter, system-ui, sans-serif; display: flex; flex-direction: column; gap: 48px">
+
+  <header style="display: flex; justify-content: space-between; align-items: flex-end; gap: 40px">
+    <div style="display: flex; flex-direction: column; gap: 12px">
+      <div style="font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #4A5060">Axion · Design system v0.1</div>
+      <h1 style="margin: 0; font-size: 56px; line-height: 60px; font-weight: 700; letter-spacing: -0.025em">Foundations</h1>
+      <p style="margin: 0; font-size: 18px; line-height: 27px; color: #4A5060; max-width: 680px">Liquid Glass material, shape, type, colour, icons and motion for the Axion browser. Every value here maps to a key in axion-config.</p>
+    </div>
+    <div style="display: flex; align-items: center; gap: 14px">
+      <div style="width: 52px; height: 52px; border-radius: 16px; background: {{accent}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; box-shadow: inset 0 1px 0 rgba(255,255,255,.5), 0 8px 20px rgba(46,107,255,.35)">
+        <svg class="i" viewBox="0 0 24 24" width="30" height="30" aria-hidden="true" style="stroke-width: 2.2"><path d="M5 19L12 5l7 14M8.2 13.5h7.6"></path></svg>
+      </div>
+      <div style="font-size: 32px; font-weight: 700; letter-spacing: -0.03em">Axion</div>
+    </div>
+  </header>
+
+  <section style="display: flex; flex-direction: column; gap: 20px">
+    <h2 style="margin: 0; font-size: 26px; line-height: 32px; font-weight: 650; letter-spacing: -0.01em">01 · Material — Liquid Glass</h2>
+    <div style="position: relative; height: 420px; border-radius: 28px; overflow: hidden; background: #FFE9CF">
+      <div style="position: absolute; left: -60px; top: -80px; width: 360px; height: 360px; border-radius: 50%; background: #FF6B3D"></div>
+      <div style="position: absolute; left: 380px; top: 170px; width: 300px; height: 300px; border-radius: 50%; background: #2E6BFF"></div>
+      <div style="position: absolute; left: 700px; top: -40px; width: 220px; height: 220px; border-radius: 50%; background: #FFC93C"></div>
+      <div style="position: absolute; left: 980px; top: 200px; width: 420px; height: 160px; border-radius: 80px; background: #18A874; transform: rotate(-14deg)"></div>
+      <div style="position: absolute; left: 1180px; top: -60px; width: 260px; height: 260px; border-radius: 50%; background: #E2457A"></div>
+      <div style="position: absolute; left: 0; right: 0; top: 0; bottom: 0; background: repeating-linear-gradient(90deg, rgba(17,19,24,.85) 0 3px, transparent 3px 46px); opacity: .35"></div>
+      <div style="position: absolute; left: 40px; top: 96px; font-size: 230px; line-height: 230px; font-weight: 800; letter-spacing: -0.05em; color: #13151A">Refract</div>
+
+      <div class="gl" style="position: absolute; left: 48px; top: 48px; width: 620px; border-radius: 24px; padding: 26px 28px; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px">
+        <div style="display: flex; justify-content: space-between; align-items: baseline">
+          <div style="font-size: 20px; font-weight: 650">Light glass</div>
+          <div class="mono" style="font-size: 12px; color: #2F3440">glass.light</div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; row-gap: 8px; font-size: 14px; line-height: 20px">
+          <div style="display: flex; justify-content: space-between"><span>Tint</span><span class="mono">#FFFFFF @ 30/48/66%</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Blur</span><span class="mono">16 / 26 / 40 px</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Saturation</span><span class="mono">185%</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Refraction</span><span class="mono">0.55</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Dispersion</span><span class="mono">0.12</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Lens height</span><span class="mono">14 px</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Rim highlight</span><span class="mono">1 px @ 95%</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Shadow</span><span class="mono">0 14 40 / 20%</span></div>
+        </div>
+        <div style="display: flex; gap: 8px; padding-top: 4px">
+          <span class="gl" style="font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px">Thin · bars</span>
+          <span class="gl" style="font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px">Regular · panels</span>
+          <span class="gl" style="font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px">Thick · sheets</span>
+        </div>
+      </div>
+
+      <div class="gd" style="position: absolute; right: 48px; bottom: 48px; width: 620px; border-radius: 24px; padding: 26px 28px; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px; color: #F5F6F8">
+        <div style="display: flex; justify-content: space-between; align-items: baseline">
+          <div style="font-size: 20px; font-weight: 650">Dark glass</div>
+          <div class="mono" style="font-size: 12px; color: #C9CED8">glass.dark</div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; row-gap: 8px; font-size: 14px; line-height: 20px">
+          <div style="display: flex; justify-content: space-between"><span>Tint</span><span class="mono">#16181E @ 36/50/68%</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Blur</span><span class="mono">16 / 26 / 40 px</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Saturation</span><span class="mono">160%</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Refraction</span><span class="mono">0.55</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Dispersion</span><span class="mono">0.10</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Lens height</span><span class="mono">14 px</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Rim highlight</span><span class="mono">1 px @ 32%</span></div>
+          <div style="display: flex; justify-content: space-between"><span>Shadow</span><span class="mono">0 16 44 / 45%</span></div>
+        </div>
+        <div style="font-size: 13px; line-height: 19px; color: #C9CED8">Tint adapts to backdrop luminance: +12% opacity over busy or mid-grey content to keep labels at 4.5:1.</div>
+      </div>
+    </div>
+  </section>
+
+  <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px">
+    <section style="background: #FFFFFF; border-radius: 24px; padding: 32px; display: flex; flex-direction: column; gap: 24px">
+      <h2 style="margin: 0; font-size: 22px; line-height: 28px; font-weight: 650">02 · Corner radii</h2>
+      <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px">
+        <sc-for list="{{radii}}" as="r" hint-placeholder-count="6">
+          <div style="display: flex; flex-direction: column; gap: 10px">
+            <div style="height: 72px; background: #EEF2FF; border: 1.5px solid {{accent}}; border-radius: {{r.css}}"></div>
+            <div style="display: flex; justify-content: space-between; font-size: 14px"><span style="font-weight: 600">{{r.name}}</span><span class="mono" style="color: #4A5060">{{r.value}}</span></div>
+            <div style="font-size: 13px; color: #4A5060; margin-top: -6px">{{r.use}}</div>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+    <section style="background: #FFFFFF; border-radius: 24px; padding: 32px; display: flex; flex-direction: column; gap: 24px">
+      <h2 style="margin: 0; font-size: 22px; line-height: 28px; font-weight: 650">03 · Spacing — 4 px base</h2>
+      <div style="display: flex; flex-direction: column; gap: 9px">
+        <sc-for list="{{spacing}}" as="s" hint-placeholder-count="10">
+          <div style="display: flex; align-items: center; gap: 16px; font-size: 13px">
+            <span class="mono" style="width: 72px; color: #4A5060">{{s.name}}</span>
+            <span class="mono" style="width: 44px; text-align: right">{{s.px}}</span>
+            <span style="height: 12px; border-radius: 3px; background: {{accent}}; width: {{s.bar}}"></span>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 1.25fr 1fr; gap: 32px">
+    <section style="background: #FFFFFF; border-radius: 24px; padding: 32px; display: flex; flex-direction: column; gap: 18px">
+      <div style="display: flex; justify-content: space-between; align-items: baseline">
+        <h2 style="margin: 0; font-size: 22px; line-height: 28px; font-weight: 650">04 · Typography — Inter</h2>
+        <span style="font-size: 13px; color: #4A5060">URLs &amp; numbers: tabular figures · code: JetBrains Mono</span>
+      </div>
+      <div style="display: flex; align-items: baseline; gap: 24px; border-bottom: 1px solid #E4E6EC; padding-bottom: 14px">
+        <span style="width: 150px; flex-shrink: 0; font-size: 12px; color: #4A5060">Large title · 34/40 · 700</span>
+        <span style="font-size: 34px; line-height: 40px; font-weight: 700; letter-spacing: -0.02em">Your tabs, everywhere</span>
+      </div>
+      <div style="display: flex; align-items: baseline; gap: 24px; border-bottom: 1px solid #E4E6EC; padding-bottom: 14px">
+        <span style="width: 150px; flex-shrink: 0; font-size: 12px; color: #4A5060">Title 1 · 26/32 · 650</span>
+        <span style="font-size: 26px; line-height: 32px; font-weight: 650; letter-spacing: -0.015em">Shields blocked 23 trackers</span>
+      </div>
+      <div style="display: flex; align-items: baseline; gap: 24px; border-bottom: 1px solid #E4E6EC; padding-bottom: 14px">
+        <span style="width: 150px; flex-shrink: 0; font-size: 12px; color: #4A5060">Title 2 · 20/26 · 600</span>
+        <span style="font-size: 20px; line-height: 26px; font-weight: 600">Tab Groups</span>
+      </div>
+      <div style="display: flex; align-items: baseline; gap: 24px; border-bottom: 1px solid #E4E6EC; padding-bottom: 14px">
+        <span style="width: 150px; flex-shrink: 0; font-size: 12px; color: #4A5060">Headline · 15/20 · 600</span>
+        <span style="font-size: 15px; line-height: 20px; font-weight: 600">Trip planning</span>
+      </div>
+      <div style="display: flex; align-items: baseline; gap: 24px; border-bottom: 1px solid #E4E6EC; padding-bottom: 14px">
+        <span style="width: 150px; flex-shrink: 0; font-size: 12px; color: #4A5060">Body · 15/22 · 400</span>
+        <span style="font-size: 15px; line-height: 22px">Background tabs freeze after 10 minutes and are discarded after 2 hours.</span>
+      </div>
+      <div style="display: flex; align-items: baseline; gap: 24px; border-bottom: 1px solid #E4E6EC; padding-bottom: 14px">
+        <span style="width: 150px; flex-shrink: 0; font-size: 12px; color: #4A5060">Address · 15/20 · 500</span>
+        <span style="font-size: 15px; line-height: 20px; font-weight: 500; font-variant-numeric: tabular-nums">tidewater.travel</span>
+      </div>
+      <div style="display: flex; align-items: baseline; gap: 24px">
+        <span style="width: 150px; flex-shrink: 0; font-size: 12px; color: #4A5060">Caption · 11/14 · 600</span>
+        <span style="font-size: 11px; line-height: 14px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #4A5060">Now playing</span>
+      </div>
+    </section>
+
+    <section style="background: #FFFFFF; border-radius: 24px; padding: 32px; display: flex; flex-direction: column; gap: 22px">
+      <h2 style="margin: 0; font-size: 22px; line-height: 28px; font-weight: 650">05 · Colour</h2>
+      <div style="display: flex; gap: 20px; align-items: center">
+        <div style="width: 120px; height: 88px; border-radius: 20px; background: {{accent}}; box-shadow: inset 0 1px 0 rgba(255,255,255,.45)"></div>
+        <div style="display: flex; flex-direction: column; gap: 10px">
+          <div style="font-size: 15px; font-weight: 600">Accent <span class="mono" style="font-weight: 400; color: #4A5060">{{accent}}</span></div>
+          <div style="display: flex; gap: 8px">
+            <sc-for list="{{accents}}" as="a" hint-placeholder-count="6">
+              <div title="{{a.name}}" style="width: 28px; height: 28px; border-radius: 50%; background: {{a.hex}}; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08)"></div>
+            </sc-for>
+          </div>
+          <div style="font-size: 13px; color: #4A5060">User-selectable. Glass tints toward it at 6%.</div>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <div style="font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #4A5060">Light</div>
+          <sc-for list="{{neutralsLight}}" as="n" hint-placeholder-count="5">
+            <div style="display: flex; align-items: center; gap: 10px; font-size: 13px">
+              <span style="width: 26px; height: 26px; border-radius: 8px; background: {{n.hex}}; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12)"></span>
+              <span style="flex: 1">{{n.name}}</span><span class="mono" style="color: #4A5060">{{n.hex}}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <div style="font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #4A5060">Dark</div>
+          <sc-for list="{{neutralsDark}}" as="n" hint-placeholder-count="5">
+            <div style="display: flex; align-items: center; gap: 10px; font-size: 13px">
+              <span style="width: 26px; height: 26px; border-radius: 8px; background: {{n.hex}}; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12)"></span>
+              <span style="flex: 1">{{n.name}}</span><span class="mono" style="color: #4A5060">{{n.hex}}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      <div style="display: flex; gap: 12px">
+        <div style="flex: 1; display: flex; align-items: center; gap: 8px; font-size: 13px"><span style="width: 14px; height: 14px; border-radius: 50%; background: #1F9D57"></span>Shield <span class="mono" style="color: #4A5060">#1F9D57</span></div>
+        <div style="flex: 1; display: flex; align-items: center; gap: 8px; font-size: 13px"><span style="width: 14px; height: 14px; border-radius: 50%; background: #D98A06"></span>Warning <span class="mono" style="color: #4A5060">#D98A06</span></div>
+        <div style="flex: 1; display: flex; align-items: center; gap: 8px; font-size: 13px"><span style="width: 14px; height: 14px; border-radius: 50%; background: #E5484D"></span>Destructive <span class="mono" style="color: #4A5060">#E5484D</span></div>
+      </div>
+    </section>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px">
+    <section style="background: #FFFFFF; border-radius: 24px; padding: 32px; display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; justify-content: space-between; align-items: baseline">
+        <h2 style="margin: 0; font-size: 22px; line-height: 28px; font-weight: 650">06 · Icons — outline</h2>
+        <span style="font-size: 13px; color: #4A5060">24 grid · 1.75 stroke · round caps</span>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px">
+        <sc-for list="{{icons}}" as="ic" hint-placeholder-count="18">
+          <div style="height: 76px; border-radius: 14px; background: #F3F4F7; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px">
+            <svg class="i" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="{{ic.d}}"></path></svg>
+            <span style="font-size: 11px; color: #4A5060">{{ic.name}}</span>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+
+    <section style="background: #FFFFFF; border-radius: 24px; padding: 32px; display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; justify-content: space-between; align-items: baseline">
+        <h2 style="margin: 0; font-size: 22px; line-height: 28px; font-weight: 650">07 · Motion — springs only</h2>
+        <span style="font-size: 13px; color: #4A5060">axion-physics presets</span>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px">
+        <sc-for list="{{springs}}" as="sp" hint-placeholder-count="4">
+          <div style="border-radius: 16px; background: #F3F4F7; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+            <div style="display: flex; justify-content: space-between; font-size: 14px"><span style="font-weight: 600">{{sp.name}}</span><span class="mono" style="font-size: 12px; color: #4A5060">{{sp.params}}</span></div>
+            <svg viewBox="0 0 240 84" width="100%" height="64" aria-hidden="true" preserveAspectRatio="none">
+              <line x1="0" y1="24" x2="240" y2="24" stroke="#C5CAD4" stroke-dasharray="3 4"></line>
+              <path d="{{sp.path}}" fill="none" stroke="{{accent}}" stroke-width="2.25" stroke-linecap="round"></path>
+            </svg>
+            <div style="font-size: 12px; color: #4A5060">{{sp.use}}</div>
+          </div>
+        </sc-for>
+      </div>
+      <ul style="margin: 0; padding-left: 18px; font-size: 14px; line-height: 22px; color: #2F3440">
+        <li>No linear or cubic easing. Every transition is a spring.</li>
+        <li>Gestures pass their release velocity into the spring.</li>
+        <li>Interruptible: a new target retargets mid-flight.</li>
+        <li>Glass squashes up to 8% along velocity, then settles.</li>
+        <li>Reduce Motion: cross-fades with damping 1.0, no stretch.</li>
+      </ul>
+    </section>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#2E6BFF","options":["#2E6BFF","#5B5BF0","#E2457A","#F2742B"]},"$preview":{"width":1600,"height":2240}}'>
+class Component extends DCLogic {
+  spring(resp, z) {
+    var w = 2 * Math.PI / resp, d = 'M0 80';
+    for (var i = 1; i <= 80; i++) {
+      var t = i / 80 * 1.2, x;
+      if (z < 1) {
+        var wd = w * Math.sqrt(1 - z * z);
+        x = 1 - Math.exp(-z * w * t) * (Math.cos(wd * t) + (z * w / wd) * Math.sin(wd * t));
+      } else {
+        x = 1 - Math.exp(-w * t) * (1 + w * t);
+      }
+      d += ' L' + (i * 3).toFixed(1) + ' ' + (80 - x * 56).toFixed(1);
+    }
+    return d;
+  }
+  renderVals() {
+    return {
+      accent: this.props.accent ?? '#2E6BFF',
+      radii: [
+        { name: 'Capsule', value: '999', css: '999px', use: 'Address bar, tabs, buttons' },
+        { name: 'Sheet', value: '28', css: '28px', use: 'Settings, tab overview' },
+        { name: 'Panel', value: '24', css: '24px', use: 'Sidebar, PiP window' },
+        { name: 'Card', value: '20', css: '20px', use: 'Popovers, tab thumbnails' },
+        { name: 'Control', value: '14', css: '14px', use: 'Fields, segmented' },
+        { name: 'Small', value: '8', css: '8px', use: 'Badges, favicons' }
+      ],
+      spacing: [2, 4, 8, 12, 16, 20, 24, 32, 48, 64].map(function (px, i) {
+        return { name: 'space-' + i, px: px, bar: (px * 6) + 'px' };
+      }),
+      accents: [
+        { name: 'Blue', hex: '#2E6BFF' }, { name: 'Indigo', hex: '#5B5BF0' },
+        { name: 'Pink', hex: '#E2457A' }, { name: 'Orange', hex: '#F2742B' },
+        { name: 'Green', hex: '#1F9D57' }, { name: 'Graphite', hex: '#5E636E' }
+      ],
+      neutralsLight: [
+        { name: 'Ground', hex: '#F3F4F7' }, { name: 'Surface', hex: '#FFFFFF' },
+        { name: 'Label', hex: '#111318' }, { name: 'Secondary', hex: '#4A5060' },
+        { name: 'Hairline', hex: '#D9DCE3' }
+      ],
+      neutralsDark: [
+        { name: 'Ground', hex: '#0E0F13' }, { name: 'Surface', hex: '#1A1C22' },
+        { name: 'Label', hex: '#F5F6F8' }, { name: 'Secondary', hex: '#A8AEBB' },
+        { name: 'Hairline', hex: '#2C2F38' }
+      ],
+      icons: [
+        { name: 'Back', d: 'M15 5l-7 7 7 7' },
+        { name: 'Forward', d: 'M9 5l7 7-7 7' },
+        { name: 'Sidebar', d: 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9.5 4v16' },
+        { name: 'Shield', d: 'M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6zM9 12l2 2 4-4' },
+        { name: 'Reload', d: 'M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5' },
+        { name: 'New tab', d: 'M12 5v14M5 12h14' },
+        { name: 'Overview', d: 'M6 4h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM15 4h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM6 13h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2zM15 13h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2z' },
+        { name: 'Tab group', d: 'M9 8h10a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 19 20H9a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 9 8zM4 16V5.5A1.5 1.5 0 0 1 5.5 4H16' },
+        { name: 'Bookmark', d: 'M7 3.5h10a1 1 0 0 1 1 1V21l-6-4-6 4V4.5a1 1 0 0 1 1-1z' },
+        { name: 'History', d: 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM12 7.5V12l3 2' },
+        { name: 'Media', d: 'M9 18V5.5l11-2V16M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM20 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z' },
+        { name: 'Search', d: 'M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM16.2 16.2L20.5 20.5' },
+        { name: 'Share', d: 'M12 3.5v11M8 7.5l4-4 4 4M5.5 12v7a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5v-7' },
+        { name: 'Close', d: 'M6.5 6.5l11 11M17.5 6.5l-11 11' },
+        { name: 'Picture in Picture', d: 'M4.5 5h15A1.5 1.5 0 0 1 21 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-11A1.5 1.5 0 0 1 4.5 5zM12.5 12h5.5v4.5h-5.5z' },
+        { name: 'Fullscreen', d: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5' },
+        { name: 'Volume', d: 'M4 9.5h3.5L12.5 5.5v13l-5-4H4zM16 9a4.5 4.5 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11' },
+        { name: 'Settings', d: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4' }
+      ],
+      springs: [
+        { name: 'Snappy', params: 'response 0.28 · ζ 0.90', path: this.spring(0.28, 0.9), use: 'Tabs, toggles, buttons' },
+        { name: 'Smooth', params: 'response 0.45 · ζ 1.00', path: this.spring(0.45, 1.0), use: 'Sidebar, sheets, settings' },
+        { name: 'Liquid', params: 'response 0.50 · ζ 0.62', path: this.spring(0.5, 0.62), use: 'Glass merge / split, popover drip' },
+        { name: 'Fling', params: 'response 0.60 · ζ 0.85', path: this.spring(0.6, 0.85), use: 'Overview zoom, scroll hand-off' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

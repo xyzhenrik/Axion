@@ -1,0 +1,104 @@
+//! Axion — a Liquid Glass web browser.
+//!
+//! ```bash
+//! axion [url] [--capture=out.png] [--size=1440x900]
+//! ```
+//!
+//! Environment: `AXION_GPU=low` uses the integrated GPU, `AXION_OSR=software` disables GPU
+//! frame sharing, `AXION_NO_SANDBOX=1` disables Chromium's sandbox, `AXION_CONFIG_DIR` and
+//! `AXION_PROFILE_DIR` move settings and browsing data.
+
+mod browser;
+mod chrome;
+mod gpu;
+mod input;
+mod tabs;
+mod url;
+
+use std::time::Duration;
+
+use anyhow::Result;
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::window::WindowId;
+
+use browser::{Browser, CaptureDone, Options};
+
+/// How long `--capture` waits for the page to load before saving.
+const CAPTURE_AFTER: Duration = Duration::from_secs(8);
+
+fn main() -> Result<()> {
+    // Chromium re-runs this binary for its helper processes; they must exit right here.
+    if let Some(code) = axion_engine::cef::run_subprocess_if_needed() {
+        std::process::exit(code);
+    }
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,wgpu_core=warn,wgpu_hal=warn".into()),
+        )
+        .init();
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let options = Options {
+        url: args.iter().find(|a| !a.starts_with("--")).cloned(),
+        capture: args.iter().find_map(|a| a.strip_prefix("--capture=")).map(Into::into),
+        capture_after: CAPTURE_AFTER,
+        size: args.iter().find_map(|a| a.strip_prefix("--size=")).and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        }),
+    };
+
+    let event_loop = EventLoop::new()?;
+    // CEF's message loop is pumped from ours, so keep polling.
+    event_loop.set_control_flow(ControlFlow::Poll);
+    let mut app = App { options: Some(options), browser: None, error: None };
+    event_loop.run_app(&mut app)?;
+    // Dropping the browser shuts Chromium down cleanly.
+    drop(app.browser.take());
+    match app.error {
+        Some(e) if e.downcast_ref::<CaptureDone>().is_none() => Err(e),
+        _ => Ok(()),
+    }
+}
+
+struct App {
+    options: Option<Options>,
+    browser: Option<Browser>,
+    error: Option<anyhow::Error>,
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(options) = self.options.take() else { return };
+        match Browser::new(event_loop, options) {
+            Ok(browser) => self.browser = Some(browser),
+            Err(e) => {
+                self.error = Some(e);
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        let Some(browser) = &mut self.browser else { return };
+        match browser.window_event(event) {
+            Ok(true) => {}
+            Ok(false) => event_loop.exit(),
+            Err(e) => {
+                self.error = Some(e);
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(browser) = &mut self.browser {
+            browser.pump();
+            browser.request_redraw();
+        }
+    }
+}

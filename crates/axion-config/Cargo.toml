@@ -1,0 +1,18 @@
+[package]
+name = "axion-config"
+description = "Axion settings: schema with design-token defaults, TOML load/save, live reload, keymap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+directories = "6"
+notify = "8"
+serde = { version = "1", features = ["derive"] }
+thiserror.workspace = true
+toml = "1"
+tracing.workspace = true
+
+[lints]
+workspace = true

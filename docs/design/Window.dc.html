@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Axion — Main window</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=Fraunces:opsz,wght@9..144,600;9..144,700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:inherit}a:hover{color:inherit}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+.i{fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.gl{background:rgba(255,255,255,.40);-webkit-backdrop-filter:blur(22px) saturate(190%) brightness(1.06);backdrop-filter:blur(22px) saturate(190%) brightness(1.06);box-shadow:inset 0 1px 0 rgba(255,255,255,.95),inset 0 -1px 0 rgba(255,255,255,.4),inset 0 0 0 .5px rgba(255,255,255,.65),inset 14px 14px 24px -16px rgba(255,255,255,1),inset -12px -12px 24px -18px rgba(255,255,255,.75),0 14px 40px rgba(12,20,40,.22),0 1px 3px rgba(12,20,40,.12)}
+.gl-thick{background:rgba(255,255,255,.58);-webkit-backdrop-filter:blur(36px) saturate(190%) brightness(1.06);backdrop-filter:blur(36px) saturate(190%) brightness(1.06);box-shadow:inset 0 1px 0 rgba(255,255,255,.95),inset 0 -1px 0 rgba(255,255,255,.4),inset 0 0 0 .5px rgba(255,255,255,.65),inset 16px 16px 30px -20px rgba(255,255,255,1),0 18px 50px rgba(12,20,40,.22)}
+.gd{background:rgba(22,24,30,.44);-webkit-backdrop-filter:blur(22px) saturate(165%) brightness(.85);backdrop-filter:blur(22px) saturate(165%) brightness(.85);box-shadow:inset 0 1px 0 rgba(255,255,255,.32),inset 0 -1px 0 rgba(255,255,255,.08),inset 0 0 0 .5px rgba(255,255,255,.18),inset 14px 14px 24px -16px rgba(255,255,255,.32),0 16px 44px rgba(0,0,0,.5)}
+.gd-thick{background:rgba(22,24,30,.62);-webkit-backdrop-filter:blur(36px) saturate(165%) brightness(.8);backdrop-filter:blur(36px) saturate(165%) brightness(.8);box-shadow:inset 0 1px 0 rgba(255,255,255,.30),inset 0 0 0 .5px rgba(255,255,255,.16),inset 16px 16px 30px -20px rgba(255,255,255,.28),0 18px 50px rgba(0,0,0,.5)}
+.serif{font-family:Fraunces,Georgia,serif}
+</style>
+</helmet>
+<div style="width: 1600px; height: 1000px; position: relative; overflow: hidden; font-family: Inter, system-ui, sans-serif; background: {{t.pageBg}}; color: {{t.label}}">
+
+  <main aria-label="Web page: Tidewater" style="position: absolute; inset: 0">
+    <div style="position: absolute; left: 0; right: 0; top: 0; height: 640px; background: {{t.sky}}">
+      <div style="position: absolute; left: 1080px; top: 150px; width: 210px; height: 210px; border-radius: 50%; background: {{t.sun}}"></div>
+      <div style="position: absolute; left: 0; right: 0; top: 220px; height: 300px; background: {{t.far}}; clip-path: polygon(0 70%, 8% 40%, 16% 58%, 27% 12%, 36% 50%, 44% 30%, 55% 62%, 63% 22%, 72% 48%, 81% 8%, 90% 44%, 100% 26%, 100% 100%, 0 100%)"></div>
+      <div style="position: absolute; left: 0; right: 0; top: 300px; height: 260px; background: {{t.mid}}; clip-path: polygon(0 50%, 10% 30%, 19% 64%, 30% 18%, 41% 60%, 52% 34%, 60% 70%, 70% 28%, 80% 66%, 89% 36%, 100% 58%, 100% 100%, 0 100%)"></div>
+      <div style="position: absolute; left: 0; right: 0; top: 400px; height: 180px; background: {{t.near}}; clip-path: polygon(0 40%, 14% 70%, 24% 30%, 38% 74%, 50% 46%, 64% 80%, 77% 38%, 88% 72%, 100% 44%, 100% 100%, 0 100%)"></div>
+      <div style="position: absolute; left: 0; right: 0; top: 560px; height: 80px; background: {{t.sea}}"></div>
+      <div style="position: absolute; left: 1150px; top: 572px; width: 80px; height: 4px; border-radius: 2px; background: {{t.sun}}; opacity: .8"></div>
+      <div style="position: absolute; left: 1120px; top: 590px; width: 140px; height: 4px; border-radius: 2px; background: {{t.sun}}; opacity: .6"></div>
+      <div style="position: absolute; left: 1165px; top: 608px; width: 50px; height: 4px; border-radius: 2px; background: {{t.sun}}; opacity: .5"></div>
+
+      <div style="position: absolute; left: 372px; right: 40px; top: 104px; display: flex; align-items: center; justify-content: space-between; color: {{t.heroText}}">
+        <div class="serif" style="font-size: 26px; font-weight: 700; letter-spacing: .04em">TIDEWATER</div>
+        <nav style="display: flex; gap: 30px; font-size: 15px; font-weight: 600">
+          <a href="#" style="text-decoration: none">Destinations</a>
+          <a href="#" style="text-decoration: none">Journal</a>
+          <a href="#" style="text-decoration: none">Gear</a>
+          <a href="#" style="text-decoration: none; padding: 8px 16px; border-radius: 999px; background: {{t.heroText}}; color: {{t.heroBtnText}}">Subscribe</a>
+        </nav>
+      </div>
+      <div style="position: absolute; left: 372px; top: 200px; width: 640px; display: flex; flex-direction: column; gap: 18px; color: {{t.heroText}}">
+        <div style="font-size: 13px; font-weight: 700; letter-spacing: .14em">FIELD NOTES · ISSUE 31</div>
+        <h1 class="serif" style="margin: 0; font-size: 68px; line-height: 72px; font-weight: 700; letter-spacing: -0.02em">Nine slow days along the northern coast</h1>
+        <p style="margin: 0; font-size: 18px; line-height: 27px; max-width: 520px; opacity: .92">Ferries, fish soup and the long blue hour — a route planned entirely around the tides.</p>
+      </div>
+    </div>
+
+    <section style="position: absolute; left: 372px; right: 40px; top: 676px; display: flex; flex-direction: column; gap: 18px">
+      <div style="display: flex; justify-content: space-between; align-items: baseline">
+        <h2 class="serif" style="margin: 0; font-size: 28px; font-weight: 700">Latest field notes</h2>
+        <a href="#" style="font-size: 14px; font-weight: 600; color: {{t.link}}; text-decoration: none">See all</a>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px">
+        <sc-for list="{{t.stories}}" as="s" hint-placeholder-count="3">
+          <article style="display: flex; flex-direction: column; gap: 12px">
+            <div style="height: 196px; border-radius: 20px; position: relative; overflow: hidden; background: {{s.bg}}">
+              <div style="position: absolute; left: {{s.x}}; top: 36px; width: 120px; height: 120px; border-radius: 50%; background: {{s.c1}}"></div>
+              <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 90px; background: {{s.c2}}; clip-path: polygon(0 50%, 20% 20%, 42% 60%, 64% 10%, 84% 46%, 100% 24%, 100% 100%, 0 100%)"></div>
+            </div>
+            <div style="font-size: 12px; font-weight: 700; letter-spacing: .1em; color: {{t.secondary}}">{{s.kicker}}</div>
+            <div class="serif" style="font-size: 21px; line-height: 27px; font-weight: 600; margin-top: -4px">{{s.title}}</div>
+          </article>
+        </sc-for>
+      </div>
+    </section>
+  </main>
+
+  <nav class="{{t.glassThick}}" aria-label="Sidebar" style="position: absolute; left: 16px; top: 16px; width: 316px; height: 968px; border-radius: 28px; padding: 14px 12px; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px">
+    <div style="display: flex; align-items: center; justify-content: space-between; padding: 4px 4px 10px">
+      <button aria-label="Hide sidebar" style="width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: {{t.hover}}"><svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="{{ic.sidebar}}"></path></svg></button>
+      <div style="display: flex; gap: 4px">
+        <button aria-label="Search tabs and history" style="width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="{{ic.search}}"></path></svg></button>
+        <button aria-label="Settings" style="width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="{{ic.settings}}"></path></svg></button>
+      </div>
+    </div>
+
+    <div style="font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: {{t.secondary}}; padding: 4px 12px 6px">Tab Groups</div>
+    <sc-for list="{{t.groups}}" as="g" hint-placeholder-count="3">
+      <a href="#" style="height: 40px; border-radius: 12px; display: flex; align-items: center; gap: 12px; padding: 0 12px; text-decoration: none; font-size: 15px; background: {{g.bg}}; font-weight: {{g.weight}}">
+        <span style="width: 10px; height: 10px; border-radius: 50%; background: {{g.color}}"></span>
+        <span style="flex: 1">{{g.name}}</span>
+        <span style="font-size: 13px; color: {{t.secondary}}; font-variant-numeric: tabular-nums">{{g.count}}</span>
+      </a>
+    </sc-for>
+    <a href="#" style="height: 40px; border-radius: 12px; display: flex; align-items: center; gap: 12px; padding: 0 12px; text-decoration: none; font-size: 15px; color: {{t.link}}"><svg class="i" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="{{ic.plus}}"></path></svg>New Tab Group</a>
+
+    <div style="font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: {{t.secondary}}; padding: 14px 12px 6px">Bookmarks</div>
+    <sc-for list="{{t.bookmarks}}" as="b" hint-placeholder-count="3">
+      <a href="#" style="height: 40px; border-radius: 12px; display: flex; align-items: center; gap: 12px; padding: 0 12px; text-decoration: none; font-size: 15px">
+        <svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="{{b.d}}"></path></svg>
+        <span style="flex: 1">{{b.name}}</span>
+        <span style="font-size: 13px; color: {{t.secondary}}">{{b.count}}</span>
+      </a>
+    </sc-for>
+
+    <div style="font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: {{t.secondary}}; padding: 14px 12px 6px">History · Today</div>
+    <sc-for list="{{t.history}}" as="h" hint-placeholder-count="3">
+      <a href="#" style="height: 40px; border-radius: 12px; display: flex; align-items: center; gap: 12px; padding: 0 12px; text-decoration: none; font-size: 14px">
+        <span style="width: 18px; height: 18px; border-radius: 5px; background: {{h.color}}; flex-shrink: 0"></span>
+        <span style="flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{h.title}}</span>
+        <span style="font-size: 12px; color: {{t.secondary}}; font-variant-numeric: tabular-nums">{{h.time}}</span>
+      </a>
+    </sc-for>
+
+    <div style="flex: 1"></div>
+
+    <div style="font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: {{t.secondary}}; padding: 8px 12px 6px">Now Playing</div>
+    <div class="{{t.glass}}" style="border-radius: 20px; padding: 12px; display: flex; flex-direction: column; gap: 10px">
+      <div style="display: flex; gap: 12px; align-items: center">
+        <div style="width: 52px; height: 52px; border-radius: 12px; background: #1F9D57; position: relative; overflow: hidden; flex-shrink: 0">
+          <div style="position: absolute; left: 10px; top: 8px; width: 26px; height: 26px; border-radius: 50%; background: #FFD66B"></div>
+          <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 18px; background: #0E5E8C"></div>
+        </div>
+        <div style="flex: 1; min-width: 0">
+          <div style="font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Low Tide Sessions, Ep. 14</div>
+          <div style="font-size: 13px; color: {{t.secondary}}">Field Radio</div>
+        </div>
+        <button aria-label="Pause" style="width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: {{t.hover}}"><svg class="i" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="stroke-width: 2.6"><path d="{{ic.pause}}"></path></svg></button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; font-size: 11px; font-variant-numeric: tabular-nums; color: {{t.secondary}}">
+        <span>18:42</span>
+        <div style="flex: 1; height: 4px; border-radius: 2px; background: {{t.track}}"><div style="width: 41%; height: 4px; border-radius: 2px; background: {{t.label}}"></div></div>
+        <span>−26:10</span>
+      </div>
+    </div>
+
+    <div style="font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: {{t.secondary}}; padding: 14px 12px 6px">Shields</div>
+    <div class="{{t.glass}}" style="border-radius: 20px; padding: 12px 14px; display: flex; align-items: center; gap: 12px">
+      <div style="width: 40px; height: 40px; border-radius: 12px; background: rgba(31,157,87,.16); color: #1F9D57; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="{{ic.shield}}"></path></svg></div>
+      <div style="flex: 1">
+        <div style="font-size: 14px; font-weight: 600"><span style="font-variant-numeric: tabular-nums">23</span> blocked on this site</div>
+        <div style="font-size: 12px; color: {{t.secondary}}">Standard · 1,482 this week</div>
+      </div>
+      <span role="img" aria-label="Shields on" style="width: 46px; height: 28px; border-radius: 999px; background: #1F9D57; position: relative; flex-shrink: 0"><span style="position: absolute; right: 2px; top: 2px; width: 30px; height: 24px; border-radius: 999px; background: #FFFFFF; box-shadow: 0 2px 5px rgba(0,0,0,.25)"></span></span>
+    </div>
+  </nav>
+
+  <div class="{{t.glass}}" role="toolbar" aria-label="Tabs and navigation" style="position: absolute; left: 348px; right: 16px; top: 16px; height: 56px; border-radius: 999px; display: flex; align-items: center; gap: 2px; padding: 0 7px; box-sizing: border-box">
+    <button aria-label="Back" style="width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="{{ic.back}}"></path></svg></button>
+    <button aria-label="Forward" aria-disabled="true" style="width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; opacity: .4"><svg class="i" viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="{{ic.forward}}"></path></svg></button>
+
+    <div style="flex: 1; min-width: 0; height: 44px; margin-left: 6px; border-radius: 999px; background: {{t.pillActive}}; box-shadow: 0 2px 10px rgba(0,0,0,.10); display: flex; align-items: center; gap: 8px; padding: 0 6px 0 8px">
+      <button aria-label="Shields for tidewater.travel" style="width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #1F9D57"><svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="{{ic.shield}}"></path></svg></button>
+      <span style="flex: 1; text-align: center; font-size: 15px; font-weight: 500">tidewater.travel</span>
+      <button aria-label="Reload" style="width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="{{ic.reload}}"></path></svg></button>
+    </div>
+    <sc-for list="{{t.tabs}}" as="tab" hint-placeholder-count="3">
+      <button style="width: 168px; height: 44px; border-radius: 999px; display: flex; align-items: center; gap: 9px; padding: 0 14px; box-sizing: border-box; color: {{t.secondary}}; background: {{tab.bg}}">
+        <span style="width: 16px; height: 16px; border-radius: 5px; background: {{tab.color}}; flex-shrink: 0"></span>
+        <span style="font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{tab.title}}</span>
+      </button>
+    </sc-for>
+
+    <div style="width: 1px; height: 24px; background: {{t.hair}}; margin: 0 4px"></div>
+    <button aria-label="New tab" style="width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="{{ic.plus}}"></path></svg></button>
+    <button aria-label="Tab overview" style="width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="{{ic.overview}}"></path></svg></button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"accent":{"editor":"color","default":"#2E6BFF","options":["#2E6BFF","#5B5BF0","#E2457A","#F2742B"]},"$preview":{"width":1600,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var dark = this.props.dark ?? false;
+    var accent = this.props.accent ?? '#2E6BFF';
+    var hover = dark ? 'rgba(255,255,255,.12)' : 'rgba(255,255,255,.6)';
+    var ic = {
+      back: 'M15 5l-7 7 7 7',
+      forward: 'M9 5l7 7-7 7',
+      sidebar: 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9.5 4v16',
+      shield: 'M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6zM9 12l2 2 4-4',
+      reload: 'M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5',
+      plus: 'M12 5v14M5 12h14',
+      overview: 'M6 4h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM15 4h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM6 13h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2zM15 13h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2z',
+      bookmark: 'M7 3.5h10a1 1 0 0 1 1 1V21l-6-4-6 4V4.5a1 1 0 0 1 1-1z',
+      star: 'M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z',
+      glasses: 'M3 14a3.5 3.5 0 1 0 7 0 3.5 3.5 0 0 0-7 0zM14 14a3.5 3.5 0 1 0 7 0 3.5 3.5 0 0 0-7 0zM10 14a2 2 0 0 1 4 0M3.5 12.5L6 6M20.5 12.5L18 6',
+      search: 'M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM16.2 16.2L20.5 20.5',
+      settings: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
+      pause: 'M8.5 5.5v13M15.5 5.5v13'
+    };
+    var t = {
+      glass: dark ? 'gd' : 'gl',
+      glassThick: dark ? 'gd-thick' : 'gl-thick',
+      pageBg: dark ? '#0E0F14' : '#FFF8F0',
+      sky: dark ? '#151C3D' : '#FFB070',
+      sun: dark ? '#F1E6C8' : '#FFE38A',
+      far: dark ? '#2C3878' : '#EC6A8A',
+      mid: dark ? '#1E2660' : '#8E3FA6',
+      near: dark ? '#0F1438' : '#33296E',
+      sea: dark ? '#0A2C52' : '#1C5FA6',
+      heroText: dark ? '#F4F1EA' : '#FFFFFF',
+      heroBtnText: dark ? '#151C3D' : '#33296E',
+      label: dark ? '#F5F6F8' : '#111318',
+      secondary: dark ? '#BCC2CE' : '#3F4554',
+      link: dark ? '#7FA6FF' : accent,
+      hover: hover,
+      pillActive: dark ? 'rgba(255,255,255,.20)' : 'rgba(255,255,255,.88)',
+      track: dark ? 'rgba(255,255,255,.22)' : 'rgba(17,19,24,.16)',
+      hair: dark ? 'rgba(255,255,255,.18)' : 'rgba(17,19,24,.14)',
+      tabs: [
+        { title: 'Kestrel Docs', color: '#7C5CFF', bg: 'transparent' },
+        { title: 'Field Radio', color: '#1F9D57', bg: hover },
+        { title: 'Harbour Market', color: '#E2457A', bg: 'transparent' }
+      ],
+      groups: [
+        { name: 'Trip planning', count: '6', color: '#F2742B', bg: hover, weight: 600 },
+        { name: 'Personal', count: '6', color: '#2E6BFF', bg: 'transparent', weight: 400 },
+        { name: 'Work', count: '12', color: '#7C5CFF', bg: 'transparent', weight: 400 }
+      ],
+      bookmarks: [
+        { name: 'Favourites', count: '18', d: ic.star },
+        { name: 'Reading List', count: '7', d: ic.glasses },
+        { name: 'Recipes', count: '24', d: ic.bookmark }
+      ],
+      history: [
+        { title: 'Ferry timetables — northern routes', time: '10:42', color: '#1C5FA6' },
+        { title: 'Weather · Svolvær, 10-day', time: '10:31', color: '#D98A06' },
+        { title: 'Kestrel Docs — Getting started', time: '09:58', color: '#7C5CFF' }
+      ],
+      stories: dark ? [
+        { kicker: 'ISLANDS', title: 'Where the ferry only runs on Tuesdays', bg: '#1B2550', c1: '#F1E6C8', c2: '#0E3A66', x: '60%' },
+        { kicker: 'FOOD', title: 'A cod-cheek crawl through four harbours', bg: '#3A1F45', c1: '#E2457A', c2: '#1E1036', x: '14%' },
+        { kicker: 'GEAR', title: 'Packing for rain that falls sideways', bg: '#0F3B36', c1: '#6FD3A8', c2: '#082622', x: '44%' }
+      ] : [
+        { kicker: 'ISLANDS', title: 'Where the ferry only runs on Tuesdays', bg: '#BFE3F5', c1: '#FFE38A', c2: '#1C5FA6', x: '60%' },
+        { kicker: 'FOOD', title: 'A cod-cheek crawl through four harbours', bg: '#FFD7C2', c1: '#E2457A', c2: '#8E3FA6', x: '14%' },
+        { kicker: 'GEAR', title: 'Packing for rain that falls sideways', bg: '#CDEFD9', c1: '#1F9D57', c2: '#0F5D49', x: '44%' }
+      ]
+    };
+    return { t: t, ic: ic };
+  }
+}
+</script>
+</body>
+</html>

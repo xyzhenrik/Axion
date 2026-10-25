@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Axion — In-page player</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=Fraunces:opsz,wght@9..144,600;9..144,700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:inherit}a:hover{color:inherit}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+.i{fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.gl{background:rgba(255,255,255,.40);-webkit-backdrop-filter:blur(22px) saturate(190%) brightness(1.06);backdrop-filter:blur(22px) saturate(190%) brightness(1.06);box-shadow:inset 0 1px 0 rgba(255,255,255,.95),inset 0 -1px 0 rgba(255,255,255,.4),inset 0 0 0 .5px rgba(255,255,255,.65),inset 14px 14px 24px -16px rgba(255,255,255,1),0 14px 40px rgba(12,20,40,.22)}
+.gd{background:rgba(20,22,28,.38);-webkit-backdrop-filter:blur(22px) saturate(170%) brightness(.9);backdrop-filter:blur(22px) saturate(170%) brightness(.9);box-shadow:inset 0 1px 0 rgba(255,255,255,.36),inset 0 0 0 .5px rgba(255,255,255,.22),inset 12px 12px 22px -14px rgba(255,255,255,.32),0 12px 34px rgba(0,0,0,.35)}
+.cb{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.scene{position:absolute;overflow:hidden;background:linear-gradient(#0E2433 0%,#24506A 38%,#C9805E 66%,#F2C38A 74%,#1A3A4A 74.2%,#0B2230 100%)}
+.serif{font-family:Fraunces,Georgia,serif}
+</style>
+</helmet>
+<div style="width: 1600px; height: 1000px; position: relative; overflow: hidden; background: #F6F3EE; color: #16181D; font-family: Inter, system-ui, sans-serif">
+  <main aria-label="Web page: Field Radio Films" style="position: absolute; left: 240px; right: 240px; top: 96px; display: flex; flex-direction: column; gap: 18px">
+    <div style="display: flex; justify-content: space-between; align-items: center">
+      <div style="display: flex; align-items: center; gap: 10px"><span style="width: 30px; height: 30px; border-radius: 8px; background: #1F9D57; color: #FFFFFF; font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center">FR</span><span style="font-size: 17px; font-weight: 700">Field Radio Films</span></div>
+      <nav style="display: flex; gap: 24px; font-size: 14px; font-weight: 600; color: #3F4554"><a href="#" style="text-decoration: none">Films</a><a href="#" style="text-decoration: none">Podcasts</a><a href="#" style="text-decoration: none">About</a></nav>
+    </div>
+
+    <div class="scene" role="img" aria-label="Video: a lighthouse on a cliff at dusk" style="position: relative; height: 630px; border-radius: 22px; box-shadow: 0 20px 60px rgba(20,24,40,.25)">
+      <div style="position: absolute; left: 690px; top: 380px; width: 100px; height: 100px; border-radius: 50%; background: #FFE2A8"></div>
+      <div style="position: absolute; left: 0; right: 0; top: 466px; bottom: 0; background: #0B2230"></div>
+      <div style="position: absolute; left: 710px; top: 482px; width: 60px; height: 4px; border-radius: 2px; background: #F2C38A; opacity: .7"></div>
+      <div style="position: absolute; left: 690px; top: 500px; width: 100px; height: 4px; border-radius: 2px; background: #F2C38A; opacity: .45"></div>
+      <div style="position: absolute; left: 0; top: 296px; width: 440px; height: 334px; background: #08151D; clip-path: polygon(0 0, 30% 4%, 58% 22%, 78% 40%, 100% 72%, 100% 100%, 0 100%)"></div>
+      <div style="position: absolute; left: 160px; top: 182px; width: 32px; height: 124px; background: #E9E2D4; clip-path: polygon(18% 0, 82% 0, 100% 100%, 0 100%)"></div>
+      <div style="position: absolute; left: 160px; top: 214px; width: 32px; height: 14px; background: #B5452F"></div>
+      <div style="position: absolute; left: 156px; top: 164px; width: 40px; height: 20px; border-radius: 5px 5px 0 0; background: #FFE9A8; box-shadow: 0 0 40px 14px rgba(255,226,150,.55)"></div>
+
+      <div class="gd" style="position: absolute; right: 18px; top: 18px; display: flex; gap: 2px; padding: 4px; border-radius: 999px; color: #FFFFFF">
+        <button class="cb" aria-label="Picture in Picture" style="width: 38px; height: 38px"><svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="M4.5 5h15A1.5 1.5 0 0 1 21 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-11A1.5 1.5 0 0 1 4.5 5zM12.5 12h5.5v4.5h-5.5z"></path></svg></button>
+        <button class="cb" aria-label="Fullscreen" style="width: 38px; height: 38px"><svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"></path></svg></button>
+      </div>
+
+      <div class="gd" role="group" aria-label="Video controls" style="position: absolute; left: 18px; right: 18px; bottom: 18px; height: 58px; border-radius: 999px; display: flex; align-items: center; gap: 4px; padding: 0 10px; box-sizing: border-box; color: #FFFFFF">
+        <button class="cb" aria-label="Pause" style="background: rgba(255,255,255,.18)"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"></path></svg></button>
+        <span style="font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; margin-left: 8px">12:48</span>
+        <div role="slider" aria-label="Seek" aria-valuemin="0" aria-valuemax="1620" aria-valuenow="768" tabindex="0" style="flex: 1; height: 24px; position: relative; display: flex; align-items: center; margin: 0 12px">
+          <div style="position: absolute; left: 0; right: 0; height: 5px; border-radius: 3px; background: rgba(255,255,255,.24)"></div>
+          <div style="position: absolute; left: 0; width: 68%; height: 5px; border-radius: 3px; background: rgba(255,255,255,.34)"></div>
+          <div style="position: absolute; left: 0; width: 47.4%; height: 5px; border-radius: 3px; background: #FFFFFF"></div>
+        </div>
+        <span style="font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; color: #D5D9E1; margin-right: 6px">−14:12</span>
+        <button class="cb" aria-label="Mute"><svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 9.5h3.5L12.5 5.5v13l-5-4H4zM16 9a4.5 4.5 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"></path></svg></button>
+        <button aria-label="Playback speed" style="height: 32px; padding: 0 10px; border-radius: 999px; font-size: 13px; font-weight: 700; background: rgba(255,255,255,.12)">1×</button>
+        <button class="cb" aria-label="Captions"><svg class="i" viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M4.5 5h15A1.5 1.5 0 0 1 21 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-11A1.5 1.5 0 0 1 4.5 5zM10.5 10.2a2.5 2.5 0 1 0 0 3.6M17 10.2a2.5 2.5 0 1 0 0 3.6"></path></svg></button>
+      </div>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 40px">
+      <div>
+        <h1 class="serif" style="margin: 0; font-size: 34px; line-height: 40px; font-weight: 700">Low Tide</h1>
+        <p style="margin: 6px 0 0; font-size: 15px; color: #3F4554">A short film about the last keeper of a northern light · 27 min</p>
+      </div>
+      <a href="#" style="font-size: 14px; font-weight: 600; text-decoration: none; padding: 10px 18px; border-radius: 999px; background: #16181D; color: #FFFFFF">Watch the series</a>
+    </div>
+  </main>
+
+  <div class="gl" role="toolbar" aria-label="Tabs and navigation" style="position: absolute; left: 16px; right: 16px; top: 16px; height: 56px; border-radius: 999px; display: flex; align-items: center; gap: 2px; padding: 0 7px; box-sizing: border-box">
+    <button class="cb" aria-label="Show sidebar" style="width: 44px; height: 44px"><svg class="i" viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9.5 4v16"></path></svg></button>
+    <button class="cb" aria-label="Back" style="width: 44px; height: 44px"><svg class="i" viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg></button>
+    <button class="cb" aria-label="Forward" aria-disabled="true" style="width: 44px; height: 44px; opacity: .4"><svg class="i" viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M9 5l7 7-7 7"></path></svg></button>
+    <button style="width: 168px; height: 44px; border-radius: 999px; display: flex; align-items: center; gap: 9px; padding: 0 14px; box-sizing: border-box; color: #3F4554">
+      <span style="width: 16px; height: 16px; border-radius: 5px; background: #F2742B; flex-shrink: 0"></span>
+      <span style="font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Tidewater</span>
+    </button>
+    <div style="flex: 1; min-width: 0; height: 44px; margin: 0 4px; border-radius: 999px; background: rgba(255,255,255,.88); box-shadow: 0 2px 10px rgba(0,0,0,.10); display: flex; align-items: center; gap: 8px; padding: 0 6px 0 8px">
+      <button class="cb" aria-label="Shields for fieldradio.fm" style="width: 34px; height: 34px; color: #1F9D57"><svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6zM9 12l2 2 4-4"></path></svg></button>
+      <span style="flex: 1; text-align: center; font-size: 15px; font-weight: 500">fieldradio.fm</span>
+      <button class="cb" aria-label="Mute this tab" style="width: 34px; height: 34px; color: #2E6BFF"><svg class="i" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 9.5h3.5L12.5 5.5v13l-5-4H4zM16 9a4.5 4.5 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"></path></svg></button>
+      <button class="cb" aria-label="Reload" style="width: 34px; height: 34px"><svg class="i" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"></path></svg></button>
+    </div>
+    <button style="width: 168px; height: 44px; border-radius: 999px; display: flex; align-items: center; gap: 9px; padding: 0 14px; box-sizing: border-box; color: #3F4554">
+      <span style="width: 16px; height: 16px; border-radius: 5px; background: #7C5CFF; flex-shrink: 0"></span>
+      <span style="font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Kestrel Docs</span>
+    </button>
+    <div style="width: 1px; height: 24px; background: rgba(17,19,24,.14); margin: 0 4px"></div>
+    <button class="cb" aria-label="New tab" style="width: 44px; height: 44px"><svg class="i" viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+    <button class="cb" aria-label="Tab overview" style="width: 44px; height: 44px"><svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 4h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM15 4h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM6 13h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2zM15 13h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2z"></path></svg></button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1600,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

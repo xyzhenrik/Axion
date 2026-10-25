@@ -1,0 +1,20 @@
+[package]
+name = "axion-ui"
+description = "Retained UI tree for Axion: layout, text, hit-testing, focus, glass widgets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+axion-compositor.workspace = true
+axion-config.workspace = true
+axion-glass.workspace = true
+axion-physics.workspace = true
+glam.workspace = true
+glyphon = "0.12"
+taffy = "0.15"
+wgpu.workspace = true
+
+[lints]
+workspace = true

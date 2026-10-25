@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Axion — Settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=Fraunces:opsz,wght@9..144,600;9..144,700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2E6BFF}a:hover{color:#1D4FD1}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+input{font:inherit;color:inherit}
+input[type=range]{width:100%;margin:0;accent-color:#2E6BFF;height:28px}
+.i{fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.sheet{background:rgba(255,255,255,.74);-webkit-backdrop-filter:blur(40px) saturate(190%) brightness(1.04);backdrop-filter:blur(40px) saturate(190%) brightness(1.04);box-shadow:inset 0 1px 0 rgba(255,255,255,.95),inset 0 0 0 .5px rgba(255,255,255,.7),inset 18px 18px 34px -22px rgba(255,255,255,1),0 40px 100px rgba(12,20,40,.38),0 6px 18px rgba(12,20,40,.14)}
+.card{background:rgba(255,255,255,.72);border-radius:20px;box-shadow:0 0 0 .5px rgba(17,19,24,.08)}
+.row{display:flex;align-items:center;gap:14px;min-height:52px;border-bottom:1px solid rgba(17,19,24,.08)}
+.row:last-child{border-bottom:0}
+.sw{width:52px;height:32px;border-radius:999px;position:relative;flex-shrink:0}
+.knob{position:absolute;top:2px;width:34px;height:28px;border-radius:999px;background:#FFFFFF;box-shadow:0 2px 6px rgba(0,0,0,.25)}
+.step{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(17,19,24,.06)}
+.chip{font-size:12px;font-weight:600;padding:3px 9px;border-radius:999px;white-space:nowrap}
+.lbl{font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#4A5060}
+.serif{font-family:Fraunces,Georgia,serif}
+</style>
+</helmet>
+<div style="width: 1600px; height: 1000px; position: relative; overflow: hidden; font-family: Inter, system-ui, sans-serif; color: #111318; background: #2A2630">
+  <div aria-hidden="true" style="position: absolute; left: -40px; top: -40px; width: 1680px; height: 1080px; filter: blur(28px) saturate(1.2) brightness(.72)">
+    <div style="position: absolute; left: 40px; top: 40px; width: 1600px; height: 1000px">
+      <dc-import name="Window" hint-size="1600px,1000px"></dc-import>
+    </div>
+  </div>
+
+  <section class="sheet" role="dialog" aria-label="Settings" style="position: absolute; left: 160px; top: 60px; width: 1280px; height: 880px; border-radius: 30px; display: flex; overflow: hidden">
+    <nav aria-label="Settings categories" style="width: 272px; flex-shrink: 0; padding: 24px 14px; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; border-right: 1px solid rgba(17,19,24,.08)">
+      <div style="font-size: 24px; font-weight: 700; letter-spacing: -0.015em; padding: 4px 10px 12px">Settings</div>
+      <label style="height: 40px; border-radius: 12px; background: rgba(17,19,24,.06); display: flex; align-items: center; gap: 8px; padding: 0 12px; margin-bottom: 10px">
+        <svg class="i" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" style="color: #4A5060"><path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM16.2 16.2L20.5 20.5"></path></svg>
+        <input type="search" placeholder="Search settings" aria-label="Search settings" style="flex: 1; border: 0; outline: 0; background: transparent; font-size: 14px">
+      </label>
+      <sc-for list="{{cats}}" as="c" hint-placeholder-count="9">
+        <button onClick="{{c.pick}}" aria-current="{{c.current}}" style="height: 42px; border-radius: 12px; display: flex; align-items: center; gap: 12px; padding: 0 12px; text-align: left; font-size: 15px; font-weight: {{c.weight}}; background: {{c.bg}}; color: {{c.color}}">
+          <svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="{{c.d}}"></path></svg>
+          {{c.name}}
+        </button>
+      </sc-for>
+    </nav>
+
+    <div style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+      <header style="display: flex; justify-content: space-between; align-items: center; padding: 24px 32px 16px">
+        <h1 style="margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -0.02em">{{title}}</h1>
+        <button style="height: 40px; padding: 0 20px; border-radius: 999px; font-size: 15px; font-weight: 650; color: #FFFFFF; background: {{accent}}; box-shadow: inset 0 1px 0 rgba(255,255,255,.4), 0 6px 16px rgba(46,107,255,.32)">Done</button>
+      </header>
+
+      <div style="flex: 1; overflow-y: auto; padding: 0 32px 32px; display: flex; flex-direction: column; gap: 18px">
+
+        <sc-if value="{{isMemory}}" hint-placeholder-val="{{true}}">
+          <div class="card" style="padding: 20px 22px; display: flex; flex-direction: column; gap: 12px">
+            <div style="display: flex; justify-content: space-between; align-items: baseline">
+              <label for="budget" style="font-size: 16px; font-weight: 650">Memory budget</label>
+              <span style="font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums">{{mem.budgetLabel}}</span>
+            </div>
+            <input id="budget" type="range" min="1024" max="16384" step="256" value="{{mem.budget}}" onChange="{{mem.setBudget}}" aria-valuetext="{{mem.budgetLabel}}">
+            <div role="img" aria-label="{{mem.usageLabel}}" style="height: 14px; border-radius: 7px; background: rgba(17,19,24,.08); display: flex; overflow: hidden; gap: 2px">
+              <sc-for list="{{mem.segs}}" as="s" hint-placeholder-count="4">
+                <span style="height: 14px; background: {{s.color}}; width: {{s.w}}"></span>
+              </sc-for>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px">
+              <div style="display: flex; gap: 16px; flex-wrap: wrap">
+                <sc-for list="{{mem.segs}}" as="s" hint-placeholder-count="4">
+                  <span style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #2F3440"><span style="width: 10px; height: 10px; border-radius: 3px; background: {{s.color}}"></span>{{s.name}} <span style="font-variant-numeric: tabular-nums; color: #4A5060">{{s.mbLabel}}</span></span>
+                </sc-for>
+              </div>
+              <span style="font-size: 13px; font-weight: 600; color: {{mem.statusColor}}">{{mem.status}}</span>
+            </div>
+            <p style="margin: 0; font-size: 13px; line-height: 19px; color: #4A5060">Above the budget, Axion freezes the least recently used tabs first and discards them after that. Tabs playing media are never frozen.</p>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px">
+            <div class="card" style="padding: 6px 20px">
+              <div class="row">
+                <span style="flex: 1; font-size: 15px">Freeze background tabs after</span>
+                <button class="step" aria-label="Shorter" onClick="{{mem.freezeDown}}"><svg class="i" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M6 12h12"></path></svg></button>
+                <span style="width: 64px; text-align: center; font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums">{{mem.freezeLabel}}</span>
+                <button class="step" aria-label="Longer" onClick="{{mem.freezeUp}}"><svg class="i" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 6v12M6 12h12"></path></svg></button>
+              </div>
+              <div class="row">
+                <span style="flex: 1; font-size: 15px">Discard frozen tabs after</span>
+                <button class="step" aria-label="Shorter" onClick="{{mem.discardDown}}"><svg class="i" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M6 12h12"></path></svg></button>
+                <span style="width: 64px; text-align: center; font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums">{{mem.discardLabel}}</span>
+                <button class="step" aria-label="Longer" onClick="{{mem.discardUp}}"><svg class="i" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 6v12M6 12h12"></path></svg></button>
+              </div>
+              <div class="row">
+                <span style="flex: 1; font-size: 15px">Never freeze tabs playing media</span>
+                <span style="font-size: 13px; color: #4A5060; display: flex; align-items: center; gap: 6px"><svg class="i" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 11h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1zM8 11V7a4 4 0 0 1 8 0v4"></path></svg>Always</span>
+              </div>
+              <sc-for list="{{mem.toggles}}" as="tg" hint-placeholder-count="2">
+                <div class="row">
+                  <span style="flex: 1; font-size: 15px">{{tg.label}}</span>
+                  <button class="sw" role="switch" aria-checked="{{tg.on}}" aria-label="{{tg.label}}" onClick="{{tg.flip}}" style="background: {{tg.track}}"><span class="knob" style="left: {{tg.knob}}"></span></button>
+                </div>
+              </sc-for>
+            </div>
+
+            <div class="card" style="padding: 16px 20px; display: flex; flex-direction: column; gap: 8px">
+              <div style="display: flex; justify-content: space-between; align-items: baseline">
+                <span style="font-size: 16px; font-weight: 650">Exceptions</span>
+                <span style="font-size: 13px; color: #4A5060">Per-site lifecycle rules</span>
+              </div>
+              <sc-for list="{{exceptions}}" as="ex" hint-placeholder-count="3">
+                <div class="row" style="min-height: 48px">
+                  <span style="width: 22px; height: 22px; border-radius: 6px; background: {{ex.color}}; flex-shrink: 0"></span>
+                  <span style="flex: 1; font-size: 14px; font-weight: 500">{{ex.site}}</span>
+                  <span class="chip" style="background: rgba(17,19,24,.06); color: #2F3440">{{ex.rule}}</span>
+                </div>
+              </sc-for>
+              <button style="align-self: flex-start; display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; color: {{accent}}; padding: 8px 0"><svg class="i" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Add site…</button>
+            </div>
+          </div>
+
+          <div class="card" style="padding: 16px 20px 8px">
+            <div style="display: flex; justify-content: space-between; align-items: baseline; padding-bottom: 6px">
+              <span style="font-size: 16px; font-weight: 650">Per-tab memory</span>
+              <span style="font-size: 13px; color: #4A5060">Live · refreshed every 2 s</span>
+            </div>
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px">
+              <thead>
+                <tr style="text-align: left; color: #4A5060; font-size: 12px">
+                  <th scope="col" style="font-weight: 600; padding: 8px 0">Tab</th>
+                  <th scope="col" style="font-weight: 600; padding: 8px 0">Group</th>
+                  <th scope="col" style="font-weight: 600; padding: 8px 0">State</th>
+                  <th scope="col" style="font-weight: 600; padding: 8px 0; text-align: right">Memory</th>
+                  <th scope="col" style="font-weight: 600; padding: 8px 0; text-align: right">CPU</th>
+                  <th scope="col" style="padding: 8px 0"><span style="position: absolute; width: 1px; height: 1px; overflow: hidden">Action</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                <sc-for list="{{tabs}}" as="r" hint-placeholder-count="6">
+                  <tr style="border-top: 1px solid rgba(17,19,24,.08)">
+                    <td style="padding: 9px 0"><span style="display: flex; align-items: center; gap: 10px; font-weight: 500"><span style="width: 18px; height: 18px; border-radius: 5px; background: {{r.color}}"></span>{{r.title}}</span></td>
+                    <td style="padding: 9px 0; color: #4A5060">Trip planning</td>
+                    <td style="padding: 9px 0"><span class="chip" style="background: {{r.stateBg}}; color: {{r.stateFg}}">{{r.state}}</span></td>
+                    <td style="padding: 9px 0; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600">{{r.mem}}</td>
+                    <td style="padding: 9px 0; text-align: right; font-variant-numeric: tabular-nums; color: #4A5060">{{r.cpu}}</td>
+                    <td style="padding: 9px 0 9px 16px; text-align: right"><button style="font-size: 13px; font-weight: 600; color: {{accent}}">{{r.action}}</button></td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{isGlass}}" hint-placeholder-val="{{false}}">
+          <div class="card" style="padding: 14px; display: flex; flex-direction: column; gap: 10px">
+            <div style="position: relative; height: 270px; border-radius: 14px; overflow: hidden; background: #FFE9CF">
+              <div style="position: absolute; left: -40px; top: -50px; width: 260px; height: 260px; border-radius: 50%; background: #FF6B3D"></div>
+              <div style="position: absolute; left: 300px; top: 120px; width: 220px; height: 220px; border-radius: 50%; background: #2E6BFF"></div>
+              <div style="position: absolute; left: 560px; top: -30px; width: 160px; height: 160px; border-radius: 50%; background: #FFC93C"></div>
+              <div style="position: absolute; left: 700px; top: 150px; width: 300px; height: 110px; border-radius: 60px; background: #18A874; transform: rotate(-14deg)"></div>
+              <div style="position: absolute; left: 0; right: 0; top: 0; bottom: 0; background: repeating-linear-gradient(90deg, rgba(17,19,24,.85) 0 2px, transparent 2px 34px); opacity: .3"></div>
+              <div style="position: absolute; left: 30px; top: 70px; font-size: 150px; line-height: 150px; font-weight: 800; letter-spacing: -0.05em; color: #13151A">Liquid</div>
+
+              <div style="position: absolute; left: 40px; right: 40px; top: 28px; height: 54px; border-radius: 999px; display: flex; align-items: center; gap: 10px; padding: 0 8px; box-sizing: border-box; background: {{pv.bg}}; backdrop-filter: {{pv.filter}}; -webkit-backdrop-filter: {{pv.filter}}; box-shadow: {{pv.shadow}}">
+                <span style="width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg></span>
+                <span style="flex: 1; height: 40px; border-radius: 999px; background: rgba(255,255,255,.8); display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 500">tidewater.travel</span>
+                <span style="width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></span>
+              </div>
+              <div style="position: absolute; left: 330px; top: 150px; width: 96px; height: 96px; border-radius: 50%; background: {{pv.bg}}; backdrop-filter: {{pv.filter}}; -webkit-backdrop-filter: {{pv.filter}}; box-shadow: {{pv.shadow}}"></div>
+              <div style="position: absolute; left: 404px; top: 176px; width: 140px; height: 70px; border-radius: 35px; background: {{pv.bg}}; backdrop-filter: {{pv.filter}}; -webkit-backdrop-filter: {{pv.filter}}; box-shadow: {{pv.shadow}}"></div>
+              <div style="position: absolute; right: 40px; bottom: 26px; width: 260px; border-radius: 22px; padding: 14px 16px; box-sizing: border-box; font-size: 14px; line-height: 20px; background: {{pv.bg}}; backdrop-filter: {{pv.filter}}; -webkit-backdrop-filter: {{pv.filter}}; box-shadow: {{pv.shadow}}"><strong>Live preview.</strong> Labels stay at 4.5:1 or better on any backdrop.</div>
+            </div>
+            <div style="display: flex; justify-content: space-between; font-size: 12px; color: #4A5060; padding: 0 4px"><span>Preview is approximate: refraction and dispersion run in the compositor shader.</span><span>{{pv.springLabel}}</span></div>
+          </div>
+
+          <div class="card" style="padding: 8px 22px">
+            <sc-for list="{{sliders}}" as="sl" hint-placeholder-count="5">
+              <div class="row" style="min-height: 62px">
+                <label for="{{sl.id}}" style="width: 150px; font-size: 15px; font-weight: 500">{{sl.label}}</label>
+                <input id="{{sl.id}}" type="range" min="0" max="{{sl.max}}" step="1" value="{{sl.value}}" onChange="{{sl.set}}" disabled="{{sl.disabled}}" style="flex: 1">
+                <span style="width: 70px; text-align: right; font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums">{{sl.valueLabel}}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div class="card" style="padding: 6px 22px">
+            <sc-for list="{{glassToggles}}" as="tg" hint-placeholder-count="3">
+              <div class="row" style="min-height: 60px">
+                <div style="flex: 1">
+                  <div style="font-size: 15px; font-weight: 500">{{tg.label}}</div>
+                  <div style="font-size: 13px; color: #4A5060">{{tg.hint}}</div>
+                </div>
+                <button class="sw" role="switch" aria-checked="{{tg.on}}" aria-label="{{tg.label}}" onClick="{{tg.flip}}" style="background: {{tg.track}}"><span class="knob" style="left: {{tg.knob}}"></span></button>
+              </div>
+            </sc-for>
+          </div>
+          <button onClick="{{resetGlass}}" style="align-self: flex-start; font-size: 14px; font-weight: 600; color: {{accent}}">Reset to defaults</button>
+        </sc-if>
+
+        <sc-if value="{{isOther}}" hint-placeholder-val="{{false}}">
+          <div class="card" style="padding: 40px; text-align: center; font-size: 15px; color: #4A5060">[{{title}} page: not designed yet]</div>
+        </sc-if>
+      </div>
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"page":{"editor":"enum","options":["memory","glass"],"default":"memory"},"accent":{"editor":"color","default":"#2E6BFF","options":["#2E6BFF","#5B5BF0","#E2457A","#F2742B"]},"$preview":{"width":1600,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var self = this;
+    var s = this.state || {};
+    var accent = this.props.accent ?? '#2E6BFF';
+    var page = s.page ?? this.props.page ?? 'memory';
+    function set(k, v) { var o = {}; o[k] = v; self.setState(o); }
+    function get(k, d) { return s[k] ?? d; }
+    function sw(label, key, def, hint) {
+      var on = get(key, def);
+      return { label: label, hint: hint || '', on: on ? 'true' : 'false', flip: function () { set(key, !on); },
+        track: on ? accent : 'rgba(17,19,24,.18)', knob: on ? '16px' : '2px' };
+    }
+    var catDefs = [
+      ['general', 'General', 'M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zM12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8'],
+      ['appearance', 'Appearance', 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM12 3v18'],
+      ['glass', 'Liquid Glass', 'M12 3.5c3.5 4.2 6 7.6 6 10.5a6 6 0 0 1-12 0c0-2.9 2.5-6.3 6-10.5zM9 14.5a3 3 0 0 0 2.5 2.8'],
+      ['memory', 'Tabs & Memory', 'M7 6h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1zM10 10h4v4h-4zM9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3'],
+      ['shields', 'Shields', 'M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6zM9 12l2 2 4-4'],
+      ['media', 'Media', 'M4.5 5h15A1.5 1.5 0 0 1 21 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-11A1.5 1.5 0 0 1 4.5 5zM10 9l5 3-5 3z'],
+      ['keyboard', 'Keyboard', 'M4 6h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1zM7 10h1M11 10h1M15 10h1M7 14h10'],
+      ['privacy', 'Privacy', 'M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6zM12 9.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5zM4 4l16 16'],
+      ['advanced', 'Advanced', 'M8 8l-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14']
+    ];
+    var title = 'Settings';
+    var cats = catDefs.map(function (c) {
+      var cur = c[0] === page;
+      if (cur) title = c[1];
+      return { name: c[1], d: c[2], pick: function () { set('page', c[0]); }, current: cur ? 'page' : 'false',
+        bg: cur ? accent : 'transparent', color: cur ? '#FFFFFF' : '#111318', weight: cur ? 600 : 500 };
+    });
+
+    var budget = get('budget', 4096);
+    var used = [
+      { name: 'Active tab', mb: 612, color: accent },
+      { name: 'Background tabs', mb: 1340, color: '#7C5CFF' },
+      { name: 'Media', mb: 380, color: '#1F9D57' },
+      { name: 'Browser & GPU', mb: 410, color: '#8A919E' }
+    ];
+    var total = used.reduce(function (a, u) { return a + u.mb; }, 0);
+    var scale = Math.max(budget, total);
+    var fmt = function (n) { return n.toLocaleString('en-US') + ' MB'; };
+    var freezeOpts = [5, 10, 15, 30, 60];
+    var discardOpts = [30, 60, 120, 240, 480];
+    var fi = freezeOpts.indexOf(get('freeze', 10));
+    var di = discardOpts.indexOf(get('discard', 120));
+    var tl = function (m) { return m < 60 ? m + ' min' : (m / 60) + ' h'; };
+    var mem = {
+      budget: budget, budgetLabel: fmt(budget),
+      setBudget: function (e) { set('budget', Number(e.target.value)); },
+      segs: used.map(function (u) { return { name: u.name, color: u.color, mbLabel: fmt(u.mb), w: (u.mb / scale * 100).toFixed(2) + '%' }; }),
+      usageLabel: fmt(total) + ' used of ' + fmt(budget),
+      status: budget >= total ? fmt(total) + ' used · ' + fmt(budget - total) + ' free' : 'Over budget by ' + fmt(total - budget) + ' · 2 tabs will freeze',
+      statusColor: budget >= total ? '#16804A' : '#B4231F',
+      freezeLabel: tl(freezeOpts[fi]), discardLabel: tl(discardOpts[di]),
+      freezeDown: function () { set('freeze', freezeOpts[Math.max(0, fi - 1)]); },
+      freezeUp: function () { set('freeze', freezeOpts[Math.min(freezeOpts.length - 1, fi + 1)]); },
+      discardDown: function () { set('discard', discardOpts[Math.max(0, di - 1)]); },
+      discardUp: function () { set('discard', discardOpts[Math.min(discardOpts.length - 1, di + 1)]); },
+      toggles: [sw('Keep pinned tabs alive', 'pinned', true), sw('Dim frozen tabs in the tab bar', 'dim', true)]
+    };
+
+    var g = {
+      intensity: get('intensity', 55), blur: get('blur', 26), dispersion: get('dispersion', 12),
+      tint: get('tint', 42), motion: get('motion', 62)
+    };
+    var rt = get('reduceTransparency', false), rm = get('reduceMotion', false);
+    var tint = rt ? 0.94 : g.tint / 100;
+    var blur = rt ? 0 : g.blur;
+    var sat = 100 + g.intensity * 1.6;
+    var rim = (0.35 + g.intensity / 100 * 0.6).toFixed(2);
+    var disp = (g.dispersion / 100 * 0.9).toFixed(2);
+    var damping = rm ? 1 : (1 - g.motion / 100 * 0.6);
+    var slider = function (id, label, key, max, unit, disabled) {
+      return { id: 'gl-' + id, label: label, max: max, value: g[key], valueLabel: g[key] + unit, disabled: !!disabled,
+        set: function (e) { set(key, Number(e.target.value)); } };
+    };
+    return {
+      accent: accent, title: title, cats: cats,
+      isMemory: page === 'memory', isGlass: page === 'glass', isOther: page !== 'memory' && page !== 'glass',
+      mem: mem,
+      exceptions: [
+        { site: 'music.fieldradio.fm', rule: 'Never freeze', color: '#1F9D57' },
+        { site: 'docs.kestrel.dev', rule: 'Freeze after 60 min', color: '#7C5CFF' },
+        { site: 'mail.example.org', rule: 'Never discard', color: '#2E6BFF' }
+      ],
+      tabs: [
+        { title: 'Tidewater', color: '#F2742B', state: 'Active', stateBg: 'rgba(46,107,255,.14)', stateFg: '#1D4FD1', mem: '612 MB', cpu: '3.1%', action: 'Freeze' },
+        { title: 'Field Radio', color: '#1F9D57', state: 'Playing', stateBg: 'rgba(31,157,87,.14)', stateFg: '#16804A', mem: '380 MB', cpu: '6.4%', action: 'Mute' },
+        { title: 'Kestrel Docs', color: '#7C5CFF', state: 'Background', stateBg: 'rgba(124,92,255,.14)', stateFg: '#5B3FD9', mem: '288 MB', cpu: '0.4%', action: 'Freeze' },
+        { title: 'Harbour Market', color: '#E2457A', state: 'Frozen', stateBg: 'rgba(17,19,24,.08)', stateFg: '#2F3440', mem: '96 MB', cpu: '0%', action: 'Discard' },
+        { title: 'Ferry timetables', color: '#1C5FA6', state: 'Frozen', stateBg: 'rgba(17,19,24,.08)', stateFg: '#2F3440', mem: '74 MB', cpu: '0%', action: 'Discard' },
+        { title: 'Weather · Svolvær', color: '#D98A06', state: 'Discarded', stateBg: 'transparent', stateFg: '#4A5060', mem: '2 MB', cpu: '0%', action: 'Reload' }
+      ],
+      pv: {
+        bg: 'rgba(255,255,255,' + tint.toFixed(2) + ')',
+        filter: 'blur(' + blur + 'px) saturate(' + Math.round(sat) + '%) brightness(1.05)',
+        shadow: 'inset 0 1px 0 rgba(255,255,255,' + rim + '), inset 0 0 0 .5px rgba(255,255,255,.6), inset 12px 12px 22px -14px rgba(255,255,255,' + rim + '), inset 2px 0 0 rgba(255,40,90,' + disp + '), inset -2px 0 0 rgba(0,150,255,' + disp + '), 0 12px 32px rgba(12,20,40,.2)',
+        springLabel: rm ? 'Reduce Motion: cross-fades, ζ 1.00' : 'Spring damping ζ ' + damping.toFixed(2)
+      },
+      sliders: [
+        slider('intensity', 'Intensity', 'intensity', 100, '%', rt),
+        slider('blur', 'Blur', 'blur', 60, ' px', rt),
+        slider('dispersion', 'Dispersion', 'dispersion', 100, '%', rt),
+        slider('tint', 'Tint', 'tint', 100, '%', rt),
+        slider('motion', 'Motion', 'motion', 100, '%', rm)
+      ],
+      glassToggles: [
+        sw('Reduce Transparency', 'reduceTransparency', false, 'Opaque surfaces, no blur or refraction'),
+        sw('Reduce Motion', 'reduceMotion', false, 'Cross-fades instead of springs, no stretching'),
+        sw('Adapt tint to backdrop', 'adapt', true, 'Raises opacity over busy content to keep text legible')
+      ],
+      resetGlass: function () { self.setState({ intensity: 55, blur: 26, dispersion: 12, tint: 42, motion: 62, reduceTransparency: false, reduceMotion: false, adapt: true }); }
+    };
+  }
+}
+</script>
+</body>
+</html>

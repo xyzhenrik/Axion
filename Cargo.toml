@@ -9,11 +9,16 @@ rust-version = "1.90"
 publish = false
 
 [workspace.dependencies]
+axion-compositor = { path = "crates/axion-compositor" }
+axion-config = { path = "crates/axion-config" }
+axion-engine = { path = "crates/axion-engine" }
 axion-glass = { path = "crates/axion-glass" }
 axion-physics = { path = "crates/axion-physics" }
+axion-ui = { path = "crates/axion-ui" }
 
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
+cef = { version = "156.2", features = ["accelerated_osr"] }
 glam = { version = "0.34", features = ["bytemuck"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 pollster = "1"

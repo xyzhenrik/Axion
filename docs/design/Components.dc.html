@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Axion — Components</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2E6BFF}a:hover{color:#1D4FD1}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+input{font:inherit;color:inherit}
+.i{fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.gl{background:rgba(255,255,255,.42);-webkit-backdrop-filter:blur(22px) saturate(185%) brightness(1.05);backdrop-filter:blur(22px) saturate(185%) brightness(1.05);box-shadow:inset 0 1px 0 rgba(255,255,255,.95),inset 0 -1px 0 rgba(255,255,255,.4),inset 0 0 0 .5px rgba(255,255,255,.6),inset 12px 12px 22px -16px rgba(255,255,255,1),inset -10px -10px 22px -18px rgba(255,255,255,.7),0 12px 34px rgba(12,20,40,.18),0 1px 3px rgba(12,20,40,.10)}
+.gd{background:rgba(22,24,30,.46);-webkit-backdrop-filter:blur(22px) saturate(160%) brightness(.85);backdrop-filter:blur(22px) saturate(160%) brightness(.85);box-shadow:inset 0 1px 0 rgba(255,255,255,.30),inset 0 -1px 0 rgba(255,255,255,.08),inset 0 0 0 .5px rgba(255,255,255,.16),inset 12px 12px 22px -16px rgba(255,255,255,.30),0 14px 40px rgba(0,0,0,.45)}
+</style>
+</helmet>
+<div style="width: 1600px; height: 1400px; box-sizing: border-box; padding: 40px; background: #E9EBF0; font-family: Inter, system-ui, sans-serif; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 40px">
+  <sc-for list="{{themes}}" as="t" hint-placeholder-count="2">
+    <div style="display: flex; flex-direction: column; gap: 16px; min-width: 0">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; color: #111318">
+        <h2 style="margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -0.015em">{{t.title}}</h2>
+        <span style="font-size: 13px; color: #4A5060">Components over a live page backdrop</span>
+      </div>
+
+      <div style="position: relative; flex: 1; border-radius: 28px; overflow: hidden; background: {{t.bg}}; color: {{t.label}}">
+        <div style="position: absolute; left: -80px; top: 40px; width: 340px; height: 340px; border-radius: 50%; background: {{t.c1}}"></div>
+        <div style="position: absolute; left: 420px; top: -60px; width: 300px; height: 300px; border-radius: 50%; background: {{t.c2}}"></div>
+        <div style="position: absolute; left: 240px; top: 470px; width: 520px; height: 200px; border-radius: 100px; background: {{t.c3}}; transform: rotate(-18deg)"></div>
+        <div style="position: absolute; left: -40px; top: 860px; width: 360px; height: 360px; border-radius: 50%; background: {{t.c4}}"></div>
+        <div style="position: absolute; left: 470px; top: 900px; width: 280px; height: 280px; border-radius: 50%; background: {{t.c2}}"></div>
+        <div style="position: absolute; left: 24px; top: 250px; font-size: 200px; line-height: 200px; font-weight: 800; letter-spacing: -0.05em; color: {{t.type}}">Glass</div>
+        <div style="position: absolute; left: 24px; top: 760px; font-size: 200px; line-height: 200px; font-weight: 800; letter-spacing: -0.05em; color: {{t.type}}">Axion</div>
+
+        <div style="position: relative; padding: 32px; display: flex; flex-direction: column; gap: 26px">
+
+          <div style="display: flex; flex-direction: column; gap: 10px">
+            <span style="align-self: flex-start; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px; background: {{t.chip}}">Glass capsule bar</span>
+            <div class="{{t.glass}}" style="height: 54px; border-radius: 999px; display: flex; align-items: center; gap: 2px; padding: 0 6px; box-sizing: border-box">
+              <button aria-label="Toggle sidebar" style="width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="{{t.ic.sidebar}}"></path></svg></button>
+              <button aria-label="Back" style="width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="{{t.ic.back}}"></path></svg></button>
+              <button aria-label="Forward" style="width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; opacity: .45"><svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="{{t.ic.forward}}"></path></svg></button>
+              <div style="flex: 1; height: 42px; border-radius: 999px; background: {{t.pillActive}}; box-shadow: 0 2px 8px rgba(0,0,0,.10); display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px; margin-left: 6px">
+                <svg class="i" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="color: #1F9D57"><path d="{{t.ic.shield}}"></path></svg>
+                <span style="flex: 1; text-align: center; font-size: 15px; font-weight: 500">tidewater.travel</span>
+                <button aria-label="Reload" style="width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="{{t.ic.reload}}"></path></svg></button>
+              </div>
+              <div style="width: 130px; height: 42px; border-radius: 999px; display: flex; align-items: center; gap: 8px; padding: 0 12px; box-sizing: border-box; color: {{t.secondary}}">
+                <span style="width: 16px; height: 16px; border-radius: 5px; background: #7C5CFF; flex-shrink: 0"></span>
+                <span style="font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Kestrel Docs</span>
+              </div>
+              <button aria-label="New tab" style="width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="{{t.ic.plus}}"></path></svg></button>
+              <button aria-label="Tab overview" style="width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="{{t.ic.overview}}"></path></svg></button>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 10px">
+            <span style="align-self: flex-start; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px; background: {{t.chip}}">Tab pill — active · inactive · hover</span>
+            <div class="{{t.glass}}" style="height: 54px; border-radius: 999px; display: flex; align-items: center; gap: 6px; padding: 0 6px; box-sizing: border-box">
+              <div style="flex: 1; height: 42px; border-radius: 999px; background: {{t.pillActive}}; box-shadow: 0 2px 8px rgba(0,0,0,.10); display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px; min-width: 0">
+                <span style="width: 16px; height: 16px; border-radius: 5px; background: #F2742B; flex-shrink: 0"></span>
+                <span style="flex: 1; font-size: 14px; font-weight: 600; white-space: nowrap">Tidewater</span>
+                <button aria-label="Close tab" style="width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="{{t.ic.close}}"></path></svg></button>
+              </div>
+              <div style="flex: 1; height: 42px; border-radius: 999px; display: flex; align-items: center; gap: 8px; padding: 0 12px; min-width: 0; color: {{t.secondary}}">
+                <span style="width: 16px; height: 16px; border-radius: 5px; background: #7C5CFF; flex-shrink: 0"></span>
+                <span style="font-size: 14px; font-weight: 500; white-space: nowrap">Kestrel Docs</span>
+              </div>
+              <div style="flex: 1; height: 42px; border-radius: 999px; background: {{t.pillHover}}; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px; min-width: 0">
+                <span style="width: 16px; height: 16px; border-radius: 5px; background: #1F9D57; flex-shrink: 0"></span>
+                <span style="flex: 1; font-size: 14px; font-weight: 500; white-space: nowrap">Field Radio</span>
+                <button aria-label="Close tab" style="width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; opacity: .7"><svg class="i" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="{{t.ic.close}}"></path></svg></button>
+              </div>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 28px; align-items: flex-end">
+            <div style="display: flex; flex-direction: column; gap: 10px">
+              <span style="align-self: flex-start; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px; background: {{t.chip}}">Glass buttons</span>
+              <div style="display: flex; gap: 12px; align-items: center">
+                <button class="{{t.glass}}" aria-label="Share" style="width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="{{t.ic.share}}"></path></svg></button>
+                <button class="{{t.glass}}" style="height: 48px; border-radius: 999px; padding: 0 22px; font-size: 15px; font-weight: 600">Done</button>
+                <button style="height: 48px; border-radius: 999px; padding: 0 22px; font-size: 15px; font-weight: 600; color: #FFFFFF; background: {{t.accent}}; box-shadow: inset 0 1px 0 rgba(255,255,255,.45), inset 0 -1px 0 rgba(0,0,0,.12), 0 8px 22px rgba(46,107,255,.38)">Open tab</button>
+              </div>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 10px">
+              <span style="align-self: flex-start; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px; background: {{t.chip}}">Toggle</span>
+              <div style="display: flex; gap: 14px; align-items: center; height: 48px">
+                <label style="display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 500">
+                  <input type="checkbox" aria-label="Shields on" style="position: absolute; opacity: 0; width: 1px; height: 1px">
+                  <span style="width: 56px; height: 32px; border-radius: 999px; background: {{t.accent}}; position: relative; box-shadow: inset 0 1px 2px rgba(0,0,0,.18)"><span style="position: absolute; right: 2px; top: 2px; width: 34px; height: 28px; border-radius: 999px; background: #FFFFFF; box-shadow: 0 2px 6px rgba(0,0,0,.25)"></span></span>
+                  On
+                </label>
+                <label style="display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 500">
+                  <input type="checkbox" aria-label="Off" style="position: absolute; opacity: 0; width: 1px; height: 1px">
+                  <span style="width: 56px; height: 32px; border-radius: 999px; background: {{t.trackOff}}; position: relative"><span style="position: absolute; left: 2px; top: 2px; width: 34px; height: 28px; border-radius: 999px; background: #FFFFFF; box-shadow: 0 2px 6px rgba(0,0,0,.25)"></span></span>
+                  Off
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px">
+            <div style="display: flex; flex-direction: column; gap: 10px">
+              <span style="align-self: flex-start; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px; background: {{t.chip}}">Popover — drips out of its button</span>
+              <div style="position: relative; height: 380px">
+                <button class="{{t.glass}}" aria-label="Share" style="position: absolute; left: 20px; top: 0; width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center"><svg class="i" viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="{{t.ic.share}}"></path></svg></button>
+                <div class="{{t.glass}}" style="position: absolute; left: 30px; top: 38px; width: 28px; height: 28px; border-radius: 0 0 14px 14px; box-shadow: none"></div>
+                <div class="{{t.glass}}" style="position: absolute; left: 0; top: 60px; width: 100%; border-radius: 22px; padding: 8px; box-sizing: border-box; display: flex; flex-direction: column">
+                  <sc-for list="{{t.menu}}" as="m" hint-placeholder-count="5">
+                    <button style="height: 46px; border-radius: 14px; display: flex; align-items: center; gap: 12px; padding: 0 12px; text-align: left; font-size: 15px; background: {{m.bg}}">
+                      <svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="{{m.d}}"></path></svg>
+                      <span style="flex: 1">{{m.label}}</span>
+                      <span style="font-size: 12px; color: {{t.secondary}}">{{m.key}}</span>
+                    </button>
+                  </sc-for>
+                  <div style="height: 1px; background: {{t.hair}}; margin: 6px 12px"></div>
+                  <button style="height: 46px; border-radius: 14px; display: flex; align-items: center; gap: 12px; padding: 0 12px; text-align: left; font-size: 15px; color: #E5484D">
+                    <svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="{{t.ic.close}}"></path></svg>
+                    <span>Close tab</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 10px">
+              <span style="align-self: flex-start; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px; background: {{t.chip}}">Sidebar panel</span>
+              <nav class="{{t.glass}}" aria-label="Sidebar" style="height: 380px; border-radius: 24px; padding: 14px 10px; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px">
+                <div style="font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{t.secondary}}; padding: 6px 10px">Tab Groups</div>
+                <sc-for list="{{t.groups}}" as="g" hint-placeholder-count="3">
+                  <a href="#" style="height: 40px; border-radius: 12px; display: flex; align-items: center; gap: 10px; padding: 0 10px; color: {{t.label}}; text-decoration: none; font-size: 15px; background: {{g.bg}}; font-weight: {{g.weight}}">
+                    <svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="{{t.ic.group}}"></path></svg>
+                    <span style="flex: 1">{{g.name}}</span>
+                    <span style="font-size: 13px; color: {{t.secondary}}">{{g.count}}</span>
+                  </a>
+                </sc-for>
+                <div style="font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: {{t.secondary}}; padding: 12px 10px 6px">Library</div>
+                <a href="#" style="height: 40px; border-radius: 12px; display: flex; align-items: center; gap: 10px; padding: 0 10px; color: {{t.label}}; text-decoration: none; font-size: 15px"><svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="{{t.ic.bookmark}}"></path></svg>Bookmarks</a>
+                <a href="#" style="height: 40px; border-radius: 12px; display: flex; align-items: center; gap: 10px; padding: 0 10px; color: {{t.label}}; text-decoration: none; font-size: 15px"><svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="{{t.ic.history}}"></path></svg>History</a>
+                <a href="#" style="height: 40px; border-radius: 12px; display: flex; align-items: center; gap: 10px; padding: 0 10px; color: {{t.label}}; text-decoration: none; font-size: 15px"><svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="{{t.ic.shield}}"></path></svg>Shields</a>
+              </nav>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px">
+            <div style="display: flex; flex-direction: column; gap: 10px">
+              <span style="align-self: flex-start; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px; background: {{t.chip}}">Slider</span>
+              <div class="{{t.glass}}" style="height: 54px; border-radius: 999px; display: flex; align-items: center; gap: 12px; padding: 0 18px; box-sizing: border-box">
+                <svg class="i" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="{{t.ic.volume}}"></path></svg>
+                <div style="flex: 1; height: 6px; border-radius: 3px; background: {{t.trackOff}}; position: relative">
+                  <div style="position: absolute; left: 0; top: 0; bottom: 0; width: 62%; border-radius: 3px; background: {{t.accent}}"></div>
+                  <div style="position: absolute; left: 62%; top: -11px; width: 38px; height: 28px; margin-left: -19px; border-radius: 999px; background: #FFFFFF; box-shadow: 0 2px 8px rgba(0,0,0,.25), inset 0 0 0 .5px rgba(0,0,0,.06)"></div>
+                </div>
+                <span style="font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; width: 32px; text-align: right">62%</span>
+              </div>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 10px">
+              <span style="align-self: flex-start; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px; background: {{t.chip}}">Segmented control</span>
+              <div class="{{t.glass}}" role="radiogroup" aria-label="Shields level" style="height: 54px; border-radius: 999px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 6px; box-sizing: border-box; gap: 4px">
+                <button role="radio" aria-checked="false" style="border-radius: 999px; font-size: 14px; font-weight: 500; color: {{t.secondary}}">Off</button>
+                <button role="radio" aria-checked="true" style="border-radius: 999px; font-size: 14px; font-weight: 600; background: {{t.pillActive}}; box-shadow: 0 2px 8px rgba(0,0,0,.12)">Standard</button>
+                <button role="radio" aria-checked="false" style="border-radius: 999px; font-size: 14px; font-weight: 500; color: {{t.secondary}}">Aggressive</button>
+              </div>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 10px">
+            <span style="align-self: flex-start; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 8px; background: {{t.chip}}">Search field</span>
+            <label class="{{t.glass}}" style="height: 54px; border-radius: 999px; display: flex; align-items: center; gap: 12px; padding: 0 20px; box-sizing: border-box">
+              <svg class="i" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" style="color: {{t.secondary}}"><path d="{{t.ic.search}}"></path></svg>
+              <input type="search" placeholder="Search or enter website" aria-label="Search or enter website" style="flex: 1; border: 0; outline: 0; background: transparent; font-size: 16px">
+              <span style="font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 6px; background: {{t.pillHover}}; color: {{t.secondary}}">Ctrl L</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#2E6BFF","options":["#2E6BFF","#5B5BF0","#E2457A","#F2742B"]},"$preview":{"width":1600,"height":1400}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var accent = this.props.accent ?? '#2E6BFF';
+    var ic = {
+      back: 'M15 5l-7 7 7 7',
+      forward: 'M9 5l7 7-7 7',
+      sidebar: 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9.5 4v16',
+      shield: 'M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6zM9 12l2 2 4-4',
+      reload: 'M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5',
+      plus: 'M12 5v14M5 12h14',
+      overview: 'M6 4h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM15 4h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM6 13h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2zM15 13h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2z',
+      group: 'M9 8h10a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 19 20H9a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 9 8zM4 16V5.5A1.5 1.5 0 0 1 5.5 4H16',
+      bookmark: 'M7 3.5h10a1 1 0 0 1 1 1V21l-6-4-6 4V4.5a1 1 0 0 1 1-1z',
+      history: 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM12 7.5V12l3 2',
+      search: 'M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM16.2 16.2L20.5 20.5',
+      share: 'M12 3.5v11M8 7.5l4-4 4 4M5.5 12v7a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5v-7',
+      close: 'M6.5 6.5l11 11M17.5 6.5l-11 11',
+      volume: 'M4 9.5h3.5L12.5 5.5v13l-5-4H4zM16 9a4.5 4.5 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11',
+      copy: 'M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1zM5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5',
+      pip: 'M4.5 5h15A1.5 1.5 0 0 1 21 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-11A1.5 1.5 0 0 1 4.5 5zM12.5 12h5.5v4.5h-5.5z'
+    };
+    function make(dark) {
+      var hover = dark ? 'rgba(255,255,255,.10)' : 'rgba(255,255,255,.55)';
+      return {
+        title: dark ? 'Dark' : 'Light',
+        accent: accent, ic: ic,
+        glass: dark ? 'gd' : 'gl',
+        bg: dark ? '#0D1222' : '#FFF1E0',
+        c1: dark ? '#C2366E' : '#FF6B3D',
+        c2: dark ? '#3B34C9' : '#2E6BFF',
+        c3: dark ? '#0D7F6A' : '#18A874',
+        c4: dark ? '#C7701F' : '#FFC93C',
+        type: dark ? '#E8EAF0' : '#13151A',
+        label: dark ? '#F5F6F8' : '#111318',
+        secondary: dark ? '#C3C8D3' : '#383E4C',
+        pillActive: dark ? 'rgba(255,255,255,.22)' : 'rgba(255,255,255,.92)',
+        pillHover: hover,
+        trackOff: dark ? 'rgba(255,255,255,.20)' : 'rgba(17,19,24,.16)',
+        hair: dark ? 'rgba(255,255,255,.14)' : 'rgba(17,19,24,.12)',
+        chip: dark ? '#1A1C22' : '#FFFFFF',
+        menu: [
+          { label: 'Copy link', key: 'Ctrl Shift C', d: ic.copy, bg: 'transparent' },
+          { label: 'Share…', key: '', d: ic.share, bg: hover },
+          { label: 'Add bookmark', key: 'Ctrl D', d: ic.bookmark, bg: 'transparent' },
+          { label: 'Open in Picture in Picture', key: '', d: ic.pip, bg: 'transparent' }
+        ],
+        groups: [
+          { name: 'Trip planning', count: '6', bg: hover, weight: 600 },
+          { name: 'Personal', count: '6', bg: 'transparent', weight: 400 },
+          { name: 'Work', count: '12', bg: 'transparent', weight: 400 }
+        ]
+      };
+    }
+    return { themes: [make(false), make(true)] };
+  }
+}
+</script>
+</body>
+</html>

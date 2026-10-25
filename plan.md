@@ -1,6 +1,6 @@
 # Axion Browser — Plan
 
-Status: **planning** · Target: v0.1 (daily-drivable on Linux)
+Status: **Phase 1 done** (2026-10-25) · Target: v0.1 (daily-drivable on Linux)
 
 ## 1. Vision
 
@@ -98,8 +98,14 @@ Extensions, sync, reader mode, profiles, Windows/macOS builds, touchscreen polis
   Result (2026-10-25, CEF 156 / Chromium 156, `crates/axion-spike-cef`): dma-buf import works on
   NVIDIA, ~0.7–1.2 ms per imported frame (copy + GPU wait). Importing across GPUs (CEF on NVIDIA,
   wgpu on the AMD iGPU) fails with a DRM-modifier error, so the spike falls back to software paint
-  automatically. **Follow-up:** pin Chromium's GPU process to wgpu's adapter instead of falling back;
-  avoid the per-frame copy + wait (keep CEF's texture alive until our composite is submitted).
+  automatically.
+  - [x] Pin Chromium's GPU process to wgpu's adapter (`--render-node-override`, done in Phase 1).
+  - [ ] **RADV (AMD) GPU fault:** with both on the iGPU, importing the dma-buf in our Vulkan
+    device triggers a GPUVM permission fault and context loss ("hard recovery"). Until found
+    (modifier/plane layout in cef-rs' dmabuf import? sync?), GPU sharing is NVIDIA-only by
+    default and other drivers use software paint (`AXION_OSR=gpu` forces it — don't on AMD).
+  - [ ] Avoid the per-frame copy + GPU wait in the import (keep CEF's texture alive until our
+    composite is submitted).
 - [ ] **Input forwarding spike**: mouse, keyboard (incl. IME), scroll, touchpad gestures into CEF.
   *(mouse, wheel, keys and text implemented in the spike, not yet verified by hand; IME and
   touchpad gestures still open)*
@@ -111,14 +117,25 @@ Extensions, sync, reader mode, profiles, Windows/macOS builds, touchscreen polis
 Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. ✅ (spike, 2026-10-25)
 
 ### Phase 1 — Skeleton
-- [ ] Cargo workspace with all crates, CI (fmt, clippy, test). *(workspace started: axion-glass, axion-physics)*
-- [ ] `Engine` trait + CEF backend: create/close browser, navigate, back/forward, reload, title/favicon/URL events.
-- [ ] Compositor frame graph: page layer → backdrop capture → UI/glass passes → present.
-- [ ] `axion-ui` basics: tree, taffy layout, glyphon text, hit-testing, focus.
-- [ ] `axion-config` with TOML + live reload; keymap.
+- [x] Cargo workspace, CI (fmt, clippy, test) in `.github/workflows/ci.yml`.
+- [x] `Engine` trait + CEF backend: create/close, navigate, back/forward, reload/stop, zoom,
+  hidden/focus, input, title/URL/loading/progress/favicon-URL/cursor/fullscreen events, popup
+  requests (blocked without a user gesture), clean shutdown, automatic software fallback.
+- [x] Compositor: layer list (page images with UV/edge extension, glass, quads/text/icons),
+  ping-pong targets so glass refracts everything below, design icon set via glyphon custom
+  glyphs, async luminance probe, read-back for `--capture`.
+- [x] `axion-ui`: retained tree, taffy layout, glyphon text, rounded hit-testing, hover/press,
+  focus, single-line editing (selection, word motion, clipboard), glass depth/level layering.
+- [x] `axion-config`: schema with design-token defaults, TOML load/save, live reload, keymap
+  with Safari-style defaults and conflict detection.
+- [x] `axion-app`: window with the design's bar (address field, back/forward, reload/stop,
+  progress, tab pills, new tab), sidebar (tab list), wide/regular/narrow layouts, tabs,
+  keyboard shortcuts, adaptive light/dark chrome over the page.
+- Not verified by hand yet: interactive typing/clicking in the real window (logic is unit
+  tested; screenshots come from `--capture`). IME and touchpad gestures still open.
 
 ### Phase 2 — Safari UI
-- [ ] Compact top bar + address field (suggestions from history/bookmarks).
+- [ ] Address field suggestions (history/bookmarks, search), real favicons (download + cache).
 - [ ] Tab pills: open/close/reorder with physics.
 - [ ] Sidebar (overlay + docked), responsive breakpoints.
 - [ ] Tab overview with snapshots and zoom transition.
@@ -127,7 +144,10 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 ### Phase 3 — Liquid Glass integration
 - [ ] Port playground shaders into the compositor; all UI uses glass material.
 - [ ] Merging between UI elements, drag stretch, fling, spring-back.
-- [ ] Adaptive tint/legibility; Reduce Transparency/Motion; perf mode.
+- [ ] Adaptive tint/legibility; Reduce Transparency/Motion; perf mode. *(Phase 1 already flips
+  the chrome light/dark from a GPU luminance probe of the page edge.)*
+- [ ] Better edge extension behind the bar: stretching the page's first row streaks when that
+  row has detail (e.g. a banner); try a blurred mirror of the top strip instead.
 - [ ] Perf budget: 120 fps at 1440p on integrated GPU.
 
 ### Phase 4 — Shields
@@ -172,7 +192,13 @@ Windows/macOS, touchscreen-first mode.
 | Stock CEF builds lack H.264/AAC (proprietary codecs) and Widevine DRM | Build CEF with `proprietary_codecs`/`ffmpeg_branding=Chrome`; DRM (Netflix etc.) is a separate open question |
 | Sites with custom JS players (YouTube) fight our controls | Integrate with their player state where possible, per-site opt-out to native controls |
 
-## 7. Open questions
+## 7. Decisions log
+- 2026-10-25: The page starts **below** the floating bar (ordinary sites don't know about it);
+  the gap is filled by stretching the page's top row ("edge extension"), so the bar still
+  refracts the page's colours. Revisit if we find a way to let content scroll under the bar.
+- 2026-10-25: Default search engine DuckDuckGo (configurable `general.search_url`).
+
+## 8. Open questions
 - App name final? ("Axion" for now.)
 - Default search engine?
 - Licensing (MIT/Apache-2.0 vs MPL-2.0 vs GPL)?

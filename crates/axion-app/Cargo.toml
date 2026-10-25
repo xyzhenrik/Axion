@@ -1,15 +1,23 @@
 [package]
-name = "axion-spike-cef"
-description = "Phase 0 spike: CEF off-screen rendering into wgpu, under Liquid Glass"
+name = "axion-app"
+description = "The Axion browser"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "axion"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
-axion-glass.workspace = true
-cef = { version = "156.2", features = ["accelerated_osr"] }
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+axion-compositor.workspace = true
+axion-config.workspace = true
+axion-engine.workspace = true
+axion-ui.workspace = true
+directories = "6"
 glam.workspace = true
 image.workspace = true
 pollster.workspace = true

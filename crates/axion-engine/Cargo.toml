@@ -1,0 +1,17 @@
+[package]
+name = "axion-engine"
+description = "Web engine abstraction for Axion, with the Chromium (CEF) off-screen backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+cef.workspace = true
+glam.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+wgpu.workspace = true
+
+[lints]
+workspace = true
