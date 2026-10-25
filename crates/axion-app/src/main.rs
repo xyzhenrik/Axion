@@ -24,6 +24,7 @@ mod input;
 mod lifecycle;
 mod lockscreen;
 mod menu;
+mod morph;
 mod mpris;
 mod overview;
 mod passwords;

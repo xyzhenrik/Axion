@@ -739,11 +739,12 @@ impl Ui {
     }
 
     /// Lets go of the held button without a click (the press became a drag of it).
+    /// The held glass (or lens) springs back.
     pub fn cancel_press(&mut self) {
-        if let Some(glass) = self.pressed.take().and_then(|n| self.glass_of(n)) {
-            self.press_glass(glass, false);
+        self.pressed = None;
+        if let Some((held, _)) = self.press_anchor.take() {
+            self.release_press(held);
         }
-        self.press_anchor = None;
     }
 
     /// The button under the pointer, if any.
@@ -895,7 +896,8 @@ impl Ui {
             events.extend(self.blur());
         }
         self.pressed = self.actionable(hit);
-        if let Some((held, lens)) = self.pressed.and_then(|n| self.press_target(n)) {
+        // A field takes the press for its caret and selection: its glass stays put.
+        if let Some((held, lens)) = self.pressed.filter(|_| !is_field).and_then(|n| self.press_target(n)) {
             self.press_glass(held, lens);
             self.press_anchor = Some((held, p));
         }
@@ -1148,8 +1150,16 @@ impl Ui {
     /// What swells while `button` is held, and whether it is a lens: a button without a
     /// background lying on glass, or a small glass button, becomes a lens (its content rides
     /// along with it); anything else swells the glass it lies on as a group.
+    /// Glass that is one element (`Widget::press_whole`) becomes one lens as a whole,
+    /// whichever of its buttons is pressed.
     fn press_target(&self, button: NodeId) -> Option<(NodeId, bool)> {
         let widget = self.widget(button)?;
+        if widget.feedback
+            && let Some(whole) =
+                self.glass_of(button).filter(|&g| self.widget(g).is_some_and(|w| w.press_whole))
+        {
+            return Some((whole, true));
+        }
         match widget.background {
             Background::None if widget.feedback => self.glass_of(button).map(|_| (button, true)),
             Background::Glass(_) | Background::TintedGlass(..)
@@ -1557,9 +1567,16 @@ impl Ui {
             } else if lensed && !opaque {
                 // The button is glass: its lens is the feedback.
                 0.0
+            } else if !opaque
+                && self.pressed == Some(node)
+                && self.press_target(node).is_some_and(|(glass, lens)| lens && glass != node)
+            {
+                // A button in glass that is pressed as a whole: the whole lens is the feedback.
+                0.0
             } else if self.pressed == Some(node) {
                 PRESS_ALPHA
-            } else if self.hover == Some(node) {
+            } else if self.hover == Some(node) && self.pressed.is_none() {
+                // While a button is held, others under the pointer don't light up.
                 HOVER_ALPHA
             } else {
                 0.0
@@ -1901,6 +1918,12 @@ struct Mark {
     images: usize,
     icons: usize,
     text: usize,
+    /// Layers of clipped subtrees.
+    after: usize,
+}
+
+impl Mark {
+    const NONE: Mark = Mark { quads: 0, images: 0, icons: 0, text: 0, after: 0 };
 }
 
 fn marks(stacks: &[Stack<'_>]) -> Vec<Mark> {
@@ -1911,45 +1934,56 @@ fn marks(stacks: &[Stack<'_>]) -> Vec<Mark> {
             images: s.content.images.len(),
             icons: s.content.icons.len(),
             text: s.content.text.len(),
+            after: s.after.len(),
         })
         .collect()
 }
 
-/// Moves what a held glass's subtree painted (from `from_depth` on) along with the glass.
+/// Moves what a held glass's subtree painted (from `from_depth` on) along with the glass,
+/// clipped lists (a sheet's scrolled page) and their clip included.
 fn transform_since(stacks: &mut [Stack<'_>], mark: &[Mark], xf: &PressXf, from_depth: usize) {
     for (d, stack) in stacks.iter_mut().enumerate().skip(from_depth) {
-        let m = mark.get(d).unwrap_or(&Mark { quads: 0, images: 0, icons: 0, text: 0 });
-        let c = &mut stack.content;
-        for q in c.quads.iter_mut().skip(m.quads) {
-            q.rect = xf.rect(q.rect);
-            q.radius *= xf.uniform();
+        let m = mark.get(d).unwrap_or(&Mark::NONE);
+        transform_content(&mut stack.content, m, xf);
+        for layer in stack.after.iter_mut().skip(m.after) {
+            if let Layer::Content(c) = layer {
+                transform_content(c, &Mark::NONE, xf);
+                c.clip = c.clip.map(|r| xf.rect(r));
+            }
         }
-        for i in c.images.iter_mut().skip(m.images) {
-            i.rect = xf.rect(i.rect);
-        }
-        for i in c.icons.iter_mut().skip(m.icons) {
-            i.rect = xf.rect(i.rect);
-        }
-        for t in c.text.iter_mut().skip(m.text) {
-            // Text scales uniformly about the centre of its box.
-            let b = &mut t.bounds;
-            let center = Vec2::new(b.left as f32 + b.right as f32, b.top as f32 + b.bottom as f32) / 2.0;
-            let u = xf.uniform();
-            let placed = xf.place(center);
-            let about = |p: Vec2| placed + (p - center) * u;
-            let p = about(Vec2::new(t.left, t.top));
-            t.left = p.x;
-            t.top = p.y;
-            t.scale *= u;
-            let tl = about(Vec2::new(b.left as f32, b.top as f32));
-            let br = about(Vec2::new(b.right as f32, b.bottom as f32));
-            *b = glyphon::TextBounds {
-                left: tl.x.floor() as i32,
-                top: tl.y.floor() as i32,
-                right: br.x.ceil() as i32,
-                bottom: br.y.ceil() as i32,
-            };
-        }
+    }
+}
+
+fn transform_content(c: &mut Content<'_>, m: &Mark, xf: &PressXf) {
+    for q in c.quads.iter_mut().skip(m.quads) {
+        q.rect = xf.rect(q.rect);
+        q.radius *= xf.uniform();
+    }
+    for i in c.images.iter_mut().skip(m.images) {
+        i.rect = xf.rect(i.rect);
+    }
+    for i in c.icons.iter_mut().skip(m.icons) {
+        i.rect = xf.rect(i.rect);
+    }
+    for t in c.text.iter_mut().skip(m.text) {
+        // Text scales uniformly about the centre of its box.
+        let b = &mut t.bounds;
+        let center = Vec2::new(b.left as f32 + b.right as f32, b.top as f32 + b.bottom as f32) / 2.0;
+        let u = xf.uniform();
+        let placed = xf.place(center);
+        let about = |p: Vec2| placed + (p - center) * u;
+        let p = about(Vec2::new(t.left, t.top));
+        t.left = p.x;
+        t.top = p.y;
+        t.scale *= u;
+        let tl = about(Vec2::new(b.left as f32, b.top as f32));
+        let br = about(Vec2::new(b.right as f32, b.bottom as f32));
+        *b = glyphon::TextBounds {
+            left: tl.x.floor() as i32,
+            top: tl.y.floor() as i32,
+            right: br.x.ceil() as i32,
+            bottom: br.y.ceil() as i32,
+        };
     }
 }
 
@@ -2242,6 +2276,71 @@ mod tests {
             ui.animate(1.0 / 60.0);
         }
         assert_eq!(glass_and_icons(&ui).0.len(), 1);
+    }
+
+    #[test]
+    fn glass_pressed_whole_is_one_lens_carrying_all_its_buttons() {
+        let mut ui = ui();
+        // A capsule of three buttons (the toolbar's nav group), one element.
+        let capsule = ui.add(
+            ui.root(),
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thin))
+                .with_radius(CAPSULE)
+                .pressed_whole(),
+            Style {
+                size: Size { width: length(140.0), height: length(44.0) },
+                padding: taffy::Rect {
+                    left: length(4.0),
+                    right: length(4.0),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
+                ..Default::default()
+            },
+        );
+        for id in 1..=3 {
+            let button = ui.add(
+                capsule,
+                Widget::container().with_action(ActionId(id)).with_radius(CAPSULE),
+                Style {
+                    size: Size { width: length(44.0), height: length(44.0) },
+                    justify_content: JustifyContent::CENTER,
+                    align_items: AlignItems::CENTER,
+                    ..Default::default()
+                },
+            );
+            ui.add(button, Widget::icon(axion_compositor::Icon::Back, 20.0), Style::default());
+        }
+        ui.layout();
+        let (_, rest_icons, _) = glass_and_icons(&ui);
+        ui.handle(UiInput::PointerMove(Vec2::new(26.0, 22.0)));
+        ui.handle(UiInput::PointerDown);
+        ui.handle(UiInput::PointerMove(Vec2::new(46.0, 22.0)));
+        for _ in 0..60 {
+            ui.animate(1.0 / 60.0);
+        }
+        let (shapes, icons, quads) = glass_and_icons(&ui);
+        // One shape: the whole capsule is the lens, no lens of the button inside it.
+        assert_eq!(shapes.len(), 1);
+        let lens = shapes[0];
+        assert!(lens.half_size.x > 70.0, "it swells");
+        assert!(lens.center.x > 70.5, "it follows the pointer");
+        assert!(lens.glow > 0.0, "it is lighter");
+        assert_eq!(quads, 0, "no plain highlight on the pressed button");
+        // Every icon moves with it, keeping its place inside the capsule.
+        let shift = lens.center.x - 70.0;
+        for (rest, held) in rest_icons.iter().zip(&icons) {
+            let expected = 70.0 + (rest.center().x - 70.0) * (lens.half_size.x / 70.0);
+            assert!((held.center().x - (expected + shift)).abs() < 2.0, "{rest:?} → {held:?}");
+        }
+        ui.handle(UiInput::PointerUp);
+        for _ in 0..120 {
+            ui.animate(1.0 / 60.0);
+        }
+        let (shapes, icons, _) = glass_and_icons(&ui);
+        assert!((shapes[0].half_size.x - 70.0).abs() < 0.5);
+        assert!((icons[0].center() - rest_icons[0].center()).length() < 0.5);
     }
 
     #[test]

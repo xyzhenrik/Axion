@@ -238,10 +238,9 @@ impl Menu {
         self.popover.is_open()
     }
 
-    /// While open, `node` (a button without glass) turns into glass, so the menu flows out of
-    /// it (see [`Popover::set_anchor_glass`]).
-    pub fn set_anchor_glass(&mut self, ui: &mut Ui, node: NodeId) {
-        self.popover.set_anchor_glass(ui, node);
+    /// Where the menu flows out of (its button, logical px).
+    pub fn anchor(&self) -> Frame {
+        self.popover.anchor()
     }
 
     /// See [`Popover::set_covered`].

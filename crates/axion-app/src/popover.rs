@@ -39,9 +39,6 @@ pub struct Popover {
     join: Option<(Frame, f32)>,
     /// How deep the bridge reaches into the shapes it joins (logical px; see [`bridge_frame`]).
     bridge_depth: f32,
-    /// A button without glass of its own that becomes glass while the popover is open, so the
-    /// popover can flow out of it (the account button), with its background from before.
-    anchor_glass: Option<(NodeId, Background)>,
     /// Glass of the same pass that the open popover lies over (the Now Playing card under
     /// the account menu): it would merge into the popover and its content would show through,
     /// so it fades out as the popover grows.
@@ -70,17 +67,7 @@ impl Popover {
         );
         ui.set_visible(bridge, false);
         ui.set_visible(root, false);
-        Self {
-            parent,
-            root,
-            bridge,
-            drip: Drip::new(),
-            radius,
-            join: None,
-            bridge_depth: 0.0,
-            anchor_glass: None,
-            covered: None,
-        }
+        Self { parent, root, bridge, drip: Drip::new(), radius, join: None, bridge_depth: 0.0, covered: None }
     }
 
     /// The glass panel: the popover's content goes in here.
@@ -97,16 +84,6 @@ impl Popover {
         matches!(self.drip.phase(), Phase::Opening | Phase::Open)
     }
 
-    /// While open, `node` (a button without glass) turns into glass, so the popover flows out
-    /// of it. Set before opening.
-    pub fn set_anchor_glass(&mut self, ui: &mut Ui, node: NodeId) {
-        if self.anchor_glass.is_none_or(|(n, _)| n != node) {
-            self.restore_anchor(ui);
-            let background = ui.widget(node).map_or(Background::None, |w| w.background);
-            self.anchor_glass = Some((node, background));
-        }
-    }
-
     /// See [`Popover::covered`]. Set before opening.
     pub fn set_covered(&mut self, ui: &mut Ui, node: Option<NodeId>) {
         if let Some(old) = self.covered.take() {
@@ -120,11 +97,6 @@ impl Popover {
     pub fn open(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, target: Frame) {
         crate::menu::place(ui, self.root, self.parent, target);
         ui.set_visible(self.root, true);
-        if let Some((node, _)) = self.anchor_glass
-            && let Some(w) = ui.widget_mut(node)
-        {
-            w.background = Background::Glass(LEVEL);
-        }
         self.find_join(ui, anchor);
         self.bridge_depth = config.glass.bezel_width.max(0.0);
         if let Some(w) = ui.widget_mut(self.bridge) {
@@ -169,7 +141,6 @@ impl Popover {
             if ui.is_visible(self.root) {
                 ui.set_visible(self.root, false);
                 ui.set_visible(self.bridge, false);
-                self.restore_anchor(ui);
                 if let Some(node) = self.covered {
                     ui.set_opacity(node, 1.0);
                 }
@@ -199,14 +170,6 @@ impl Popover {
     fn find_join(&mut self, ui: &Ui, anchor: Frame) {
         let found = ui.glass_at(self.parent, anchor.center(), &[self.root, self.bridge]);
         self.join = Some(found.map_or((anchor, CAPSULE), |(frame, radius, _)| (frame, radius)));
-    }
-
-    fn restore_anchor(&mut self, ui: &mut Ui) {
-        if let Some((node, background)) = self.anchor_glass
-            && let Some(w) = ui.widget_mut(node)
-        {
-            w.background = background;
-        }
     }
 }
 

@@ -499,11 +499,15 @@ fn group_row(
     (label, chevron, chevron_icon, lock)
 }
 
-/// A glass capsule grouping toolbar buttons.
+/// A glass capsule grouping toolbar buttons: one element, so pressing any of its buttons
+/// presses the whole capsule (see `Widget::press_whole`).
 fn glass_group(ui: &mut Ui, parent: NodeId) -> NodeId {
     ui.add(
         parent,
-        Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
+        Widget::container()
+            .with_background(Background::Glass(GlassLevel::Thin))
+            .with_radius(CAPSULE)
+            .pressed_whole(),
         Style {
             size: Size { width: auto(), height: length(BAR_CAPSULE) },
             padding: padding(4.0, 4.0, 0.0, 0.0),
@@ -748,7 +752,8 @@ impl Chrome {
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thin))
                 .with_radius(NOW_PLAYING_RADIUS)
-                .with_action(ChromeAction::NowPlaying.id()),
+                .with_action(ChromeAction::NowPlaying.id())
+                .pressed_whole(),
             Style {
                 size: Size { width: auto(), height: length(NOW_PLAYING_HEIGHT) },
                 padding: padding(14.0, 8.0, 0.0, 0.0),
@@ -779,10 +784,15 @@ impl Chrome {
             40.0,
         );
         ui.set_visible(now_playing, false);
-        // The account button (like Claude's app): avatar with initials, then the name.
+        // The account button (like Claude's app): avatar with initials, then the name, on a
+        // thin glass capsule lying on the sidebar's glass. The account menu flows out of it.
         let account = ui.add(
             footer,
-            Widget::container().with_action(ChromeAction::Account.id()).with_radius(CAPSULE),
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thin))
+                .with_action(ChromeAction::Account.id())
+                .with_radius(CAPSULE)
+                .pressed_whole(),
             Style {
                 size: Size { width: auto(), height: length(ACCOUNT_HEIGHT) },
                 padding: padding(6.0, 12.0, 0.0, 0.0),
@@ -856,7 +866,8 @@ impl Chrome {
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thin))
                 .with_radius(CAPSULE)
-                .with_action(ChromeAction::EditAddress.id()),
+                .with_action(ChromeAction::EditAddress.id())
+                .pressed_whole(),
             Style {
                 flex_grow: ACTIVE_SEGMENT_GROW,
                 flex_shrink: 1.0,
@@ -930,7 +941,8 @@ impl Chrome {
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thin))
                 .with_radius(CAPSULE)
-                .with_action(ChromeAction::ExpandBars.id()),
+                .with_action(ChromeAction::ExpandBars.id())
+                .pressed_whole(),
             Style {
                 position: Position::Absolute,
                 size: Size { width: auto(), height: length(MINI_HEIGHT) },
@@ -1595,11 +1607,6 @@ impl Chrome {
         ui.frame(self.account)
     }
 
-    /// The account button itself (glass while the account menu flows out of it).
-    pub fn account_node(&self) -> NodeId {
-        self.account
-    }
-
     /// The Now Playing card (the account menu covers it).
     pub fn now_playing_node(&self) -> NodeId {
         self.now_playing
@@ -1814,7 +1821,8 @@ impl Chrome {
                 Widget::container()
                     .with_action(ChromeAction::SelectTab(i).id())
                     .with_radius(CAPSULE)
-                    .with_background(background),
+                    .with_background(background)
+                    .pressed_whole(),
                 Style {
                     flex_grow: 1.0,
                     flex_shrink: 1.0,

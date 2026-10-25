@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use axion_compositor::Icon;
+use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
     ACCENT_SWATCHES, Action as KeyAction, ClearRange, Color, Config, Keymap, RemoveDownloads, ShieldLevel,
     TabBarStyle, ThemeMode,
@@ -13,6 +13,7 @@ use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, 
 use glam::Vec2;
 use zeroize::Zeroizing;
 
+use crate::morph::{Origin, SheetMorph};
 use crate::passwords::MIN_MASTER_LENGTH;
 
 mod search;
@@ -589,6 +590,8 @@ pub enum Outcome {
 pub struct SettingsSheet {
     root: NodeId,
     sheet: NodeId,
+    /// The sheet flows out of the glass it was opened from and drains back into it.
+    morph: SheetMorph,
     nav: Vec<(Category, NodeId)>,
     content: NodeId,
     /// The clipped area `content` scrolls in.
@@ -772,9 +775,11 @@ impl SettingsSheet {
             },
         );
         ui.set_visible(root, false);
+        let morph = SheetMorph::build(sheet, root, SHEET_RADIUS, BACKDROP_DIM);
         Self {
             root,
             sheet,
+            morph,
             nav,
             content,
             viewport,
@@ -853,11 +858,29 @@ impl SettingsSheet {
         self.passwords_status = Some(status);
     }
 
-    pub fn open(&mut self, ui: &mut Ui, config: &Config, keymap: &Keymap, window: Vec2) {
+    /// Opens out of the glass at `origin` (or `fallback`, the address field, if none is there).
+    pub fn open(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        keymap: &Keymap,
+        window: Vec2,
+        origin: Origin,
+        fallback: Origin,
+    ) {
         self.open = true;
         ui.set_visible(self.root, true);
-        self.resize(ui, window);
+        let target = self.resize(ui, window);
         self.show(ui, config, keymap);
+        self.morph.open(ui, config, origin, fallback, target, true);
+    }
+
+    /// Advances the sheet's flow in or out; call every frame.
+    pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
+        let phase = self.morph.animate(ui, dt);
+        if !self.open && phase == crate::drip::Phase::Closed && ui.is_visible(self.root) {
+            ui.set_visible(self.root, false);
+        }
     }
 
     pub fn set_memory_used(&mut self, used: Option<u64>) {
@@ -914,7 +937,11 @@ impl SettingsSheet {
         self.category = category;
     }
 
-    pub fn close(&mut self, ui: &mut Ui) {
+    /// Drains back into the glass it came from (or `fallback`, if that is gone).
+    pub fn close(&mut self, ui: &mut Ui, config: &Config, fallback: Origin) {
+        if !self.open {
+            return;
+        }
         self.open = false;
         self.query.clear();
         ui.set_field_text(self.search, "");
@@ -923,16 +950,20 @@ impl SettingsSheet {
         self.confirm_remove_all = false;
         self.confirm_delete = false;
         self.account_status = None;
-        ui.set_visible(self.root, false);
+        self.morph.close(ui, config, fallback);
     }
 
-    pub fn resize(&mut self, ui: &mut Ui, window: Vec2) {
+    /// Lays the sheet out for `window`; returns its frame (logical px).
+    pub fn resize(&mut self, ui: &mut Ui, window: Vec2) -> Frame {
         let size = (window - Vec2::splat(2.0 * SHEET_MARGIN)).min(SHEET_MAX).max(Vec2::new(480.0, 360.0));
         let origin = ((window - size) / 2.0).max(Vec2::ZERO);
         let mut style = ui.style(self.sheet);
         style.inset = Rect { left: length(origin.x), right: auto(), top: length(origin.y), bottom: auto() };
         style.size = Size { width: length(size.x), height: length(size.y) };
         ui.set_style(self.sheet, style);
+        let frame = Frame { origin, size };
+        self.morph.retarget(frame);
+        frame
     }
 
     /// Rebuilds the current category's page from `config`.

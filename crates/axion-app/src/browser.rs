@@ -33,6 +33,7 @@ use crate::menu::{
     ACCOUNT_MENU_BASE, MAX_ITEMS, Menu, MenuAction, MenuClick, MenuControl, MenuItem, PAGE_MENU_BASE,
     Placement,
 };
+use crate::morph::Origin;
 use crate::mpris::{Mpris, MprisCommand, Track};
 use crate::overview::{Overview, OverviewAction};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
@@ -259,6 +260,8 @@ pub struct Browser {
     overview_at: Option<Instant>,
     address_at: Option<(Instant, String)>,
     open_at: Option<(Instant, String)>,
+    /// Where the next Settings or Passwords sheet comes out of (taken when it opens).
+    sheet_origin: Option<Origin>,
     /// Capture aid "sweep:X1:Y1:X2:Y2:N": the pointer moves from one point to the other in N
     /// steps, one per frame (start, end, steps, steps done).
     sweep: Option<(Vec2, Vec2, u32, u32)>,
@@ -482,6 +485,7 @@ impl Browser {
             sweep: None,
             slide_page_size: None,
             slide_view_size: None,
+            sheet_origin: None,
             open_at: options.open.clone().filter(|_| options.capture.is_some()).map(|what| {
                 (
                     Instant::now()
@@ -740,7 +744,7 @@ impl Browser {
             }
             Action::OpenSettings => {
                 if self.settings.is_open() {
-                    self.settings.close(&mut self.ui);
+                    self.close_settings();
                 } else {
                     self.menu.close(&mut self.ui, &self.config);
                     self.shields_popover.close(&mut self.ui, &self.config);
@@ -748,7 +752,10 @@ impl Browser {
                     self.settings.set_account(self.account_info());
                     self.settings.set_memory_used(self.memory.used());
                     let window = self.logical_size();
-                    self.settings.open(&mut self.ui, &self.config, &self.keymap, window);
+                    // Out of what it was opened from (the address field by default).
+                    let fallback = self.address_origin();
+                    let origin = self.sheet_origin.take().unwrap_or(fallback);
+                    self.settings.open(&mut self.ui, &self.config, &self.keymap, window, origin, fallback);
                     if self.settings.category() == Category::Data {
                         self.settings_outcome(Outcome::DataPage);
                     }
@@ -847,9 +854,7 @@ impl Browser {
         }
         let anchor = self.chrome.account_frame(&self.ui);
         let window = self.logical_size();
-        // It flows out of the account button (glass while the menu is open) and covers the
-        // Now Playing card above it.
-        self.account_menu.set_anchor_glass(&mut self.ui, self.chrome.account_node());
+        // It flows out of the account button's glass and covers the Now Playing card above it.
         self.account_menu.set_covered(&mut self.ui, Some(self.chrome.now_playing_node()));
         self.account_menu.open(&mut self.ui, &self.config, anchor, window, items);
     }
@@ -857,7 +862,7 @@ impl Browser {
     fn open_add_account(&mut self) {
         self.account_menu.close(&mut self.ui, &self.config);
         if self.settings.is_open() {
-            self.settings.close(&mut self.ui);
+            self.close_settings();
         }
         if let Some(view) = self.active_view() {
             self.engine.set_focus(view, false);
@@ -890,6 +895,10 @@ impl Browser {
             self.settings.set_account(self.account_info());
             self.refresh_settings();
         } else {
+            // Out of the account button the account menu came from.
+            let account = self.chrome.account_frame(&self.ui);
+            self.sheet_origin =
+                Some(Origin { plane: self.chrome.sidebar_node(), point: account.center(), control: account });
             self.run(Action::OpenSettings);
         }
     }
@@ -936,7 +945,7 @@ impl Browser {
     /// sheet's lock button. Nothing else locks during a session.
     fn lock_account(&mut self) {
         if self.passwords.is_open() {
-            self.passwords.close(&mut self.ui);
+            self.close_passwords();
         }
         let outcome = self.passwords.lock(&mut self.ui, &self.config);
         self.passwords_outcome(outcome);
@@ -1148,12 +1157,33 @@ impl Browser {
 
     fn open_passwords(&mut self) {
         if self.settings.is_open() {
-            self.settings.close(&mut self.ui);
+            self.close_settings();
         }
         self.shields_popover.close(&mut self.ui, &self.config);
         let window = self.logical_size();
-        let outcome = self.passwords.open(&mut self.ui, &self.config, window);
+        let fallback = self.address_origin();
+        let origin = self.sheet_origin.take().unwrap_or(fallback);
+        let outcome = self.passwords.open(&mut self.ui, &self.config, window, origin, fallback);
         self.passwords_outcome(outcome);
+    }
+
+    /// The address field, where sheets come from by default (keyboard shortcuts) and drain
+    /// back into when their own origin is gone.
+    fn address_origin(&self) -> Origin {
+        let address = self.chrome.address_frame(&self.ui);
+        Origin { plane: self.chrome.bar_node(), point: address.center(), control: address }
+    }
+
+    /// Closes Settings: it drains back into where it came from.
+    fn close_settings(&mut self) {
+        let fallback = self.address_origin();
+        self.settings.close(&mut self.ui, &self.config, fallback);
+    }
+
+    /// Closes Passwords: it drains back into where it came from.
+    fn close_passwords(&mut self) {
+        let fallback = self.address_origin();
+        self.passwords.close(&mut self.ui, &self.config, fallback);
     }
 
     fn primary_player(&self, view: ViewId) -> Option<&axion_media::Player> {
@@ -1971,7 +2001,13 @@ impl Browser {
             }
             MenuAction::Zoom => {}
             MenuAction::HardReload => self.run(Action::HardReload),
-            MenuAction::Settings => self.run(Action::OpenSettings),
+            MenuAction::Settings => {
+                // Out of the glass the page menu came from (the address field).
+                let anchor = self.menu.anchor();
+                self.sheet_origin =
+                    Some(Origin { plane: self.chrome.bar_node(), point: anchor.center(), control: anchor });
+                self.run(Action::OpenSettings);
+            }
             MenuAction::SwitchAccount(_)
             | MenuAction::AddAccount
             | MenuAction::AccountSettings
@@ -1992,7 +2028,7 @@ impl Browser {
         })
     }
 
-    /// Capture aid: closes every menu and popover at once (with `--lead` or
+    /// Capture aid: closes every menu, popover and sheet at once (with `--lead` or
     /// `AXION_CAPTURE_FRAMES` it shows them on their way out).
     fn close_popups(&mut self) {
         self.menu.close(&mut self.ui, &self.config);
@@ -2001,6 +2037,12 @@ impl Browser {
         self.downloads_popover.close(&mut self.ui, &self.config);
         self.suggestions.hide(&mut self.ui, &self.config);
         self.passwords.hide_prompt(None, false);
+        if self.settings.is_open() {
+            self.close_settings();
+        }
+        if self.passwords.is_open() {
+            self.close_passwords();
+        }
     }
 
     // ---- moving tabs ----
@@ -2308,6 +2350,12 @@ impl Browser {
                             self.shields_popover.close(&mut self.ui, &self.config);
                             self.settings.set_category(Category::Shields);
                             if !self.settings.is_open() {
+                                let shield = self.chrome.shield_frame(&self.ui);
+                                self.sheet_origin = Some(Origin {
+                                    plane: self.chrome.bar_node(),
+                                    point: shield.center(),
+                                    control: shield,
+                                });
                                 self.run(Action::OpenSettings);
                             }
                         }
@@ -2322,7 +2370,7 @@ impl Browser {
                         self.navigate_to(url);
                     }
                 }
-                UiEvent::Clicked { action, .. } => match ChromeAction::from_id(action) {
+                UiEvent::Clicked { action, node } => match ChromeAction::from_id(action) {
                     Some(ChromeAction::ToggleSidebar) => self.run(Action::ToggleSidebar),
                     Some(ChromeAction::Back) => self.run(Action::Back),
                     Some(ChromeAction::Forward) => self.run(Action::Forward),
@@ -2361,7 +2409,16 @@ impl Browser {
                     Some(ChromeAction::PageMenu) => self.open_page_menu(),
                     Some(ChromeAction::Bookmarks) => self.show_panel(Panel::Bookmarks),
                     Some(ChromeAction::History) => self.show_panel(Panel::History),
-                    Some(ChromeAction::Passwords) => self.open_passwords(),
+                    Some(ChromeAction::Passwords) => {
+                        // The sheet comes out of the row (the sidebar is too big an origin).
+                        let row = self.ui.frame(node);
+                        self.sheet_origin = Some(Origin {
+                            plane: self.chrome.sidebar_node(),
+                            point: row.center(),
+                            control: row,
+                        });
+                        self.open_passwords();
+                    }
                     Some(ChromeAction::Account) => self.toggle_account_menu(),
                     Some(ChromeAction::ReadingList) => self.show_panel(Panel::ReadingList),
                     Some(ChromeAction::ClosePanel) => {
@@ -2636,7 +2693,7 @@ impl Browser {
                 self.update_layout();
                 self.tabs_changed = true;
             }
-            Outcome::Close => self.settings.close(&mut self.ui),
+            Outcome::Close => self.close_settings(),
             Outcome::SetAccountPassword { current, new } => {
                 let (ui, config) = (&mut self.ui, &self.config);
                 let (result, done) = match &current {
@@ -2684,7 +2741,7 @@ impl Browser {
                 let next = self.accounts.all().iter().find(|a| a.id != self.account_id).map(|a| a.id.clone());
                 let Some(next) = next else { return };
                 let id = self.account_id.clone();
-                self.settings.close(&mut self.ui);
+                self.close_settings();
                 self.switch_account(&next);
                 match self.accounts.remove(&id) {
                     Ok(()) => {
@@ -3110,7 +3167,7 @@ impl Browser {
     fn keyboard(&mut self, event: &winit::event::KeyEvent) -> bool {
         let pressed = event.state.is_pressed();
         if pressed && self.passwords.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
-            self.passwords.close(&mut self.ui);
+            self.close_passwords();
             let _ = self.ui.blur();
             return false;
         }
@@ -3119,7 +3176,7 @@ impl Browser {
             && self.ui.focused().is_none()
             && input::key(event) == Some(Key::Named("Escape".into()))
         {
-            self.settings.close(&mut self.ui);
+            self.close_settings();
             return false;
         }
         if pressed && self.tab_drag.is_dragging() && input::key(event) == Some(Key::Named("Escape".into())) {
@@ -3486,7 +3543,7 @@ impl Browser {
                     self.passwords_outcome(outcome);
                 }
                 "save-prompt" | "fill-prompt" => {
-                    self.passwords.close(&mut self.ui);
+                    self.close_passwords();
                     let target = self.tabs.active().map(|t| (t.view, t.url.clone()));
                     if let Some((view, url)) = target {
                         if what == "save-prompt" {
@@ -3595,6 +3652,7 @@ impl Browser {
         self.shields_popover.animate(&mut self.ui, dt);
         self.downloads_popover.animate(&mut self.ui, dt);
         self.lock_screen.animate(&mut self.ui, dt);
+        self.settings.animate(&mut self.ui, dt);
         let address = self.chrome.address_frame(&self.ui);
         self.passwords.animate(&mut self.ui, &self.config, dt, address);
         self.update_player(dt);

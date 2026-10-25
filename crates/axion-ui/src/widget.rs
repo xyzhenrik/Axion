@@ -157,6 +157,11 @@ pub struct Widget {
     /// surface of its own (see `Ui::glass_at`); and it has no tint of its own, so across it
     /// the tint blends from the glass it joins.
     pub join_only: bool,
+    /// Glass that is one element (the toolbar's nav capsule, the address field): pressing any
+    /// button in it turns the whole glass into one lens that swells, follows the pointer and
+    /// stretches, carrying all its content along, instead of the button becoming a lens of
+    /// its own.
+    pub press_whole: bool,
     /// Children are drawn only inside this widget's frame (scrolling lists).
     pub clip: bool,
     /// Absolute frame in logical pixels, updated by layout.
@@ -179,6 +184,7 @@ impl Widget {
             glass_density: None,
             glass_merge: None,
             join_only: false,
+            press_whole: false,
             clip: false,
             frame: Rect::default(),
         }
@@ -278,6 +284,12 @@ impl Widget {
     /// See [`Widget::join_only`].
     pub fn as_join(mut self) -> Self {
         self.join_only = true;
+        self
+    }
+
+    /// See [`Widget::press_whole`].
+    pub fn pressed_whole(mut self) -> Self {
+        self.press_whole = true;
         self
     }
 

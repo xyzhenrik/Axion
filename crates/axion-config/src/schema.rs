@@ -255,6 +255,11 @@ pub struct Motion {
     pub smooth: SpringSpec,
     /// Glass merge and split, popover drip.
     pub liquid: SpringSpec,
+    /// A closing popover or sheet draining back into the glass it came from: its far edge
+    /// and sides (the body retracting toward its anchor).
+    pub drain: SpringSpec,
+    /// … and its near edge (the neck sinking into the anchor's glass, ahead of the body).
+    pub drain_neck: SpringSpec,
     /// Overview zoom, scroll hand-off.
     pub fling: SpringSpec,
     /// Multiplies every spring response (0.5 = twice as fast).
@@ -267,6 +272,8 @@ impl Default for Motion {
             snappy: SpringSpec { response: 0.28, damping: 0.90 },
             smooth: SpringSpec { response: 0.45, damping: 1.00 },
             liquid: SpringSpec { response: 0.50, damping: 0.62 },
+            drain: SpringSpec { response: 0.55, damping: 0.90 },
+            drain_neck: SpringSpec { response: 0.34, damping: 1.00 },
             fling: SpringSpec { response: 0.60, damping: 0.85 },
             speed: 1.0,
         }

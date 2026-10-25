@@ -21,6 +21,7 @@ use glam::Vec2;
 use zeroize::Zeroizing;
 
 use crate::drip::Phase;
+use crate::morph::{Origin, SheetMorph};
 use crate::popover::Popover;
 
 /// Clear of the chrome's ranges (its other-group tab rows start at 12 000 and its panel
@@ -239,6 +240,15 @@ pub struct Passwords {
     vault: Option<Vault>,
     root: NodeId,
     sheet: NodeId,
+    /// The sheet flows out of where it was opened from (once unlocked) and drains back.
+    morph: SheetMorph,
+    /// Where the sheet comes from, and the address field (when that is gone).
+    origin: Option<(Origin, Origin)>,
+    /// The sheet's laid out frame (logical px).
+    sheet_frame: Frame,
+    /// The toolbar, and the address field in it (logical px; the prompt's anchor).
+    bar: NodeId,
+    address: Frame,
     list_viewport: NodeId,
     list: NodeId,
     list_scroll: f32,
@@ -601,10 +611,16 @@ impl Passwords {
         let alert_button = capsule_button(ui, buttons, UNLOCK, "Unlock", true);
         ui.set_visible(root, false);
         ui.set_visible(alert_layer, false);
+        let morph = SheetMorph::build(sheet, root, SHEET_RADIUS, BACKDROP_DIM);
         Self {
             vault,
             root,
             sheet,
+            morph,
+            origin: None,
+            sheet_frame: Frame::default(),
+            bar,
+            address: Frame::default(),
             list_viewport,
             list,
             list_scroll: 0.0,
@@ -742,7 +758,17 @@ impl Passwords {
 
     /// Opens the sheet. With an account password it is asked for first, every time (also
     /// while the session is unlocked; then it is only checked).
-    pub fn open(&mut self, ui: &mut Ui, config: &Config, window: Vec2) -> Outcome {
+    /// Opens out of the glass at `origin` (or `fallback`, the address field). The sheet flows
+    /// out once the vault is unlocked.
+    pub fn open(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        window: Vec2,
+        origin: Origin,
+        fallback: Origin,
+    ) -> Outcome {
+        self.origin = Some((origin, fallback));
         self.open = true;
         self.prompt.hide();
         self.asking = self.has_password().then_some(Reauth::OpenSheet);
@@ -751,7 +777,8 @@ impl Passwords {
         self.refresh(ui, config)
     }
 
-    pub fn close(&mut self, ui: &mut Ui) {
+    /// Closes: a shown sheet drains back into where it came from (or `fallback`).
+    pub fn close(&mut self, ui: &mut Ui, config: &Config, fallback: Origin) {
         self.open = false;
         self.asking = None;
         // What was revealed is hidden again next time.
@@ -761,11 +788,26 @@ impl Passwords {
         if matches!(self.shown, Detail::Edit { .. }) {
             self.shown = Detail::Empty;
         }
-        self.clear_detail(ui);
         ui.set_field_text(self.alert_field, "");
         ui.set_field_text(self.confirm_field, "");
-        ui.set_visible(self.root, false);
         ui.set_visible(self.alert_layer, false);
+        let draining = ui.is_visible(self.root) && ui.is_visible(self.sheet) && self.morph.is_shown();
+        self.morph.close(ui, config, fallback);
+        if !draining {
+            self.finish_close(ui);
+        }
+    }
+
+    /// The address field: where the sheet comes from when the prompt opens it, and where it
+    /// drains back into when its own origin is gone.
+    fn address_origin(&self) -> Origin {
+        Origin { plane: self.bar, point: self.address.center(), control: self.address }
+    }
+
+    /// Once the sheet has drained (or right away, without one): its details go, it hides.
+    fn finish_close(&mut self, ui: &mut Ui) {
+        self.clear_detail(ui);
+        ui.set_visible(self.root, false);
     }
 
     pub fn resize(&mut self, ui: &mut Ui, window: Vec2) {
@@ -775,6 +817,8 @@ impl Passwords {
         style.inset = Rect { left: length(origin.x), right: auto(), top: length(origin.y), bottom: auto() };
         style.size = Size { width: length(size.x), height: length(size.y) };
         ui.set_style(self.sheet, style);
+        self.sheet_frame = Frame { origin, size };
+        self.morph.retarget(self.sheet_frame);
     }
 
     /// Scrolls the list by `dy` logical px (wheel: positive scrolls up).
@@ -803,8 +847,13 @@ impl Passwords {
             w.background = Background::None;
         }
         if self.is_unlocked() {
+            // After the unlock alert the window is dimmed already.
+            let dimmed = ui.is_visible(self.alert_layer);
             ui.set_visible(self.alert_layer, false);
             ui.set_visible(self.sheet, true);
+            if let Some((origin, fallback)) = self.origin {
+                self.morph.open(ui, config, origin, fallback, self.sheet_frame, !dimmed);
+            }
             self.rebuild_list(ui);
             self.show_detail(ui, config);
             return Outcome::Nothing;
@@ -883,7 +932,7 @@ impl Passwords {
         reason: Reauth,
     ) -> Outcome {
         let Some(vault) = &mut self.vault else {
-            self.close(ui);
+            self.close(ui, config, self.address_origin());
             return Outcome::Nothing;
         };
         let password = Zeroizing::new(ui.field_text(self.alert_field).unwrap_or_default().to_owned());
@@ -923,7 +972,7 @@ impl Passwords {
             return self.answer_again(ui, config, clipboard, reason);
         }
         let Some(vault) = &mut self.vault else {
-            self.close(ui);
+            self.close(ui, config, self.address_origin());
             return Outcome::Nothing;
         };
         let password = Zeroizing::new(ui.field_text(self.alert_field).unwrap_or_default().to_owned());
@@ -1465,7 +1514,7 @@ impl Passwords {
                 ui.set_field_text(self.alert_field, "");
                 return self.refresh(ui, config);
             }
-            CLOSE | CANCEL_UNLOCK => self.close(ui),
+            CLOSE | CANCEL_UNLOCK => self.close(ui, config, self.address_origin()),
             UNLOCK => return self.try_unlock(ui, config, clipboard),
             // Locks the whole account (private tabs too), like the account menu's Lock.
             LOCK => return Outcome::LockSession,
@@ -1530,7 +1579,8 @@ impl Passwords {
                         // Saved once the user unlocks (or sets up) the vault.
                         self.pending = Some(pending);
                         let window = ui.frame(ui.root()).size;
-                        return self.open(ui, config, window);
+                        let address = self.address_origin();
+                        return self.open(ui, config, window, address, address);
                     }
                 }
             }
@@ -1868,6 +1918,11 @@ impl Passwords {
 
     /// Per frame: the search, the prompt's place under the address bar, animations.
     pub fn animate(&mut self, ui: &mut Ui, config: &Config, dt: f32, address: Frame) {
+        self.address = address;
+        let phase = self.morph.animate(ui, dt);
+        if !self.open && phase == Phase::Closed && ui.is_visible(self.root) {
+            self.finish_close(ui);
+        }
         if self.open && ui.is_visible(self.sheet) {
             let query = ui.field_text(self.search).unwrap_or_default().to_owned();
             if query != self.query {
