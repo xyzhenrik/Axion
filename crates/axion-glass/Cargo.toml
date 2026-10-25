@@ -1,0 +1,24 @@
+[package]
+name = "axion-glass"
+description = "Liquid Glass material renderer for Axion (SDF shapes, refraction, blur, specular)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytemuck.workspace = true
+glam.workspace = true
+tracing.workspace = true
+wgpu.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+axion-physics.workspace = true
+image.workspace = true
+pollster.workspace = true
+tracing-subscriber.workspace = true
+winit.workspace = true
+
+[lints]
+workspace = true
