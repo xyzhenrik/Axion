@@ -21,7 +21,17 @@ const ACTION_BASE: u32 = 9500;
 /// Smaller videos keep their page's look; controls wouldn't fit.
 const MIN_SIZE: Vec2 = Vec2::new(220.0, 124.0);
 /// Below this width the time labels and speed button are left out.
-const COMPACT_WIDTH: f32 = 440.0;
+const COMPACT_WIDTH: f32 = 400.0;
+/// Sizes (logical px), kept compact so the controls cover little of the video.
+const BUTTON: f32 = 32.0;
+const PLAY_BUTTON: f32 = 34.0;
+const SKIP_BUTTON: f32 = 36.0;
+const CORNER_BUTTON: f32 = 30.0;
+/// Icon size relative to its button.
+const ICON_RATIO: f32 = 0.56;
+/// Bar: (distance to the video's sides, to its bottom, height) inline and fullscreen.
+const INLINE_BAR: (f32, f32, f32) = (12.0, 12.0, 44.0);
+const FULLSCREEN_BAR: (f32, f32, f32) = (48.0, 28.0, 52.0);
 /// After scrubbing, page reports still carry the old time for a moment; ignore them.
 const SCRUB_SETTLE: Duration = Duration::from_millis(600);
 const SETTLED: f32 = 0.01;
@@ -143,7 +153,8 @@ fn button(
         widget,
         Style { size: square(side), flex_shrink: 0.0, justify_content: JustifyContent::CENTER, ..row(0.0) },
     );
-    let glyph = ui.add(node, Widget::icon(icon, side * 0.5).with_paint(Paint::Label), Style::default());
+    let glyph =
+        ui.add(node, Widget::icon(icon, side * ICON_RATIO).with_paint(Paint::Label), Style::default());
     (node, glyph)
 }
 
@@ -165,12 +176,12 @@ impl PlayerOverlay {
             Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(CAPSULE),
             Style {
                 position: Position::Absolute,
-                inset: Rect { left: length(32.0), top: length(28.0), right: auto(), bottom: auto() },
-                size: Size { width: auto(), height: length(52.0) },
+                inset: Rect { left: length(24.0), top: length(20.0), right: auto(), bottom: auto() },
+                size: Size { width: auto(), height: length(44.0) },
                 max_size: Size { width: percent(0.6), height: auto() },
                 padding: Rect {
-                    left: length(20.0),
-                    right: length(20.0),
+                    left: length(16.0),
+                    right: length(16.0),
                     top: length(0.0),
                     bottom: length(0.0),
                 },
@@ -179,7 +190,7 @@ impl PlayerOverlay {
                 ..Default::default()
             },
         );
-        let title = ui.add_label(title_pill, "", TextStyle::BodyEmphasis, Style::default());
+        let title = ui.add_label(title_pill, "", TextStyle::Callout, Style::default());
         let subtitle = ui.add_label(title_pill, "", TextStyle::Footnote, Style::default());
         if let Some(w) = ui.widget_mut(subtitle) {
             w.set_paint(Paint::Secondary);
@@ -190,17 +201,18 @@ impl PlayerOverlay {
             Widget::container().with_background(Background::Glass(GlassLevel::Regular)).with_radius(CAPSULE),
             Style {
                 position: Position::Absolute,
-                inset: Rect { right: length(18.0), top: length(18.0), left: auto(), bottom: auto() },
+                inset: Rect { right: length(12.0), top: length(12.0), left: auto(), bottom: auto() },
                 padding: Rect {
-                    left: length(4.0),
-                    right: length(4.0),
-                    top: length(4.0),
-                    bottom: length(4.0),
+                    left: length(3.0),
+                    right: length(3.0),
+                    top: length(3.0),
+                    bottom: length(3.0),
                 },
                 ..row(2.0)
             },
         );
-        let (_, fullscreen_icon) = button(ui, corner, Control::Fullscreen, Icon::Fullscreen, 38.0, false);
+        let (_, fullscreen_icon) =
+            button(ui, corner, Control::Fullscreen, Icon::Fullscreen, CORNER_BUTTON, false);
 
         // Thick glass: the controls must stay legible over any video.
         let bar = ui.add(
@@ -209,17 +221,17 @@ impl PlayerOverlay {
             Style {
                 position: Position::Absolute,
                 padding: Rect {
-                    left: length(10.0),
-                    right: length(10.0),
+                    left: length(6.0),
+                    right: length(8.0),
                     top: length(0.0),
                     bottom: length(0.0),
                 },
                 ..row(4.0)
             },
         );
-        let (skip_back, _) = button(ui, bar, Control::SkipBack, Icon::SkipBack, 48.0, false);
-        let (_, play_icon) = button(ui, bar, Control::PlayPause, Icon::Pause, 42.0, true);
-        let (skip_forward, _) = button(ui, bar, Control::SkipForward, Icon::SkipForward, 48.0, false);
+        let (skip_back, _) = button(ui, bar, Control::SkipBack, Icon::SkipBack, SKIP_BUTTON, false);
+        let (_, play_icon) = button(ui, bar, Control::PlayPause, Icon::Pause, PLAY_BUTTON, true);
+        let (skip_forward, _) = button(ui, bar, Control::SkipForward, Icon::SkipForward, SKIP_BUTTON, false);
         let time = label(ui, bar, "0:00", TextStyle::Footnote);
         let scrubber = ui.add(
             bar,
@@ -233,13 +245,13 @@ impl PlayerOverlay {
             },
         );
         let remaining = label(ui, bar, "-0:00", TextStyle::Footnote);
-        let (_, mute_icon) = button(ui, bar, Control::Mute, Icon::Volume, 42.0, false);
+        let (_, mute_icon) = button(ui, bar, Control::Mute, Icon::Volume, BUTTON, false);
         let speed = ui.add(
             bar,
             Widget::container().with_action(Control::Speed.id()).with_radius(CAPSULE),
             Style {
-                size: Size { width: auto(), height: length(36.0) },
-                min_size: Size { width: length(42.0), height: auto() },
+                size: Size { width: auto(), height: length(28.0) },
+                min_size: Size { width: length(BUTTON), height: auto() },
                 padding: Rect {
                     left: length(8.0),
                     right: length(8.0),
@@ -251,9 +263,9 @@ impl PlayerOverlay {
                 ..row(0.0)
             },
         );
-        let speed_label = ui.add_label(speed, "1×", TextStyle::Callout, Style::default());
-        let (captions, _) = button(ui, bar, Control::Captions, Icon::Captions, 42.0, false);
-        let (exit, _) = button(ui, bar, Control::Fullscreen, Icon::ExitFullscreen, 42.0, false);
+        let speed_label = ui.add_label(speed, "1×", TextStyle::Footnote, Style::default());
+        let (captions, _) = button(ui, bar, Control::Captions, Icon::Captions, BUTTON, false);
+        let (exit, _) = button(ui, bar, Control::Fullscreen, Icon::ExitFullscreen, BUTTON, false);
         ui.set_visible(root, false);
         Self {
             root,
@@ -348,7 +360,7 @@ impl PlayerOverlay {
             let player = media
                 .players
                 .iter()
-                .filter(|p| p.kind == Kind::Video && p.fullscreen)
+                .filter(|p| p.kind == Kind::Video && p.fullscreen && !p.trusted)
                 .max_by(|a, b| a.area().total_cmp(&b.area()));
             return (Mode::Fullscreen, player.cloned(), Some(cx.page));
         }
@@ -379,7 +391,7 @@ impl PlayerOverlay {
 
     fn apply_layout(&self, ui: &mut Ui, mode: Mode, compact: bool) {
         let fullscreen = mode == Mode::Fullscreen;
-        let (side, bottom, height) = if fullscreen { (64.0, 40.0, 72.0) } else { (18.0, 18.0, 58.0) };
+        let (side, bottom, height) = if fullscreen { FULLSCREEN_BAR } else { INLINE_BAR };
         let mut style = ui.style(self.bar);
         style.inset = Rect { left: length(side), right: length(side), bottom: length(bottom), top: auto() };
         style.size = Size { width: auto(), height: length(height) };
@@ -489,7 +501,7 @@ impl PlayerOverlay {
             return None;
         }
         let (view, player) = self.target.as_ref()?;
-        if player.native || self.takeover.as_deref() == Some(player.id.as_str()) {
+        if player.native || player.trusted || self.takeover.as_deref() == Some(player.id.as_str()) {
             return None;
         }
         self.takeover = Some(player.id.clone());

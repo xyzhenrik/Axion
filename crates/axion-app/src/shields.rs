@@ -80,6 +80,10 @@ impl RequestPolicy for Policy {
         self.0.allow_cookies(url, page_url)
     }
 
+    fn allow_navigation_initiator(&self, page_url: &str, initiator: &str, url: &str) -> bool {
+        self.0.allow_navigation_initiator(page_url, initiator, url)
+    }
+
     fn allow_navigation(&self, n: &NavigationRequest<'_>) -> bool {
         self.0.allow_navigation(&Navigation {
             from: n.from,
@@ -130,8 +134,14 @@ impl ShieldsState {
         self.shields.is_ready()
     }
 
-    pub fn allow_popup(&self, opener_url: &str, url: &str, user_gesture: bool) -> bool {
-        self.shields.allow_popup(opener_url, url, user_gesture)
+    pub fn allow_popup(
+        &self,
+        opener_url: &str,
+        opener_frame: Option<&str>,
+        url: &str,
+        user_gesture: bool,
+    ) -> bool {
+        self.shields.allow_popup(opener_url, opener_frame, url, user_gesture)
     }
 
     /// The level on the page's site.

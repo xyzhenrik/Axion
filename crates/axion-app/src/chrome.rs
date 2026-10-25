@@ -29,6 +29,7 @@ pub struct NowPlaying {
 }
 
 const NOW_PLAYING_HEIGHT: f32 = 60.0;
+const ADDRESS_FAVICON: f32 = 18.0;
 const NOW_PLAYING_RADIUS: f32 = 20.0;
 
 /// What a click in the chrome means.
@@ -196,6 +197,7 @@ pub struct Chrome {
     page_menu: NodeId,
     shield: NodeId,
     shield_glyph: NodeId,
+    address_favicon: NodeId,
     progress: NodeId,
     /// Inactive tab segments, rebuilt by `sync_tabs`.
     pills: Vec<NodeId>,
@@ -529,6 +531,12 @@ impl Chrome {
         let address_close = close_dot(ui, address, ChromeAction::CloseTab(0), 32.0);
         let shield_glyph = Widget::icon(Icon::Shield, 18.0).with_paint(Paint::Shield);
         let (shield, shield_glyph) = icon_button(ui, address, ChromeAction::Shield, shield_glyph, 30.0);
+        // The site's icon, like on the other tabs' segments.
+        let address_favicon = ui.add(
+            address,
+            Widget::container(),
+            Style { size: square(ADDRESS_FAVICON), flex_shrink: 0.0, ..Default::default() },
+        );
         let address_label = ui.add_label(address, "", TextStyle::BodyEmphasis, shrinking_label());
         ui.set_label_align(address_label, Align::Start);
         let address_field = ui.add_text_field(
@@ -610,6 +618,7 @@ impl Chrome {
             page_menu,
             shield,
             shield_glyph,
+            address_favicon,
             progress,
             pills: Vec::new(),
             overview,
@@ -901,6 +910,11 @@ impl Chrome {
             order.push(pill);
         }
         ui.set_children(self.tab_capsule, &order);
+        ui.clear_children(self.address_favicon);
+        if let Some(tab) = tabs.active() {
+            favicon_node(ui, self.address_favicon, &tab.url, ADDRESS_FAVICON, favicons);
+        }
+        ui.set_visible(self.address_favicon, !self.locked);
         if let Some(w) = ui.widget_mut(self.address_close) {
             w.action = Some(ChromeAction::CloseTab(tabs.active_index()).id());
         }

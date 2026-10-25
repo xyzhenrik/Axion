@@ -140,7 +140,7 @@ impl Setting {
             Setting::KeepMediaAwake => "Keep tabs playing audio awake",
             Setting::RestoreSession => "Reopen last session's tabs at start",
             Setting::OwnControls => "Axion's controls for page videos",
-            Setting::ReplaceSitePlayers => "Also instead of sites' own players (YouTube…)",
+            Setting::ReplaceSitePlayers => "Also instead of sites' own players (not YouTube, Twitch…)",
             Setting::OwnFullscreenControls => "Axion's controls in fullscreen, also over site players",
             Setting::HideControlsAfter => "Hide controls while playing after (1 – 10 seconds)",
             Setting::HardwareDecoding => "Hardware video decoding (after restart)",

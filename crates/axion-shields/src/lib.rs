@@ -308,11 +308,43 @@ impl Shields {
         !site::is_cross_site(url, page_url)
     }
 
-    /// Whether a page may open a new tab or window. It needs a click or key press, and the
-    /// target must not be a listed ad site (ad popups usually come with a click).
-    pub fn allow_popup(&self, opener_url: &str, url: &str, user_gesture: bool) -> bool {
-        if self.level(opener_url) == Level::Off || !read(&self.settings).block_popups {
+    /// Whether a frame of origin `initiator` may navigate the tab from `page` to `url`: the
+    /// page itself may, and so may a frame going to its own site (an embed's "watch on …"
+    /// link) or back to the page's site; a frame of another site sending the tab to a third
+    /// site is an ad redirect.
+    pub fn allow_navigation_initiator(&self, page: &str, initiator: &str, url: &str) -> bool {
+        // Opaque ("null") or missing initiators and new tabs have nothing to compare.
+        if page.is_empty() || !initiator.contains("://") {
             return true;
+        }
+        if self.level(page) == Level::Off || !read(&self.settings).block_redirects {
+            return true;
+        }
+        // Back to the page's own site is fine too (payment and sign-in frames return there).
+        !site::is_cross_site(initiator, page)
+            || !site::is_cross_site(url, initiator)
+            || !site::is_cross_site(url, page)
+    }
+
+    /// Whether a page may open a new tab or window. It needs a click or key press, and the
+    /// target must not be a listed ad site (ad popups usually come with a click). An iframe of
+    /// another site (a video hoster, an ad) may only open its own site: hosters open ad tabs on
+    /// the first click into their player. On Aggressive, such iframes open nothing.
+    pub fn allow_popup(
+        &self,
+        opener_url: &str,
+        opener_frame: Option<&str>,
+        url: &str,
+        user_gesture: bool,
+    ) -> bool {
+        let level = self.level(opener_url);
+        if level == Level::Off || !read(&self.settings).block_popups {
+            return true;
+        }
+        if let Some(frame) = opener_frame.filter(|f| site::is_cross_site(f, opener_url))
+            && (level == Level::Aggressive || site::is_cross_site(url, frame))
+        {
+            return false;
         }
         user_gesture && !self.is_ad_page(url, opener_url)
     }
@@ -419,7 +451,7 @@ mod tests {
         let page = "https://www.news.site/";
         assert_eq!(s.level(page), Level::Off);
         assert_eq!(s.check_request("https://ads.example/x.js", page, ResourceKind::Script), Verdict::Allow);
-        assert!(s.allow_popup(page, "https://popads.biz/", false));
+        assert!(s.allow_popup(page, None, "https://popads.biz/", false));
         assert!(s.page_script(page).is_none());
     }
 
@@ -436,9 +468,15 @@ mod tests {
     fn popups_need_a_click_and_a_clean_target() {
         let s = shields();
         let page = "https://news.site/";
-        assert!(!s.allow_popup(page, "https://other.org/", false));
-        assert!(s.allow_popup(page, "https://other.org/", true));
-        assert!(!s.allow_popup(page, "https://popads.biz/landing", true));
+        assert!(!s.allow_popup(page, None, "https://other.org/", false));
+        assert!(s.allow_popup(page, None, "https://other.org/", true));
+        assert!(!s.allow_popup(page, None, "https://popads.biz/landing", true));
+        // A hoster iframe opening an ad site on the first click into its player.
+        let hoster = Some("https://hoster.example/e/abc");
+        assert!(!s.allow_popup(page, hoster, "https://cheap-ads.example/x", true));
+        assert!(s.allow_popup(page, hoster, "https://hoster.example/download", true));
+        // The page's own iframes are the page.
+        assert!(s.allow_popup(page, Some("https://news.site/embed"), "https://other.org/", true));
     }
 
     #[test]
@@ -459,6 +497,19 @@ mod tests {
         assert!(s.allow_navigation(&nav("https://m.news.site/", false)));
         let typed = Navigation { browser_initiated: true, ..nav("https://popads.biz/", false) };
         assert!(s.allow_navigation(&typed));
+    }
+
+    #[test]
+    fn frame_redirects() {
+        let s = shields();
+        let page = "https://anime.site/watch/1";
+        assert!(s.allow_navigation_initiator(page, "https://anime.site", "https://anime.site/watch/2"));
+        assert!(s.allow_navigation_initiator(page, "https://hoster.example", "https://hoster.example/full"));
+        assert!(s.allow_navigation_initiator(page, "https://bank.example", "https://anime.site/paid"));
+        assert!(!s.allow_navigation_initiator(page, "https://hoster.example", "https://scam.example/btc"));
+        assert!(s.allow_navigation_initiator("", "https://hoster.example", "https://scam.example/"));
+        s.set_site_level("anime.site", Some(Level::Off));
+        assert!(s.allow_navigation_initiator(page, "https://hoster.example", "https://scam.example/btc"));
     }
 
     #[test]

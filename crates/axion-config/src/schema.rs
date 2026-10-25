@@ -422,8 +422,10 @@ impl Default for Tabs {
 pub struct Media {
     /// Replace the native controls of page videos with Axion's glass controls.
     pub own_controls: bool,
-    /// Also replace the players sites build themselves (YouTube…): their UI is hidden.
+    /// Also replace the players sites build themselves: their UI is hidden.
     pub replace_site_players: bool,
+    /// Sites (with their subdomains) that keep their own player, inline and in fullscreen.
+    pub trusted_player_sites: Vec<String>,
     /// Show Axion's controls over every fullscreen video, also ones with a site's own player.
     pub own_fullscreen_controls: bool,
     /// Hide the controls of a playing video after this long without pointer movement.
@@ -445,6 +447,21 @@ impl Default for Media {
         Self {
             own_controls: true,
             replace_site_players: true,
+            trusted_player_sites: [
+                "youtube.com",
+                "youtube-nocookie.com",
+                "twitch.tv",
+                "vimeo.com",
+                "dailymotion.com",
+                "netflix.com",
+                "disneyplus.com",
+                "primevideo.com",
+                "crunchyroll.com",
+                "spotify.com",
+                "soundcloud.com",
+            ]
+            .map(String::from)
+            .to_vec(),
             own_fullscreen_controls: true,
             hide_controls_after_seconds: 2.5,
             skip_seconds: 10.0,

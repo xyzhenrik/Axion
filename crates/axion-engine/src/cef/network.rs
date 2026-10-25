@@ -133,6 +133,23 @@ wrap_resource_request_handler! {
     }
 }
 
+// Cancels the request it is attached to (a blocked top-level navigation).
+wrap_resource_request_handler! {
+    pub(super) struct CancelBuilder {}
+
+    impl ResourceRequestHandler {
+        fn on_before_resource_load(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _request: Option<&mut Request>,
+            _callback: Option<&mut Callback>,
+        ) -> ReturnValue {
+            cef_return_value_t::RV_CANCEL.into()
+        }
+    }
+}
+
 wrap_request_handler! {
     pub(super) struct RequestHandlerBuilder {
         net: Arc<Network>,
@@ -182,14 +199,28 @@ wrap_request_handler! {
 
         fn resource_request_handler(
             &self,
-            _browser: Option<&mut Browser>,
-            _frame: Option<&mut Frame>,
-            _request: Option<&mut Request>,
-            _is_navigation: ::std::os::raw::c_int,
+            browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            is_navigation: ::std::os::raw::c_int,
             _is_download: ::std::os::raw::c_int,
-            _request_initiator: Option<&CefString>,
+            request_initiator: Option<&CefString>,
             _disable_default_handling: Option<&mut ::std::os::raw::c_int>,
         ) -> Option<ResourceRequestHandler> {
+            let top_navigation = is_navigation != 0 && frame.is_some_and(|f| f.is_main() == 1);
+            if let (true, Some(policy), Some(request), Some(initiator)) =
+                (top_navigation, self.net.policy(), request, request_initiator)
+            {
+                let browser = browser.map(|b| &*b);
+                let initiator = initiator.to_string();
+                let url = CefString::from(&request.url()).to_string();
+                let page = main_frame_url(browser);
+                if !policy.allow_navigation_initiator(&page, &initiator, &url) {
+                    tracing::info!(%page, %initiator, %url, "blocked a redirect by a frame of another site");
+                    self.net.emit(browser, EngineEvent::NavigationBlocked { view: self.view, url });
+                    return Some(CancelBuilder::new());
+                }
+            }
             Some(self.resources.clone())
         }
     }

@@ -15,20 +15,25 @@ pub const MARKER: &str = "\u{1}axion:";
 const SOURCE: &str = include_str!("bridge.js");
 
 /// Which page controls Axion's replace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Replace {
     /// `<video controls>`: the browser's built-in controls.
     pub native_controls: bool,
-    /// Sites' own players (YouTube…): their UI is hidden around the video.
+    /// Sites' own players: their UI is hidden around the video.
     pub site_players: bool,
+    /// Sites (and their subdomains) whose players are kept as they are (YouTube, Twitch…).
+    pub trusted_sites: Vec<String>,
 }
 
 /// The bridge script. `secret` keeps the frames' postMessage traffic apart from the page's.
-pub fn bridge_script(secret: &str, replace: Replace) -> String {
+pub fn bridge_script(secret: &str, replace: &Replace) -> String {
     let secret: String = secret.chars().filter(char::is_ascii_alphanumeric).collect();
     let flag = |on: bool| if on { "true" } else { "false" };
+    let trusted: Vec<String> = replace.trusted_sites.iter().map(|s| s.trim().to_ascii_lowercase()).collect();
+    let trusted = serde_json::to_string(&trusted).unwrap_or_else(|_| "[]".into());
     SOURCE
         .replace("__AXION_SECRET__", &secret)
+        .replace("__AXION_TRUSTED__", &trusted)
         .replace("__AXION_REPLACE_SITE__", flag(replace.site_players))
         .replace("__AXION_REPLACE__", flag(replace.native_controls))
 }
@@ -78,6 +83,8 @@ pub struct Player {
     pub native: bool,
     /// Axion's controls replace the page's (native ones or a site player's UI).
     pub own: bool,
+    /// It plays on a trusted site, whose player stays as it is (also in fullscreen).
+    pub trusted: bool,
     /// It is (inside) the page's fullscreen element.
     pub fullscreen: bool,
 }
@@ -198,6 +205,8 @@ pub enum Action {
     Fullscreen(bool),
     /// Let the video cover the page (used inside a page-made fullscreen).
     Takeover(bool),
+    /// Log the element's loading state from its own frame (debugging).
+    Probe,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -215,7 +224,7 @@ impl Command {
     /// sound are refused otherwise. Commands come from the user's clicks and keys, so this
     /// only passes their gesture on.
     pub fn needs_gesture(&self) -> bool {
-        !matches!(self.action, Action::Takeover(_) | Action::Pause)
+        !matches!(self.action, Action::Takeover(_) | Action::Pause | Action::Probe)
     }
 
     /// JavaScript for the top frame.
@@ -232,6 +241,7 @@ impl Command {
             Action::Caption(i) => ("caption", i.into()),
             Action::Fullscreen(on) => ("fullscreen", on.into()),
             Action::Takeover(on) => ("takeover", on.into()),
+            Action::Probe => ("probe", serde_json::Value::Null),
         };
         let command = serde_json::json!({ "id": self.player, "action": name, "value": value });
         format!("window.__axionMedia && window.__axionMedia.cmd({command});")
@@ -251,7 +261,10 @@ mod tests {
 
     #[test]
     fn script_is_filled_in() {
-        let s = bridge_script("abc'; alert(1)//", Replace { native_controls: true, site_players: false });
+        let replace =
+            Replace { native_controls: true, site_players: false, trusted_sites: vec!["YouTube.com".into()] };
+        let s = bridge_script("abc'; alert(1)//", &replace);
+        assert!(s.contains(r#"})(location.hostname, ["youtube.com"]);"#));
         assert!(s.contains("var SECRET = 'abcalert1';"), "secret must be sanitised");
         assert!(s.contains("var REPLACE_NATIVE = true;"));
         assert!(s.contains("var REPLACE_SITE = false;"));

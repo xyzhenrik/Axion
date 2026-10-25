@@ -95,6 +95,8 @@ pub enum EngineEvent {
         url: String,
         kind: NewViewKind,
         user_gesture: bool,
+        /// The URL of the frame that asked, if it isn't the page itself (an iframe).
+        opener_frame: Option<String>,
     },
     /// A message from the page script (a console message starting with
     /// [`PAGE_MESSAGE_PREFIX`]; the page's own console output isn't reported).

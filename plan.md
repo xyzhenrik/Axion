@@ -169,6 +169,9 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [x] Cosmetic filters: host-specific and generic non-class selectors injected as a style
       sheet at load start. *Open:* class/id generic rules (needs a DOM-scanning content
       script → `hidden_class_id_selectors`) and scriptlets (need uBO's resources).
+- [x] Hoster tricks (tested on aniworld.to): a cross-site iframe may only open tabs to its
+      own site, and may not send the whole tab to a third site (initiator check in the
+      resource-request hook) — VOE's ad tab on the first player click is blocked.
 - [x] Popup & redirect policy: popups need a click and must not go to a listed ad site
       (`$popup` rules are rewritten to `$document`, adblock-rust has no popup type);
       redirects without a click to listed sites are cancelled in `OnBeforeBrowse`;
@@ -205,11 +208,17 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
       cycle, captions cycle, fullscreen/exit. They replace native controls and sites' own
       players (YouTube…): the bridge hides everything in the player's container (ancestors up
       to 1.6× the video's area) but the video. Muted looping videos (backgrounds) and small
-      ones (< 220×124) keep the site's look. `media.replace_site_players` turns it off.
+      ones (< 220×124) keep the site's look. `media.replace_site_players` turns it off;
+      `media.trusted_player_sites` (YouTube, Twitch, Vimeo, Netflix…) always keep theirs.
+      Play/pause of a site player is a real click at the video's centre (hosters only load
+      their stream on their own play click), retried up to 3× if the hoster ate the click.
 - [x] Own fullscreen: the element's real fullscreen; in a site's own fullscreen (YouTube…)
       the video "takes over" (everything else `visibility:hidden`) under our controls.
       Controls and pointer hide after 2.5 s; media keys (Space/K, ←/→, ↑/↓, M, F/Esc, C, <, >)
       only while fullscreen. Double-click a replaced video toggles fullscreen.
+- [ ] **H.264/AAC**: the prebuilt CEF has no proprietary codecs (ffmpeg is inside
+      libcef.so). `tools/build-cef.sh` builds CEF 156.0.14 with them (hours, ~100 GB);
+      then point `CEF_PATH` at the result. Needed for most hosters (aniworld's VOE is x264).
 - [ ] PiP window (own floating glass window, physics, corner snapping) — next.
 - [x] Playback priority: playing tabs are never frozen/unloaded (bridge state); VA-API
       on by default (`chrome://gpu`: Video Decode hardware accelerated); fullscreen controls

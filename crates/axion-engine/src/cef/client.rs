@@ -276,7 +276,7 @@ wrap_life_span_handler! {
         fn on_before_popup(
             &self,
             browser: Option<&mut Browser>,
-            _frame: Option<&mut Frame>,
+            frame: Option<&mut Frame>,
             _popup_id: ::std::os::raw::c_int,
             target_url: Option<&CefString>,
             _target_frame_name: Option<&CefString>,
@@ -295,11 +295,14 @@ wrap_life_span_handler! {
                 _ => NewViewKind::Popup,
             };
             let url = target_url.map(|u| u.to_string()).unwrap_or_default();
+            let opener_frame =
+                frame.filter(|f| f.is_main() == 0).map(|f| CefString::from(&f.url()).to_string());
             self.ctx.emit(browser, EngineEvent::NewViewRequested {
                 opener: self.ctx.view,
                 url,
                 kind,
                 user_gesture: user_gesture != 0,
+                opener_frame,
             });
             // Never let CEF open windows itself; the browser decides.
             1

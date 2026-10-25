@@ -43,6 +43,19 @@ const OVERVIEW_CAPTURE_LEAD: Duration = Duration::from_secs(2);
 /// Settings changes are written to disk once they've been still for this long.
 const CONFIG_SAVE_DELAY: Duration = Duration::from_millis(250);
 /// Saving the open tabs waits until they stop changing for this long.
+/// A click into a site player that should start it.
+struct SiteClick {
+    view: ViewId,
+    player: String,
+    tries: u32,
+    at: Instant,
+}
+
+/// How long a click into a site player gets to start it before we click again.
+const SITE_CLICK_RETRY: Duration = Duration::from_millis(1200);
+const SITE_CLICK_TRIES: u32 = 3;
+/// Time between the steps of a capture's `--open=a,b`.
+const OPEN_STEP_INTERVAL: Duration = Duration::from_millis(2500);
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 /// History rows shown in the sidebar panel.
 const PANEL_HISTORY_LIMIT: usize = 100;
@@ -97,6 +110,7 @@ pub struct Browser {
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
     player: PlayerOverlay,
+    site_click: Option<SiteClick>,
     /// The tab whose media the Now Playing card and the desktop (MPRIS) show.
     now_playing: Option<ViewId>,
     mpris: Option<Mpris>,
@@ -229,7 +243,7 @@ impl Browser {
             },
         )?;
         engine.set_request_policy(Some(shields.policy()));
-        engine.set_page_script(Some(axion_media::bridge_script(&bridge_secret(), media_replace(&config))));
+        engine.set_page_script(Some(axion_media::bridge_script(&bridge_secret(), &media_replace(&config))));
 
         let dark = is_dark(&config, &window);
         let scale = window.scale_factor() as f32;
@@ -265,6 +279,7 @@ impl Browser {
             shields,
             shields_popover,
             player,
+            site_click: None,
             now_playing: None,
             mpris: if config.media.desktop_integration { Mpris::start() } else { None },
             memory: MemoryMonitor::start(Duration::from_secs_f32(
@@ -539,7 +554,87 @@ impl Browser {
 
     fn media_command(&mut self, view: ViewId, command: &axion_media::Command) {
         tracing::debug!(?view, ?command, "media command");
+        if self.click_site_player(view, command) {
+            return;
+        }
         self.engine.run_script(view, &command.script(), command.needs_gesture());
+    }
+
+    /// Sites' own players (hosters behind JW Player, video.js…) often load their video only
+    /// when their play button is clicked, and iframes only play with sound after a click in
+    /// them. So play/pause of such a player is a real click at the video's centre — with the
+    /// site's UI hidden it lands on the video, which the site player toggles on. Returns false
+    /// if this command isn't one (then the bridge carries it out).
+    fn click_site_player(&mut self, view: ViewId, command: &axion_media::Command) -> bool {
+        use axion_media::Action;
+        let Some(tab) = find_tab(&self.tabs, &self.parked, view) else { return false };
+        let Some(media) = tab.media.as_ref() else { return false };
+        let Some(player) = media.get(&command.player).filter(|p| p.own && !p.native).cloned() else {
+            return false;
+        };
+        let click = match command.action {
+            Action::Toggle => true,
+            Action::Play => !player.is_playing(),
+            Action::Pause => player.is_playing(),
+            _ => return false,
+        };
+        let dpr = if media.dpr > 0.0 { media.dpr } else { self.scale() };
+        let center = Vec2::new(player.x + player.w / 2.0, player.y + player.h / 2.0) * dpr / self.scale();
+        let size = self.page_rect().size;
+        if center.x < 0.0 || center.y < 0.0 || center.x > size.x || center.y > size.y {
+            return false;
+        }
+        if click {
+            self.click_page(view, center);
+            // Hosters often swallow the first click (for an ad tab); try again if it didn't play.
+            self.site_click = (!player.is_playing()).then(|| SiteClick {
+                view,
+                player: player.id.clone(),
+                tries: 1,
+                at: Instant::now(),
+            });
+        }
+        true
+    }
+
+    fn click_page(&mut self, view: ViewId, pos: Vec2) {
+        let modifiers = axion_engine::Modifiers::default();
+        self.engine.send_input(view, &InputEvent::MouseMove { pos, modifiers });
+        for pressed in [true, false] {
+            self.engine.send_input(
+                view,
+                &InputEvent::MouseButton {
+                    pos,
+                    button: MouseButton::Left,
+                    pressed,
+                    click_count: 1,
+                    modifiers,
+                },
+            );
+        }
+    }
+
+    /// Clicks a site player again while it hasn't started (see `click_site_player`).
+    fn retry_site_click(&mut self) {
+        let Some(pending) = self.site_click.take() else { return };
+        if pending.at.elapsed() < SITE_CLICK_RETRY {
+            self.site_click = Some(pending);
+            return;
+        }
+        let player = self.primary_player(pending.view).filter(|p| p.id == pending.player).cloned();
+        tracing::debug!(found = player.is_some(), paused = ?player.as_ref().map(|p| p.paused), tries = pending.tries, "site click check");
+        let Some(player) = player else { return };
+        if !player.paused || pending.tries >= SITE_CLICK_TRIES {
+            return;
+        }
+        let command = axion_media::Command::new(&player.id, axion_media::Action::Play);
+        let before = self.site_click.is_none();
+        if self.click_site_player(pending.view, &command) && before {
+            if let Some(next) = &mut self.site_click {
+                next.tries = pending.tries + 1;
+            }
+            tracing::debug!(tries = pending.tries + 1, "clicked the site player again");
+        }
     }
 
     fn page_message(&mut self, view: ViewId, message: &str) {
@@ -672,6 +767,7 @@ impl Browser {
     }
 
     fn update_player(&mut self, dt: f32) {
+        self.retry_site_click();
         let tab = self.tabs.active().filter(|_| !self.overview.is_open() && !self.is_locked());
         let host = tab.map(|t| display_host(&t.url)).unwrap_or_default();
         let title = tab.map(|t| t.label()).unwrap_or_default();
@@ -1065,7 +1161,7 @@ impl Browser {
     fn apply_shields_config(&mut self) {
         self.shields.apply_config(&self.config);
         // Pages loaded from now on get the media bridge with the current setting.
-        let script = axion_media::bridge_script(&bridge_secret(), media_replace(&self.config));
+        let script = axion_media::bridge_script(&bridge_secret(), &media_replace(&self.config));
         self.engine.set_page_script(Some(script));
     }
 
@@ -1331,14 +1427,15 @@ impl Browser {
                         self.update_layout();
                     }
                 }
-                EngineEvent::NewViewRequested { opener, url, kind, user_gesture } => {
+                EngineEvent::NewViewRequested { opener, url, kind, user_gesture, opener_frame } => {
                     let opener_url = find_tab(&self.tabs, &self.parked, opener).map(|t| t.url.clone());
                     if !self.shields.allow_popup(
                         opener_url.as_deref().unwrap_or_default(),
+                        opener_frame.as_deref(),
                         &url,
                         user_gesture,
                     ) {
-                        tracing::info!(%url, user_gesture, "blocked a popup");
+                        tracing::info!(%url, user_gesture, ?opener_frame, "blocked a popup");
                         self.count_blocked(opener, url);
                         continue;
                     }
@@ -1778,14 +1875,42 @@ impl Browser {
             self.overview_at = None;
             self.open_overview();
         }
-        if let Some((_, what)) = self.open_at.take_if(|(at, _)| now >= *at) {
-            match what.as_str() {
+        if let Some((_, list)) = self.open_at.take_if(|(at, _)| now >= *at) {
+            // Several steps ("a,b") run one after another, a moment apart.
+            let (what, rest) = list.split_once(',').unwrap_or((list.as_str(), ""));
+            if !rest.is_empty() {
+                self.open_at = Some((now + OPEN_STEP_INTERVAL, rest.to_owned()));
+            }
+            match what {
                 "menu" => self.open_page_menu(),
                 "shields" => self.toggle_shields_popover(),
                 "history" => self.show_panel(Panel::History),
                 "bookmarks" => self.show_panel(Panel::Bookmarks),
                 "settings" => self.run(Action::OpenSettings),
                 "next-tab" => self.run(Action::NextTab),
+                // Debug aid: the main player logs its loading state from its frame (PageMessage log).
+                "probe-media" => {
+                    let target = self
+                        .active_view()
+                        .zip(self.active_view().and_then(|v| self.primary_player(v)).map(|p| p.id.clone()));
+                    if let Some((view, id)) = target {
+                        self.media_command(view, &axion_media::Command::new(&id, axion_media::Action::Probe));
+                    }
+                }
+                // Capture aid: a real click at page position "click:X:Y" (logical px).
+                click if click.starts_with("click:") => {
+                    let mut parts = click.split(':').skip(1).filter_map(|n| n.parse::<f32>().ok());
+                    if let (Some(x), Some(y), Some(view)) = (parts.next(), parts.next(), self.active_view()) {
+                        self.click_page(view, Vec2::new(x, y));
+                    }
+                }
+                // Capture aid: scroll the page's main player into view.
+                "scroll-player" => {
+                    let y = self.tabs.active().and_then(|t| t.media.as_ref()?.primary().map(|p| p.y));
+                    if let (Some(view), Some(y)) = (self.active_view(), y) {
+                        self.engine.run_script(view, &format!("window.scrollBy(0, {} - 90);", y), false);
+                    }
+                }
                 // Capture aid: what a site's own fullscreen button does (its player's frame).
                 "page-fullscreen" => {
                     if let Some(view) = self.active_view() {
@@ -2042,6 +2167,7 @@ fn media_replace(config: &Config) -> axion_media::Replace {
     axion_media::Replace {
         native_controls: media.own_controls,
         site_players: media.own_controls && media.replace_site_players,
+        trusted_sites: media.trusted_player_sites.clone(),
     }
 }
 

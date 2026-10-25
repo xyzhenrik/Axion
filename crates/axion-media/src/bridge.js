@@ -9,6 +9,11 @@
   var SECRET = '__AXION_SECRET__';
   var REPLACE_NATIVE = __AXION_REPLACE__;
   var REPLACE_SITE = __AXION_REPLACE_SITE__;
+  // Sites whose own player is trusted and kept (YouTube, Twitch…), for this frame's host.
+  var TRUSTED = (function (host, sites) {
+    return sites.some(function (s) { return host === s || host.slice(-s.length - 1) === '.' + s; });
+  })(location.hostname, __AXION_TRUSTED__);
+  if (TRUSTED) { REPLACE_NATIVE = false; REPLACE_SITE = false; }
   // Site players (YouTube…) smaller than this keep their own UI.
   var MIN_W = 220, MIN_H = 124;
   // A player's container is the ancestors up to this much bigger than its video.
@@ -144,6 +149,7 @@
       volume: el.volume, muted: el.muted, rate: el.playbackRate, buffered: buffered,
       captions: captions, caption: caption, native: !!el.__axNative,
       own: (!!el.__axNative && REPLACE_NATIVE) || replaceSitePlayer(el),
+      trusted: TRUSTED,
       fullscreen: !!document.fullscreenElement &&
         (document.fullscreenElement === el || document.fullscreenElement.contains(el)) || (takeover && takeover.el === el) || false
     };
@@ -228,6 +234,11 @@
         for (var i = 0; i < el.textTracks.length; i++) el.textTracks[i].mode = (i === v) ? 'showing' : 'disabled';
         break;
       case 'takeover': setTakeover(el, !!v); break;
+      case 'probe':
+        log(MARK + JSON.stringify({ t: 'probe', frame: location.href, src: el.currentSrc, ready: el.readyState,
+          network: el.networkState, error: el.error && el.error.code, paused: el.paused,
+          jw: window.jwplayer && window.jwplayer().getState && window.jwplayer().getState() }));
+        break;
       case 'fullscreen':
         if (v) { if (el.requestFullscreen) el.requestFullscreen().catch(function () { setTakeover(el, true); }); else setTakeover(el, true); }
         else { setTakeover(el, false); if (document.fullscreenElement) document.exitFullscreen(); }
