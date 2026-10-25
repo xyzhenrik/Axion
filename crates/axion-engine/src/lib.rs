@@ -160,6 +160,9 @@ pub trait Engine {
     /// Runs JavaScript in the view's top frame; with `user_gesture` as if the user had just
     /// clicked (needed for fullscreen and unmuted playback).
     fn run_script(&mut self, view: ViewId, script: &str, user_gesture: bool);
+    /// Light or dark for pages (`prefers-color-scheme`, form controls, scrollbars), applied to
+    /// open pages at once.
+    fn set_color_scheme(&mut self, dark: bool);
     /// Mutes or unmutes everything the view plays.
     fn set_audio_muted(&mut self, view: ViewId, muted: bool);
     /// Pauses a hidden view completely (no JavaScript, timers or loading) or resumes it.

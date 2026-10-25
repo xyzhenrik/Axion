@@ -47,7 +47,8 @@ const TOGGLE_KNOB_ASPECT: f32 = 1.55;
 const LENS_GROWTH: Vec2 = Vec2::new(1.45, 1.5);
 /// How much a fast-moving lens stretches along its motion.
 const LENS_SQUASH: f32 = 0.012;
-const LENS_SQUASH_MAX: f32 = 0.14;
+/// A moving lens stretches up to this many times `glass.squash`.
+const LENS_SQUASH_RATIO: f32 = 1.75;
 const SLIDER_KNOB: f32 = 24.0;
 const SLIDER_TRACK: f32 = 4.0;
 /// Line slider thickness at rest and while dragged.
@@ -57,6 +58,9 @@ const LINE_SLIDER_HELD: f32 = 8.0;
 const MIN_VISIBLE: f32 = 0.01;
 /// How much glass swells while a button on it is held.
 const PRESS_SCALE: f32 = 1.06;
+/// Limits of `appearance.text_scale`.
+const MIN_TEXT_SCALE: f32 = 0.5;
+const MAX_TEXT_SCALE: f32 = 3.0;
 /// A held glass grows at most this many logical px at each edge (wide bars barely swell) …
 const PRESS_GROW_PX: f32 = 5.0;
 /// … and surfaces bigger than this (sheets, the sidebar) don't react at all.
@@ -193,12 +197,25 @@ impl Ui {
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
-        let family_changed = theme.font_family() != self.theme.font_family();
+        let text_changed =
+            theme.font_family() != self.theme.font_family() || theme.text_scale() != self.theme.text_scale();
         self.dark_theme = Theme::new(theme.config(), true);
         self.theme = theme;
-        if family_changed {
+        if text_changed {
             self.reshape_all();
+            self.needs_layout = true;
         }
+    }
+
+    /// How much moving glass may squash (`glass.squash`; none with Reduce Motion).
+    fn squash(&self) -> f32 {
+        let glass = &self.theme.config().glass;
+        if glass.reduce_motion { 0.0 } else { glass.squash.max(0.0) }
+    }
+
+    /// Text is shaped at the display scale times the user's text size.
+    fn text_scale(&self) -> f32 {
+        self.scale * self.theme.text_scale().clamp(MIN_TEXT_SCALE, MAX_TEXT_SCALE)
     }
 
     /// Paints a plane (a child of the root) in the dark scheme whatever the theme — for
@@ -229,12 +246,13 @@ impl Ui {
 
     fn reshape_all(&mut self) {
         let family = self.theme.font_family().to_owned();
+        let text_scale = self.text_scale();
         let nodes = self.descendants(self.root);
         for node in nodes {
             let Some(widget) = self.tree.get_node_context_mut(node) else { continue };
             match &mut widget.kind {
                 WidgetKind::Label(label) => {
-                    label.buffer = new_buffer(self.fonts.get_mut(), label.style, self.scale);
+                    label.buffer = new_buffer(self.fonts.get_mut(), label.style, text_scale);
                     set_buffer_text(
                         &mut label.buffer,
                         self.fonts.get_mut(),
@@ -245,8 +263,8 @@ impl Ui {
                     );
                 }
                 WidgetKind::TextField(field) => {
-                    field.buffer = new_buffer(self.fonts.get_mut(), field.style, self.scale);
-                    field.placeholder = new_buffer(self.fonts.get_mut(), field.style, self.scale);
+                    field.buffer = new_buffer(self.fonts.get_mut(), field.style, text_scale);
+                    field.placeholder = new_buffer(self.fonts.get_mut(), field.style, text_scale);
                     let text = field.display_text();
                     set_buffer_text(
                         &mut field.buffer,
@@ -284,7 +302,8 @@ impl Ui {
 
     pub fn add_label(&mut self, parent: NodeId, text: &str, style: TextStyle, layout: Style) -> NodeId {
         let family = self.theme.font_family().to_owned();
-        let widget = Widget::label(self.fonts.get_mut(), &family, self.scale, text, style);
+        let text_scale = self.text_scale();
+        let widget = Widget::label(self.fonts.get_mut(), &family, text_scale, text, style);
         self.add(parent, widget, layout)
     }
 
@@ -296,7 +315,8 @@ impl Ui {
         layout: Style,
     ) -> NodeId {
         let family = self.theme.font_family().to_owned();
-        let widget = Widget::text_field(self.fonts.get_mut(), &family, self.scale, placeholder, style);
+        let text_scale = self.text_scale();
+        let widget = Widget::text_field(self.fonts.get_mut(), &family, text_scale, placeholder, style);
         self.add(parent, widget, layout)
     }
 
@@ -1133,7 +1153,7 @@ impl Ui {
         let press_xf = self.press_scale.get(&node).map(|press| {
             let offset = press.offset.value * s;
             let pull = offset.length();
-            let e = pull * PULL_STRETCH / bg_px.size.max_element().max(1.0);
+            let e = (pull * PULL_STRETCH / bg_px.size.max_element().max(1.0)).min(self.squash());
             PressXf {
                 center: bg_px.center(),
                 scale: press.scale.value,
@@ -1336,7 +1356,7 @@ impl Ui {
     ) {
         let s = self.scale;
         let grow = Vec2::ONE + (LENS_GROWTH - Vec2::ONE) * lens;
-        let stretch = (speed.abs() * LENS_SQUASH).min(LENS_SQUASH_MAX) * lens;
+        let stretch = (speed.abs() * LENS_SQUASH).min(self.squash() * LENS_SQUASH_RATIO) * lens;
         let size = knob * grow * Vec2::new(1.0 + stretch, 1.0 / (1.0 + stretch).sqrt());
         let rect = Rect { origin: center - size / 2.0, size };
         let radius = size.y / 2.0;
