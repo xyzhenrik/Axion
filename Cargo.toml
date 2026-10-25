@@ -19,6 +19,7 @@ axion-tabs = { path = "crates/axion-tabs" }
 axion-media = { path = "crates/axion-media" }
 axion-store = { path = "crates/axion-store" }
 axion-ui = { path = "crates/axion-ui" }
+axion-vault = { path = "crates/axion-vault" }
 
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }

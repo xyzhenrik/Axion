@@ -22,6 +22,7 @@ mod lockscreen;
 mod menu;
 mod mpris;
 mod overview;
+mod passwords;
 mod pip;
 mod player;
 mod private;

@@ -1,6 +1,8 @@
 //! The settings sheet (design: "Settings"): a large glass sheet over the dimmed browser with
 //! categories on the left. Every change is written to `config.toml` at once.
 
+use std::path::PathBuf;
+
 use axion_compositor::Icon;
 use axion_config::{Action as KeyAction, Color, Config, Keymap, ShieldLevel, TabBarStyle, ThemeMode};
 use axion_ui::taffy::prelude::*;
@@ -44,10 +46,11 @@ pub enum Category {
     Keyboard,
     Shields,
     Privacy,
+    Passwords,
 }
 
 impl Category {
-    const ALL: [Category; 8] = [
+    const ALL: [Category; 9] = [
         Category::General,
         Category::Appearance,
         Category::LiquidGlass,
@@ -56,6 +59,7 @@ impl Category {
         Category::Keyboard,
         Category::Shields,
         Category::Privacy,
+        Category::Passwords,
     ];
 
     fn title(self) -> &'static str {
@@ -68,6 +72,7 @@ impl Category {
             Category::Keyboard => "Keyboard",
             Category::Shields => "Shields",
             Category::Privacy => "Privacy",
+            Category::Passwords => "Passwords",
         }
     }
 
@@ -81,6 +86,7 @@ impl Category {
             Category::Keyboard => Icon::Menu,
             Category::Shields => Icon::Shield,
             Category::Privacy => Icon::Lock,
+            Category::Passwords => Icon::Key,
         }
     }
 }
@@ -118,6 +124,10 @@ enum Setting {
     HideControlsAfter,
     HardwareDecoding,
     DesktopIntegration,
+    OfferToSavePasswords,
+    AutofillPasswords,
+    PasswordsLockAfter,
+    ClearClipboardAfter,
 }
 
 impl Setting {
@@ -153,6 +163,10 @@ impl Setting {
             Setting::HideControlsAfter => "Hide controls while playing after",
             Setting::HardwareDecoding => "Hardware video decoding (after restart)",
             Setting::DesktopIntegration => "Desktop media controls and media keys (after restart)",
+            Setting::OfferToSavePasswords => "Offer to save passwords",
+            Setting::AutofillPasswords => "Offer to fill saved passwords",
+            Setting::PasswordsLockAfter => "Lock Passwords after",
+            Setting::ClearClipboardAfter => "Clear copied passwords from the clipboard after",
         }
     }
 
@@ -177,6 +191,8 @@ impl Setting {
                 | Setting::OwnFullscreenControls
                 | Setting::HardwareDecoding
                 | Setting::DesktopIntegration
+                | Setting::OfferToSavePasswords
+                | Setting::AutofillPasswords
         )
     }
 
@@ -196,6 +212,8 @@ impl Setting {
             Setting::HideControlsAfter => (1.0, 10.0),
             Setting::DiscardAfter => (0.0, 480.0),
             Setting::MemoryBudget => (0.0, system_memory_mb()),
+            Setting::PasswordsLockAfter => (0.0, 120.0),
+            Setting::ClearClipboardAfter => (0.0, 300.0),
             _ => (0.0, 1.0),
         }
     }
@@ -236,6 +254,12 @@ impl Setting {
                 mb => format_bytes(u64::from(mb) * 1024 * 1024),
             },
             Setting::HideControlsAfter => format!("{} s", trim_number(c.media.hide_controls_after_seconds)),
+            Setting::PasswordsLockAfter => minutes(c.passwords.auto_lock_minutes),
+            Setting::ClearClipboardAfter => match c.passwords.clear_clipboard_seconds {
+                s if s <= 0.0 => "Never".to_owned(),
+                s if s < 60.0 => format!("{s:.0} s"),
+                s => format!("{} min", trim_number(s / 60.0)),
+            },
             _ => String::new(),
         }
     }
@@ -261,6 +285,10 @@ impl Setting {
             Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
             Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
+            Setting::OfferToSavePasswords => return c.passwords.offer_to_save as u8 as f32,
+            Setting::AutofillPasswords => return c.passwords.autofill as u8 as f32,
+            Setting::PasswordsLockAfter => c.passwords.auto_lock_minutes,
+            Setting::ClearClipboardAfter => c.passwords.clear_clipboard_seconds,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes,
             Setting::DiscardAfter => c.tabs.discard_after_minutes,
@@ -302,6 +330,10 @@ impl Setting {
             Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
             Setting::DesktopIntegration => c.media.desktop_integration = on,
+            Setting::OfferToSavePasswords => c.passwords.offer_to_save = on,
+            Setting::AutofillPasswords => c.passwords.autofill = on,
+            Setting::PasswordsLockAfter => c.passwords.auto_lock_minutes = v.round(),
+            Setting::ClearClipboardAfter => c.passwords.clear_clipboard_seconds = (v / 5.0).round() * 5.0,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds = (v * 2.0).round() / 2.0,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes = v.round(),
             Setting::DiscardAfter => c.tabs.discard_after_minutes = (v / 5.0).round() * 5.0,
@@ -351,6 +383,9 @@ pub enum SettingsAction {
     AddTrustedSite,
     /// Index into `media.trusted_player_sites`.
     RemoveTrustedSite(usize),
+    OpenPasswords,
+    ImportPasswords,
+    ExportPasswords,
 }
 
 /// Remove buttons of the trusted player sites (one id per row).
@@ -389,6 +424,9 @@ impl SettingsAction {
                         72 + CLOSE_AFTER.iter().position(|(_, d)| *d == days).unwrap_or(0) as u32
                     }
                     SettingsAction::AddTrustedSite => 80,
+                    SettingsAction::OpenPasswords => 90,
+                    SettingsAction::ImportPasswords => 91,
+                    SettingsAction::ExportPasswords => 92,
                     SettingsAction::RemoveTrustedSite(i) => TRUSTED_SITE_BASE + i as u32,
                 },
         )
@@ -398,7 +436,7 @@ impl SettingsAction {
         let n = id.0.checked_sub(ACTION_BASE)?;
         Some(match n {
             0 => SettingsAction::Close,
-            10..=17 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
+            10..=18 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
             20 => SettingsAction::Theme(ThemeMode::Auto),
             21 => SettingsAction::Theme(ThemeMode::Light),
             22 => SettingsAction::Theme(ThemeMode::Dark),
@@ -415,6 +453,9 @@ impl SettingsAction {
             71 => SettingsAction::TabBar(TabBarStyle::Compact),
             72..=75 => SettingsAction::CloseAfter(CLOSE_AFTER[(n - 72) as usize].1),
             80 => SettingsAction::AddTrustedSite,
+            90 => SettingsAction::OpenPasswords,
+            91 => SettingsAction::ImportPasswords,
+            92 => SettingsAction::ExportPasswords,
             n if (TRUSTED_SITE_BASE..TRUSTED_SITE_BASE + 800).contains(&n) => {
                 SettingsAction::RemoveTrustedSite((n - TRUSTED_SITE_BASE) as usize)
             }
@@ -433,6 +474,9 @@ pub enum Outcome {
     SetPassword(String),
     RemovePassword,
     UpdateFilterLists,
+    OpenPasswords,
+    ImportPasswords(PathBuf),
+    ExportPasswords(PathBuf),
 }
 
 pub struct SettingsSheet {
@@ -455,6 +499,9 @@ pub struct SettingsSheet {
     trusted_site: Option<NodeId>,
     password: Option<NodeId>,
     has_password: bool,
+    /// The import/export file field (Passwords page) and the last import/export result.
+    passwords_file: Option<NodeId>,
+    passwords_status: Option<String>,
     /// The browser's memory use, shown on the Tabs page.
     memory_used: Option<u64>,
     confirm_clear: bool,
@@ -589,6 +636,8 @@ impl SettingsSheet {
             trusted_site: None,
             password: None,
             has_password: false,
+            passwords_file: None,
+            passwords_status: None,
             memory_used: None,
             group: None,
             confirm_clear: false,
@@ -620,6 +669,11 @@ impl SettingsSheet {
 
     pub fn homepage_field(&self) -> Option<NodeId> {
         self.homepage
+    }
+
+    /// Shows the result of the last password import or export (Passwords page).
+    pub fn set_passwords_status(&mut self, status: String) {
+        self.passwords_status = Some(status);
     }
 
     pub fn open(&mut self, ui: &mut Ui, config: &Config, keymap: &Keymap, window: Vec2) {
@@ -690,6 +744,7 @@ impl SettingsSheet {
         self.homepage = None;
         self.trusted_site = None;
         self.password = None;
+        self.passwords_file = None;
         ui.add_label(
             self.content,
             self.category.title(),
@@ -988,6 +1043,45 @@ impl SettingsSheet {
                     });
                 }
             }
+            Category::Passwords => {
+                let row_node = self.row(ui, "Saved passwords, cards and addresses");
+                pill_button(ui, row_node, "Open Passwords", SettingsAction::OpenPasswords, false);
+                for setting in [Setting::OfferToSavePasswords, Setting::AutofillPasswords] {
+                    self.control(ui, config, setting);
+                }
+                self.section(ui, "Security");
+                for setting in [Setting::PasswordsLockAfter, Setting::ClearClipboardAfter] {
+                    self.control(ui, config, setting);
+                }
+                self.note(ui, "Everything is encrypted with your master password, which Axion never stores.");
+                self.section(ui, "Import and export");
+                let row_node = self.row(ui, "File");
+                let field_box = ui.add(
+                    row_node,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Label, 0.06))
+                        .with_radius(12.0),
+                    Style {
+                        size: Size { width: auto(), height: length(38.0) },
+                        padding: padding(12.0, 0.0),
+                        ..row(0.0)
+                    },
+                );
+                let field = ui.add_text_field(
+                    field_box,
+                    "~/passwords.csv",
+                    TextStyle::Body,
+                    Style { size: Size { width: length(260.0), height: length(22.0) }, ..Default::default() },
+                );
+                self.passwords_file = Some(field);
+                let row_node = self.row(ui, "");
+                pill_button(ui, row_node, "Import CSV", SettingsAction::ImportPasswords, false);
+                pill_button(ui, row_node, "Export Encrypted Copy", SettingsAction::ExportPasswords, false);
+                let note = self.passwords_status.clone().unwrap_or_else(|| {
+                    "Import reads CSV exports of Chrome, Firefox and Bitwarden. The export is an encrypted copy that opens with the same master password.".to_owned()
+                });
+                self.note(ui, &note);
+            }
         }
     }
 
@@ -1255,6 +1349,22 @@ impl SettingsSheet {
                 self.show(ui, config, keymap);
                 return Outcome::RemovePassword;
             }
+            SettingsAction::OpenPasswords => return Outcome::OpenPasswords,
+            SettingsAction::ImportPasswords | SettingsAction::ExportPasswords => {
+                let text =
+                    self.passwords_file.and_then(|f| ui.field_text(f)).unwrap_or_default().trim().to_owned();
+                if text.is_empty() {
+                    self.passwords_status = Some("Enter the file's path first.".to_owned());
+                    self.show(ui, config, keymap);
+                    return Outcome::Nothing;
+                }
+                let path = expand_home(&text);
+                return if action == SettingsAction::ImportPasswords {
+                    Outcome::ImportPasswords(path)
+                } else {
+                    Outcome::ExportPasswords(path)
+                };
+            }
             SettingsAction::ClearHistory => {
                 if self.confirm_clear {
                     self.confirm_clear = false;
@@ -1267,6 +1377,14 @@ impl SettingsSheet {
         };
         self.show(ui, config, keymap);
         outcome
+    }
+}
+
+/// "~/x" → the home directory's "x".
+fn expand_home(path: &str) -> PathBuf {
+    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(path),
     }
 }
 
@@ -1450,6 +1568,8 @@ mod tests {
             SettingsAction::UpdateFilterLists,
             SettingsAction::AddTrustedSite,
             SettingsAction::RemoveTrustedSite(7),
+            SettingsAction::Category(Category::Passwords),
+            SettingsAction::ExportPasswords,
         ] {
             assert_eq!(SettingsAction::from_id(action.id()), Some(action));
         }

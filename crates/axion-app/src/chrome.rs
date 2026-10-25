@@ -76,6 +76,8 @@ pub enum ChromeAction {
     DeletePanelItem(usize),
     /// The panel header's clear button ("Clear History…").
     ClearPanel,
+    /// Opens the Passwords sheet.
+    Passwords,
 }
 
 const SELECT_TAB_BASE: u32 = 1000;
@@ -84,7 +86,7 @@ const PANEL_ITEM_BASE: u32 = 7000;
 const DELETE_PANEL_ITEM_BASE: u32 = 10_000;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 23] = [
+    const SIMPLE: [ChromeAction; 24] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -108,6 +110,7 @@ impl ChromeAction {
         ChromeAction::MuteTab,
         ChromeAction::ExpandBars,
         ChromeAction::ClearPanel,
+        ChromeAction::Passwords,
     ];
 
     fn id(self) -> ActionId {
@@ -122,7 +125,7 @@ impl ChromeAction {
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=23 => Some(Self::SIMPLE[n as usize - 1]),
+            n @ 1..=24 => Some(Self::SIMPLE[n as usize - 1]),
             n if (DELETE_PANEL_ITEM_BASE..DELETE_PANEL_ITEM_BASE + 1000).contains(&n) => {
                 Some(ChromeAction::DeletePanelItem((n - DELETE_PANEL_ITEM_BASE) as usize))
             }
@@ -479,6 +482,7 @@ impl Chrome {
         sidebar_row(ui, saved_list, ChromeAction::Bookmarks, Icon::Book, "Bookmarks", None);
         sidebar_row(ui, saved_list, ChromeAction::ReadingList, Icon::Glasses, "Reading List", None);
         sidebar_row(ui, saved_list, ChromeAction::History, Icon::History, "History", None);
+        sidebar_row(ui, saved_list, ChromeAction::Passwords, Icon::Key, "Passwords", None);
 
         // Fills the sidebar below its header, so the list scrolls inside it.
         let panel = ui.add(

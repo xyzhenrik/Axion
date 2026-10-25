@@ -19,6 +19,7 @@ pub struct Config {
     pub shields: Shields,
     pub tabs: Tabs,
     pub media: Media,
+    pub passwords: Passwords,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -342,6 +343,37 @@ pub struct Privacy {
 impl Default for Privacy {
     fn default() -> Self {
         Self { lock_private_tabs: true, lock_after_seconds: 60.0 }
+    }
+}
+
+/// The password manager (Settings › Passwords). The master password itself is never stored.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Passwords {
+    /// Offer to save a password after signing in to a site.
+    pub offer_to_save: bool,
+    /// Offer to fill saved logins into sign-in forms.
+    pub autofill: bool,
+    /// Lock the vault after this long without using it (0: only when Axion quits).
+    pub auto_lock_minutes: f32,
+    /// Empty the clipboard this long after copying a password or card number (0: never).
+    pub clear_clipboard_seconds: f32,
+    /// Length of generated passwords.
+    pub generator_length: u32,
+    /// Generated passwords include symbols.
+    pub generator_symbols: bool,
+}
+
+impl Default for Passwords {
+    fn default() -> Self {
+        Self {
+            offer_to_save: true,
+            autofill: true,
+            auto_lock_minutes: 15.0,
+            clear_clipboard_seconds: 60.0,
+            generator_length: 20,
+            generator_symbols: true,
+        }
     }
 }
 
