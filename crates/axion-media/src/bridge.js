@@ -7,17 +7,13 @@
   'use strict';
   if (window.__axionMedia) return;
   var SECRET = '__AXION_SECRET__';
-  var REPLACE_NATIVE = __AXION_REPLACE__;
-  var REPLACE_SITE = __AXION_REPLACE_SITE__;
-  // Sites whose own player is trusted and kept (YouTube, Twitch…), for this frame's host.
+  // Axion's player takes over videos in fullscreen (pages keep their own controls inline).
+  var OWN_FULLSCREEN = __AXION_OWN_FULLSCREEN__;
+  // Sites whose own player is trusted and kept, also in fullscreen (YouTube, Twitch…).
   var TRUSTED = (function (host, sites) {
     return sites.some(function (s) { return host === s || host.slice(-s.length - 1) === '.' + s; });
   })(location.hostname, __AXION_TRUSTED__);
-  if (TRUSTED) { REPLACE_NATIVE = false; REPLACE_SITE = false; }
-  // Site players (YouTube…) smaller than this keep their own UI.
-  var MIN_W = 220, MIN_H = 124;
-  // A player's container is the ancestors up to this much bigger than its video.
-  var CONTAINER_SLACK = 1.6;
+  if (TRUSTED) OWN_FULLSCREEN = false;
   var MARK = '\u0001axion:';
   var log = console.debug.bind(console);
   var isTop = window === window.top;
@@ -50,13 +46,12 @@
   var style = document.createElement('style');
   // Takeover hides everything but the video: `visibility` (unlike z-index) is not trapped by
   // the site's stacking contexts, and hidden elements take no clicks.
-  style.textContent = 'video[data-axion-controls]::-webkit-media-controls{display:none!important}' +
+  style.textContent =
     'html.axion-takeover,html.axion-takeover body{background:#000!important}' +
     'html.axion-takeover *{visibility:hidden!important}' +
     'html.axion-takeover [data-axion-takeover]{visibility:visible!important}' +
-    // A site player whose UI ours replaces: everything in its container but the video.
-    '[data-axion-player] *{visibility:hidden!important}' +
-    '[data-axion-player] [data-axion-own]{visibility:visible!important}';
+    // A fullscreen <video> shows Axion's player, not the built-in controls.
+    (OWN_FULLSCREEN ? 'video:fullscreen::-webkit-media-controls{display:none!important}' : '');
   function addStyle() {
     var root = document.head || document.documentElement;
     if (!root) return false;
@@ -69,40 +64,9 @@
     if (media.has(el)) return;
     media.add(el);
     el.__axId = FRAME + ':' + (++seq);
-    if (el.tagName === 'VIDEO' && el.hasAttribute('controls')) {
-      el.__axNative = true;
-      if (REPLACE_NATIVE) replaceControls(el);
-    }
+    if (el.tagName === 'VIDEO' && el.hasAttribute('controls')) el.__axNative = true;
     EVENTS.forEach(function (t) { el.addEventListener(t, schedule, true); });
     schedule();
-  }
-
-  function replaceControls(el) {
-    el.controls = false;
-    el.setAttribute('data-axion-controls', '');
-    new MutationObserver(function () { if (el.controls) el.controls = false; })
-      .observe(el, { attributes: true, attributeFilter: ['controls'] });
-    el.addEventListener('click', function () { if (el.paused) el.play(); else el.pause(); });
-    el.addEventListener('dblclick', function () { event({ e: 'dblclick', id: el.__axId }); });
-  }
-
-  // Gives a site player's video our controls: hides the site's player UI around it. Muted
-  // looping videos are decoration (animated backgrounds) and stay as they are.
-  function replaceSitePlayer(el) {
-    if (el.__axOwn) return true;
-    if (!REPLACE_SITE || el.__axNative || el.tagName !== 'VIDEO' || (el.loop && el.muted)) return false;
-    var r = el.getBoundingClientRect();
-    if (r.width < MIN_W || r.height < MIN_H) return false;
-    var area = r.width * r.height, container = null;
-    for (var p = el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
-      var pr = p.getBoundingClientRect();
-      if (pr.width * pr.height > area * CONTAINER_SLACK) break;
-      container = p;
-    }
-    if (container) container.setAttribute('data-axion-player', '');
-    el.setAttribute('data-axion-own', '');
-    el.__axOwn = true;
-    return true;
   }
 
   function scan() {
@@ -148,7 +112,6 @@
       duration: isFinite(el.duration) ? el.duration : 0, live: el.duration === Infinity,
       volume: el.volume, muted: el.muted, rate: el.playbackRate, buffered: buffered,
       captions: captions, caption: caption, native: !!el.__axNative,
-      own: (!!el.__axNative && REPLACE_NATIVE) || replaceSitePlayer(el),
       trusted: TRUSTED,
       fullscreen: !!document.fullscreenElement &&
         (document.fullscreenElement === el || document.fullscreenElement.contains(el)) || (takeover && takeover.el === el) || false

@@ -603,7 +603,7 @@ impl Browser {
         use axion_media::Action;
         let Some(tab) = find_tab(&self.tabs, &self.parked, view) else { return false };
         let Some(media) = tab.media.as_ref() else { return false };
-        let Some(player) = media.get(&command.player).filter(|p| p.own && !p.native).cloned() else {
+        let Some(player) = media.get(&command.player).filter(|p| !p.native && !p.trusted).cloned() else {
             return false;
         };
         let click = match command.action {
@@ -972,7 +972,6 @@ impl Browser {
             view: tab.map(|t| t.view),
             media: tab.and_then(|t| t.media.as_ref()),
             page: self.page_rect(),
-            scale: self.scale(),
             pointer: self.pointer,
             page_fullscreen: self.chrome.page_fullscreen(),
         };
@@ -1566,6 +1565,11 @@ impl Browser {
                 }
                 UiEvent::Submitted { node, .. } if Some(node) == self.settings.password_field() => {
                     let action = SettingsAction::SetPassword;
+                    let outcome = self.settings.action(&mut self.ui, action, &mut self.config, &self.keymap);
+                    self.settings_outcome(outcome);
+                }
+                UiEvent::Submitted { node, .. } if Some(node) == self.settings.trusted_site_field() => {
+                    let action = SettingsAction::AddTrustedSite;
                     let outcome = self.settings.action(&mut self.ui, action, &mut self.config, &self.keymap);
                     self.settings_outcome(outcome);
                 }
@@ -2347,15 +2351,16 @@ impl Browser {
                 }
                 // Capture aids for the media controls: play the page's video (and fullscreen it).
                 "media-play" | "media-fullscreen" => {
-                    let mut controls = vec![PlayerControl::PlayPause];
-                    if what == "media-fullscreen" {
-                        controls.push(PlayerControl::Fullscreen);
-                    }
-                    for control in controls {
-                        if let PlayerOutcome::Command(view, command) =
-                            self.player.click(&mut self.ui, control, &self.config)
-                        {
-                            self.media_command(view, &command);
+                    let target = self
+                        .active_view()
+                        .zip(self.active_view().and_then(|v| self.primary_player(v)).cloned());
+                    if let Some((view, player)) = target {
+                        let mut actions = vec![axion_media::Action::Play];
+                        if what == "media-fullscreen" {
+                            actions.push(axion_media::Action::Fullscreen(true));
+                        }
+                        for action in actions {
+                            self.media_command(view, &axion_media::Command::new(&player.id, action));
                         }
                     }
                 }
@@ -2652,12 +2657,12 @@ fn tab_mut<'a>(tabs: &'a mut Tabs, parked: &'a mut Tabs, view: ViewId) -> Option
     if tabs.all().iter().any(|t| t.view == view) { tabs.by_view_mut(view) } else { parked.by_view_mut(view) }
 }
 
-/// Which page controls the media bridge replaces with ours.
-fn media_replace(config: &Config) -> axion_media::Replace {
+/// How the media bridge treats page players: Axion's player only in fullscreen, trusted sites
+/// keep theirs.
+fn media_replace(config: &Config) -> axion_media::BridgeOptions {
     let media = &config.media;
-    axion_media::Replace {
-        native_controls: media.own_controls,
-        site_players: media.own_controls && media.replace_site_players,
+    axion_media::BridgeOptions {
+        own_fullscreen: media.fullscreen_player,
         trusted_sites: media.trusted_player_sites.clone(),
     }
 }

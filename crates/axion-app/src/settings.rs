@@ -110,8 +110,6 @@ enum Setting {
     RestoreSession,
     HideBarOnScroll,
     OpenInBackground,
-    OwnControls,
-    ReplaceSitePlayers,
     OwnFullscreenControls,
     HideControlsAfter,
     HardwareDecoding,
@@ -147,9 +145,7 @@ impl Setting {
             Setting::RestoreSession => "Reopen last session's tabs at start",
             Setting::HideBarOnScroll => "Hide tab bar when scrolling",
             Setting::OpenInBackground => "Open new tabs in background",
-            Setting::OwnControls => "Axion's controls for page videos",
-            Setting::ReplaceSitePlayers => "Also instead of sites' own players (not YouTube, Twitch…)",
-            Setting::OwnFullscreenControls => "Axion's controls in fullscreen, also over site players",
+            Setting::OwnFullscreenControls => "Axion's player in fullscreen",
             Setting::HideControlsAfter => "Hide controls while playing after (1 – 10 seconds)",
             Setting::HardwareDecoding => "Hardware video decoding (after restart)",
             Setting::DesktopIntegration => "Desktop media controls and media keys (after restart)",
@@ -172,10 +168,8 @@ impl Setting {
                 | Setting::LimitMemory
                 | Setting::KeepMediaAwake
                 | Setting::RestoreSession
-                | Setting::OwnControls
                 | Setting::HideBarOnScroll
                 | Setting::OpenInBackground
-                | Setting::ReplaceSitePlayers
                 | Setting::OwnFullscreenControls
                 | Setting::HardwareDecoding
                 | Setting::DesktopIntegration
@@ -218,11 +212,9 @@ impl Setting {
             Setting::LimitMemory => return c.tabs.limit_memory as u8 as f32,
             Setting::KeepMediaAwake => return c.tabs.keep_media_awake as u8 as f32,
             Setting::RestoreSession => return c.tabs.restore_session as u8 as f32,
-            Setting::OwnControls => return c.media.own_controls as u8 as f32,
             Setting::HideBarOnScroll => return c.layout.hide_bar_on_scroll as u8 as f32,
             Setting::OpenInBackground => return c.tabs.open_links_in_background as u8 as f32,
-            Setting::ReplaceSitePlayers => return c.media.replace_site_players as u8 as f32,
-            Setting::OwnFullscreenControls => return c.media.own_fullscreen_controls as u8 as f32,
+            Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
             Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds,
@@ -261,11 +253,9 @@ impl Setting {
             Setting::LimitMemory => c.tabs.limit_memory = on,
             Setting::KeepMediaAwake => c.tabs.keep_media_awake = on,
             Setting::RestoreSession => c.tabs.restore_session = on,
-            Setting::OwnControls => c.media.own_controls = on,
             Setting::HideBarOnScroll => c.layout.hide_bar_on_scroll = on,
             Setting::OpenInBackground => c.tabs.open_links_in_background = on,
-            Setting::ReplaceSitePlayers => c.media.replace_site_players = on,
-            Setting::OwnFullscreenControls => c.media.own_fullscreen_controls = on,
+            Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
             Setting::DesktopIntegration => c.media.desktop_integration = on,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds = (v * 2.0).round() / 2.0,
@@ -314,7 +304,13 @@ pub enum SettingsAction {
     UpdateFilterLists,
     TabBar(TabBarStyle),
     CloseAfter(u32),
+    AddTrustedSite,
+    /// Index into `media.trusted_player_sites`.
+    RemoveTrustedSite(usize),
 }
+
+/// Remove buttons of the trusted player sites (one id per row).
+const TRUSTED_SITE_BASE: u32 = 200;
 
 const CLOSE_AFTER: [(&str, u32); 4] =
     [("Manually", 0), ("After a Day", 1), ("After a Week", 7), ("After a Month", 30)];
@@ -348,6 +344,8 @@ impl SettingsAction {
                     SettingsAction::CloseAfter(days) => {
                         72 + CLOSE_AFTER.iter().position(|(_, d)| *d == days).unwrap_or(0) as u32
                     }
+                    SettingsAction::AddTrustedSite => 80,
+                    SettingsAction::RemoveTrustedSite(i) => TRUSTED_SITE_BASE + i as u32,
                 },
         )
     }
@@ -372,6 +370,10 @@ impl SettingsAction {
             70 => SettingsAction::TabBar(TabBarStyle::Separate),
             71 => SettingsAction::TabBar(TabBarStyle::Compact),
             72..=75 => SettingsAction::CloseAfter(CLOSE_AFTER[(n - 72) as usize].1),
+            80 => SettingsAction::AddTrustedSite,
+            n if (TRUSTED_SITE_BASE..TRUSTED_SITE_BASE + 800).contains(&n) => {
+                SettingsAction::RemoveTrustedSite((n - TRUSTED_SITE_BASE) as usize)
+            }
             _ => return None,
         })
     }
@@ -403,6 +405,8 @@ pub struct SettingsSheet {
     /// The card rows are added to; a new one starts with the next row after `section`.
     group: Option<NodeId>,
     homepage: Option<NodeId>,
+    /// The "add a trusted player site" field (Media page).
+    trusted_site: Option<NodeId>,
     password: Option<NodeId>,
     has_password: bool,
     /// The browser's memory use, shown on the Tabs page.
@@ -535,6 +539,7 @@ impl SettingsSheet {
             category: Category::General,
             controls: Vec::new(),
             homepage: None,
+            trusted_site: None,
             password: None,
             has_password: false,
             memory_used: None,
@@ -560,6 +565,10 @@ impl SettingsSheet {
 
     pub fn password_field(&self) -> Option<NodeId> {
         self.password
+    }
+
+    pub fn trusted_site_field(&self) -> Option<NodeId> {
+        self.trusted_site
     }
 
     pub fn homepage_field(&self) -> Option<NodeId> {
@@ -631,6 +640,7 @@ impl SettingsSheet {
             self.set_scroll(ui, 0.0);
         }
         self.homepage = None;
+        self.trusted_site = None;
         self.password = None;
         ui.add_label(
             self.content,
@@ -798,14 +808,54 @@ impl SettingsSheet {
                 }
             }
             Category::Media => {
-                for setting in [
-                    Setting::OwnControls,
-                    Setting::ReplaceSitePlayers,
-                    Setting::OwnFullscreenControls,
-                    Setting::HideControlsAfter,
-                    Setting::HardwareDecoding,
-                    Setting::DesktopIntegration,
-                ] {
+                for setting in [Setting::OwnFullscreenControls, Setting::HideControlsAfter] {
+                    self.control(ui, config, setting);
+                }
+                self.note(ui, "Pages keep their own player; in fullscreen, Axion's takes over.");
+                self.section(ui, "Sites that keep their own player");
+                for (i, site) in config.media.trusted_player_sites.iter().enumerate() {
+                    let row_node = self.row(ui, site);
+                    let remove = ui.add(
+                        row_node,
+                        Widget::container()
+                            .with_action(SettingsAction::RemoveTrustedSite(i).id())
+                            .with_radius(CAPSULE)
+                            .with_background(Background::Fill(Paint::Label, 0.08)),
+                        Style {
+                            size: Size { width: length(28.0), height: length(28.0) },
+                            justify_content: JustifyContent::CENTER,
+                            ..row(0.0)
+                        },
+                    );
+                    ui.add(
+                        remove,
+                        Widget::icon(Icon::Close, 14.0).with_paint(Paint::Secondary),
+                        Style::default(),
+                    );
+                }
+                let row_node = self.row(ui, "Add a site");
+                let field_box = ui.add(
+                    row_node,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Label, 0.06))
+                        .with_radius(12.0),
+                    Style {
+                        size: Size { width: auto(), height: length(38.0) },
+                        padding: padding(12.0, 0.0),
+                        ..row(0.0)
+                    },
+                );
+                let field = ui.add_text_field(
+                    field_box,
+                    "example.com",
+                    TextStyle::Body,
+                    Style { size: Size { width: length(220.0), height: length(22.0) }, ..Default::default() },
+                );
+                self.trusted_site = Some(field);
+                pill_button(ui, row_node, "Add", SettingsAction::AddTrustedSite, false);
+                self.note(ui, "Also in fullscreen, with their subdomains. Applies to pages loaded next.");
+                self.section(ui, "Playback");
+                for setting in [Setting::HardwareDecoding, Setting::DesktopIntegration] {
                     self.control(ui, config, setting);
                 }
             }
@@ -1107,6 +1157,18 @@ impl SettingsSheet {
                 config.tabs.close_after_days = days;
                 Outcome::Changed
             }
+            SettingsAction::AddTrustedSite => {
+                let text = self.trusted_site.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned();
+                if config.media.add_trusted_site(&text) { Outcome::Changed } else { Outcome::Nothing }
+            }
+            SettingsAction::RemoveTrustedSite(i) => {
+                if i < config.media.trusted_player_sites.len() {
+                    config.media.trusted_player_sites.remove(i);
+                    Outcome::Changed
+                } else {
+                    Outcome::Nothing
+                }
+            }
             SettingsAction::SetPassword => {
                 let password = self.password.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned();
                 if password.is_empty() {
@@ -1308,6 +1370,8 @@ mod tests {
             SettingsAction::ClearHistory,
             SettingsAction::ShieldLevel(ShieldLevel::Aggressive),
             SettingsAction::UpdateFilterLists,
+            SettingsAction::AddTrustedSite,
+            SettingsAction::RemoveTrustedSite(7),
         ] {
             assert_eq!(SettingsAction::from_id(action.id()), Some(action));
         }

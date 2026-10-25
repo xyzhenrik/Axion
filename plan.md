@@ -71,12 +71,11 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
 - Mouse: drag tabs/glass elements, middle-click behaviours, mouse back/forward buttons.
 
 ### 2.7 Media player & fullscreen (priority 1)
-- **Own media controls** for every HTML5 `<video>`/`<audio>`: native page controls are hidden
-  (injected script/CSS) and replaced by our glass control bar — scrubber with thumbnail
-  preview, play/pause, ±10 s, volume, speed, captions, PiP, AirPlay-style cast slot.
-  Driven via a small injected bridge (`HTMLMediaElement` API ↔ IPC). Per-site opt-out.
-- **Own fullscreen**: we handle CEF fullscreen requests ourselves — the page/video fills the
-  window, our glass controls float above, auto-hide after inactivity, Esc/double-click exits.
+- **Own fullscreen player** (decision 2026-10-25: fullscreen only): on the page, sites keep their
+  own controls. When a video goes fullscreen, Axion's Safari-style glass player takes over —
+  play/pause, ±10 s, volume, speed, captions, PiP — auto-hiding after inactivity.
+  Driven via a small injected bridge (`HTMLMediaElement` API ↔ IPC). Trusted sites (YouTube,
+  Twitch, …) keep their own player also in fullscreen; the list is edited in Settings › Media.
 - **Picture-in-Picture**: our own floating glass window, draggable with physics, snaps to corners.
 - **Now Playing** in the sidebar + MPRIS integration (media keys, desktop widgets).
 - **Playback has priority 1**:
@@ -200,22 +199,22 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [x] Media bridge (`axion-media/src/bridge.js`), injected into every frame at load start:
       finds media in the DOM, shadow roots (patched `attachShadow`) and detached `new Audio()`
       (patched `play`); iframes report to their parent via `postMessage`, the top frame to the
-      browser as a marked console message; commands go back down the same way. Native
-      controls of `<video controls>` are replaced. Commands run through DevTools
+      browser as a marked console message; commands go back down the same way. Inline,
+      pages keep their controls; a fullscreen `<video>`'s built-in controls are hidden.
+      Commands run through DevTools
       `Runtime.evaluate` with a user gesture (play with sound, fullscreen need one).
-- [x] Glass controls (design "In-page player" / "Fullscreen player"), always dark glass
-      (`Ui::set_plane_dark`): play, ±10 s (fullscreen), time, scrubber, remaining, mute, speed
-      cycle, captions cycle, fullscreen/exit. They replace native controls and sites' own
-      players (YouTube…): the bridge hides everything in the player's container (ancestors up
-      to 1.6× the video's area) but the video. Muted looping videos (backgrounds) and small
-      ones (< 220×124) keep the site's look. `media.replace_site_players` turns it off;
-      `media.trusted_player_sites` (YouTube, Twitch, Vimeo, Netflix…) always keep theirs.
-      Play/pause of a site player is a real click at the video's centre (hosters only load
-      their stream on their own play click), retried up to 3× if the hoster ate the click.
+- [x] Glass controls, fullscreen only (Safari's player), always dark glass
+      (`Ui::set_plane_dark`): close, PiP, volume, ±10 s, play, progress, speed menu, captions.
+      The inline replacement of native controls and site players was dropped (user decision):
+      pages keep their own player until fullscreen. `media.fullscreen_player` turns Axion's
+      player off; `media.trusted_player_sites` (YouTube, Twitch, Vimeo, Netflix…, editable in
+      Settings › Media: × per site, field + Add) keep theirs also in fullscreen.
+      Play/pause of a site player in fullscreen is a real click at the video's centre (hosters
+      only load their stream on their own play click), retried up to 3× if the hoster ate it.
 - [x] Own fullscreen: the element's real fullscreen; in a site's own fullscreen (YouTube…)
       the video "takes over" (everything else `visibility:hidden`) under our controls.
       Controls and pointer hide after 2.5 s; media keys (Space/K, ←/→, ↑/↓, M, F/Esc, C, <, >)
-      only while fullscreen. Double-click a replaced video toggles fullscreen.
+      only while fullscreen.
 - [ ] **H.264/AAC**: the prebuilt CEF has no proprietary codecs (ffmpeg is inside
       libcef.so). `tools/build-cef.sh` builds CEF 156.0.14 with them (hours, ~100 GB);
       then point `CEF_PATH` at the result. Needed for most hosters (aniworld's VOE is x264).
@@ -229,8 +228,8 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [x] MPRIS (`org.mpris.MediaPlayer2.axion.instance<pid>`, zbus): status, metadata from
       `navigator.mediaSession`, position, seek, volume, rate — media keys work through it.
       Now Playing card at the bottom of the sidebar. Private tabs stay off the desktop.
-      *Open:* per-site opt-out of our controls; captions rendered by sites (not text tracks)
-      are hidden by the fullscreen takeover.
+      *Open:* captions rendered by sites (not text tracks) are hidden by the fullscreen
+      takeover (trusting the site in Settings › Media keeps them).
 
 ### Phase 6 — Bookmarks & history
 - [ ] SQLite schema + migrations, sidebar views, search, import.
@@ -296,6 +295,12 @@ Windows/macOS, touchscreen-first mode.
 
 - 2026-10-25: Page ↔ browser messages use console messages from an injected script rather
   than a renderer-side CEF app; pages could forge them, but only to fool their own controls.
+
+- 2026-10-25: Axion's player only takes over in fullscreen; inline, every page keeps its own
+  player. Trusted sites keep theirs also in fullscreen; non-programmers edit that list in
+  Settings › Media (`media.trusted_player_sites` in config.toml). Old keys `own_controls` /
+  `replace_site_players` are accepted and ignored; `own_fullscreen_controls` became
+  `fullscreen_player`.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

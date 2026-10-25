@@ -4,9 +4,11 @@
 //! and skip forward in the middle, the progress capsule along the bottom and a speed button
 //! (with its menu) above it. Driven through the media bridge.
 //!
-//! Inline, they replace the native controls of `<video controls>` elements and the UI of sites'
-//! own players (hidden by the bridge), and show while the video is paused or the pointer is
-//! over it. In fullscreen they hide after a moment without pointer movement.
+//! They only take over in fullscreen: inline, pages keep their own controls. When a video goes
+//! fullscreen (the page's button, double-click, F), Axion's player covers it — a site's own
+//! player UI is hidden around the video ("takeover"). Trusted sites (`media.trusted_player_sites`:
+//! YouTube, Twitch…) keep their player also in fullscreen. The controls hide after a moment
+//! without pointer movement.
 
 use std::time::{Duration, Instant};
 
@@ -21,10 +23,6 @@ use glam::Vec2;
 
 const ACTION_BASE: u32 = 9500;
 const SPEED_CHOICE_BASE: u32 = ACTION_BASE + 50;
-/// Smaller videos keep their page's look; controls wouldn't fit.
-const MIN_SIZE: Vec2 = Vec2::new(220.0, 124.0);
-/// Below this width the skip buttons, times and volume are left out.
-const COMPACT_WIDTH: f32 = 400.0;
 /// Icon size relative to its button.
 const ICON_RATIO: f32 = 0.5;
 /// After scrubbing, page reports still carry the old time for a moment; ignore them.
@@ -35,7 +33,7 @@ const SPEED_ROW: f32 = 34.0;
 /// Space between neighbouring glass circles: wide enough that they don't flow into each other.
 const CIRCLE_GAP: f32 = 16.0;
 
-/// Sizes (logical px) per layout, measured on Safari's fullscreen player; inline is smaller.
+/// Sizes (logical px), measured on Safari's fullscreen player.
 #[derive(Clone, Copy)]
 struct Metrics {
     margin: f32,
@@ -59,17 +57,6 @@ const FULLSCREEN: Metrics = Metrics {
     small: 32.0,
 };
 
-const INLINE: Metrics = Metrics {
-    margin: 12.0,
-    corner: 32.0,
-    volume: Vec2::new(150.0, 32.0),
-    skip: 46.0,
-    play: 64.0,
-    centre_gap: 34.0,
-    bar_height: 34.0,
-    small: 28.0,
-};
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
     PlayPause,
@@ -78,7 +65,7 @@ pub enum Control {
     Mute,
     Speed,
     Captions,
-    /// Enter fullscreen inline, close (leave fullscreen) in fullscreen.
+    /// Close: leave fullscreen.
     Fullscreen,
     PictureInPicture,
     /// An entry of the speed menu (index into `media.playback_speeds`).
@@ -115,7 +102,6 @@ impl Control {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Hidden,
-    Inline,
     Fullscreen,
 }
 
@@ -125,8 +111,6 @@ pub struct Context<'a> {
     pub media: Option<&'a PageMedia>,
     /// The page area in logical pixels.
     pub page: Frame,
-    /// Logical → physical pixels.
-    pub scale: f32,
     pub pointer: Option<Vec2>,
     /// The page made something fullscreen.
     pub page_fullscreen: bool,
@@ -161,8 +145,8 @@ pub struct PlayerOverlay {
     remaining: NodeId,
     opacity: Animated<f32>,
     mode: Mode,
-    /// The layout the nodes have now: mode and whether it's the compact (narrow) one.
-    layout: Option<(Mode, bool)>,
+    /// The nodes have been laid out (once, on first use).
+    laid_out: bool,
     /// The view and player the controls are about.
     target: Option<(ViewId, Player)>,
     last_pointer: Option<Vec2>,
@@ -385,7 +369,7 @@ impl PlayerOverlay {
             remaining,
             opacity: Animated::new(0.0, Spring::SNAPPY),
             mode: Mode::Hidden,
-            layout: None,
+            laid_out: false,
             target: None,
             last_pointer: None,
             last_activity: Instant::now(),
@@ -434,71 +418,41 @@ impl PlayerOverlay {
             self.fade(ui, false, dt);
             return;
         };
-        let layout = (mode, mode != Mode::Fullscreen && rect.size.x < COMPACT_WIDTH);
-        if self.layout != Some(layout) {
-            self.layout = Some(layout);
-            self.apply_layout(ui, layout.0, layout.1);
+        if !self.laid_out {
+            self.laid_out = true;
+            self.apply_layout(ui);
         }
         self.place(ui, rect);
         self.show_state(ui, &player);
-        let pointer_inside = cx.pointer.is_some_and(|p| rect.contains(p));
         let recently_active =
             now.duration_since(self.last_activity).as_secs_f32() < config.media.hide_controls_after_seconds;
         let held = ui.dragging().is_some_and(|n| n == self.scrubber || n == self.volume);
-        let visible = held
-            || self.speed_menu_open
-            || !player.is_playing()
-            || match mode {
-                Mode::Fullscreen => recently_active,
-                _ => pointer_inside && recently_active,
-            };
+        let visible = held || self.speed_menu_open || !player.is_playing() || recently_active;
         self.target = Some((view, player));
         if !visible {
             self.close_speed_menu(ui);
         }
         self.fade(ui, visible, dt);
     }
+    /// The fullscreen video Axion's player is for, if the page made one fullscreen.
     fn choose(&self, config: &Config, cx: &Context<'_>) -> (Mode, Option<Player>, Option<Frame>) {
         let Some(media) = cx.media else { return (Mode::Hidden, None, None) };
-        if cx.page_fullscreen {
-            if !config.media.own_fullscreen_controls {
-                return (Mode::Hidden, None, None);
-            }
-            let player = media
-                .players
-                .iter()
-                .filter(|p| p.kind == Kind::Video && p.fullscreen && !p.trusted)
-                .max_by(|a, b| a.area().total_cmp(&b.area()));
-            return (Mode::Fullscreen, player.cloned(), Some(cx.page));
-        }
-        if !config.media.own_controls {
+        if !cx.page_fullscreen || !config.media.fullscreen_player {
             return (Mode::Hidden, None, None);
         }
-        let dpr = if media.dpr > 0.0 { media.dpr } else { cx.scale };
-        let to_logical = |p: &Player| {
-            let k = dpr / cx.scale;
-            Frame::new(cx.page.origin.x + p.x * k, cx.page.origin.y + p.y * k, p.w * k, p.h * k)
-        };
-        let candidates: Vec<(&Player, Frame)> = media
+        let player = media
             .players
             .iter()
-            .filter(|p| p.kind == Kind::Video && p.own)
-            .map(|p| (p, clip(to_logical(p), cx.page)))
-            .filter(|(_, r)| r.size.x >= MIN_SIZE.x && r.size.y >= MIN_SIZE.y)
-            .collect();
-        let under_pointer = cx.pointer.and_then(|p| candidates.iter().find(|(_, r)| r.contains(p)));
-        let chosen = under_pointer
-            .or_else(|| candidates.iter().find(|(p, _)| p.is_playing()))
-            .or_else(|| candidates.first());
-        match chosen {
-            Some((p, r)) => (Mode::Inline, Some((*p).clone()), Some(*r)),
+            .filter(|p| p.kind == Kind::Video && p.fullscreen && !p.trusted)
+            .max_by(|a, b| a.area().total_cmp(&b.area()));
+        match player {
+            Some(p) => (Mode::Fullscreen, Some(p.clone()), Some(cx.page)),
             None => (Mode::Hidden, None, None),
         }
     }
 
-    fn apply_layout(&self, ui: &mut Ui, mode: Mode, compact: bool) {
-        let fullscreen = mode == Mode::Fullscreen;
-        let m = if fullscreen { FULLSCREEN } else { INLINE };
+    fn apply_layout(&self, ui: &mut Ui) {
+        let m = FULLSCREEN;
         let set = |ui: &mut Ui, node: NodeId, f: &dyn Fn(&mut Style)| {
             let mut style = ui.style(node);
             f(&mut style);
@@ -558,12 +512,7 @@ impl PlayerOverlay {
                 bottom: length(m.margin + m.bar_height + m.small + 2.0 * CIRCLE_GAP),
             };
         });
-        ui.set_visible(self.skip_back, !compact);
-        ui.set_visible(self.skip_forward, !compact);
-        ui.set_visible(self.volume_capsule, !compact);
-        ui.set_visible(self.time, !compact);
-        ui.set_visible(self.remaining, !compact);
-        ui.set_icon(self.first_icon, if fullscreen { Icon::Close } else { Icon::Fullscreen });
+        ui.set_icon(self.first_icon, Icon::Close);
     }
 
     fn place(&self, ui: &mut Ui, rect: Frame) {
@@ -767,13 +716,6 @@ impl PlayerOverlay {
         self.scrubbed_at = Some(Instant::now());
         Some((*view, Command::new(&player.id, Action::Seek(f64::from(value) * player.duration))))
     }
-}
-
-/// The part of `r` inside `bounds`.
-fn clip(r: Frame, bounds: Frame) -> Frame {
-    let min = r.origin.max(bounds.origin);
-    let max = (r.origin + r.size).min(bounds.origin + bounds.size);
-    Frame { origin: min, size: (max - min).max(Vec2::ZERO) }
 }
 
 /// 1 → "1×", 1.25 → "1.25×".

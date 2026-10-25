@@ -443,14 +443,18 @@ impl Default for Tabs {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Media {
-    /// Replace the native controls of page videos with Axion's glass controls.
-    pub own_controls: bool,
-    /// Also replace the players sites build themselves: their UI is hidden.
-    pub replace_site_players: bool,
-    /// Sites (with their subdomains) that keep their own player, inline and in fullscreen.
+    /// Axion's player takes over when a video goes fullscreen (on every site except the
+    /// trusted ones below). Inline, pages always keep their own controls.
+    #[serde(alias = "own_fullscreen_controls")]
+    pub fullscreen_player: bool,
+    /// Sites whose own player is kept, also in fullscreen. Just the site's name, like
+    /// "youtube.com" — its subdomains (www., m., …) count too. Edit in Settings › Media.
     pub trusted_player_sites: Vec<String>,
-    /// Show Axion's controls over every fullscreen video, also ones with a site's own player.
-    pub own_fullscreen_controls: bool,
+    /// Older settings (Axion's controls inline), no longer used; accepted so old files load.
+    #[serde(skip_serializing)]
+    own_controls: Option<bool>,
+    #[serde(skip_serializing)]
+    replace_site_players: Option<bool>,
     /// Hide the controls of a playing video after this long without pointer movement.
     pub hide_controls_after_seconds: f32,
     /// How far the skip buttons and arrow keys jump.
@@ -465,11 +469,31 @@ pub struct Media {
     pub desktop_integration: bool,
 }
 
+impl Media {
+    /// Adds a trusted site (a host like "example.com"; "https://www.example.com/x" works too).
+    /// Returns false if it is empty or already listed.
+    pub fn add_trusted_site(&mut self, input: &str) -> bool {
+        let site = trusted_site_name(input);
+        if site.is_empty() || self.trusted_player_sites.contains(&site) {
+            return false;
+        }
+        self.trusted_player_sites.push(site);
+        true
+    }
+}
+
+/// "https://www.Example.com/watch?v=1" → "example.com".
+fn trusted_site_name(input: &str) -> String {
+    let s = input.trim().to_ascii_lowercase();
+    let s = s.split_once("://").map_or(s.as_str(), |(_, rest)| rest);
+    let host = s.split(['/', '?', '#', ':']).next().unwrap_or_default();
+    host.strip_prefix("www.").unwrap_or(host).to_owned()
+}
+
 impl Default for Media {
     fn default() -> Self {
         Self {
-            own_controls: true,
-            replace_site_players: true,
+            fullscreen_player: true,
             trusted_player_sites: [
                 "youtube.com",
                 "youtube-nocookie.com",
@@ -485,7 +509,8 @@ impl Default for Media {
             ]
             .map(String::from)
             .to_vec(),
-            own_fullscreen_controls: true,
+            own_controls: None,
+            replace_site_players: None,
             hide_controls_after_seconds: 2.5,
             skip_seconds: 10.0,
             volume_step: 0.1,
@@ -511,6 +536,22 @@ mod tests {
     fn empty_file_is_default() {
         let c: Config = toml::from_str("").unwrap();
         assert_eq!(c, Config::default());
+    }
+
+    #[test]
+    fn media_settings_old_and_new() {
+        // Files from before the fullscreen-only player still load.
+        let c: Config = toml::from_str(
+            "[media]\nown_controls = false\nreplace_site_players = true\nown_fullscreen_controls = false",
+        )
+        .unwrap();
+        assert!(!c.media.fullscreen_player);
+        let mut media = Media::default();
+        assert!(media.add_trusted_site("https://www.Example.com/watch?v=1"));
+        assert!(media.trusted_player_sites.contains(&"example.com".to_owned()));
+        assert!(!media.add_trusted_site("example.com"));
+        assert!(!media.add_trusted_site("  "));
+        assert!(!toml::to_string(&media).unwrap().contains("own_controls"));
     }
 
     #[test]
