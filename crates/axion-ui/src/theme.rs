@@ -91,7 +91,7 @@ impl Theme {
             Paint::Label => palette.label,
             Paint::Secondary => palette.secondary,
             Paint::Accent => self.config.appearance.accent,
-            Paint::Shield => self.config.colors.shield,
+            Paint::Shield => self.config.colors.shield.unwrap_or(self.config.appearance.accent),
             Paint::Surface => palette.surface,
             Paint::Ground => palette.ground,
             Paint::Hairline => palette.hairline,
