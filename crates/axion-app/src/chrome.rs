@@ -11,9 +11,7 @@ use axion_compositor::{Icon, IconWeight, Rect as Frame};
 use axion_config::{Color, Config, SidebarMode, TabBarStyle};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
-use axion_ui::{
-    ActionId, Align, Background, CAPSULE, GlassLevel, Paint, Shadow, TextStyle, Ui, UiEvent, Widget,
-};
+use axion_ui::{ActionId, Align, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
 use glam::Vec2;
 
 use crate::favicons::{Favicons, favicon_node};
@@ -30,7 +28,9 @@ pub struct NowPlaying {
 
 const NOW_PLAYING_HEIGHT: f32 = 60.0;
 /// The separate tab bar's row of tabs, and its gap to the toolbar.
-const TAB_STRIP_HEIGHT: f32 = 40.0;
+const TAB_STRIP_HEIGHT: f32 = 38.0;
+/// Tint of the capsule under the tabs that aren't open.
+const TAB_CAPSULE_TINT: f32 = 0.06;
 const TAB_STRIP_GAP: f32 = 8.0;
 /// The pill with the site's name while the bars are hidden.
 const MINI_HEIGHT: f32 = 28.0;
@@ -151,9 +151,11 @@ pub enum Mode {
 
 /// Gap between the toolbar's glass groups (wide enough that they don't flow together at rest).
 const GROUP_GAP: f32 = 14.0;
-const BUTTON: f32 = 44.0;
+const BUTTON: f32 = 38.0;
 const SIDEBAR_BUTTON: f32 = 48.0;
-const SEGMENT_HEIGHT: f32 = 44.0;
+const SEGMENT_HEIGHT: f32 = 36.0;
+/// The toolbar's capsules (navigation, tabs, actions).
+const BAR_CAPSULE: f32 = 46.0;
 const ROW_HEIGHT: f32 = 42.0;
 /// The active tab's segment grows this much more than the others and never gets narrower
 /// than its minimum, so the address stays readable with many tabs.
@@ -312,8 +314,8 @@ fn glass_group(ui: &mut Ui, parent: NodeId) -> NodeId {
         parent,
         Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
         Style {
-            size: Size { width: auto(), height: length(56.0) },
-            padding: padding(6.0, 6.0, 0.0, 0.0),
+            size: Size { width: auto(), height: length(BAR_CAPSULE) },
+            padding: padding(4.0, 4.0, 0.0, 0.0),
             ..row(2.0)
         },
     )
@@ -535,24 +537,27 @@ impl Chrome {
             Style { flex_grow: 1.0, flex_shrink: 1.0, justify_content: JustifyContent::CENTER, ..row(0.0) },
         );
         ui.set_visible(address_slot, false);
+        // The other tabs sit on a plain tinted capsule; only the open tab (the address) is glass,
+        // lying on top of them.
         let tab_capsule = ui.add(
             bar,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
+            Widget::container()
+                .with_background(Background::Fill(Paint::Label, TAB_CAPSULE_TINT))
+                .with_radius(CAPSULE),
             Style {
                 flex_grow: 1.0,
                 flex_shrink: 1.0,
                 min_size: Size { width: length(160.0), height: auto() },
-                size: Size { width: auto(), height: length(56.0) },
-                padding: padding(6.0, 6.0, 0.0, 0.0),
+                size: Size { width: auto(), height: length(BAR_CAPSULE) },
+                padding: padding(5.0, 5.0, 0.0, 0.0),
                 ..row(4.0)
             },
         );
         let address = ui.add(
             tab_capsule,
             Widget::container()
-                .with_background(Background::Fill(Paint::Surface, 0.92))
+                .with_background(Background::Glass(GlassLevel::Regular))
                 .with_radius(CAPSULE)
-                .with_shadow(Shadow { offset_y: 2.0, blur: 10.0, opacity: 0.10 })
                 .with_action(ChromeAction::EditAddress.id()),
             Style {
                 flex_grow: ACTIVE_SEGMENT_GROW,
@@ -600,8 +605,8 @@ impl Chrome {
             Widget::progress(Paint::Accent),
             Style {
                 position: Position::Absolute,
-                inset: Rect { left: length(22.0), right: length(22.0), top: auto(), bottom: length(1.0) },
-                size: Size { width: auto(), height: length(2.5) },
+                inset: Rect { left: length(16.0), right: length(16.0), top: auto(), bottom: length(0.0) },
+                size: Size { width: auto(), height: length(3.0) },
                 ..Default::default()
             },
         );
@@ -610,7 +615,9 @@ impl Chrome {
         // Separate tab bar: the row of tabs under the toolbar.
         let tab_strip = ui.add(
             root,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
+            Widget::container()
+                .with_background(Background::Fill(Paint::Label, TAB_CAPSULE_TINT))
+                .with_radius(CAPSULE),
             Style {
                 position: Position::Absolute,
                 size: Size { width: auto(), height: length(TAB_STRIP_HEIGHT) },
@@ -853,8 +860,10 @@ impl Chrome {
     fn animate_collapse(&mut self, ui: &mut Ui, dt: f32, centre_x: f32) {
         self.collapse.step(dt);
         let k = self.collapse.value.clamp(0.0, 1.0);
-        let shift = k * (self.bar_top + 2.0 * (TAB_STRIP_HEIGHT + TAB_STRIP_GAP) + 56.0);
-        for (node, top) in [(self.bar, self.bar_top), (self.tab_strip, self.bar_top + 56.0 + TAB_STRIP_GAP)] {
+        let shift = k * (self.bar_top + 2.0 * (TAB_STRIP_HEIGHT + TAB_STRIP_GAP) + BAR_CAPSULE);
+        for (node, top) in
+            [(self.bar, self.bar_top), (self.tab_strip, self.bar_top + BAR_CAPSULE + TAB_STRIP_GAP)]
+        {
             let mut style = ui.style(node);
             style.inset.top = length(top - shift);
             ui.set_style(node, style);
@@ -1070,7 +1079,7 @@ impl Chrome {
                 continue;
             }
             let parent = if separate { self.tab_strip } else { self.tab_capsule };
-            let background = if active { Background::Fill(Paint::Surface, 0.92) } else { Background::None };
+            let background = if active { Background::Glass(GlassLevel::Regular) } else { Background::None };
             let height = if separate { TAB_STRIP_HEIGHT - 8.0 } else { SEGMENT_HEIGHT };
             let pill = ui.add(
                 parent,

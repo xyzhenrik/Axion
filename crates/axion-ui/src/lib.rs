@@ -57,6 +57,14 @@ const LINE_SLIDER_HELD: f32 = 8.0;
 const MIN_VISIBLE: f32 = 0.01;
 /// How much glass swells while a button on it is held.
 const PRESS_SCALE: f32 = 1.06;
+/// A held glass grows at most this many logical px at each edge (wide bars barely swell) …
+const PRESS_GROW_PX: f32 = 5.0;
+/// … and surfaces bigger than this (sheets, the sidebar) don't react at all.
+const PRESS_MAX_SIZE: f32 = 420.0;
+/// How far held glass follows the pointer when it is dragged away (rubber band limit, px) …
+const PULL_LIMIT: f32 = 9.0;
+/// … and how much it stretches toward it (relative to the pull over the glass's size).
+const PULL_STRETCH: f32 = 1.4;
 const PRESS_SETTLED: f32 = 0.001;
 /// Fading glass is grouped into this many opacity steps (each step is one glass pass).
 const GLASS_FADE_STEPS: f32 = 24.0;
@@ -129,7 +137,9 @@ pub struct Ui {
     hover: Option<NodeId>,
     pressed: Option<NodeId>,
     /// Glass that swells while a button on it is held, springing back on release.
-    press_scale: HashMap<NodeId, Animated<f32>>,
+    press_scale: HashMap<NodeId, Press>,
+    /// The glass being held and where the pointer went down (for the pull toward the pointer).
+    press_anchor: Option<(NodeId, Vec2)>,
     /// Switch and slider knobs that are held or still animating.
     knobs: HashMap<NodeId, Knob>,
     focus: Option<NodeId>,
@@ -162,6 +172,7 @@ impl Ui {
             focus: None,
             dragging: None,
             press_scale: HashMap::new(),
+            press_anchor: None,
             knobs: HashMap::new(),
             caret_epoch: Instant::now(),
             needs_layout: true,
@@ -699,6 +710,7 @@ impl Ui {
                     }
                     return (true, events);
                 }
+                self.pull_glass(p);
                 let hit = self.hit(p);
                 self.hover = hit.and_then(|n| self.actionable(n));
                 hit.is_some() || self.pressed.is_some()
@@ -715,8 +727,9 @@ impl Ui {
                     return (true, events);
                 }
                 let pressed = self.pressed.take();
+                self.press_anchor = None;
                 if let Some(glass) = pressed.and_then(|n| self.glass_of(n)) {
-                    self.press_glass(glass, 1.0);
+                    self.press_glass(glass, false);
                 }
                 if let (Some(node), Some(p)) = (pressed, self.pointer)
                     && self.hit(p).and_then(|n| self.actionable(n)) == Some(node)
@@ -788,7 +801,8 @@ impl Ui {
         }
         self.pressed = self.actionable(hit);
         if let Some(glass) = self.pressed.and_then(|n| self.glass_of(n)) {
-            self.press_glass(glass, PRESS_SCALE);
+            self.press_glass(glass, true);
+            self.press_anchor = Some((glass, p));
         }
         true
     }
@@ -951,11 +965,31 @@ impl Ui {
         }
     }
 
-    fn press_glass(&mut self, glass: NodeId, scale: f32) {
+    fn press_glass(&mut self, glass: NodeId, pressed: bool) {
+        let size = self.frame(glass).size;
+        if size.max_element() > PRESS_MAX_SIZE {
+            return;
+        }
+        let swell = (PRESS_GROW_PX / (size.max_element() / 2.0).max(1.0)).min(PRESS_SCALE - 1.0);
         let spring = self.press_spring();
-        let anim = self.press_scale.entry(glass).or_insert_with(|| Animated::new(1.0, spring));
-        anim.spring = spring;
-        anim.target = scale;
+        let press = self.press_scale.entry(glass).or_insert_with(|| Press {
+            scale: Animated::new(1.0, spring),
+            offset: Animated::new(Vec2::ZERO, spring),
+        });
+        press.scale.spring = spring;
+        press.offset.spring = spring;
+        press.scale.target = if pressed { 1.0 + swell } else { 1.0 };
+        if !pressed {
+            press.offset.target = Vec2::ZERO;
+        }
+    }
+
+    /// While glass is held, it follows the pointer a little (rubber band) when dragged away.
+    fn pull_glass(&mut self, p: Vec2) {
+        let Some((glass, anchor)) = self.press_anchor else { return };
+        if let Some(press) = self.press_scale.get_mut(&glass) {
+            press.offset.target = axion_physics::rubber_band_vec(p - anchor, PULL_LIMIT);
+        }
     }
 
     fn press_spring(&self) -> Spring {
@@ -969,9 +1003,13 @@ impl Ui {
 
     /// Advances UI animations (glass press feedback). Call once per frame.
     pub fn animate(&mut self, dt: f32) {
-        self.press_scale.retain(|_, anim| {
-            anim.step(dt);
-            !(anim.target == 1.0 && anim.is_settled(PRESS_SETTLED))
+        self.press_scale.retain(|_, press| {
+            press.scale.step(dt);
+            press.offset.step(dt);
+            !(press.scale.target == 1.0
+                && press.scale.is_settled(PRESS_SETTLED)
+                && press.offset.target == Vec2::ZERO
+                && press.offset.is_settled(0.05))
         });
         // A slider's knob sits where its value is; only the lens animates.
         let sliders: Vec<(NodeId, f32)> = self
@@ -1091,12 +1129,32 @@ impl Ui {
             c
         };
 
+        // Held glass swells and leans toward the pointer; its content moves with it.
+        let press_xf = self.press_scale.get(&node).map(|press| {
+            let offset = press.offset.value * s;
+            let pull = offset.length();
+            let e = pull * PULL_STRETCH / bg_px.size.max_element().max(1.0);
+            PressXf {
+                center: bg_px.center(),
+                scale: press.scale.value,
+                offset,
+                stretch: Vec2::new(1.0 + e, 1.0 / (1.0 + e)),
+                angle: offset.y.atan2(offset.x),
+            }
+        });
+        let mark = press_xf.as_ref().map(|_| marks(stacks));
         let mut child_depth = depth;
         let content = &mut stacks[depth].content;
         match widget.background {
             Background::Glass(level) => {
-                let k = self.press_scale.get(&node).map_or(1.0, |a| a.value);
-                let shape = GlassShape::rounded_rect(bg_px.center(), bg_px.size * 0.5 * k, bg_radius * k);
+                let mut shape = GlassShape::rounded_rect(bg_px.center(), bg_px.size * 0.5, bg_radius);
+                if let Some(xf) = &press_xf {
+                    shape.center += xf.offset;
+                    shape.half_size *= xf.scale;
+                    shape.corner_radius *= xf.scale;
+                    shape.stretch = xf.stretch;
+                    shape.stretch_angle = xf.angle;
+                }
                 stacks[depth + 1].glass.push(GlassItem { level, fade: quantize_fade(fade), shape });
                 child_depth = depth + 1;
             }
@@ -1258,6 +1316,9 @@ impl Ui {
         for child in self.tree.children(node).unwrap_or_default() {
             self.paint_node(child, child_depth, dim, fade, stacks);
         }
+        if let (Some(xf), Some(mark)) = (press_xf, mark) {
+            transform_since(stacks, &mark, &xf, child_depth);
+        }
     }
 
     /// A switch or slider knob (physical px): opaque white at rest, a clear glass lens while
@@ -1348,10 +1409,88 @@ struct Stack<'a> {
     after: Vec<Layer<'a>>,
 }
 
+/// A held (or springing back) glass: its swell and its pull toward the pointer.
+struct Press {
+    scale: Animated<f32>,
+    offset: Animated<Vec2>,
+}
+
 struct GlassItem {
     level: GlassLevel,
     fade: f32,
     shape: GlassShape,
+}
+
+/// The press transform of held glass (physical px).
+struct PressXf {
+    center: Vec2,
+    scale: f32,
+    offset: Vec2,
+    stretch: Vec2,
+    angle: f32,
+}
+
+impl PressXf {
+    fn point(&self, p: Vec2) -> Vec2 {
+        self.center + (p - self.center) * self.scale + self.offset
+    }
+
+    fn rect(&self, r: Rect) -> Rect {
+        Rect { origin: self.point(r.origin), size: r.size * self.scale }
+    }
+}
+
+/// How much each stack held before a subtree was painted.
+struct Mark {
+    quads: usize,
+    images: usize,
+    icons: usize,
+    text: usize,
+}
+
+fn marks(stacks: &[Stack<'_>]) -> Vec<Mark> {
+    stacks
+        .iter()
+        .map(|s| Mark {
+            quads: s.content.quads.len(),
+            images: s.content.images.len(),
+            icons: s.content.icons.len(),
+            text: s.content.text.len(),
+        })
+        .collect()
+}
+
+/// Moves what a held glass's subtree painted (from `from_depth` on) along with the glass.
+fn transform_since(stacks: &mut [Stack<'_>], mark: &[Mark], xf: &PressXf, from_depth: usize) {
+    for (d, stack) in stacks.iter_mut().enumerate().skip(from_depth) {
+        let m = mark.get(d).unwrap_or(&Mark { quads: 0, images: 0, icons: 0, text: 0 });
+        let c = &mut stack.content;
+        for q in c.quads.iter_mut().skip(m.quads) {
+            q.rect = xf.rect(q.rect);
+            q.radius *= xf.scale;
+        }
+        for i in c.images.iter_mut().skip(m.images) {
+            i.rect = xf.rect(i.rect);
+        }
+        for i in c.icons.iter_mut().skip(m.icons) {
+            i.rect = xf.rect(i.rect);
+        }
+        for t in c.text.iter_mut().skip(m.text) {
+            let p = xf.point(Vec2::new(t.left, t.top));
+            t.left = p.x;
+            t.top = p.y;
+            t.scale *= xf.scale;
+            let b = &mut t.bounds;
+            let tl = xf.point(Vec2::new(b.left as f32, b.top as f32));
+            let br = xf.point(Vec2::new(b.right as f32, b.bottom as f32));
+            *b = glyphon::TextBounds {
+                left: tl.x.floor() as i32,
+                top: tl.y.floor() as i32,
+                right: br.x.ceil() as i32,
+                bottom: br.y.ceil() as i32,
+            };
+        }
+    }
 }
 
 fn quantize_fade(fade: f32) -> f32 {

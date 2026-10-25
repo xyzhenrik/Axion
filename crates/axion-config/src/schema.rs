@@ -315,7 +315,7 @@ impl Default for Layout {
     fn default() -> Self {
         Self {
             margin: 16.0,
-            bar_height: 56.0,
+            bar_height: 46.0,
             sidebar_width: 316.0,
             sidebar: SidebarMode::Auto,
             sidebar_visible: true,
