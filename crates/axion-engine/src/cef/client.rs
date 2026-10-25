@@ -57,6 +57,42 @@ impl ViewContext {
         self.frames.serial.set(self.frames.serial.get() + 1);
     }
 
+    /// Copies a frame shared by Chromium into a texture of our own (reused while the size and
+    /// format stay the same).
+    fn copy_frame(&self, shared: &wgpu::Texture) {
+        let reusable = self
+            .frames
+            .texture
+            .borrow()
+            .as_ref()
+            .filter(|t| {
+                t.size() == shared.size()
+                    && t.format() == shared.format()
+                    && t.usage().contains(wgpu::TextureUsages::COPY_DST)
+            })
+            .cloned();
+        let texture = reusable.unwrap_or_else(|| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("cef frame copy"),
+                size: shared.size(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: shared.format(),
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("cef frame copy") });
+        encoder.copy_texture_to_texture(shared.as_image_copy(), texture.as_image_copy(), shared.size());
+        self.queue.submit([encoder.finish()]);
+        self.store(texture);
+    }
+
     /// Software paint: upload BGRA pixels, reusing the texture while the size is unchanged.
     fn upload(&self, pixels: &[u8], width: u32, height: u32) {
         let reusable = self
@@ -133,9 +169,11 @@ wrap_render_handler! {
             // device was created with VULKAN_EXTERNAL_MEMORY_DMA_BUF. If CEF renders on another
             // GPU the import fails cleanly and the engine falls back to software paint.
             match unsafe { SharedTextureHandle::new(info).import_texture(&self.ctx.device, &self.ctx.queue) } {
-                Ok(texture) => {
+                Ok(shared) => {
                     frames.imported_any.set(true);
-                    self.ctx.store(texture);
+                    // Chromium's buffer is only ours during this callback (it is reused or freed
+                    // on the next frame, reload or resize), so the frame is copied out now.
+                    self.ctx.copy_frame(&shared);
                 }
                 Err(error) => {
                     if frames.import_failures.get() == 0 {

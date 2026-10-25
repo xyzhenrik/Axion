@@ -65,16 +65,30 @@ impl Drip {
         self.phase = Phase::Opening;
     }
 
-    /// Moves the target (e.g. the window was resized) without restarting.
+    /// Moves the target (the list grew while typing, the window was resized) without
+    /// restarting: the glass glides to its new size instead of jumping or dripping again.
     pub fn retarget(&mut self, target: Frame) {
         if self.phase == Phase::Opening || self.phase == Phase::Open {
             self.target = target;
             self.origin.target = target.origin;
             self.size.target = target.size;
-            if self.phase == Phase::Open {
-                self.origin.snap(target.origin);
-                self.size.snap(target.size);
+        }
+    }
+
+    /// Opens if closed or closing (dripping out of `anchor`), else glides to `target`.
+    pub fn show(&mut self, config: &Config, anchor: Frame, target: Frame) {
+        match self.phase {
+            Phase::Open | Phase::Opening => self.retarget(target),
+            // Reopened while flowing back: turn around from where it is, no new drip.
+            Phase::Closing => {
+                self.springs(config);
+                self.anchor = anchor;
+                self.target = target;
+                self.origin.target = target.origin;
+                self.size.target = target.size;
+                self.phase = Phase::Opening;
             }
+            Phase::Closed => self.open(config, anchor, target),
         }
     }
 

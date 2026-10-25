@@ -1,3 +1,4 @@
 /target
 *.log
 /third_party/cef/
+.claude/worktrees/

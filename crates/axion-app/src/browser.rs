@@ -1570,6 +1570,8 @@ impl Browser {
                             tracing::info!("address copied");
                         }
                     }
+                    // In private browsing, the normal tabs' row switches back to them.
+                    Some(ChromeAction::ToggleTabsSection) if self.private_mode => self.toggle_private_mode(),
                     Some(ChromeAction::ToggleTabsSection) => self.chrome.toggle_section(&mut self.ui, true),
                     Some(ChromeAction::ToggleSavedSection) => self.chrome.toggle_section(&mut self.ui, false),
                     Some(ChromeAction::PageMenu) => self.open_page_menu(),
@@ -1761,6 +1763,12 @@ impl Browser {
         }
         self.reload_config_if_changed();
         self.apply_lifecycle();
+        if self.config.privacy.lock_private_tabs {
+            let after = Duration::from_secs_f32(self.config.privacy.lock_after_seconds.max(0.0));
+            if self.lock.tick(after) {
+                self.update_lock();
+            }
+        }
         self.save_session_if_due(false);
         self.handle_mpris();
     }
@@ -2161,6 +2169,8 @@ impl Browser {
             self.update_now_playing();
             self.session_dirty = true;
             self.session_changed = Instant::now();
+            let normal_count = if self.private_mode { self.parked.len() } else { self.tabs.len() };
+            self.chrome.set_normal_count(normal_count);
             self.chrome.sync_tabs(&mut self.ui, &self.tabs, &self.favicons);
             let audio = self.tabs.active().map_or((false, false), |t| (t.playing_media, t.muted));
             self.chrome.set_audio(&mut self.ui, audio.0, audio.1);
@@ -2228,6 +2238,7 @@ impl Browser {
                 }
                 // Capture aid: open the player's speed menu.
                 // Capture aid: scroll the page down by 600 px.
+                "toggle-sidebar" => self.run(Action::ToggleSidebar),
                 "scroll-page" => {
                     if let Some(view) = self.active_view() {
                         self.engine.run_script(view, "window.scrollBy(0, 600);", false);
@@ -2300,7 +2311,21 @@ impl Browser {
         self.last_frame = now;
         self.ui.animate(dt);
         let centre_x = self.page_rect().center().x;
+        let was_sliding = self.chrome.is_sliding();
         self.chrome.animate_all(&mut self.ui, dt, centre_x);
+        if was_sliding {
+            // The page and toolbar follow the sidebar frame by frame; only the shown tab is
+            // resized meanwhile, the others once the slide has settled.
+            let size = self.logical_size();
+            self.chrome.apply_layout(&mut self.ui, &self.config, size);
+            if self.chrome.is_sliding() {
+                if let Some(view) = self.active_view() {
+                    self.engine.resize(view, self.view_size());
+                }
+            } else {
+                self.update_layout();
+            }
+        }
         self.menu.animate(&mut self.ui, dt);
         self.shields_popover.animate(&mut self.ui, dt);
         self.lock_screen.animate(&mut self.ui, dt);

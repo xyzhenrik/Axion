@@ -74,6 +74,17 @@ impl PrivateLock {
         self.locked = self.hash.is_some();
     }
 
+    /// Locks once the window has been in the background for `after`, while it still is —
+    /// so private tabs are never visible in an unfocused window past the limit. Returns
+    /// whether it just locked.
+    pub fn tick(&mut self, after: Duration) -> bool {
+        if !self.locked && self.hash.is_some() && self.away_since.is_some_and(|t| t.elapsed() >= after) {
+            self.locked = true;
+            return true;
+        }
+        false
+    }
+
     /// Window focus changes: locks if the window was away longer than `after`.
     pub fn window_focused(&mut self, focused: bool, after: Duration) {
         if focused {

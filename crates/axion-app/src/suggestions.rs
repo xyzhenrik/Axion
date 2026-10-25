@@ -187,11 +187,7 @@ impl SuggestionList {
         let target = self.target(anchor);
         place(ui, self.root, self.parent, target);
         ui.set_visible(self.root, true);
-        if self.is_visible() {
-            self.drip.retarget(target);
-        } else {
-            self.drip.open(config, anchor, target);
-        }
+        self.drip.show(config, anchor, target);
 
         for (i, item) in self.items.iter().enumerate() {
             let row = ui.add(

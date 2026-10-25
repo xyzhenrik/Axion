@@ -188,6 +188,10 @@ pub struct Chrome {
     slide: Animated<f32>,
     private_row: NodeId,
     private_lock: NodeId,
+    /// Private tabs are the current group (listed under "Private" instead of "N Tabs").
+    private_mode: bool,
+    /// How many normal tabs there are while private tabs are shown.
+    normal_count: usize,
     locked: bool,
     sections: NodeId,
     panel: NodeId,
@@ -659,6 +663,17 @@ impl Chrome {
         );
         let tab_count_label = ui.add_label(count_box, "1", TextStyle::Caption, Style::default());
 
+        // The tab row is drawn before the toolbar, so the toolbar's popovers (page menu,
+        // suggestions, Shields) lie above it.
+        let mut planes = ui.children(root);
+        if let (Some(strip_at), Some(bar_at)) =
+            (planes.iter().position(|&n| n == tab_strip), planes.iter().position(|&n| n == bar))
+            && strip_at > bar_at
+        {
+            planes.remove(strip_at);
+            planes.insert(bar_at, tab_strip);
+            ui.set_children(root, &planes);
+        }
         let mut chrome = Self {
             now_playing,
             now_playing_title,
@@ -675,6 +690,8 @@ impl Chrome {
             slide: Animated::new(0.0, Spring::SMOOTH),
             private_row: ui.parent(private_label).unwrap_or(sidebar),
             private_lock: private_lock.unwrap_or(sidebar),
+            private_mode: false,
+            normal_count: 0,
             locked: false,
             sections,
             panel,
@@ -725,6 +742,20 @@ impl Chrome {
             SidebarMode::Overlay => false,
             SidebarMode::Auto => self.mode == Mode::Wide,
         }
+    }
+
+    /// How much of a docked sidebar is in view right now (logical px; follows its slide).
+    fn docked_sidebar_width(&self, config: &Config) -> f32 {
+        if !self.docked || self.page_fullscreen {
+            return 0.0;
+        }
+        let width = config.layout.sidebar_width;
+        (width + self.slide.value).clamp(0.0, width)
+    }
+
+    /// The sidebar is sliding (the page and toolbar follow it every frame).
+    pub fn is_sliding(&self) -> bool {
+        !self.slide.is_settled(SLIDE_SETTLED)
     }
 
     pub fn sidebar_open(&self) -> bool {
@@ -816,7 +847,13 @@ impl Chrome {
     }
 
     /// Marks private mode in the sidebar, and whether a password lock exists (lock icon).
+    /// The number of normal tabs, shown on "N Tabs" while private tabs are open.
+    pub fn set_normal_count(&mut self, count: usize) {
+        self.normal_count = count;
+    }
+
     pub fn set_private(&mut self, ui: &mut Ui, private: bool, has_lock: bool) {
+        self.private_mode = private;
         if let Some(w) = ui.widget_mut(self.private_row) {
             w.background = if private { Background::Fill(Paint::Label, 0.08) } else { Background::None };
         }
@@ -922,7 +959,8 @@ impl Chrome {
         let show_sidebar = self.sidebar_open() && !self.page_fullscreen;
         let m = l.margin;
 
-        let bar_left = if self.docked && show_sidebar { l.sidebar_width + m } else { m };
+        // Docked, the toolbar starts where the (possibly sliding) sidebar ends.
+        let bar_left = if self.docked { self.docked_sidebar_width(config).max(0.0) + m } else { m };
         let mut bar_style = ui.style(self.bar);
         self.bar_top = m;
         bar_style.inset = Rect { left: length(bar_left), right: length(m), top: length(m), bottom: auto() };
@@ -998,11 +1036,8 @@ impl Chrome {
             return Frame { origin: Vec2::ZERO, size: window };
         }
         let l = &config.layout;
-        let left = if self.sidebar_docked(config) && self.docked_open {
-            l.sidebar_width + l.page_margin
-        } else {
-            l.page_margin
-        };
+        // The page's left edge follows the sidebar as it slides.
+        let left = self.docked_sidebar_width(config) + l.page_margin;
         let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 };
         let top = if self.collapsed {
             MINI_TOP + MINI_HEIGHT + l.page_margin / 2.0
@@ -1126,9 +1161,19 @@ impl Chrome {
         }
         ui.set_visible(self.address_favicon, !self.locked);
 
-        // Sidebar: "N Tabs" and one row per tab; the active one is a pill with a close button.
-        let count = tabs.len();
+        // Sidebar: each group's tabs are listed under its row — under "N Tabs" normally, under
+        // "Private" in private browsing (where "N Tabs" counts the normal tabs and switches back).
+        let count = if self.private_mode { self.normal_count } else { tabs.len() };
         ui.set_text(self.tab_group_label, &format!("{count} {}", if count == 1 { "Tab" } else { "Tabs" }));
+        if let Some(header) = ui.parent(self.tab_group_label) {
+            let mut order: Vec<NodeId> =
+                ui.children(self.sections).into_iter().filter(|&n| n != self.sidebar_tabs).collect();
+            let after = if self.private_mode { self.private_row } else { header };
+            if let Some(at) = order.iter().position(|&n| n == after) {
+                order.insert(at + 1, self.sidebar_tabs);
+                ui.set_children(self.sections, &order);
+            }
+        }
         ui.clear_children(self.sidebar_tabs);
         for (i, tab) in tabs.all().iter().enumerate() {
             let active = i == tabs.active_index();
