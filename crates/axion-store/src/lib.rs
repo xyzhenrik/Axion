@@ -36,6 +36,9 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX bookmarks_by_url ON bookmarks(url);",
     // 2: small key/value settings that don't belong in config.toml (e.g. secrets' hashes)
     "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    // 3: per-site settings (Shields level, …), keyed by host
+    "CREATE TABLE site_settings (host TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+        PRIMARY KEY (host, key));",
 ];
 
 /// Seconds per day, for the recency buckets.
@@ -219,6 +222,30 @@ impl Store {
         Ok(())
     }
 
+    // ---- per-site settings ----
+
+    /// Every site's value for `key`, as (host, value).
+    pub fn site_settings(&self, key: &str) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare("SELECT host, value FROM site_settings WHERE key = ?1")?;
+        let rows = stmt.query_map([key], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Sets (or with `None`, removes) a site's value for `key`.
+    pub fn set_site_setting(&self, host: &str, key: &str, value: Option<&str>) -> Result<()> {
+        match value {
+            Some(v) => self.conn.execute(
+                "INSERT INTO site_settings (host, key, value) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(host, key) DO UPDATE SET value = excluded.value",
+                params![host, key, v],
+            )?,
+            None => {
+                self.conn.execute("DELETE FROM site_settings WHERE host = ?1 AND key = ?2", [host, key])?
+            }
+        };
+        Ok(())
+    }
+
     // ---- bookmarks ----
 
     pub fn add_bookmark(&self, url: &str, title: &str, now: i64) -> Result<i64> {
@@ -365,6 +392,20 @@ mod tests {
         assert_eq!(s.meta("k").unwrap().as_deref(), Some("v2"));
         s.set_meta("k", None).unwrap();
         assert_eq!(s.meta("k").unwrap(), None);
+    }
+
+    #[test]
+    fn site_settings() {
+        let s = store();
+        s.set_site_setting("a.com", "shields", Some("off")).unwrap();
+        s.set_site_setting("b.com", "shields", Some("aggressive")).unwrap();
+        s.set_site_setting("a.com", "shields", Some("standard")).unwrap();
+        s.set_site_setting("a.com", "zoom", Some("1")).unwrap();
+        let mut all = s.site_settings("shields").unwrap();
+        all.sort();
+        assert_eq!(all, [("a.com".into(), "standard".into()), ("b.com".into(), "aggressive".into())]);
+        s.set_site_setting("b.com", "shields", None).unwrap();
+        assert_eq!(s.site_settings("shields").unwrap().len(), 1);
     }
 
     #[test]

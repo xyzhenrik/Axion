@@ -1,6 +1,6 @@
 # Axion Browser — Plan
 
-Status: **Phase 2 done** (2026-10-25) · Target: v0.1 (daily-drivable on Linux)
+Status: **Phase 4 done** (2026-10-25; Phase 3 leftovers open) · Target: v0.1 (daily-drivable on Linux)
 
 ## 1. Vision
 
@@ -162,11 +162,23 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
   against the 120 fps / iGPU budget.
 
 ### Phase 4 — Shields
-- [ ] adblock-rust request interception via CEF `ResourceRequestHandler`.
-- [ ] Cosmetic filters + scriptlets.
-- [ ] Popup & redirect policy (`OnBeforePopup`, `OnBeforeBrowse` with user-gesture info).
-- [ ] Tracking param stripping, cookie policy, fingerprinting protections.
-- [ ] Shields popover + per-site settings; list updates.
+- [x] adblock-rust request interception via CEF `ResourceRequestHandler` (IO thread, behind
+      the engine's `RequestPolicy` trait). Lists: EasyList, EasyPrivacy, uBlock filters +
+      privacy, Peter Lowe; downloaded in the background, cached compiled in the profile,
+      refreshed every 96 h. Standard spares first-party requests (unless `$important`).
+- [x] Cosmetic filters: host-specific and generic non-class selectors injected as a style
+      sheet at load start. *Open:* class/id generic rules (needs a DOM-scanning content
+      script → `hidden_class_id_selectors`) and scriptlets (need uBO's resources).
+- [x] Popup & redirect policy: popups need a click and must not go to a listed ad site
+      (`$popup` rules are rewritten to `$document`, adblock-rust has no popup type);
+      redirects without a click to listed sites are cancelled in `OnBeforeBrowse`;
+      Aggressive also cancels every cross-site redirect without a click.
+- [x] Tracking parameters (fbclid, gclid, … and `utm_*` on Aggressive) stripped from page loads.
+- [x] Third-party cookies blocked per request (CEF cookie access filter). Chromium's
+      `profile.cookie_controls_mode` pref is refused by CEF 156, so it isn't used.
+      *Open:* `document.cookie` in third-party iframes; fingerprinting protections.
+- [x] Shields popover (drips from the shield: counter, Off/Standard/Aggressive per site,
+      stored in the profile), Settings › Shields, grey shield when off.
 
 ### Phase 5 — Tabs & memory
 - [ ] Lifecycle state machine + freeze/discard + restore.
@@ -221,6 +233,10 @@ Windows/macOS, touchscreen-first mode.
 - 2026-10-25: The window area around the page takes the **page's top colour** (solid, measured
   on the GPU; `appearance.tint_from_page`), like Safari. The page itself still never shows
   behind the bar.
+
+- 2026-10-25: Shields levels per site are stored by host (without `www.`) in the profile's
+  `site_settings` table; a level equal to the default is not stored, so changing the default
+  in Settings reaches every site without its own choice. Changing a level reloads the page.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

@@ -20,6 +20,8 @@ mod menu;
 mod overview;
 mod private;
 mod settings;
+mod shields;
+mod shields_popover;
 mod suggestions;
 mod tabs;
 mod url;
@@ -58,7 +60,10 @@ fn main() -> Result<()> {
         open: args.iter().find_map(|a| a.strip_prefix("--open=")).map(str::to_owned),
         lead: args.iter().find_map(|a| a.strip_prefix("--lead=")?.parse().ok()).map(Duration::from_millis),
         capture: args.iter().find_map(|a| a.strip_prefix("--capture=")).map(Into::into),
-        capture_after: CAPTURE_AFTER,
+        capture_after: args
+            .iter()
+            .find_map(|a| a.strip_prefix("--after=")?.parse().ok())
+            .map_or(CAPTURE_AFTER, Duration::from_secs_f32),
         size: args.iter().find_map(|a| a.strip_prefix("--size=")).and_then(|s| {
             let (w, h) = s.split_once('x')?;
             Some((w.parse().ok()?, h.parse().ok()?))

@@ -3,12 +3,14 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use cef::rc::Rc as _;
 use cef::sys::{cef_cursor_type_t, cef_window_open_disposition_t};
 use cef::*;
 use glam::Vec2;
 
+use super::network::{Network, build_request_handler};
 use crate::{CursorKind, EngineEvent, NewViewKind, ViewId};
 
 /// Events from all views, tagged with the CEF browser they came from so events from a browser
@@ -39,6 +41,7 @@ pub(super) struct ViewContext {
     pub geometry: Rc<ViewGeometry>,
     pub frames: Rc<ViewFrames>,
     pub shared: Rc<Shared>,
+    pub net: Arc<Network>,
 }
 
 impl ViewContext {
@@ -215,6 +218,15 @@ wrap_load_handler! {
     }
 
     impl LoadHandler {
+        fn on_load_start(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, _transition_type: TransitionType) {
+            // Shields' cosmetic filters, injected as the document starts so ads never show.
+            let (Some(policy), Some(frame)) = (self.ctx.net.policy(), frame) else { return };
+            let url = CefString::from(&frame.url()).to_string();
+            if let Some(script) = policy.page_script(&url) {
+                frame.execute_java_script(Some(&script.as_str().into()), Some(&url.as_str().into()), 0);
+            }
+        }
+
         fn on_loading_state_change(
             &self,
             browser: Option<&mut Browser>,
@@ -342,6 +354,7 @@ wrap_client! {
         display: DisplayHandler,
         load: LoadHandler,
         life_span: LifeSpanHandler,
+        request: RequestHandler,
     }
 
     impl Client {
@@ -360,6 +373,10 @@ wrap_client! {
         fn life_span_handler(&self) -> Option<LifeSpanHandler> {
             Some(self.life_span.clone())
         }
+
+        fn request_handler(&self) -> Option<RequestHandler> {
+            Some(self.request.clone())
+        }
     }
 }
 
@@ -369,6 +386,7 @@ pub(super) fn build_client(ctx: &ViewContext) -> Client {
         DisplayHandlerBuilder::new(ctx.clone()),
         LoadHandlerBuilder::new(ctx.clone()),
         LifeSpanHandlerBuilder::new(ctx.clone()),
+        build_request_handler(&ctx.net, ctx.view),
     )
 }
 

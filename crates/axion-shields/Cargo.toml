@@ -1,0 +1,18 @@
+[package]
+name = "axion-shields"
+description = "Axion Shields: ad/tracker blocking (adblock-rust), popup and redirect policy, tracking-parameter stripping"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+adblock = { version = "0.13", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
+addr = { version = "0.15", default-features = false, features = ["psl"] }
+thiserror.workspace = true
+tracing.workspace = true
+ureq = "3"
+url = "2"
+
+[lints]
+workspace = true

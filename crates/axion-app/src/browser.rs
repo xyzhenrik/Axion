@@ -11,6 +11,7 @@ use axion_compositor::{Compositor, ImageDraw, Layer, Rect, Scene};
 use axion_config::{Action, Config, ConfigPaths, ConfigWatcher, Key, Keymap, Modifiers, ThemeMode};
 use axion_engine::cef::{CefEngine, CefOptions};
 use axion_engine::{CursorKind, Engine, EngineEvent, InputEvent, MouseButton, NewViewKind, ViewId, ViewSize};
+use axion_shields::Level;
 use axion_ui::{Paint, Theme, Ui, UiCursor, UiEvent, UiInput};
 use glam::Vec2;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
@@ -24,7 +25,9 @@ use crate::lockscreen::LockScreen;
 use crate::menu::{Menu, MenuAction, MenuItem};
 use crate::overview::{Overview, OverviewAction};
 use crate::private::PrivateLock;
-use crate::settings::{Outcome, SettingsAction, SettingsSheet};
+use crate::settings::{Category, Outcome, SettingsAction, SettingsSheet};
+use crate::shields::ShieldsState;
+use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
 use crate::suggestions::{SuggestionList, suggest};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
 use crate::url::display_host;
@@ -85,6 +88,8 @@ pub struct Browser {
     overview: Overview,
     suggestions: SuggestionList,
     menu: Menu,
+    shields: ShieldsState,
+    shields_popover: ShieldsPopover,
     settings: SettingsSheet,
     /// Unsaved settings changes since this time (saving is throttled while dragging).
     config_dirty_since: Option<Instant>,
@@ -192,7 +197,8 @@ impl Browser {
         let store = axion_store::Store::open(&profile.join("axion.sqlite"))
             .inspect_err(|e| tracing::error!("history unavailable: {e}"))
             .ok();
-        let engine = CefEngine::new(
+        let shields = ShieldsState::new(&profile, &config, store.as_ref());
+        let mut engine = CefEngine::new(
             device.clone(),
             queue.clone(),
             CefOptions {
@@ -207,6 +213,7 @@ impl Browser {
                 max_frame_rate: MAX_FRAME_RATE,
             },
         )?;
+        engine.set_request_policy(Some(shields.policy()));
 
         let dark = is_dark(&config, &window);
         let scale = window.scale_factor() as f32;
@@ -216,6 +223,7 @@ impl Browser {
         let chrome = Chrome::build(&mut ui, &config);
         let suggestions = SuggestionList::build(&mut ui, chrome.bar_node());
         let menu = Menu::build(&mut ui, chrome.bar_node());
+        let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
         let settings = SettingsSheet::build(&mut ui);
         let lock = PrivateLock::load(store.as_ref());
@@ -236,6 +244,8 @@ impl Browser {
             overview,
             suggestions,
             menu,
+            shields,
+            shields_popover,
             settings,
             config_dirty_since: None,
             last_saved_config: None,
@@ -469,6 +479,7 @@ impl Browser {
                     self.settings.close(&mut self.ui);
                 } else {
                     self.menu.close(&mut self.ui, &self.config);
+                    self.shields_popover.close(&mut self.ui, &self.config);
                     self.settings.set_has_password(self.lock.has_password());
                     let window = self.logical_size();
                     self.settings.open(&mut self.ui, &self.config, &self.keymap, window);
@@ -494,6 +505,7 @@ impl Browser {
         std::mem::swap(&mut self.tabs, &mut self.parked);
         self.private_mode = !self.private_mode;
         self.menu.close(&mut self.ui, &self.config);
+        self.shields_popover.close(&mut self.ui, &self.config);
         self.suggestions.hide(&mut self.ui, &self.config);
         if self.tabs.is_empty() {
             let home = self.config.general.homepage.clone();
@@ -671,6 +683,69 @@ impl Browser {
         }
     }
 
+    // ---- shields ----
+
+    fn shields_info(&self) -> Option<ShieldsInfo> {
+        let tab = self.tabs.active()?;
+        Some(ShieldsInfo {
+            host: display_host(&tab.url),
+            level: self.shields.level(&tab.url),
+            blocked_here: tab.blocked,
+            blocked_total: self.shields.total(),
+            lists_loading: !self.shields.is_ready(),
+        })
+    }
+
+    fn toggle_shields_popover(&mut self) {
+        if self.shields_popover.is_open() {
+            self.shields_popover.close(&mut self.ui, &self.config);
+            return;
+        }
+        self.menu.close(&mut self.ui, &self.config);
+        let Some(info) = self.shields_info() else { return };
+        let anchor = self.chrome.shield_frame(&self.ui);
+        let width = self.logical_size().x;
+        self.shields_popover.open(&mut self.ui, &self.config, anchor, width, &info);
+    }
+
+    /// Sets the active page's site level and reloads it, so the change shows at once.
+    fn set_shields_level(&mut self, level: Level) {
+        let Some(tab) = self.tabs.active() else { return };
+        let (url, view) = (tab.url.clone(), tab.view);
+        self.shields.set_level(self.store.as_ref(), &url, level, &self.config);
+        self.engine.reload(view, false);
+        self.tabs_changed = true;
+        self.refresh_shields_popover();
+    }
+
+    /// Counts a blocked request once per page (pages often retry the same URL).
+    fn count_blocked(&mut self, view: ViewId, url: String) {
+        let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) else { return };
+        if !tab.blocked_urls.insert(url) {
+            return;
+        }
+        tab.blocked += 1;
+        self.shields.count_blocked(self.store.as_ref());
+        if Some(view) == self.active_view() {
+            self.refresh_shields_popover();
+        }
+    }
+
+    fn refresh_shields_popover(&mut self) {
+        if !self.shields_popover.is_open() {
+            return;
+        }
+        if let Some(info) = self.shields_info() {
+            let anchor = self.chrome.shield_frame(&self.ui);
+            let width = self.logical_size().x;
+            self.shields_popover.update(&mut self.ui, &self.config, anchor, width, &info);
+        }
+    }
+
+    fn apply_shields_config(&mut self) {
+        self.shields.apply_config(&self.config);
+    }
+
     fn edit_address(&mut self) {
         if let Some(view) = self.active_view() {
             self.engine.set_focus(view, false);
@@ -744,6 +819,19 @@ impl Browser {
                         self.menu_action(action);
                     }
                 }
+                UiEvent::Clicked { action, .. } if self.shields_popover.action(action).is_some() => {
+                    match self.shields_popover.action(action) {
+                        Some(PopoverAction::SetLevel(level)) => self.set_shields_level(level),
+                        Some(PopoverAction::OpenSettings) => {
+                            self.shields_popover.close(&mut self.ui, &self.config);
+                            self.settings.set_category(Category::Shields);
+                            if !self.settings.is_open() {
+                                self.run(Action::OpenSettings);
+                            }
+                        }
+                        None => {}
+                    }
+                }
                 UiEvent::Clicked { action, .. } if SuggestionList::row_action(action).is_some() => {
                     let url = SuggestionList::row_action(action)
                         .and_then(|i| self.suggestions.get(i))
@@ -765,7 +853,7 @@ impl Browser {
                     Some(ChromeAction::EditAddress) => self.edit_address(),
                     Some(ChromeAction::NewTab) => self.run(Action::NewTab),
                     Some(ChromeAction::Overview) => self.run(Action::TabOverview),
-                    Some(ChromeAction::Shield) => tracing::info!("the Shields popover arrives in Phase 4"),
+                    Some(ChromeAction::Shield) => self.toggle_shields_popover(),
                     Some(ChromeAction::Share) => {
                         // Until the share sheet exists: copy the address.
                         let url = self.tabs.active().map(|t| t.url.clone());
@@ -863,6 +951,11 @@ impl Browser {
                         tracing::warn!("saving history failed: {e}");
                     }
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
+                        if loading && !tab.loading {
+                            // A new page: its count starts over.
+                            tab.blocked = 0;
+                            tab.blocked_urls.clear();
+                        }
                         tab.loading = loading;
                         tab.can_go_back = can_go_back;
                         tab.can_go_forward = can_go_forward;
@@ -892,11 +985,15 @@ impl Browser {
                         self.update_layout();
                     }
                 }
-                EngineEvent::NewViewRequested { url, kind, user_gesture, .. } => {
-                    // Popup policy (Shields, Phase 4 will make this configurable): pages may only
-                    // open tabs in response to a click or key press.
-                    if !user_gesture {
-                        tracing::info!(%url, "blocked a popup opened without user interaction");
+                EngineEvent::NewViewRequested { opener, url, kind, user_gesture } => {
+                    let opener_url = find_tab(&self.tabs, &self.parked, opener).map(|t| t.url.clone());
+                    if !self.shields.allow_popup(
+                        opener_url.as_deref().unwrap_or_default(),
+                        &url,
+                        user_gesture,
+                    ) {
+                        tracing::info!(%url, user_gesture, "blocked a popup");
+                        self.count_blocked(opener, url);
                         continue;
                     }
                     let activate = kind != NewViewKind::BackgroundTab;
@@ -925,6 +1022,9 @@ impl Browser {
                         }
                     }
                 }
+                EngineEvent::RequestBlocked { view, url } | EngineEvent::NavigationBlocked { view, url } => {
+                    self.count_blocked(view, url);
+                }
                 EngineEvent::Closed { .. } => {}
             }
         }
@@ -937,6 +1037,7 @@ impl Browser {
             Outcome::Changed => {
                 // Apply at once; write to disk a moment later (sliders send many changes).
                 self.config_dirty_since.get_or_insert(Instant::now());
+                self.apply_shields_config();
                 self.apply_theme();
                 self.update_layout();
                 self.tabs_changed = true;
@@ -954,6 +1055,7 @@ impl Browser {
                 self.settings.set_has_password(false);
                 self.update_lock();
             }
+            Outcome::UpdateFilterLists => self.shields.update_lists(),
             Outcome::ClearHistory => {
                 if let Some(store) = &self.store
                     && let Err(e) = store.clear_history_since(0)
@@ -985,6 +1087,7 @@ impl Browser {
                 Ok(config) => {
                     tracing::info!("settings reloaded");
                     self.config = config;
+                    self.apply_shields_config();
                     self.apply_theme();
                     self.update_layout();
                     self.tabs_changed = true;
@@ -1164,6 +1267,10 @@ impl Browser {
             self.menu.close(&mut self.ui, &self.config);
             return;
         }
+        if pressed && self.shields_popover.is_open() && !self.shields_popover.contains(&self.ui, p) {
+            self.shields_popover.close(&mut self.ui, &self.config);
+            return;
+        }
         if button == winit::event::MouseButton::Left {
             if pressed {
                 let (consumed, events) = self.ui.handle(UiInput::PointerDown);
@@ -1218,6 +1325,11 @@ impl Browser {
         }
         if pressed && self.menu.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.menu.close(&mut self.ui, &self.config);
+            return false;
+        }
+        if pressed && self.shields_popover.is_open() && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            self.shields_popover.close(&mut self.ui, &self.config);
             return false;
         }
         if pressed
@@ -1287,6 +1399,8 @@ impl Browser {
         }
         if std::mem::take(&mut self.tabs_changed) {
             self.chrome.sync_tabs(&mut self.ui, &self.tabs, &self.favicons);
+            let level = self.tabs.active().map(|t| self.shields.level(&t.url));
+            self.chrome.set_shield_active(&mut self.ui, level.is_some_and(|l| l != Level::Off));
             let title = self.tabs.active().map(|t| t.label()).unwrap_or_default();
             self.window.set_title(
                 if title.is_empty() { "Axion".to_owned() } else { format!("{title} — Axion") }.as_str(),
@@ -1300,9 +1414,14 @@ impl Browser {
         if let Some((_, what)) = self.open_at.take_if(|(at, _)| now >= *at) {
             match what.as_str() {
                 "menu" => self.open_page_menu(),
+                "shields" => self.toggle_shields_popover(),
                 "history" => self.show_panel(Panel::History),
                 "bookmarks" => self.show_panel(Panel::Bookmarks),
                 "settings" => self.run(Action::OpenSettings),
+                "shields-settings" => {
+                    self.settings.set_category(Category::Shields);
+                    self.run(Action::OpenSettings);
+                }
                 "private" => self.toggle_private_mode(),
                 "private-locked" => {
                     // Capture aid: lock private browsing with a throwaway test password.
@@ -1323,6 +1442,7 @@ impl Browser {
         self.ui.animate(dt);
         self.chrome.animate(&mut self.ui, dt);
         self.menu.animate(&mut self.ui, dt);
+        self.shields_popover.animate(&mut self.ui, dt);
         self.suggestions.animate(&mut self.ui, dt);
         if self.overview.is_open() {
             let query = self.ui.field_text(self.overview.search_field()).unwrap_or_default().to_owned();
@@ -1462,6 +1582,12 @@ enum Panel {
 }
 
 /// Signals that `--capture` finished (not an error for the user).
+impl Drop for Browser {
+    fn drop(&mut self) {
+        self.shields.save(self.store.as_ref());
+    }
+}
+
 #[derive(Debug)]
 pub struct CaptureDone;
 

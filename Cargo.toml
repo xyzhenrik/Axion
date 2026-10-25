@@ -14,6 +14,7 @@ axion-config = { path = "crates/axion-config" }
 axion-engine = { path = "crates/axion-engine" }
 axion-glass = { path = "crates/axion-glass" }
 axion-physics = { path = "crates/axion-physics" }
+axion-shields = { path = "crates/axion-shields" }
 axion-store = { path = "crates/axion-store" }
 axion-ui = { path = "crates/axion-ui" }
 

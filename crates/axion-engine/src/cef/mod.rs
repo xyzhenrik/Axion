@@ -7,22 +7,27 @@
 mod client;
 mod gpu;
 mod input;
+mod network;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
 use cef::*;
 
 pub use gpu::render_node_for;
 
-use crate::{Engine, EngineError, EngineEvent, Frame, InputEvent, ViewId, ViewSize};
+use crate::{Engine, EngineError, EngineEvent, Frame, InputEvent, RequestPolicy, ViewId, ViewSize};
 use client::{FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, build_client, favicon_callback};
 use input::InputState;
+use network::Network;
 
 /// How long [`CefEngine::shutdown`] waits for views to close before giving up.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+/// Opaque white, ARGB.
+const PAGE_BACKGROUND: u32 = 0xFFFF_FFFF;
 
 #[derive(Clone)]
 struct ProcessFlags {
@@ -115,6 +120,7 @@ pub struct CefEngine {
     input: InputState,
     /// In-memory profile shared by private views, created on first use.
     private_context: Option<RequestContext>,
+    net: Arc<Network>,
     shut_down: bool,
 }
 
@@ -150,6 +156,7 @@ impl CefEngine {
             max_frame_rate: options.max_frame_rate,
             input: InputState::default(),
             private_context: None,
+            net: Arc::default(),
             shut_down: false,
         })
     }
@@ -185,8 +192,13 @@ impl CefEngine {
             external_begin_frame_enabled: 1,
             ..Default::default()
         };
-        let settings =
-            BrowserSettings { windowless_frame_rate: self.max_frame_rate as _, ..Default::default() };
+        let settings = BrowserSettings {
+            windowless_frame_rate: self.max_frame_rate as _,
+            // Off-screen views are transparent by default; pages without a background of
+            // their own must get white, as in any browser.
+            background_color: PAGE_BACKGROUND,
+            ..Default::default()
+        };
         let browser = browser_host_create_browser_sync(
             Some(&window_info),
             Some(&mut client),
@@ -289,6 +301,7 @@ impl Engine for CefEngine {
             geometry: Rc::new(ViewGeometry { logical: size.logical.into(), scale: size.scale.into() }),
             frames: Rc::new(ViewFrames::default()),
             shared: self.shared.clone(),
+            net: self.net.clone(),
         };
         let (browser, browser_id) = self.create_browser(&ctx, url, private)?;
         self.views.insert(
@@ -388,6 +401,10 @@ impl Engine for CefEngine {
         host.download_image(Some(&url.into()), 1, max_size, 0, Some(&mut callback));
     }
 
+    fn set_request_policy(&mut self, policy: Option<Arc<dyn RequestPolicy>>) {
+        *self.net.policy.write().unwrap_or_else(PoisonError::into_inner) = policy;
+    }
+
     fn request_frame(&mut self, view: ViewId) {
         if let Some(host) = self.host(view) {
             host.send_external_begin_frame();
@@ -404,7 +421,8 @@ impl Engine for CefEngine {
         do_message_loop_work();
         self.fall_back_to_software_if_needed();
 
-        let raw = std::mem::take(&mut *self.shared.events.borrow_mut());
+        let mut raw = std::mem::take(&mut *self.shared.events.borrow_mut());
+        raw.extend(self.net.take_events());
         let mut events = Vec::with_capacity(raw.len());
         for (browser_id, event) in raw {
             let view = match &event {
@@ -417,6 +435,8 @@ impl Engine for CefEngine {
                 | EngineEvent::FaviconReady { view, .. }
                 | EngineEvent::CursorChanged { view, .. }
                 | EngineEvent::FullscreenRequested { view, .. }
+                | EngineEvent::RequestBlocked { view, .. }
+                | EngineEvent::NavigationBlocked { view, .. }
                 | EngineEvent::Closed { view } => *view,
             };
             let Some(state) = self.views.get_mut(&view) else { continue };

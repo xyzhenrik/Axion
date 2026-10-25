@@ -16,6 +16,7 @@ pub struct Config {
     pub motion: Motion,
     pub layout: Layout,
     pub privacy: Privacy,
+    pub shields: Shields,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -322,6 +323,60 @@ pub struct Privacy {
 impl Default for Privacy {
     fn default() -> Self {
         Self { lock_private_tabs: true, lock_after_seconds: 60.0 }
+    }
+}
+
+/// How hard Shields blocks on a site.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShieldLevel {
+    Off,
+    /// Third-party ads and trackers, ad popups and ad redirects.
+    #[default]
+    Standard,
+    /// Also first-party ads, every cross-site redirect without a click, and `utm_` parameters.
+    Aggressive,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Shields {
+    /// Level for sites without their own setting (set per site in the Shields popover).
+    pub default_level: ShieldLevel,
+    /// Hide ad placeholders left on the page (cosmetic filters).
+    pub hide_ad_elements: bool,
+    /// Block tabs and windows a page opens without a click or key press.
+    pub block_popups: bool,
+    /// Block redirects the page makes without a click to sites on the block lists.
+    pub block_redirects: bool,
+    /// Remove click-tracking parameters (fbclid, gclid, …) from links.
+    pub strip_tracking_parameters: bool,
+    pub block_third_party_cookies: bool,
+    /// Filter lists in Adblock Plus / uBlock Origin syntax.
+    pub lists: Vec<String>,
+    /// Refresh the lists after this many hours.
+    pub update_interval_hours: f32,
+}
+
+impl Default for Shields {
+    fn default() -> Self {
+        Self {
+            default_level: ShieldLevel::Standard,
+            hide_ad_elements: true,
+            block_popups: true,
+            block_redirects: true,
+            strip_tracking_parameters: true,
+            block_third_party_cookies: true,
+            lists: vec![
+                "https://easylist.to/easylist/easylist.txt".into(),
+                "https://easylist.to/easylist/easyprivacy.txt".into(),
+                "https://ublockorigin.github.io/uAssets/filters/filters.txt".into(),
+                "https://ublockorigin.github.io/uAssets/filters/privacy.txt".into(),
+                "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&showintro=0&mimetype=plaintext"
+                    .into(),
+            ],
+            update_interval_hours: 96.0,
+        }
     }
 }
 

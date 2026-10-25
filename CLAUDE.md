@@ -47,11 +47,12 @@ crates/
   axion-physics/     springs, drag/fling, rubber-banding, gesture → motion mapping
   axion-ui/          retained widget tree, taffy layout, glyphon text, hit-testing, focus, editing
   axion-config/      settings schema (design-token defaults), TOML load/save, live reload, keymap
+  axion-shields/     adblock-rust engine + list cache, popup/redirect/cookie policy, tracking params
+                     (the engine asks it through `axion_engine::RequestPolicy`, glue in app/shields.rs)
+  axion-store/       SQLite: history, bookmarks, meta, per-site settings (session restore planned)
 planned:
-  axion-shields/     adblock-rust integration, popup/redirect policy, fingerprinting protections
   axion-tabs/        tab lifecycle (active/background/frozen/discarded), groups, memory budget
   axion-media/       media bridge (injected JS ↔ IPC), controls state, fullscreen/PiP, MPRIS
-  axion-store/       SQLite: history, bookmarks, session restore
 ```
 
 Dependency direction: `app` → everything; `ui` → `compositor`, `glass`, `config`;
@@ -98,6 +99,8 @@ Provide a "Reduce Transparency" / "Reduce Motion" setting that degrades graceful
 - Errors: `thiserror` in library crates, `anyhow` only in `axion-app`.
 - Logging: `tracing`. No `println!` outside examples.
 - No `unwrap()`/`expect()` in non-test code unless the invariant is commented.
+- CEF's request hooks (`cef/network.rs`) run on Chromium's IO thread: they may only hold
+  `Send + Sync` state (`Arc<Network>`), never the `Rc`-based `ViewContext`.
 - `unsafe` only in `axion-engine` (CEF FFI) and GPU interop; every block gets a `// SAFETY:` comment.
 - Shaders are WGSL files in each crate's `shaders/` directory, embedded with `include_str!`
   (hot reload in debug builds is still to do).
@@ -122,6 +125,7 @@ AXION_OSR=software|gpu ...   # force page frame sharing off/on (default: on for 
 AXION_CONFIG_DIR / AXION_PROFILE_DIR   # use throwaway settings/profile (do this for test runs)
 AXION_MONITOR=HDMI-A-1 ...   # open on that monitor (X11/XWayland only: run with `env -u WAYLAND_DISPLAY`)
 axion url1 url2 --overview --capture=out.png   # several tabs; screenshot of the tab overview
+axion url --after=20 --capture=out.png        # capture after 20 s instead of 8
 ```
 
 ## Things to watch

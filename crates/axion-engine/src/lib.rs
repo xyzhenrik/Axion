@@ -8,8 +8,10 @@
 
 pub mod cef;
 mod input;
+mod policy;
 
 pub use input::{CursorKind, InputEvent, Modifiers, MouseButton};
+pub use policy::{NavigationRequest, RequestPolicy, RequestVerdict, ResourceKind, ResourceRequest};
 
 use glam::Vec2;
 
@@ -91,6 +93,16 @@ pub enum EngineEvent {
         kind: NewViewKind,
         user_gesture: bool,
     },
+    /// The [`RequestPolicy`] blocked a request of the view's page.
+    RequestBlocked {
+        view: ViewId,
+        url: String,
+    },
+    /// The [`RequestPolicy`] stopped the view's page from navigating (a redirect).
+    NavigationBlocked {
+        view: ViewId,
+        url: String,
+    },
     /// The view is gone (after [`Engine::close_view`], or the engine had to drop it).
     Closed {
         view: ViewId,
@@ -137,6 +149,10 @@ pub trait Engine {
     /// Downloads and decodes a favicon through the view's network stack (cache, cookies,
     /// blocking rules apply). Arrives as [`EngineEvent::FaviconReady`].
     fn fetch_favicon(&mut self, view: ViewId, url: &str, max_size: u32);
+
+    /// Installs what decides which requests and navigations pages may make (Shields). It
+    /// applies to every view, also ones created before.
+    fn set_request_policy(&mut self, policy: Option<std::sync::Arc<dyn RequestPolicy>>);
 
     /// Asks the view to produce a frame now (call once per compositor frame for visible views).
     fn request_frame(&mut self, view: ViewId);

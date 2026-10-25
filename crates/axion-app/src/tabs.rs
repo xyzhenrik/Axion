@@ -1,5 +1,7 @@
 //! The window's tabs. (Lifecycle — freezing, discarding — moves to `axion-tabs` in Phase 5.)
 
+use std::collections::HashSet;
+
 use axion_engine::ViewId;
 
 /// Each zoom step in Chromium's zoom-level units (1 level = ×1.2).
@@ -21,6 +23,9 @@ pub struct Tab {
     pub needs_snapshot: bool,
     /// Private tabs keep no history.
     pub private: bool,
+    /// Requests, popups and redirects Shields blocked on the current page.
+    pub blocked: u32,
+    pub blocked_urls: HashSet<String>,
 }
 
 impl Tab {
@@ -36,6 +41,8 @@ impl Tab {
             zoom: 0.0,
             needs_snapshot: false,
             private: false,
+            blocked: 0,
+            blocked_urls: HashSet::new(),
         }
     }
 

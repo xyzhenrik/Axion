@@ -174,6 +174,8 @@ pub struct Chrome {
     pub address_field: NodeId,
     reload_icon: NodeId,
     page_menu: NodeId,
+    shield: NodeId,
+    shield_glyph: NodeId,
     progress: NodeId,
     /// Inactive tab segments, rebuilt by `sync_tabs`.
     pills: Vec<NodeId>,
@@ -467,7 +469,7 @@ impl Chrome {
         );
         let address_close = close_dot(ui, address, ChromeAction::CloseTab(0), 32.0);
         let shield_glyph = Widget::icon(Icon::Shield, 18.0).with_paint(Paint::Shield);
-        icon_button(ui, address, ChromeAction::Shield, shield_glyph, 30.0);
+        let (shield, shield_glyph) = icon_button(ui, address, ChromeAction::Shield, shield_glyph, 30.0);
         let address_label = ui.add_label(address, "", TextStyle::BodyEmphasis, shrinking_label());
         ui.set_label_align(address_label, Align::Start);
         let address_field = ui.add_text_field(
@@ -543,6 +545,8 @@ impl Chrome {
             address_field,
             reload_icon,
             page_menu,
+            shield,
+            shield_glyph,
             progress,
             pills: Vec::new(),
             overview,
@@ -770,6 +774,17 @@ impl Chrome {
     /// The page menu button's frame (logical px), for anchoring the menu.
     pub fn page_menu_frame(&self, ui: &Ui) -> Frame {
         ui.frame(self.page_menu)
+    }
+
+    pub fn shield_frame(&self, ui: &Ui) -> Frame {
+        ui.frame(self.shield)
+    }
+
+    /// Green while Shields protect the page, grey when they are off for its site.
+    pub fn set_shield_active(&self, ui: &mut Ui, active: bool) {
+        if let Some(w) = ui.widget_mut(self.shield_glyph) {
+            w.set_paint(if active { Paint::Shield } else { Paint::Secondary });
+        }
     }
 
     pub fn page_fullscreen(&self) -> bool {

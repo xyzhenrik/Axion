@@ -2,7 +2,7 @@
 //! categories on the left. Every change is written to `config.toml` at once.
 
 use axion_compositor::Icon;
-use axion_config::{Action as KeyAction, Color, Config, Keymap, ThemeMode};
+use axion_config::{Action as KeyAction, Color, Config, Keymap, ShieldLevel, ThemeMode};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
@@ -32,15 +32,17 @@ pub enum Category {
     Appearance,
     LiquidGlass,
     Keyboard,
+    Shields,
     Privacy,
 }
 
 impl Category {
-    const ALL: [Category; 5] = [
+    const ALL: [Category; 6] = [
         Category::General,
         Category::Appearance,
         Category::LiquidGlass,
         Category::Keyboard,
+        Category::Shields,
         Category::Privacy,
     ];
 
@@ -50,6 +52,7 @@ impl Category {
             Category::Appearance => "Appearance",
             Category::LiquidGlass => "Liquid Glass",
             Category::Keyboard => "Keyboard",
+            Category::Shields => "Shields",
             Category::Privacy => "Privacy",
         }
     }
@@ -60,7 +63,8 @@ impl Category {
             Category::Appearance => Icon::Sidebar,
             Category::LiquidGlass => Icon::Overview,
             Category::Keyboard => Icon::Menu,
-            Category::Privacy => Icon::Shield,
+            Category::Shields => Icon::Shield,
+            Category::Privacy => Icon::Lock,
         }
     }
 }
@@ -81,6 +85,11 @@ enum Setting {
     MergeDistance,
     LockPrivateTabs,
     LockAfter,
+    HideAdElements,
+    BlockPopups,
+    BlockRedirects,
+    StripTracking,
+    ThirdPartyCookies,
 }
 
 impl Setting {
@@ -99,6 +108,11 @@ impl Setting {
             Setting::MergeDistance => "Merge distance",
             Setting::LockPrivateTabs => "Lock private tabs with a password",
             Setting::LockAfter => "Lock after (0 – 10 minutes in background)",
+            Setting::HideAdElements => "Hide empty ad spaces",
+            Setting::BlockPopups => "Block popups opened without a click",
+            Setting::BlockRedirects => "Block redirects to ad and tracker sites",
+            Setting::StripTracking => "Remove tracking parameters from links",
+            Setting::ThirdPartyCookies => "Block third-party cookies",
         }
     }
 
@@ -110,6 +124,11 @@ impl Setting {
                 | Setting::ReduceTransparency
                 | Setting::ReduceMotion
                 | Setting::LockPrivateTabs
+                | Setting::HideAdElements
+                | Setting::BlockPopups
+                | Setting::BlockRedirects
+                | Setting::StripTracking
+                | Setting::ThirdPartyCookies
         )
     }
 
@@ -137,6 +156,11 @@ impl Setting {
             Setting::ReduceTransparency => return c.glass.reduce_transparency as u8 as f32,
             Setting::ReduceMotion => return c.glass.reduce_motion as u8 as f32,
             Setting::LockPrivateTabs => return c.privacy.lock_private_tabs as u8 as f32,
+            Setting::HideAdElements => return c.shields.hide_ad_elements as u8 as f32,
+            Setting::BlockPopups => return c.shields.block_popups as u8 as f32,
+            Setting::BlockRedirects => return c.shields.block_redirects as u8 as f32,
+            Setting::StripTracking => return c.shields.strip_tracking_parameters as u8 as f32,
+            Setting::ThirdPartyCookies => return c.shields.block_third_party_cookies as u8 as f32,
             Setting::LockAfter => c.privacy.lock_after_seconds,
             Setting::TextScale => c.appearance.text_scale,
             Setting::PageCorner => c.layout.page_corner_radius,
@@ -161,6 +185,11 @@ impl Setting {
             Setting::ReduceTransparency => c.glass.reduce_transparency = on,
             Setting::ReduceMotion => c.glass.reduce_motion = on,
             Setting::LockPrivateTabs => c.privacy.lock_private_tabs = on,
+            Setting::HideAdElements => c.shields.hide_ad_elements = on,
+            Setting::BlockPopups => c.shields.block_popups = on,
+            Setting::BlockRedirects => c.shields.block_redirects = on,
+            Setting::StripTracking => c.shields.strip_tracking_parameters = on,
+            Setting::ThirdPartyCookies => c.shields.block_third_party_cookies = on,
             Setting::LockAfter => c.privacy.lock_after_seconds = (v / 10.0).round() * 10.0,
             Setting::TextScale => c.appearance.text_scale = (v * 20.0).round() / 20.0,
             Setting::PageCorner => c.layout.page_corner_radius = v.round(),
@@ -199,7 +228,12 @@ pub enum SettingsAction {
     ClearHistory,
     SetPassword,
     RemovePassword,
+    ShieldLevel(ShieldLevel),
+    UpdateFilterLists,
 }
+
+const SHIELD_LEVELS: [(&str, ShieldLevel); 3] =
+    [("Off", ShieldLevel::Off), ("Standard", ShieldLevel::Standard), ("Aggressive", ShieldLevel::Aggressive)];
 
 impl SettingsAction {
     fn id(self) -> ActionId {
@@ -218,6 +252,10 @@ impl SettingsAction {
                     SettingsAction::ClearHistory => 50,
                     SettingsAction::SetPassword => 51,
                     SettingsAction::RemovePassword => 52,
+                    SettingsAction::ShieldLevel(level) => {
+                        60 + SHIELD_LEVELS.iter().position(|(_, l)| *l == level).unwrap_or(0) as u32
+                    }
+                    SettingsAction::UpdateFilterLists => 63,
                 },
         )
     }
@@ -226,7 +264,7 @@ impl SettingsAction {
         let n = id.0.checked_sub(ACTION_BASE)?;
         Some(match n {
             0 => SettingsAction::Close,
-            10..=14 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
+            10..=15 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
             20 => SettingsAction::Theme(ThemeMode::Auto),
             21 => SettingsAction::Theme(ThemeMode::Light),
             22 => SettingsAction::Theme(ThemeMode::Dark),
@@ -237,6 +275,8 @@ impl SettingsAction {
             50 => SettingsAction::ClearHistory,
             51 => SettingsAction::SetPassword,
             52 => SettingsAction::RemovePassword,
+            60..=62 => SettingsAction::ShieldLevel(SHIELD_LEVELS[(n - 60) as usize].1),
+            63 => SettingsAction::UpdateFilterLists,
             _ => return None,
         })
     }
@@ -251,6 +291,7 @@ pub enum Outcome {
     ClearHistory,
     SetPassword(String),
     RemovePassword,
+    UpdateFilterLists,
 }
 
 pub struct SettingsSheet {
@@ -406,6 +447,11 @@ impl SettingsSheet {
         self.show(ui, config, keymap);
     }
 
+    /// Shows this category next time the sheet opens (or now, if open).
+    pub fn set_category(&mut self, category: Category) {
+        self.category = category;
+    }
+
     pub fn close(&mut self, ui: &mut Ui) {
         self.open = false;
         self.confirm_clear = false;
@@ -474,19 +520,19 @@ impl SettingsSheet {
                 self.homepage = Some(field);
                 let row_node = self.row(ui, "Search engine");
                 let current = SEARCH_ENGINES.iter().position(|(_, url)| *url == config.general.search_url);
-                let options: Vec<(&str, SettingsAction)> = SEARCH_ENGINES
+                let options: Vec<(&str, ActionId)> = SEARCH_ENGINES
                     .iter()
                     .enumerate()
-                    .map(|(i, (name, _))| (*name, SettingsAction::SearchEngine(i)))
+                    .map(|(i, (name, _))| (*name, SettingsAction::SearchEngine(i).id()))
                     .collect();
                 segmented(ui, row_node, &options, current);
             }
             Category::Appearance => {
                 let row_node = self.row(ui, "Appearance");
                 let themes = [
-                    ("Automatic", SettingsAction::Theme(ThemeMode::Auto)),
-                    ("Light", SettingsAction::Theme(ThemeMode::Light)),
-                    ("Dark", SettingsAction::Theme(ThemeMode::Dark)),
+                    ("Automatic", SettingsAction::Theme(ThemeMode::Auto).id()),
+                    ("Light", SettingsAction::Theme(ThemeMode::Light).id()),
+                    ("Dark", SettingsAction::Theme(ThemeMode::Dark).id()),
                 ];
                 let current = [ThemeMode::Auto, ThemeMode::Light, ThemeMode::Dark]
                     .iter()
@@ -569,6 +615,31 @@ impl SettingsSheet {
                         w.set_paint(Paint::Secondary);
                     }
                 }
+            }
+            Category::Shields => {
+                let row_node = self.row(ui, "Shields on sites you haven't set");
+                let options: Vec<(&str, ActionId)> = SHIELD_LEVELS
+                    .iter()
+                    .map(|(name, l)| (*name, SettingsAction::ShieldLevel(*l).id()))
+                    .collect();
+                let current = SHIELD_LEVELS.iter().position(|(_, l)| *l == config.shields.default_level);
+                segmented(ui, row_node, &options, current);
+                for setting in [
+                    Setting::HideAdElements,
+                    Setting::BlockPopups,
+                    Setting::BlockRedirects,
+                    Setting::StripTracking,
+                    Setting::ThirdPartyCookies,
+                ] {
+                    self.control(ui, config, setting);
+                }
+                let hours = config.shields.update_interval_hours;
+                let label = format!(
+                    "Filter lists ({}, refreshed every {hours:.0} hours)",
+                    config.shields.lists.len()
+                );
+                let row_node = self.row(ui, &label);
+                pill_button(ui, row_node, "Update Now", SettingsAction::UpdateFilterLists, false);
             }
             Category::Privacy => {
                 let label =
@@ -696,6 +767,11 @@ impl SettingsSheet {
                 config.appearance.accent = Color::rgb(ACCENTS[i]);
                 Outcome::Changed
             }
+            SettingsAction::ShieldLevel(level) => {
+                config.shields.default_level = level;
+                Outcome::Changed
+            }
+            SettingsAction::UpdateFilterLists => return Outcome::UpdateFilterLists,
             SettingsAction::SetPassword => {
                 let password = self.password.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned();
                 if password.is_empty() {
@@ -743,7 +819,7 @@ fn pill_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsAction, 
 }
 
 /// A segmented control: options as capsules, the current one filled.
-fn segmented(ui: &mut Ui, parent: NodeId, options: &[(&str, SettingsAction)], current: Option<usize>) {
+pub fn segmented(ui: &mut Ui, parent: NodeId, options: &[(&str, ActionId)], current: Option<usize>) {
     let group = ui.add(
         parent,
         Widget::container().with_background(Background::Fill(Paint::Label, 0.07)).with_radius(CAPSULE),
@@ -751,18 +827,19 @@ fn segmented(ui: &mut Ui, parent: NodeId, options: &[(&str, SettingsAction)], cu
     );
     for (i, (label, action)) in options.iter().enumerate() {
         let selected = Some(i) == current;
-        let segment =
-            ui.add(
-                group,
-                Widget::container().with_action(action.id()).with_radius(CAPSULE).with_background(
-                    if selected { Background::Fill(Paint::Surface, 1.0) } else { Background::None },
-                ),
-                Style {
-                    size: Size { width: auto(), height: length(30.0) },
-                    padding: padding(14.0, 0.0),
-                    ..row(0.0)
-                },
-            );
+        let segment = ui.add(
+            group,
+            Widget::container().with_action(*action).with_radius(CAPSULE).with_background(if selected {
+                Background::Fill(Paint::Surface, 1.0)
+            } else {
+                Background::None
+            }),
+            Style {
+                size: Size { width: auto(), height: length(30.0) },
+                padding: padding(14.0, 0.0),
+                ..row(0.0)
+            },
+        );
         let style = if selected { TextStyle::BodyEmphasis } else { TextStyle::Body };
         ui.add_label(segment, label, style, Style::default());
     }
@@ -826,6 +903,8 @@ mod tests {
             SettingsAction::SearchEngine(4),
             SettingsAction::Accent(5),
             SettingsAction::ClearHistory,
+            SettingsAction::ShieldLevel(ShieldLevel::Aggressive),
+            SettingsAction::UpdateFilterLists,
         ] {
             assert_eq!(SettingsAction::from_id(action.id()), Some(action));
         }
