@@ -4,6 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use cef::rc::Rc as _;
 use cef::sys::{cef_cursor_type_t, cef_window_open_disposition_t};
@@ -30,6 +31,13 @@ pub(super) struct ViewFrames {
     pub imported_any: Cell<bool>,
     pub import_failures: Cell<u32>,
 }
+
+/// How often a shared GPU frame that isn't drawn yet is copied again (see
+/// `ViewContext::import_gpu_frame`) …
+const FRAME_RETRY_INTERVAL: Duration = Duration::from_micros(500);
+/// … and for how long before it is given up (the previous frame stays and Chromium is asked
+/// to paint again).
+const FRAME_READY_TIMEOUT: Duration = Duration::from_millis(25);
 
 pub(super) struct ViewGeometry {
     pub logical: Cell<Vec2>,
@@ -58,40 +66,58 @@ impl ViewContext {
         self.frames.serial.set(self.frames.serial.get() + 1);
     }
 
-    /// Copies a frame shared by Chromium into a texture of our own (reused while the size and
-    /// format stay the same).
-    fn copy_frame(&self, shared: &wgpu::Texture) {
-        let reusable = self
-            .frames
-            .texture
-            .borrow()
-            .as_ref()
-            .filter(|t| {
-                t.size() == shared.size()
-                    && t.format() == shared.format()
-                    && t.usage().contains(wgpu::TextureUsages::COPY_DST)
-            })
-            .cloned();
-        let texture = reusable.unwrap_or_else(|| {
-            self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("cef frame copy"),
-                size: shared.size(),
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: shared.format(),
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            })
-        });
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("cef frame copy") });
-        encoder.copy_texture_to_texture(shared.as_image_copy(), texture.as_image_copy(), shared.size());
-        self.queue.submit([encoder.finish()]);
-        self.store(texture);
+    /// Copies a frame Chromium shares as a dma-buf into a texture of our own. Returns `false`
+    /// if no drawn frame could be taken (Chromium should then paint again).
+    ///
+    /// Chromium calls `on_accelerated_paint` once the frame's drawing is *submitted* on its GPU,
+    /// not once it has finished, and NVIDIA's driver attaches no fence to the dma-buf that we
+    /// could wait for. Copied at once, a buffer can still be empty (the first use of a pooled
+    /// buffer, e.g. after every resize) or partly drawn, and the page flashed blank. The buffer
+    /// can't be copied later instead: it goes back to Chromium's pool when the callback returns
+    /// (copied on the next pump, even more frames came out empty). So the copy is checked, and
+    /// taken again shortly until it is drawn. Chromium draws pages over an opaque background,
+    /// so a drawn frame has no fully transparent pixels.
+    fn import_gpu_frame(&self, info: &AcceleratedPaintInfo) -> bool {
+        use cef::osr_texture_import::SharedTextureHandle;
+
+        let frames = &self.frames;
+        let started = Instant::now();
+        let mut attempts = 0u32;
+        loop {
+            attempts += 1;
+            // SAFETY: we are inside CEF's `on_accelerated_paint` for this frame (the caller), and
+            // the wgpu device was created with VULKAN_EXTERNAL_MEMORY_DMA_BUF. If CEF renders on
+            // another GPU the import fails cleanly and the engine falls back to software paint.
+            let imported =
+                unsafe { SharedTextureHandle::new(info).import_texture(&self.device, &self.queue) };
+            let texture = match imported {
+                // Already a copy of our own (made and waited for by the import).
+                Ok(texture) => crop_to_content(&self.device, &self.queue, texture, &info.extra.content_rect),
+                Err(error) => {
+                    if frames.import_failures.get() == 0 {
+                        tracing::warn!(view = ?self.view, %error, "importing a GPU frame from Chromium failed");
+                    }
+                    frames.import_failures.set(frames.import_failures.get() + 1);
+                    return true;
+                }
+            };
+            frames.imported_any.set(true);
+            match is_drawn(&self.device, &self.queue, &texture) {
+                // Can't tell (read-back failed): show it as before.
+                None | Some(true) => {
+                    if attempts > 1 {
+                        tracing::debug!(view = ?self.view, attempts, waited = ?started.elapsed(), "GPU frame was drawn late");
+                    }
+                    self.store(texture);
+                    return true;
+                }
+                Some(false) if started.elapsed() >= FRAME_READY_TIMEOUT => {
+                    tracing::debug!(view = ?self.view, attempts, "GPU frame never got drawn; keeping the previous one");
+                    return false;
+                }
+                Some(false) => std::thread::sleep(FRAME_RETRY_INTERVAL),
+            }
+        }
     }
 
     /// Software paint: upload BGRA pixels, reusing the texture while the size is unchanged.
@@ -154,34 +180,33 @@ wrap_render_handler! {
 
         fn on_accelerated_paint(
             &self,
-            _browser: Option<&mut Browser>,
+            browser: Option<&mut Browser>,
             type_: PaintElementType,
             _dirty_rects: Option<&[Rect]>,
             info: Option<&AcceleratedPaintInfo>,
         ) {
-            use cef::osr_texture_import::SharedTextureHandle;
-
             let Some(info) = info else { return };
             if type_ != PaintElementType::default() {
                 return;
             }
-            let frames = &self.ctx.frames;
-            // SAFETY: we are inside CEF's `on_accelerated_paint` for this frame, and the wgpu
-            // device was created with VULKAN_EXTERNAL_MEMORY_DMA_BUF. If CEF renders on another
-            // GPU the import fails cleanly and the engine falls back to software paint.
-            match unsafe { SharedTextureHandle::new(info).import_texture(&self.ctx.device, &self.ctx.queue) } {
-                Ok(shared) => {
-                    frames.imported_any.set(true);
-                    // Chromium's buffer is only ours during this callback (it is reused or freed
-                    // on the next frame, reload or resize), so the frame is copied out now.
-                    self.ctx.copy_frame(&shared);
-                }
-                Err(error) => {
-                    if frames.import_failures.get() == 0 {
-                        tracing::warn!(view = ?self.ctx.view, %error, "importing a GPU frame from Chromium failed");
-                    }
-                    frames.import_failures.set(frames.import_failures.get() + 1);
-                }
+            let e = &info.extra;
+            tracing::trace!(
+                coded = ?(e.coded_size.width, e.coded_size.height),
+                visible = ?(e.visible_rect.x, e.visible_rect.y, e.visible_rect.width, e.visible_rect.height),
+                content = ?(e.content_rect.x, e.content_rect.y, e.content_rect.width, e.content_rect.height),
+                source = ?(e.source_size.width, e.source_size.height),
+                update = ?(e.capture_update_rect.x, e.capture_update_rect.y, e.capture_update_rect.width, e.capture_update_rect.height),
+                "accelerated paint"
+            );
+            // Around a resize Chromium can capture the page at one size into a buffer of the
+            // other, scaled to fit: skip those (the page would shrink or grow for a frame) and
+            // wait for one at its real size.
+            let scaled = e.has_source_size != 0
+                && (e.source_size.width, e.source_size.height) != (e.content_rect.width, e.content_rect.height);
+            if (scaled || !self.ctx.import_gpu_frame(info))
+                && let Some(host) = browser.and_then(|b| b.host())
+            {
+                host.invalidate(PaintElementType::default());
             }
         }
 
@@ -509,4 +534,102 @@ fn cursor_kind(cursor: CursorType) -> CursorKind {
         CT_NONE => CursorKind::Hidden,
         _ => CursorKind::Default,
     }
+}
+
+/// The part of a shared frame that holds the page. Right after a resize Chromium can still
+/// deliver a buffer of the old size with the page at its new size letterboxed inside it (black
+/// bars around `content_rect`); drawn whole, the page jumped sideways next to a black band.
+fn crop_to_content(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    frame: wgpu::Texture,
+    content: &Rect,
+) -> wgpu::Texture {
+    let (width, height) = (frame.width(), frame.height());
+    let (Ok(x), Ok(y), Ok(w), Ok(h)) = (
+        u32::try_from(content.x),
+        u32::try_from(content.y),
+        u32::try_from(content.width),
+        u32::try_from(content.height),
+    ) else {
+        return frame;
+    };
+    let full = x == 0 && y == 0 && w == width && h == height;
+    let inside = w > 0 && h > 0 && x.saturating_add(w) <= width && y.saturating_add(h) <= height;
+    if full || !inside {
+        return frame;
+    }
+    let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+    let cropped = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("cef frame content"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: frame.format(),
+        usage: frame.usage(),
+        view_formats: &[],
+    });
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("cef frame crop") });
+    encoder.copy_texture_to_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &frame,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x, y, z: 0 },
+            aspect: wgpu::TextureAspect::All,
+        },
+        cropped.as_image_copy(),
+        size,
+    );
+    queue.submit([encoder.finish()]);
+    cropped
+}
+
+/// Rows of a GPU frame read back to check that it is drawn.
+const DRAWN_CHECK_ROWS: u32 = 8;
+
+/// Whether a frame copied from Chromium is drawn: none of the pixels in a few rows across it
+/// is fully transparent. `None` if it couldn't be read back.
+fn is_drawn(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Option<bool> {
+    let (width, height) = (texture.width(), texture.height());
+    let rows = DRAWN_CHECK_ROWS.min(height);
+    let row_bytes = (4 * width).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("frame drawn check"),
+        size: u64::from(row_bytes * rows),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    for i in 0..rows {
+        // Evenly spread, away from the edges.
+        let y = height * (2 * i + 1) / (2 * rows);
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: 0, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: u64::from(i * row_bytes),
+                    bytes_per_row: Some(row_bytes),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::Extent3d { width, height: 1, depth_or_array_layers: 1 },
+        );
+    }
+    let submission = queue.submit([encoder.finish()]);
+    buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None }).ok()?;
+    let data = buffer.slice(..).get_mapped_range().ok()?;
+    let drawn = (0..rows as usize).all(|i| {
+        let row = &data[i * row_bytes as usize..][..4 * width as usize];
+        row.as_chunks::<4>().0.iter().all(|pixel| pixel[3] != 0)
+    });
+    Some(drawn)
 }
