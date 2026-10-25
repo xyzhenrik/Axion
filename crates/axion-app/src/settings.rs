@@ -31,16 +31,18 @@ pub enum Category {
     General,
     Appearance,
     LiquidGlass,
+    Tabs,
     Keyboard,
     Shields,
     Privacy,
 }
 
 impl Category {
-    const ALL: [Category; 6] = [
+    const ALL: [Category; 7] = [
         Category::General,
         Category::Appearance,
         Category::LiquidGlass,
+        Category::Tabs,
         Category::Keyboard,
         Category::Shields,
         Category::Privacy,
@@ -51,6 +53,7 @@ impl Category {
             Category::General => "General",
             Category::Appearance => "Appearance",
             Category::LiquidGlass => "Liquid Glass",
+            Category::Tabs => "Tabs & Memory",
             Category::Keyboard => "Keyboard",
             Category::Shields => "Shields",
             Category::Privacy => "Privacy",
@@ -62,6 +65,7 @@ impl Category {
             Category::General => Icon::Settings,
             Category::Appearance => Icon::Sidebar,
             Category::LiquidGlass => Icon::Overview,
+            Category::Tabs => Icon::TabGroup,
             Category::Keyboard => Icon::Menu,
             Category::Shields => Icon::Shield,
             Category::Privacy => Icon::Lock,
@@ -90,6 +94,12 @@ enum Setting {
     BlockRedirects,
     StripTracking,
     ThirdPartyCookies,
+    FreezeAfter,
+    DiscardAfter,
+    LimitMemory,
+    MemoryBudget,
+    KeepMediaAwake,
+    RestoreSession,
 }
 
 impl Setting {
@@ -113,6 +123,12 @@ impl Setting {
             Setting::BlockRedirects => "Block redirects to ad and tracker sites",
             Setting::StripTracking => "Remove tracking parameters from links",
             Setting::ThirdPartyCookies => "Block third-party cookies",
+            Setting::FreezeAfter => "Freeze background tabs after (never – 60 minutes)",
+            Setting::DiscardAfter => "Unload background tabs after (never – 8 hours)",
+            Setting::LimitMemory => "Unload tabs when memory runs over the budget",
+            Setting::MemoryBudget => "Memory budget (automatic – all memory)",
+            Setting::KeepMediaAwake => "Keep tabs playing audio awake",
+            Setting::RestoreSession => "Reopen last session's tabs at start",
         }
     }
 
@@ -129,6 +145,9 @@ impl Setting {
                 | Setting::BlockRedirects
                 | Setting::StripTracking
                 | Setting::ThirdPartyCookies
+                | Setting::LimitMemory
+                | Setting::KeepMediaAwake
+                | Setting::RestoreSession
         )
     }
 
@@ -144,6 +163,9 @@ impl Setting {
             Setting::Squash => (0.0, 0.2),
             Setting::MergeDistance => (0.0, 40.0),
             Setting::LockAfter => (0.0, 600.0),
+            Setting::FreezeAfter => (0.0, 60.0),
+            Setting::DiscardAfter => (0.0, 480.0),
+            Setting::MemoryBudget => (0.0, system_memory_mb()),
             _ => (0.0, 1.0),
         }
     }
@@ -161,6 +183,12 @@ impl Setting {
             Setting::BlockRedirects => return c.shields.block_redirects as u8 as f32,
             Setting::StripTracking => return c.shields.strip_tracking_parameters as u8 as f32,
             Setting::ThirdPartyCookies => return c.shields.block_third_party_cookies as u8 as f32,
+            Setting::LimitMemory => return c.tabs.limit_memory as u8 as f32,
+            Setting::KeepMediaAwake => return c.tabs.keep_media_awake as u8 as f32,
+            Setting::RestoreSession => return c.tabs.restore_session as u8 as f32,
+            Setting::FreezeAfter => c.tabs.freeze_after_minutes,
+            Setting::DiscardAfter => c.tabs.discard_after_minutes,
+            Setting::MemoryBudget => c.tabs.memory_budget_mb as f32,
             Setting::LockAfter => c.privacy.lock_after_seconds,
             Setting::TextScale => c.appearance.text_scale,
             Setting::PageCorner => c.layout.page_corner_radius,
@@ -190,6 +218,12 @@ impl Setting {
             Setting::BlockRedirects => c.shields.block_redirects = on,
             Setting::StripTracking => c.shields.strip_tracking_parameters = on,
             Setting::ThirdPartyCookies => c.shields.block_third_party_cookies = on,
+            Setting::LimitMemory => c.tabs.limit_memory = on,
+            Setting::KeepMediaAwake => c.tabs.keep_media_awake = on,
+            Setting::RestoreSession => c.tabs.restore_session = on,
+            Setting::FreezeAfter => c.tabs.freeze_after_minutes = v.round(),
+            Setting::DiscardAfter => c.tabs.discard_after_minutes = (v / 5.0).round() * 5.0,
+            Setting::MemoryBudget => c.tabs.memory_budget_mb = ((v / 256.0).round() * 256.0) as u32,
             Setting::LockAfter => c.privacy.lock_after_seconds = (v / 10.0).round() * 10.0,
             Setting::TextScale => c.appearance.text_scale = (v * 20.0).round() / 20.0,
             Setting::PageCorner => c.layout.page_corner_radius = v.round(),
@@ -264,7 +298,7 @@ impl SettingsAction {
         let n = id.0.checked_sub(ACTION_BASE)?;
         Some(match n {
             0 => SettingsAction::Close,
-            10..=15 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
+            10..=16 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
             20 => SettingsAction::Theme(ThemeMode::Auto),
             21 => SettingsAction::Theme(ThemeMode::Light),
             22 => SettingsAction::Theme(ThemeMode::Dark),
@@ -304,6 +338,8 @@ pub struct SettingsSheet {
     homepage: Option<NodeId>,
     password: Option<NodeId>,
     has_password: bool,
+    /// The browser's memory use, shown on the Tabs page.
+    memory_used: Option<u64>,
     confirm_clear: bool,
     open: bool,
 }
@@ -413,6 +449,7 @@ impl SettingsSheet {
             homepage: None,
             password: None,
             has_password: false,
+            memory_used: None,
             confirm_clear: false,
             open: false,
         }
@@ -445,6 +482,10 @@ impl SettingsSheet {
         ui.set_visible(self.root, true);
         self.resize(ui, window);
         self.show(ui, config, keymap);
+    }
+
+    pub fn set_memory_used(&mut self, used: Option<u64>) {
+        self.memory_used = used;
     }
 
     /// Shows this category next time the sheet opens (or now, if open).
@@ -614,6 +655,26 @@ impl SettingsSheet {
                     if let Some(w) = ui.widget_mut(label) {
                         w.set_paint(Paint::Secondary);
                     }
+                }
+            }
+            Category::Tabs => {
+                for setting in [
+                    Setting::FreezeAfter,
+                    Setting::DiscardAfter,
+                    Setting::LimitMemory,
+                    Setting::MemoryBudget,
+                    Setting::KeepMediaAwake,
+                    Setting::RestoreSession,
+                ] {
+                    self.control(ui, config, setting);
+                }
+                let budget = crate::lifecycle::memory_budget(config).map_or("none".into(), format_bytes);
+                let used = self.memory_used.map_or("not measured yet".into(), format_bytes);
+                let row_node = self.row(ui, &format!("In use now: {used} · budget: {budget}"));
+                if let Some(label) = ui.children(row_node).first().copied()
+                    && let Some(w) = ui.widget_mut(label)
+                {
+                    w.set_paint(Paint::Secondary);
                 }
             }
             Category::Shields => {
@@ -874,6 +935,16 @@ fn humanize(name: &str) -> String {
     let text = name.replace('_', " ");
     let mut chars = text.chars();
     chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+fn system_memory_mb() -> f32 {
+    axion_tabs::system_memory().map_or(16384.0, |b| (b / (1024 * 1024)) as f32)
+}
+
+/// 1536 MiB → "1.5 GB".
+pub fn format_bytes(bytes: u64) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 1024.0 { format!("{:.1} GB", mb / 1024.0) } else { format!("{mb:.0} MB") }
 }
 
 #[cfg(test)]

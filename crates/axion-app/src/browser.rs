@@ -12,6 +12,7 @@ use axion_config::{Action, Config, ConfigPaths, ConfigWatcher, Key, Keymap, Modi
 use axion_engine::cef::{CefEngine, CefOptions};
 use axion_engine::{CursorKind, Engine, EngineEvent, InputEvent, MouseButton, NewViewKind, ViewId, ViewSize};
 use axion_shields::Level;
+use axion_tabs::{Lifecycle, MemoryMonitor, TabInfo, Transition};
 use axion_ui::{Paint, Theme, Ui, UiCursor, UiEvent, UiInput};
 use glam::Vec2;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
@@ -21,6 +22,7 @@ use winit::window::{Fullscreen, Window};
 use crate::chrome::{Chrome, ChromeAction, PanelItem};
 use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::input::{self, ClickCounter};
+use crate::lifecycle;
 use crate::lockscreen::LockScreen;
 use crate::menu::{Menu, MenuAction, MenuItem};
 use crate::overview::{Overview, OverviewAction};
@@ -38,6 +40,8 @@ const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
 const OVERVIEW_CAPTURE_LEAD: Duration = Duration::from_secs(2);
 /// Settings changes are written to disk once they've been still for this long.
 const CONFIG_SAVE_DELAY: Duration = Duration::from_millis(250);
+/// Saving the open tabs waits until they stop changing for this long.
+const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 /// History rows shown in the sidebar panel.
 const PANEL_HISTORY_LIMIT: usize = 100;
 /// Chromium's zoom levels are powers of this factor.
@@ -90,6 +94,10 @@ pub struct Browser {
     menu: Menu,
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
+    memory: MemoryMonitor,
+    lifecycle_checked: Instant,
+    session_dirty: bool,
+    session_changed: Instant,
     settings: SettingsSheet,
     /// Unsaved settings changes since this time (saving is throttled while dragging).
     config_dirty_since: Option<Instant>,
@@ -246,6 +254,12 @@ impl Browser {
             menu,
             shields,
             shields_popover,
+            memory: MemoryMonitor::start(Duration::from_secs_f32(
+                config.tabs.check_interval_seconds.max(0.5),
+            )),
+            lifecycle_checked: Instant::now(),
+            session_dirty: false,
+            session_changed: Instant::now(),
             settings,
             config_dirty_since: None,
             last_saved_config: None,
@@ -297,6 +311,9 @@ impl Browser {
         };
         browser.update_layout();
         let mut urls = options.urls;
+        if urls.is_empty() && browser.config.tabs.restore_session && browser.restore_session() {
+            return Ok(browser);
+        }
         if urls.is_empty() {
             urls.push(browser.config.general.homepage.clone());
         }
@@ -387,9 +404,11 @@ impl Browser {
         if let Some(view) = previous {
             self.engine.set_focus(view, false);
             self.engine.set_hidden(view, true);
+            self.mark_hidden(view);
         }
         if let Some(tab) = self.tabs.active() {
             let view = tab.view;
+            self.wake(view);
             self.engine.set_hidden(view, false);
             self.engine.resize(view, self.view_size());
             self.engine.set_focus(view, true);
@@ -481,6 +500,7 @@ impl Browser {
                     self.menu.close(&mut self.ui, &self.config);
                     self.shields_popover.close(&mut self.ui, &self.config);
                     self.settings.set_has_password(self.lock.has_password());
+                    self.settings.set_memory_used(self.memory.used());
                     let window = self.logical_size();
                     self.settings.open(&mut self.ui, &self.config, &self.keymap, window);
                 }
@@ -496,11 +516,136 @@ impl Browser {
         self.private_mode && self.config.privacy.lock_private_tabs && self.lock.is_locked()
     }
 
+    // ---- session ----
+
+    /// Reopens the last session's tabs: the active one loads, the others stay unloaded until
+    /// they are shown. Returns false if there was nothing to restore.
+    fn restore_session(&mut self) -> bool {
+        let Some((saved, active)) = self.store.as_ref().and_then(|s| s.session().ok()) else { return false };
+        if saved.is_empty() {
+            return false;
+        }
+        let size = self.view_size();
+        for (i, (url, title)) in saved.iter().enumerate() {
+            let view = if i == active {
+                match self.engine.create_view(url, size, false) {
+                    Ok(view) => view,
+                    Err(e) => {
+                        tracing::error!("restoring {url} failed: {e}");
+                        self.engine.create_discarded_view(url, size, false)
+                    }
+                }
+            } else {
+                self.engine.create_discarded_view(url, size, false)
+            };
+            let mut tab = Tab::new(view, url);
+            tab.title.clone_from(title);
+            if self.engine.is_discarded(view) {
+                tab.lifecycle = Lifecycle::Discarded;
+                tab.loading = false;
+            }
+            self.tabs.insert(tab, true);
+        }
+        self.tabs.select(active.min(saved.len() - 1));
+        self.on_active_changed(None);
+        tracing::info!(tabs = saved.len(), "session restored");
+        true
+    }
+
+    /// Writes the open (non-private) tabs a moment after they last changed.
+    fn save_session_if_due(&mut self, force: bool) {
+        if !self.session_dirty || (!force && self.session_changed.elapsed() < SESSION_SAVE_DELAY) {
+            return;
+        }
+        self.session_dirty = false;
+        let normal = if self.private_mode { &self.parked } else { &self.tabs };
+        let tabs: Vec<(String, String)> =
+            normal.all().iter().map(|t| (t.url.clone(), t.title.clone())).collect();
+        let active = normal.active_index();
+        if let Some(store) = &mut self.store
+            && let Err(e) = store.save_session(&tabs, active)
+        {
+            tracing::warn!("saving the session failed: {e}");
+        }
+    }
+
+    // ---- lifecycle ----
+
+    /// The tab was just hidden: its background time starts now.
+    fn mark_hidden(&mut self, view: ViewId) {
+        if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view)
+            && tab.lifecycle == Lifecycle::Active
+        {
+            tab.lifecycle = Lifecycle::Background;
+            tab.hidden_since = Some(Instant::now());
+        }
+    }
+
+    /// The tab is about to be shown: reload it if it was unloaded, resume it if frozen.
+    fn wake(&mut self, view: ViewId) {
+        let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) else { return };
+        match tab.lifecycle {
+            Lifecycle::Discarded => {
+                if let Err(e) = self.engine.restore(view) {
+                    tracing::error!("reloading an unloaded tab failed: {e}");
+                }
+                tab.loading = true;
+            }
+            Lifecycle::Frozen => self.engine.set_frozen(view, false),
+            Lifecycle::Active | Lifecycle::Background => {}
+        }
+        tab.lifecycle = Lifecycle::Active;
+        tab.hidden_since = None;
+    }
+
+    /// Freezes and unloads background tabs as the settings say. Runs every few seconds.
+    fn apply_lifecycle(&mut self) {
+        let interval = Duration::from_secs_f32(self.config.tabs.check_interval_seconds.max(0.5));
+        let now = Instant::now();
+        if now.duration_since(self.lifecycle_checked) < interval {
+            return;
+        }
+        self.lifecycle_checked = now;
+        let infos: Vec<TabInfo<ViewId>> = self
+            .tabs
+            .all()
+            .iter()
+            .chain(self.parked.all())
+            .map(|t| TabInfo {
+                key: t.view,
+                lifecycle: t.lifecycle,
+                hidden_since: t.hidden_since,
+                playing_media: t.playing_media,
+                // A background tab still waiting for its overview snapshot counts as loading.
+                loading: t.loading || t.needs_snapshot,
+            })
+            .collect();
+        let used = self.memory.used();
+        for transition in axion_tabs::plan(&lifecycle::policy(&self.config), &infos, now, used) {
+            let (view, state) = match transition {
+                Transition::Freeze(view) => {
+                    self.engine.set_frozen(view, true);
+                    (view, Lifecycle::Frozen)
+                }
+                Transition::Discard(view) => {
+                    self.engine.discard(view);
+                    (view, Lifecycle::Discarded)
+                }
+            };
+            tracing::info!(?view, ?state, memory_mb = used.map(|b| b / (1024 * 1024)), "tab lifecycle");
+            if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
+                tab.lifecycle = state;
+                tab.playing_media = false;
+            }
+        }
+    }
+
     /// Switches between the normal and the private tab group.
     fn toggle_private_mode(&mut self) {
         if let Some(view) = self.active_view() {
             self.engine.set_focus(view, false);
             self.engine.set_hidden(view, true);
+            self.mark_hidden(view);
         }
         std::mem::swap(&mut self.tabs, &mut self.parked);
         self.private_mode = !self.private_mode;
@@ -1022,6 +1167,11 @@ impl Browser {
                         }
                     }
                 }
+                EngineEvent::MediaStateChanged { view, playing } => {
+                    if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
+                        tab.playing_media = playing;
+                    }
+                }
                 EngineEvent::RequestBlocked { view, url } | EngineEvent::NavigationBlocked { view, url } => {
                     self.count_blocked(view, url);
                 }
@@ -1029,6 +1179,8 @@ impl Browser {
             }
         }
         self.reload_config_if_changed();
+        self.apply_lifecycle();
+        self.save_session_if_due(false);
     }
 
     fn settings_outcome(&mut self, outcome: Outcome) {
@@ -1398,6 +1550,8 @@ impl Browser {
             self.update_layout();
         }
         if std::mem::take(&mut self.tabs_changed) {
+            self.session_dirty = true;
+            self.session_changed = Instant::now();
             self.chrome.sync_tabs(&mut self.ui, &self.tabs, &self.favicons);
             let level = self.tabs.active().map(|t| self.shields.level(&t.url));
             self.chrome.set_shield_active(&mut self.ui, level.is_some_and(|l| l != Level::Off));
@@ -1418,8 +1572,13 @@ impl Browser {
                 "history" => self.show_panel(Panel::History),
                 "bookmarks" => self.show_panel(Panel::Bookmarks),
                 "settings" => self.run(Action::OpenSettings),
+                "next-tab" => self.run(Action::NextTab),
                 "shields-settings" => {
                     self.settings.set_category(Category::Shields);
+                    self.run(Action::OpenSettings);
+                }
+                "tabs-settings" => {
+                    self.settings.set_category(Category::Tabs);
                     self.run(Action::OpenSettings);
                 }
                 "private" => self.toggle_private_mode(),
@@ -1585,6 +1744,7 @@ enum Panel {
 impl Drop for Browser {
     fn drop(&mut self) {
         self.shields.save(self.store.as_ref());
+        self.save_session_if_due(true);
     }
 }
 

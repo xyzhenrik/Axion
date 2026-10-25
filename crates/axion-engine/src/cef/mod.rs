@@ -20,12 +20,16 @@ use cef::*;
 pub use gpu::render_node_for;
 
 use crate::{Engine, EngineError, EngineEvent, Frame, InputEvent, RequestPolicy, ViewId, ViewSize};
-use client::{FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, build_client, favicon_callback};
+use client::{
+    FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, ViewMedia, build_client, favicon_callback,
+};
 use input::InputState;
 use network::Network;
 
 /// How long [`CefEngine::shutdown`] waits for views to close before giving up.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+/// `browser_id` of a view without a page: matches no CEF browser.
+const NO_BROWSER: i32 = i32::MIN;
 /// Opaque white, ARGB.
 const PAGE_BACKGROUND: u32 = 0xFFFF_FFFF;
 
@@ -59,6 +63,16 @@ wrap_app! {
             // Without a Wayland display (e.g. forced onto XWayland), Chromium must use X11 too.
             if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some() {
                 command_line.append_switch_with_value(Some(&"ozone-platform".into()), Some(&"x11".into()));
+            }
+            // Debugging aid: extra Chromium switches, e.g. "autoplay-policy=no-user-gesture-required".
+            if let Ok(extra) = std::env::var("AXION_CHROMIUM_SWITCHES") {
+                for switch in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    match switch.split_once('=') {
+                        Some((name, value)) => command_line
+                            .append_switch_with_value(Some(&name.into()), Some(&value.into())),
+                        None => command_line.append_switch(Some(&switch.into())),
+                    }
+                }
             }
             if let Some(node) = &self.flags.render_node {
                 let node = node.to_string_lossy();
@@ -101,7 +115,8 @@ pub struct CefOptions {
 }
 
 struct ViewState {
-    browser: Browser,
+    /// `None` while discarded.
+    browser: Option<Browser>,
     private: bool,
     browser_id: i32,
     ctx: ViewContext,
@@ -213,11 +228,11 @@ impl CefEngine {
     }
 
     fn host(&self, view: ViewId) -> Option<BrowserHost> {
-        self.views.get(&view).filter(|v| !v.closing).and_then(|v| v.browser.host())
+        self.browser(view).and_then(|b| b.host())
     }
 
     fn browser(&self, view: ViewId) -> Option<&Browser> {
-        self.views.get(&view).filter(|v| !v.closing).map(|v| &v.browser)
+        self.views.get(&view).filter(|v| !v.closing).and_then(|v| v.browser.as_ref())
     }
 
     /// If GPU frames can't be imported on this system, re-create every view with software paint.
@@ -238,9 +253,8 @@ impl CefEngine {
             if state.closing {
                 continue;
             }
-            if let Some(host) = state.browser.host() {
-                host.close_browser(1);
-            }
+            let Some(host) = state.browser.as_ref().and_then(|b| b.host()) else { continue };
+            host.close_browser(1);
             let ctx = state.ctx.clone();
             let url = state.url.clone();
             let private = state.private;
@@ -248,7 +262,7 @@ impl CefEngine {
             match self.create_browser(&ctx, &url, private) {
                 Ok((browser, browser_id)) => {
                     if let Some(state) = self.views.get_mut(&id) {
-                        state.browser = browser;
+                        state.browser = Some(browser);
                         state.browser_id = browser_id;
                     }
                 }
@@ -263,10 +277,12 @@ impl CefEngine {
             return;
         }
         self.shut_down = true;
+        // Discarded views have no page to close.
+        self.views.retain(|_, v| v.browser.is_some());
         for state in self.views.values_mut() {
             if !state.closing {
                 state.closing = true;
-                if let Some(host) = state.browser.host() {
+                if let Some(host) = state.browser.as_ref().and_then(|b| b.host()) {
                     host.close_browser(1);
                 }
             }
@@ -292,6 +308,15 @@ impl Drop for CefEngine {
 
 impl Engine for CefEngine {
     fn create_view(&mut self, url: &str, size: ViewSize, private: bool) -> Result<ViewId, EngineError> {
+        let view = self.create_discarded_view(url, size, private);
+        if let Err(e) = self.restore(view) {
+            self.views.remove(&view);
+            return Err(e);
+        }
+        Ok(view)
+    }
+
+    fn create_discarded_view(&mut self, url: &str, size: ViewSize, private: bool) -> ViewId {
         let view = ViewId(self.next_id);
         self.next_id += 1;
         let ctx = ViewContext {
@@ -300,29 +325,86 @@ impl Engine for CefEngine {
             queue: self.queue.clone(),
             geometry: Rc::new(ViewGeometry { logical: size.logical.into(), scale: size.scale.into() }),
             frames: Rc::new(ViewFrames::default()),
+            media: Rc::new(ViewMedia::default()),
             shared: self.shared.clone(),
             net: self.net.clone(),
         };
-        let (browser, browser_id) = self.create_browser(&ctx, url, private)?;
-        self.views.insert(
-            view,
-            ViewState { browser, private, browser_id, ctx, url: url.to_owned(), closing: false },
-        );
-        Ok(view)
+        let state = ViewState {
+            browser: None,
+            private,
+            browser_id: NO_BROWSER,
+            ctx,
+            url: url.to_owned(),
+            closing: false,
+        };
+        self.views.insert(view, state);
+        view
     }
 
     fn close_view(&mut self, view: ViewId) {
-        if let Some(state) = self.views.get_mut(&view)
-            && !state.closing
-        {
-            state.closing = true;
-            if let Some(host) = state.browser.host() {
-                host.close_browser(1);
+        let Some(state) = self.views.get_mut(&view) else { return };
+        match &state.browser {
+            None => {
+                self.views.remove(&view);
             }
+            Some(browser) if !state.closing => {
+                state.closing = true;
+                if let Some(host) = browser.host() {
+                    host.close_browser(1);
+                }
+            }
+            Some(_) => {}
         }
     }
 
+    fn set_frozen(&mut self, view: ViewId, frozen: bool) {
+        let Some(host) = self.host(view) else { return };
+        let Some(mut params) = dictionary_value_create() else { return };
+        let state = if frozen { "frozen" } else { "active" };
+        params.set_string(Some(&"state".into()), Some(&state.into()));
+        // Id 0: CEF assigns one; the result isn't needed.
+        host.execute_dev_tools_method(0, Some(&"Page.setWebLifecycleState".into()), Some(&mut params));
+    }
+
+    fn discard(&mut self, view: ViewId) {
+        let Some(state) = self.views.get_mut(&view).filter(|v| !v.closing) else { return };
+        let Some(browser) = state.browser.take() else { return };
+        // Keep the last frame as the tab's snapshot. Chromium's shared GPU buffers are
+        // recycled once the page closes, so those are copied; software frames are ours.
+        let frames = &state.ctx.frames;
+        let snapshot = frames.texture.borrow().as_ref().map(|t| keep_frame(&self.device, &self.queue, t));
+        frames.texture.replace(snapshot);
+        // Events of the closed page (its `Closed` included) no longer match and are dropped.
+        state.browser_id = NO_BROWSER;
+        state.ctx.media.clear();
+        if let Some(host) = browser.host() {
+            host.close_browser(1);
+        }
+    }
+
+    fn restore(&mut self, view: ViewId) -> Result<(), EngineError> {
+        let Some(state) = self.views.get(&view).filter(|v| v.browser.is_none()) else { return Ok(()) };
+        let (ctx, url, private) = (state.ctx.clone(), state.url.clone(), state.private);
+        let (browser, browser_id) = self.create_browser(&ctx, &url, private)?;
+        if let Some(state) = self.views.get_mut(&view) {
+            state.browser = Some(browser);
+            state.browser_id = browser_id;
+        }
+        Ok(())
+    }
+
+    fn is_discarded(&self, view: ViewId) -> bool {
+        self.views.get(&view).is_some_and(|v| v.browser.is_none())
+    }
+
     fn navigate(&mut self, view: ViewId, url: &str) {
+        if let Some(state) = self.views.get_mut(&view)
+            && state.browser.is_none()
+        {
+            // Loads when the view is restored.
+            state.url = url.to_owned();
+            return;
+        }
         if let Some(frame) = self.browser(view).and_then(|b| b.main_frame()) {
             frame.load_url(Some(&url.into()));
         }
@@ -392,7 +474,7 @@ impl Engine for CefEngine {
 
     fn fetch_favicon(&mut self, view: ViewId, url: &str, max_size: u32) {
         let Some(state) = self.views.get(&view).filter(|v| !v.closing) else { return };
-        let Some(host) = state.browser.host() else { return };
+        let Some(host) = state.browser.as_ref().and_then(|b| b.host()) else { return };
         let mut callback = favicon_callback(FaviconRequest {
             ctx: state.ctx.clone(),
             browser_id: state.browser_id,
@@ -435,6 +517,7 @@ impl Engine for CefEngine {
                 | EngineEvent::FaviconReady { view, .. }
                 | EngineEvent::CursorChanged { view, .. }
                 | EngineEvent::FullscreenRequested { view, .. }
+                | EngineEvent::MediaStateChanged { view, .. }
                 | EngineEvent::RequestBlocked { view, .. }
                 | EngineEvent::NavigationBlocked { view, .. }
                 | EngineEvent::Closed { view } => *view,
@@ -455,4 +538,29 @@ impl Engine for CefEngine {
         }
         events
     }
+}
+
+/// A copy of `frame` that stays valid after Chromium recycles it (software frames are already
+/// our own textures and are returned as they are).
+fn keep_frame(device: &wgpu::Device, queue: &wgpu::Queue, frame: &wgpu::Texture) -> wgpu::Texture {
+    if frame.usage().contains(wgpu::TextureUsages::COPY_DST)
+        || !frame.usage().contains(wgpu::TextureUsages::COPY_SRC)
+    {
+        return frame.clone();
+    }
+    let copy = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("discarded view snapshot"),
+        size: frame.size(),
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: frame.format(),
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("snapshot") });
+    encoder.copy_texture_to_texture(frame.as_image_copy(), copy.as_image_copy(), frame.size());
+    queue.submit([encoder.finish()]);
+    copy
 }

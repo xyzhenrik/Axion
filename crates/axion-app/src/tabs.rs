@@ -1,8 +1,10 @@
-//! The window's tabs. (Lifecycle — freezing, discarding — moves to `axion-tabs` in Phase 5.)
+//! The window's tabs. When background tabs are frozen or unloaded is decided by `axion-tabs`.
 
 use std::collections::HashSet;
+use std::time::Instant;
 
 use axion_engine::ViewId;
+use axion_tabs::Lifecycle;
 
 /// Each zoom step in Chromium's zoom-level units (1 level = ×1.2).
 pub const ZOOM_STEP: f64 = 0.5;
@@ -26,6 +28,11 @@ pub struct Tab {
     /// Requests, popups and redirects Shields blocked on the current page.
     pub blocked: u32,
     pub blocked_urls: HashSet<String>,
+    pub lifecycle: Lifecycle,
+    /// When the tab was last hidden (`None` while shown).
+    pub hidden_since: Option<Instant>,
+    /// Plays audible media.
+    pub playing_media: bool,
 }
 
 impl Tab {
@@ -43,6 +50,9 @@ impl Tab {
             private: false,
             blocked: 0,
             blocked_urls: HashSet::new(),
+            lifecycle: Lifecycle::Background,
+            hidden_since: Some(Instant::now()),
+            playing_media: false,
         }
     }
 

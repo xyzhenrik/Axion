@@ -1,6 +1,6 @@
 # Axion Browser — Plan
 
-Status: **Phase 4 done** (2026-10-25; Phase 3 leftovers open) · Target: v0.1 (daily-drivable on Linux)
+Status: **Phase 5 done** (2026-10-25; Phase 3 leftovers open) · Target: v0.1 (daily-drivable on Linux)
 
 ## 1. Vision
 
@@ -181,9 +181,17 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
       stored in the profile), Settings › Shields, grey shield when off.
 
 ### Phase 5 — Tabs & memory
-- [ ] Lifecycle state machine + freeze/discard + restore.
-- [ ] Memory budget enforcement and per-tab memory reporting.
-- [ ] Session restore.
+- [x] Lifecycle (`axion-tabs`): Active → Background → Frozen → Discarded. Freezing uses
+      DevTools `Page.setWebLifecycleState`; discarding closes the page and keeps URL, title and
+      a GPU copy of the last frame (overview snapshot); showing the tab resumes/reloads it.
+      Defaults: freeze after 10 min, unload after 2 h (`[tabs]`, Settings › Tabs & Memory).
+- [x] Tabs playing audible media are never frozen/unloaded. Detection: an injected script
+      reports play/pause through a marked console message (stopgap until the 5b media bridge).
+- [x] Memory budget: PSS of the whole process tree, measured on a background thread; over
+      budget the longest-hidden tab is unloaded (one per check). Default: 40 % of RAM.
+      *Open:* per-tab memory reporting (renderer processes don't map to tabs in CEF).
+- [x] Session restore (`session_tabs` table): the active tab loads, the others come back
+      unloaded. *Open:* back/forward history and thumbnails don't survive unloading/restart.
 
 ### Phase 5b — Media player & fullscreen
 - [ ] Media bridge script: detect media elements (incl. shadow DOM / iframes), hide native controls, IPC.
@@ -237,6 +245,10 @@ Windows/macOS, touchscreen-first mode.
 - 2026-10-25: Shields levels per site are stored by host (without `www.`) in the profile's
   `site_settings` table; a level equal to the default is not stored, so changing the default
   in Settings reaches every site without its own choice. Changing a level reloads the page.
+
+- 2026-10-25: Unloaded ("discarded") tabs keep their `ViewId`; the engine closes the CEF
+  browser but keeps the view's state, so the rest of the browser never sees tab identities
+  change.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

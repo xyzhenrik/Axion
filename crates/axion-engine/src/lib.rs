@@ -93,6 +93,11 @@ pub enum EngineEvent {
         kind: NewViewKind,
         user_gesture: bool,
     },
+    /// The view started or stopped playing audible media.
+    MediaStateChanged {
+        view: ViewId,
+        playing: bool,
+    },
     /// The [`RequestPolicy`] blocked a request of the view's page.
     RequestBlocked {
         view: ViewId,
@@ -143,6 +148,16 @@ pub trait Engine {
     fn resize(&mut self, view: ViewId, size: ViewSize);
     /// Hidden views stop rendering and get throttled (background tabs).
     fn set_hidden(&mut self, view: ViewId, hidden: bool);
+    /// Pauses a hidden view completely (no JavaScript, timers or loading) or resumes it.
+    fn set_frozen(&mut self, view: ViewId, frozen: bool);
+    /// Closes the view's page to free its memory, keeping its URL and last frame (still
+    /// returned by [`Engine::frame`]). [`Engine::restore`] loads it again.
+    fn discard(&mut self, view: ViewId);
+    fn restore(&mut self, view: ViewId) -> Result<(), EngineError>;
+    fn is_discarded(&self, view: ViewId) -> bool;
+    /// Creates a view that starts discarded (e.g. a restored session's background tab): it
+    /// costs nothing until [`Engine::restore`].
+    fn create_discarded_view(&mut self, url: &str, size: ViewSize, private: bool) -> ViewId;
     fn set_focus(&mut self, view: ViewId, focused: bool);
     fn send_input(&mut self, view: ViewId, event: &InputEvent);
 

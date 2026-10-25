@@ -39,6 +39,9 @@ const MIGRATIONS: &[&str] = &[
     // 3: per-site settings (Shields level, …), keyed by host
     "CREATE TABLE site_settings (host TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
         PRIMARY KEY (host, key));",
+    // 4: the open tabs, for session restore
+    "CREATE TABLE session_tabs (position INTEGER PRIMARY KEY, url TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 0);",
 ];
 
 /// Seconds per day, for the recency buckets.
@@ -222,6 +225,40 @@ impl Store {
         Ok(())
     }
 
+    // ---- session ----
+
+    /// Replaces the saved session with these tabs (url, title); `active` is an index into them.
+    pub fn save_session(&mut self, tabs: &[(String, String)], active: usize) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM session_tabs", [])?;
+        {
+            let mut insert = tx
+                .prepare("INSERT INTO session_tabs (position, url, title, active) VALUES (?1, ?2, ?3, ?4)")?;
+            for (i, (url, title)) in tabs.iter().enumerate() {
+                insert.execute(params![i as i64, url, title, i == active])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The saved session's tabs (url, title) and the active one's index.
+    pub fn session(&self) -> Result<(Vec<(String, String)>, usize)> {
+        let mut stmt = self.conn.prepare("SELECT url, title, active FROM session_tabs ORDER BY position")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?)))?;
+        let mut tabs = Vec::new();
+        let mut active = 0;
+        for row in rows {
+            let (url, title, is_active) = row?;
+            if is_active {
+                active = tabs.len();
+            }
+            tabs.push((url, title));
+        }
+        Ok((tabs, active))
+    }
+
     // ---- per-site settings ----
 
     /// Every site's value for `key`, as (host, value).
@@ -392,6 +429,17 @@ mod tests {
         assert_eq!(s.meta("k").unwrap().as_deref(), Some("v2"));
         s.set_meta("k", None).unwrap();
         assert_eq!(s.meta("k").unwrap(), None);
+    }
+
+    #[test]
+    fn session_round_trip() {
+        let mut s = store();
+        assert_eq!(s.session().unwrap(), (vec![], 0));
+        let tabs = vec![("https://a/".to_owned(), "A".to_owned()), ("https://b/".to_owned(), "B".to_owned())];
+        s.save_session(&tabs, 1).unwrap();
+        assert_eq!(s.session().unwrap(), (tabs.clone(), 1));
+        s.save_session(&tabs[..1], 0).unwrap();
+        assert_eq!(s.session().unwrap().0.len(), 1);
     }
 
     #[test]

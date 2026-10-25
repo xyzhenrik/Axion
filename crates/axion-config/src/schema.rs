@@ -17,6 +17,7 @@ pub struct Config {
     pub layout: Layout,
     pub privacy: Privacy,
     pub shields: Shields,
+    pub tabs: Tabs,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -376,6 +377,40 @@ impl Default for Shields {
                     .into(),
             ],
             update_interval_hours: 96.0,
+        }
+    }
+}
+
+/// Tab lifecycle and memory.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Tabs {
+    /// Freeze tabs (pause their scripts and timers) after this long in the background (0: never).
+    pub freeze_after_minutes: f32,
+    /// Unload tabs (keep only URL and a snapshot) after this long in the background (0: never).
+    pub discard_after_minutes: f32,
+    /// Unload background tabs while the browser uses more memory than the budget.
+    pub limit_memory: bool,
+    /// Memory budget for the whole browser in MB; 0 means 40 % of the computer's memory.
+    pub memory_budget_mb: u32,
+    /// Tabs playing audio are never frozen or unloaded.
+    pub keep_media_awake: bool,
+    /// Reopen the last session's tabs at start (they load when first shown).
+    pub restore_session: bool,
+    /// How often memory use is measured and the tab rules are applied.
+    pub check_interval_seconds: f32,
+}
+
+impl Default for Tabs {
+    fn default() -> Self {
+        Self {
+            freeze_after_minutes: 10.0,
+            discard_after_minutes: 120.0,
+            limit_memory: true,
+            memory_budget_mb: 0,
+            keep_media_awake: true,
+            restore_session: true,
+            check_interval_seconds: 5.0,
         }
     }
 }

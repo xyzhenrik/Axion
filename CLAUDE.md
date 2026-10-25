@@ -50,8 +50,8 @@ crates/
   axion-shields/     adblock-rust engine + list cache, popup/redirect/cookie policy, tracking params
                      (the engine asks it through `axion_engine::RequestPolicy`, glue in app/shields.rs)
   axion-store/       SQLite: history, bookmarks, meta, per-site settings (session restore planned)
+  axion-tabs/        tab lifecycle planner (freeze/discard by idle time + memory budget), PSS monitor
 planned:
-  axion-tabs/        tab lifecycle (active/background/frozen/discarded), groups, memory budget
   axion-media/       media bridge (injected JS ↔ IPC), controls state, fullscreen/PiP, MPRIS
 ```
 
@@ -124,6 +124,7 @@ AXION_GPU=low ...            # force the integrated GPU
 AXION_OSR=software|gpu ...   # force page frame sharing off/on (default: on for NVIDIA only)
 AXION_CONFIG_DIR / AXION_PROFILE_DIR   # use throwaway settings/profile (do this for test runs)
 AXION_MONITOR=HDMI-A-1 ...   # open on that monitor (X11/XWayland only: run with `env -u WAYLAND_DISPLAY`)
+AXION_CHROMIUM_SWITCHES=autoplay-policy=no-user-gesture-required ...   # extra Chromium switches (comma-separated)
 axion url1 url2 --overview --capture=out.png   # several tabs; screenshot of the tab overview
 axion url --after=20 --capture=out.png        # capture after 20 s instead of 8
 ```

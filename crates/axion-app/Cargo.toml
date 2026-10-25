@@ -19,6 +19,7 @@ axion-config.workspace = true
 axion-engine.workspace = true
 axion-physics.workspace = true
 axion-shields.workspace = true
+axion-tabs.workspace = true
 axion-store.workspace = true
 axion-ui.workspace = true
 directories = "6"

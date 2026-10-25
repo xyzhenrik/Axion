@@ -15,6 +15,7 @@ mod drip;
 mod favicons;
 mod gpu;
 mod input;
+mod lifecycle;
 mod lockscreen;
 mod menu;
 mod overview;

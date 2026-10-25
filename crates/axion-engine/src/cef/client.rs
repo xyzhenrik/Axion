@@ -2,6 +2,7 @@
 //! `do_message_loop_work`, so plain `Rc`/`RefCell` state is enough.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -28,6 +29,33 @@ pub(super) struct ViewFrames {
     pub import_failures: Cell<u32>,
 }
 
+/// Whether the view's documents play audible media, reported by [`MEDIA_WATCH`] per document.
+#[derive(Default)]
+pub(super) struct ViewMedia {
+    documents: RefCell<HashMap<String, bool>>,
+    playing: Cell<bool>,
+}
+
+impl ViewMedia {
+    pub fn clear(&self) {
+        self.documents.borrow_mut().clear();
+        self.playing.set(false);
+    }
+}
+
+/// Console messages starting with this come from [`MEDIA_WATCH`], not from the page.
+const MEDIA_MARKER: &str = "\u{1}axion-media:";
+
+/// Injected into every document: reports (as a marked console message) whether any media
+/// element in it plays audibly. Phase 5b's media bridge replaces this channel.
+const MEDIA_WATCH: &str = r#"(function(){if(window.__axionMedia)return;window.__axionMedia=1;
+var id=Math.random().toString(36).slice(2),last=false,seen=new Set();
+function report(){var now=false;seen.forEach(function(m){if(m.isConnected&&!m.paused&&!m.ended&&!m.muted&&m.volume>0)now=true});
+if(now!==last){last=now;console.debug('axion-media:'+id+':'+(now?1:0))}}
+['play','playing','pause','ended','emptied','volumechange'].forEach(function(t){window.addEventListener(t,function(e){
+if(e.target instanceof HTMLMediaElement){seen.add(e.target);report()}},true)});
+window.addEventListener('pagehide',function(){seen.clear();report()});})();"#;
+
 pub(super) struct ViewGeometry {
     pub logical: Cell<Vec2>,
     pub scale: Cell<f32>,
@@ -40,6 +68,7 @@ pub(super) struct ViewContext {
     pub queue: wgpu::Queue,
     pub geometry: Rc<ViewGeometry>,
     pub frames: Rc<ViewFrames>,
+    pub media: Rc<ViewMedia>,
     pub shared: Rc<Shared>,
     pub net: Arc<Network>,
 }
@@ -48,6 +77,21 @@ impl ViewContext {
     fn emit(&self, browser: Option<&mut Browser>, event: EngineEvent) {
         let id = browser.map_or(-1, |b| b.identifier());
         self.shared.events.borrow_mut().push((id, event));
+    }
+
+    /// Applies one document's media report; emits when the view as a whole changes.
+    fn media_report(&self, browser: Option<&mut Browser>, document: Option<(String, bool)>) {
+        let media = &self.media;
+        match document {
+            Some((id, playing)) => {
+                media.documents.borrow_mut().insert(id, playing);
+            }
+            None => media.documents.borrow_mut().clear(),
+        }
+        let playing = media.documents.borrow().values().any(|&p| p);
+        if media.playing.replace(playing) != playing {
+            self.emit(browser, EngineEvent::MediaStateChanged { view: self.view, playing });
+        }
     }
 
     fn store(&self, texture: wgpu::Texture) {
@@ -171,6 +215,23 @@ wrap_display_handler! {
     }
 
     impl DisplayHandler {
+        fn on_console_message(
+            &self,
+            browser: Option<&mut Browser>,
+            _level: LogSeverity,
+            message: Option<&CefString>,
+            _source: Option<&CefString>,
+            _line: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            let message = message.map(|m| m.to_string()).unwrap_or_default();
+            let Some(report) = message.strip_prefix(MEDIA_MARKER) else { return 0 };
+            if let Some((id, state)) = report.rsplit_once(':') {
+                self.ctx.media_report(browser, Some((id.to_owned(), state == "1")));
+            }
+            // Ours: keep it out of the page's console output.
+            1
+        }
+
         fn on_address_change(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, url: Option<&CefString>) {
             if frame.is_some_and(|f| f.is_main() == 1) {
                 let url = url.map(|u| u.to_string()).unwrap_or_default();
@@ -218,11 +279,16 @@ wrap_load_handler! {
     }
 
     impl LoadHandler {
-        fn on_load_start(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, _transition_type: TransitionType) {
-            // Shields' cosmetic filters, injected as the document starts so ads never show.
-            let (Some(policy), Some(frame)) = (self.ctx.net.policy(), frame) else { return };
+        fn on_load_start(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, _transition_type: TransitionType) {
+            let Some(frame) = frame else { return };
             let url = CefString::from(&frame.url()).to_string();
-            if let Some(script) = policy.page_script(&url) {
+            if frame.is_main() == 1 {
+                // A new page: the old one's media is gone.
+                self.ctx.media_report(browser, None);
+            }
+            frame.execute_java_script(Some(&MEDIA_WATCH.into()), Some(&url.as_str().into()), 0);
+            // Shields' cosmetic filters, injected as the document starts so ads never show.
+            if let Some(script) = self.ctx.net.policy().and_then(|p| p.page_script(&url)) {
                 frame.execute_java_script(Some(&script.as_str().into()), Some(&url.as_str().into()), 0);
             }
         }

@@ -259,6 +259,7 @@ dependencies = [
  "axion-physics",
  "axion-shields",
  "axion-store",
+ "axion-tabs",
  "axion-ui",
  "directories",
  "glam",
@@ -348,6 +349,13 @@ version = "0.0.1"
 dependencies = [
  "rusqlite",
  "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "axion-tabs"
+version = "0.0.1"
+dependencies = [
  "tracing",
 ]
 
