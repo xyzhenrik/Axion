@@ -1,6 +1,6 @@
 # Axion Browser — Plan
 
-Status: **Phase 5 done** (2026-10-25; Phase 3 leftovers open) · Target: v0.1 (daily-drivable on Linux)
+Status: **Phase 5b done except PiP** (2026-10-25; Phase 3 leftovers open) · Target: v0.1 (daily-drivable on Linux)
 
 ## 1. Vision
 
@@ -194,11 +194,29 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
       unloaded. *Open:* back/forward history and thumbnails don't survive unloading/restart.
 
 ### Phase 5b — Media player & fullscreen
-- [ ] Media bridge script: detect media elements (incl. shadow DOM / iframes), hide native controls, IPC.
-- [ ] Glass control bar, scrubber, captions, speed, volume.
-- [ ] Custom fullscreen + auto-hide; PiP window.
-- [ ] Playback priority: lifecycle exemption, process priority, VA-API, frame pacing.
-- [ ] MPRIS + media keys; Now Playing in sidebar.
+- [x] Media bridge (`axion-media/src/bridge.js`), injected into every frame at load start:
+      finds media in the DOM, shadow roots (patched `attachShadow`) and detached `new Audio()`
+      (patched `play`); iframes report to their parent via `postMessage`, the top frame to the
+      browser as a marked console message; commands go back down the same way. Native
+      controls of `<video controls>` are replaced. Commands run through DevTools
+      `Runtime.evaluate` with a user gesture (play with sound, fullscreen need one).
+- [x] Glass controls (design "In-page player" / "Fullscreen player"), always dark glass
+      (`Ui::set_plane_dark`): play, ±10 s (fullscreen), time, scrubber, remaining, mute, speed
+      cycle, captions cycle, fullscreen/exit; inline only over videos that had native controls.
+- [x] Own fullscreen: the element's real fullscreen; in a site's own fullscreen (YouTube…)
+      the video "takes over" (everything else `visibility:hidden`) under our controls.
+      Controls and pointer hide after 2.5 s; media keys (Space/K, ←/→, ↑/↓, M, F/Esc, C, <, >)
+      only while fullscreen. Double-click a replaced video toggles fullscreen.
+- [ ] PiP window (own floating glass window, physics, corner snapping) — next.
+- [x] Playback priority: playing tabs are never frozen/unloaded (bridge state); VA-API
+      on by default (`chrome://gpu`: Video Decode hardware accelerated); fullscreen controls
+      disappear entirely while hidden, so no glass is drawn over playing video.
+      *Open:* raising renderer OS priority (no tab → process mapping in CEF).
+- [x] MPRIS (`org.mpris.MediaPlayer2.axion.instance<pid>`, zbus): status, metadata from
+      `navigator.mediaSession`, position, seek, volume, rate — media keys work through it.
+      Now Playing card at the bottom of the sidebar. Private tabs stay off the desktop.
+      *Open:* per-site opt-out of our controls; captions rendered by sites (not text tracks)
+      are hidden by the fullscreen takeover.
 
 ### Phase 6 — Bookmarks & history
 - [ ] SQLite schema + migrations, sidebar views, search, import.
@@ -249,6 +267,9 @@ Windows/macOS, touchscreen-first mode.
 - 2026-10-25: Unloaded ("discarded") tabs keep their `ViewId`; the engine closes the CEF
   browser but keeps the view's state, so the rest of the browser never sees tab identities
   change.
+
+- 2026-10-25: Page ↔ browser messages use console messages from an injected script rather
+  than a renderer-side CEF app; pages could forge them, but only to fool their own controls.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

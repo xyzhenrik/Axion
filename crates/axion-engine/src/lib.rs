@@ -15,6 +15,9 @@ pub use policy::{NavigationRequest, RequestPolicy, RequestVerdict, ResourceKind,
 
 use glam::Vec2;
 
+/// Console messages starting with this are [`EngineEvent::PageMessage`]s.
+pub const PAGE_MESSAGE_PREFIX: &str = "\u{1}axion:";
+
 /// Identifies one view (tab) for the lifetime of the engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ViewId(pub u32);
@@ -93,10 +96,11 @@ pub enum EngineEvent {
         kind: NewViewKind,
         user_gesture: bool,
     },
-    /// The view started or stopped playing audible media.
-    MediaStateChanged {
+    /// A message from the page script (a console message starting with
+    /// [`PAGE_MESSAGE_PREFIX`]; the page's own console output isn't reported).
+    PageMessage {
         view: ViewId,
-        playing: bool,
+        message: String,
     },
     /// The [`RequestPolicy`] blocked a request of the view's page.
     RequestBlocked {
@@ -148,6 +152,12 @@ pub trait Engine {
     fn resize(&mut self, view: ViewId, size: ViewSize);
     /// Hidden views stop rendering and get throttled (background tabs).
     fn set_hidden(&mut self, view: ViewId, hidden: bool);
+    /// JavaScript run in every frame of every view as it starts loading (`None`: nothing).
+    /// It can talk back with console messages starting with [`PAGE_MESSAGE_PREFIX`].
+    fn set_page_script(&mut self, script: Option<String>);
+    /// Runs JavaScript in the view's top frame; with `user_gesture` as if the user had just
+    /// clicked (needed for fullscreen and unmuted playback).
+    fn run_script(&mut self, view: ViewId, script: &str, user_gesture: bool);
     /// Pauses a hidden view completely (no JavaScript, timers or loading) or resumes it.
     fn set_frozen(&mut self, view: ViewId, frozen: bool);
     /// Closes the view's page to free its memory, keeping its URL and last frame (still

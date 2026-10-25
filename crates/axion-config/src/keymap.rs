@@ -41,6 +41,37 @@ pub enum Action {
     OpenSettings,
     ToggleFullscreen,
     Quit,
+    // Media keys: only while a video plays fullscreen with Axion's controls, so plain keys
+    // like Space keep reaching the page otherwise.
+    MediaPlayPause,
+    MediaSeekBack,
+    MediaSeekForward,
+    MediaVolumeUp,
+    MediaVolumeDown,
+    MediaMute,
+    MediaFullscreen,
+    MediaCaptions,
+    MediaSlower,
+    MediaFaster,
+}
+
+impl Action {
+    /// Media keys apply only while a video is fullscreen (see the enum).
+    pub fn is_media(self) -> bool {
+        matches!(
+            self,
+            Action::MediaPlayPause
+                | Action::MediaSeekBack
+                | Action::MediaSeekForward
+                | Action::MediaVolumeUp
+                | Action::MediaVolumeDown
+                | Action::MediaMute
+                | Action::MediaFullscreen
+                | Action::MediaCaptions
+                | Action::MediaSlower
+                | Action::MediaFaster
+        )
+    }
 }
 
 const SIMPLE_ACTIONS: &[(Action, &str)] = &[
@@ -64,6 +95,16 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::OpenSettings, "open_settings"),
     (Action::ToggleFullscreen, "toggle_fullscreen"),
     (Action::Quit, "quit"),
+    (Action::MediaPlayPause, "media_play_pause"),
+    (Action::MediaSeekBack, "media_seek_back"),
+    (Action::MediaSeekForward, "media_seek_forward"),
+    (Action::MediaVolumeUp, "media_volume_up"),
+    (Action::MediaVolumeDown, "media_volume_down"),
+    (Action::MediaMute, "media_mute"),
+    (Action::MediaFullscreen, "media_fullscreen"),
+    (Action::MediaCaptions, "media_captions"),
+    (Action::MediaSlower, "media_slower"),
+    (Action::MediaFaster, "media_faster"),
 ];
 const SELECT_TAB_PREFIX: &str = "select_tab_";
 
@@ -306,6 +347,16 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::OpenSettings, &["Ctrl+,"]);
     bind(Action::ToggleFullscreen, &["F11"]);
     bind(Action::Quit, &["Ctrl+Q"]);
+    bind(Action::MediaPlayPause, &["Space", "K"]);
+    bind(Action::MediaSeekBack, &["Left", "J"]);
+    bind(Action::MediaSeekForward, &["Right", "L"]);
+    bind(Action::MediaVolumeUp, &["Up"]);
+    bind(Action::MediaVolumeDown, &["Down"]);
+    bind(Action::MediaMute, &["M"]);
+    bind(Action::MediaFullscreen, &["F", "Escape"]);
+    bind(Action::MediaCaptions, &["C"]);
+    bind(Action::MediaSlower, &["Shift+,"]);
+    bind(Action::MediaFaster, &["Shift+."]);
     map
 }
 
@@ -315,6 +366,18 @@ mod tests {
 
     fn chord(s: &str) -> Chord {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn media_defaults_all_parse() {
+        let keymap = Keymap::default();
+        for (action, _) in SIMPLE_ACTIONS.iter().filter(|(a, _)| a.is_media()) {
+            let expected =
+                if *action == Action::MediaPlayPause || *action == Action::MediaFullscreen { 2 } else { 1 };
+            assert!(keymap.chords_for(*action).len() >= expected, "{action}");
+        }
+        assert_eq!(keymap.action_for(&chord("Space")), Some(Action::MediaPlayPause));
+        assert_eq!(keymap.action_for(&chord("Shift+.")), Some(Action::MediaFaster));
     }
 
     #[test]

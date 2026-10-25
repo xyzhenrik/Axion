@@ -17,6 +17,7 @@ arboard = { version = "3", default-features = false, features = ["wayland-data-c
 axion-compositor.workspace = true
 axion-config.workspace = true
 axion-engine.workspace = true
+axion-media.workspace = true
 axion-physics.workspace = true
 axion-shields.workspace = true
 axion-tabs.workspace = true
@@ -30,6 +31,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+zbus = "5"
 
 [lints]
 workspace = true

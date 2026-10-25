@@ -32,17 +32,19 @@ pub enum Category {
     Appearance,
     LiquidGlass,
     Tabs,
+    Media,
     Keyboard,
     Shields,
     Privacy,
 }
 
 impl Category {
-    const ALL: [Category; 7] = [
+    const ALL: [Category; 8] = [
         Category::General,
         Category::Appearance,
         Category::LiquidGlass,
         Category::Tabs,
+        Category::Media,
         Category::Keyboard,
         Category::Shields,
         Category::Privacy,
@@ -54,6 +56,7 @@ impl Category {
             Category::Appearance => "Appearance",
             Category::LiquidGlass => "Liquid Glass",
             Category::Tabs => "Tabs & Memory",
+            Category::Media => "Media",
             Category::Keyboard => "Keyboard",
             Category::Shields => "Shields",
             Category::Privacy => "Privacy",
@@ -66,6 +69,7 @@ impl Category {
             Category::Appearance => Icon::Sidebar,
             Category::LiquidGlass => Icon::Overview,
             Category::Tabs => Icon::TabGroup,
+            Category::Media => Icon::Media,
             Category::Keyboard => Icon::Menu,
             Category::Shields => Icon::Shield,
             Category::Privacy => Icon::Lock,
@@ -100,6 +104,11 @@ enum Setting {
     MemoryBudget,
     KeepMediaAwake,
     RestoreSession,
+    OwnControls,
+    OwnFullscreenControls,
+    HideControlsAfter,
+    HardwareDecoding,
+    DesktopIntegration,
 }
 
 impl Setting {
@@ -129,6 +138,11 @@ impl Setting {
             Setting::MemoryBudget => "Memory budget (automatic – all memory)",
             Setting::KeepMediaAwake => "Keep tabs playing audio awake",
             Setting::RestoreSession => "Reopen last session's tabs at start",
+            Setting::OwnControls => "Axion's controls for page videos",
+            Setting::OwnFullscreenControls => "Axion's controls in fullscreen, also over site players",
+            Setting::HideControlsAfter => "Hide controls while playing after (1 – 10 seconds)",
+            Setting::HardwareDecoding => "Hardware video decoding (after restart)",
+            Setting::DesktopIntegration => "Desktop media controls and media keys (after restart)",
         }
     }
 
@@ -148,6 +162,10 @@ impl Setting {
                 | Setting::LimitMemory
                 | Setting::KeepMediaAwake
                 | Setting::RestoreSession
+                | Setting::OwnControls
+                | Setting::OwnFullscreenControls
+                | Setting::HardwareDecoding
+                | Setting::DesktopIntegration
         )
     }
 
@@ -164,6 +182,7 @@ impl Setting {
             Setting::MergeDistance => (0.0, 40.0),
             Setting::LockAfter => (0.0, 600.0),
             Setting::FreezeAfter => (0.0, 60.0),
+            Setting::HideControlsAfter => (1.0, 10.0),
             Setting::DiscardAfter => (0.0, 480.0),
             Setting::MemoryBudget => (0.0, system_memory_mb()),
             _ => (0.0, 1.0),
@@ -186,6 +205,11 @@ impl Setting {
             Setting::LimitMemory => return c.tabs.limit_memory as u8 as f32,
             Setting::KeepMediaAwake => return c.tabs.keep_media_awake as u8 as f32,
             Setting::RestoreSession => return c.tabs.restore_session as u8 as f32,
+            Setting::OwnControls => return c.media.own_controls as u8 as f32,
+            Setting::OwnFullscreenControls => return c.media.own_fullscreen_controls as u8 as f32,
+            Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
+            Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
+            Setting::HideControlsAfter => c.media.hide_controls_after_seconds,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes,
             Setting::DiscardAfter => c.tabs.discard_after_minutes,
             Setting::MemoryBudget => c.tabs.memory_budget_mb as f32,
@@ -221,6 +245,11 @@ impl Setting {
             Setting::LimitMemory => c.tabs.limit_memory = on,
             Setting::KeepMediaAwake => c.tabs.keep_media_awake = on,
             Setting::RestoreSession => c.tabs.restore_session = on,
+            Setting::OwnControls => c.media.own_controls = on,
+            Setting::OwnFullscreenControls => c.media.own_fullscreen_controls = on,
+            Setting::HardwareDecoding => c.media.hardware_decoding = on,
+            Setting::DesktopIntegration => c.media.desktop_integration = on,
+            Setting::HideControlsAfter => c.media.hide_controls_after_seconds = (v * 2.0).round() / 2.0,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes = v.round(),
             Setting::DiscardAfter => c.tabs.discard_after_minutes = (v / 5.0).round() * 5.0,
             Setting::MemoryBudget => c.tabs.memory_budget_mb = ((v / 256.0).round() * 256.0) as u32,
@@ -298,7 +327,7 @@ impl SettingsAction {
         let n = id.0.checked_sub(ACTION_BASE)?;
         Some(match n {
             0 => SettingsAction::Close,
-            10..=16 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
+            10..=17 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
             20 => SettingsAction::Theme(ThemeMode::Auto),
             21 => SettingsAction::Theme(ThemeMode::Light),
             22 => SettingsAction::Theme(ThemeMode::Dark),
@@ -677,6 +706,17 @@ impl SettingsSheet {
                     w.set_paint(Paint::Secondary);
                 }
             }
+            Category::Media => {
+                for setting in [
+                    Setting::OwnControls,
+                    Setting::OwnFullscreenControls,
+                    Setting::HideControlsAfter,
+                    Setting::HardwareDecoding,
+                    Setting::DesktopIntegration,
+                ] {
+                    self.control(ui, config, setting);
+                }
+            }
             Category::Shields => {
                 let row_node = self.row(ui, "Shields on sites you haven't set");
                 let options: Vec<(&str, ActionId)> = SHIELD_LEVELS
@@ -927,6 +967,16 @@ fn shortcut_actions() -> Vec<KeyAction> {
         OpenSettings,
         ToggleFullscreen,
         Quit,
+        MediaPlayPause,
+        MediaSeekBack,
+        MediaSeekForward,
+        MediaVolumeUp,
+        MediaVolumeDown,
+        MediaMute,
+        MediaFullscreen,
+        MediaCaptions,
+        MediaSlower,
+        MediaFaster,
     ]
 }
 

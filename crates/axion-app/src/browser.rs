@@ -19,13 +19,15 @@ use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Fullscreen, Window};
 
-use crate::chrome::{Chrome, ChromeAction, PanelItem};
+use crate::chrome::{Chrome, ChromeAction, NowPlaying, PanelItem};
 use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
 use crate::lockscreen::LockScreen;
 use crate::menu::{Menu, MenuAction, MenuItem};
+use crate::mpris::{Mpris, MprisCommand, Track};
 use crate::overview::{Overview, OverviewAction};
+use crate::player::{Context as PlayerContext, Control as PlayerControl, Mode as PlayerMode, PlayerOverlay};
 use crate::private::PrivateLock;
 use crate::settings::{Category, Outcome, SettingsAction, SettingsSheet};
 use crate::shields::ShieldsState;
@@ -94,6 +96,10 @@ pub struct Browser {
     menu: Menu,
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
+    player: PlayerOverlay,
+    /// The tab whose media the Now Playing card and the desktop (MPRIS) show.
+    now_playing: Option<ViewId>,
+    mpris: Option<Mpris>,
     memory: MemoryMonitor,
     lifecycle_checked: Instant,
     session_dirty: bool,
@@ -219,15 +225,19 @@ impl Browser {
                 },
                 no_sandbox: std::env::var_os("AXION_NO_SANDBOX").is_some(),
                 max_frame_rate: MAX_FRAME_RATE,
+                hardware_video_decoding: config.media.hardware_decoding,
             },
         )?;
         engine.set_request_policy(Some(shields.policy()));
+        engine.set_page_script(Some(axion_media::bridge_script(&bridge_secret(), config.media.own_controls)));
 
         let dark = is_dark(&config, &window);
         let scale = window.scale_factor() as f32;
         let mut ui = Ui::new(Theme::new(&config, dark), scale);
         let compositor = Compositor::new(&device, &queue, format, &mut ui.fonts());
         let queue = queue.clone();
+        // Under the chrome, so menus and popovers cover the video controls.
+        let player = PlayerOverlay::build(&mut ui);
         let chrome = Chrome::build(&mut ui, &config);
         let suggestions = SuggestionList::build(&mut ui, chrome.bar_node());
         let menu = Menu::build(&mut ui, chrome.bar_node());
@@ -254,6 +264,9 @@ impl Browser {
             menu,
             shields,
             shields_popover,
+            player,
+            now_playing: None,
+            mpris: if config.media.desktop_integration { Mpris::start() } else { None },
             memory: MemoryMonitor::start(Duration::from_secs_f32(
                 config.tabs.check_interval_seconds.max(0.5),
             )),
@@ -509,11 +522,173 @@ impl Browser {
                 tracing::info!("{action} arrives in a later phase");
             }
             Action::Quit => {}
+            media => {
+                if let Some((view, command)) = self.player.key_command(media, &self.config) {
+                    self.player.wake();
+                    self.media_command(view, &command);
+                }
+            }
         }
     }
 
     fn is_locked(&self) -> bool {
         self.private_mode && self.config.privacy.lock_private_tabs && self.lock.is_locked()
+    }
+
+    // ---- media ----
+
+    fn media_command(&mut self, view: ViewId, command: &axion_media::Command) {
+        tracing::debug!(?view, ?command, "media command");
+        self.engine.run_script(view, &command.script(), command.needs_gesture());
+    }
+
+    fn page_message(&mut self, view: ViewId, message: &str) {
+        let message = match axion_media::parse(message) {
+            Ok(Some(message)) => message,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::debug!("{e}");
+                return;
+            }
+        };
+        match message {
+            axion_media::Message::State(media) => {
+                let playing = media.primary().is_some_and(axion_media::Player::is_playing);
+                if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
+                    tab.playing_media = media.is_audible();
+                    tab.media = Some(media);
+                }
+                // The tab that started playing last is the one the desktop controls.
+                let current_playing =
+                    self.now_playing.and_then(|v| self.primary_player(v)).is_some_and(|p| p.is_playing());
+                if playing
+                    && (self.now_playing != Some(view) && !current_playing || self.now_playing.is_none())
+                {
+                    self.now_playing = Some(view);
+                }
+                self.update_now_playing();
+            }
+            axion_media::Message::DoubleClick { id } => {
+                let fullscreen = self.player.mode() != PlayerMode::Fullscreen;
+                let command = axion_media::Command::new(&id, axion_media::Action::Fullscreen(fullscreen));
+                self.media_command(view, &command);
+            }
+        }
+    }
+
+    fn primary_player(&self, view: ViewId) -> Option<&axion_media::Player> {
+        find_tab(&self.tabs, &self.parked, view)?.media.as_ref()?.primary()
+    }
+
+    /// Selects the tab of `view`, switching between normal and private tabs if needed.
+    fn show_view(&mut self, view: ViewId) {
+        if !self.tabs.all().iter().any(|t| t.view == view) && self.parked.all().iter().any(|t| t.view == view)
+        {
+            self.toggle_private_mode();
+        }
+        if let Some(i) = self.tabs.all().iter().position(|t| t.view == view) {
+            self.select_tab(i);
+        }
+    }
+
+    fn now_playing_command(&mut self, action: axion_media::Action) {
+        let Some(view) = self.now_playing else { return };
+        let Some(id) = self.primary_player(view).map(|p| p.id.clone()) else { return };
+        self.media_command(view, &axion_media::Command::new(&id, action));
+    }
+
+    /// Refreshes the sidebar card and the desktop's media controls.
+    fn update_now_playing(&mut self) {
+        // Private tabs' media stays out of the desktop; the card shows it in private mode only.
+        let tab = self.now_playing.and_then(|v| find_tab(&self.tabs, &self.parked, v));
+        let tab = tab.filter(|t| t.media.as_ref().and_then(|m| m.primary()).is_some());
+        if tab.is_none() {
+            self.now_playing = None;
+        }
+        let info = tab.and_then(|t| {
+            let media = t.media.as_ref()?;
+            let player = media.primary()?;
+            let session = media.session.clone().unwrap_or_default();
+            let title = if session.title.is_empty() { t.label() } else { session.title };
+            Some((
+                t.private,
+                player.clone(),
+                title,
+                session.artist,
+                session.album,
+                session.artwork,
+                display_host(&t.url),
+            ))
+        });
+        let card =
+            info.as_ref().filter(|i| !i.0 || self.private_mode).map(|(_, p, title, artist, ..)| NowPlaying {
+                title: title.clone(),
+                subtitle: if artist.is_empty() {
+                    info.as_ref().map(|i| i.6.clone()).unwrap_or_default()
+                } else {
+                    artist.clone()
+                },
+                playing: p.is_playing(),
+            });
+        self.chrome.set_now_playing(&mut self.ui, card.as_ref());
+        if let Some(mpris) = &mut self.mpris {
+            let track = info.filter(|i| !i.0).map(|(_, p, title, artist, album, art, _)| Track {
+                playing: p.is_playing(),
+                title,
+                artist,
+                album,
+                art_url: art,
+                length: if p.live { 0.0 } else { p.duration },
+                position: p.time,
+                volume: if p.muted { 0.0 } else { p.volume },
+                rate: p.rate,
+            });
+            mpris.update(track);
+        }
+    }
+
+    fn handle_mpris(&mut self) {
+        let Some(commands) = self.mpris.as_ref().map(Mpris::commands) else { return };
+        for command in commands {
+            use axion_media::Action as A;
+            let action = match command {
+                MprisCommand::Raise => {
+                    self.window.focus_window();
+                    if let Some(view) = self.now_playing {
+                        self.show_view(view);
+                    }
+                    continue;
+                }
+                MprisCommand::Play => A::Play,
+                MprisCommand::Pause => A::Pause,
+                MprisCommand::PlayPause => A::Toggle,
+                MprisCommand::Seek(by) => A::Skip(by),
+                MprisCommand::SetPosition(to) => A::Seek(to),
+                MprisCommand::Volume(v) => A::Volume(v),
+                MprisCommand::Rate(r) => A::Rate(r),
+            };
+            self.now_playing_command(action);
+        }
+    }
+
+    fn update_player(&mut self, dt: f32) {
+        let tab = self.tabs.active().filter(|_| !self.overview.is_open() && !self.is_locked());
+        let host = tab.map(|t| display_host(&t.url)).unwrap_or_default();
+        let title = tab.map(|t| t.label()).unwrap_or_default();
+        let cx = PlayerContext {
+            view: tab.map(|t| t.view),
+            media: tab.and_then(|t| t.media.as_ref()),
+            page: self.page_rect(),
+            scale: self.scale(),
+            pointer: self.pointer,
+            page_fullscreen: self.chrome.page_fullscreen(),
+            page_title: &title,
+            host: &host,
+        };
+        self.player.update(&mut self.ui, &self.config, &cx, dt);
+        if let Some((view, command)) = self.player.takeover_command() {
+            self.media_command(view, &command);
+        }
     }
 
     // ---- session ----
@@ -889,6 +1064,9 @@ impl Browser {
 
     fn apply_shields_config(&mut self) {
         self.shields.apply_config(&self.config);
+        // Pages loaded from now on get the media bridge with the current setting.
+        let script = axion_media::bridge_script(&bridge_secret(), self.config.media.own_controls);
+        self.engine.set_page_script(Some(script));
     }
 
     fn edit_address(&mut self) {
@@ -941,6 +1119,19 @@ impl Browser {
                     }
                     let outcome = self.settings.action(&mut self.ui, action, &mut self.config, &self.keymap);
                     self.settings_outcome(outcome);
+                }
+                UiEvent::ValueChanged { node, value } if node == self.player.scrubber() => {
+                    if let Some((view, command)) = self.player.seek_command(value) {
+                        self.media_command(view, &command);
+                    }
+                }
+                UiEvent::Clicked { action, .. } if PlayerControl::from_id(action).is_some() => {
+                    let command =
+                        PlayerControl::from_id(action).and_then(|c| self.player.command(c, &self.config));
+                    if let Some((view, command)) = command {
+                        self.player.wake();
+                        self.media_command(view, &command);
+                    }
                 }
                 UiEvent::ValueChanged { node, value } => {
                     let outcome = self.settings.value_changed(node, value, &mut self.config);
@@ -1024,6 +1215,14 @@ impl Browser {
                     }
                     Some(ChromeAction::Private) => self.toggle_private_mode(),
                     Some(ChromeAction::NewTabGroup) => tracing::info!("tab groups arrive in a later phase"),
+                    Some(ChromeAction::NowPlaying) => {
+                        if let Some(view) = self.now_playing {
+                            self.show_view(view);
+                        }
+                    }
+                    Some(ChromeAction::NowPlayingToggle) => {
+                        self.now_playing_command(axion_media::Action::Toggle)
+                    }
                     Some(ChromeAction::SelectTab(i)) => self.select_tab(i),
                     Some(ChromeAction::CloseTab(i)) => self.close_tab(i),
                     None => {}
@@ -1100,6 +1299,8 @@ impl Browser {
                             // A new page: its count starts over.
                             tab.blocked = 0;
                             tab.blocked_urls.clear();
+                            tab.media = None;
+                            tab.playing_media = false;
                         }
                         tab.loading = loading;
                         tab.can_go_back = can_go_back;
@@ -1167,11 +1368,7 @@ impl Browser {
                         }
                     }
                 }
-                EngineEvent::MediaStateChanged { view, playing } => {
-                    if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
-                        tab.playing_media = playing;
-                    }
-                }
+                EngineEvent::PageMessage { view, message } => self.page_message(view, &message),
                 EngineEvent::RequestBlocked { view, url } | EngineEvent::NavigationBlocked { view, url } => {
                     self.count_blocked(view, url);
                 }
@@ -1181,6 +1378,7 @@ impl Browser {
         self.reload_config_if_changed();
         self.apply_lifecycle();
         self.save_session_if_due(false);
+        self.handle_mpris();
     }
 
     fn settings_outcome(&mut self, outcome: Outcome) {
@@ -1390,6 +1588,8 @@ impl Browser {
             Some(UiCursor::Pointer) => Some(winit::window::CursorIcon::Pointer),
             Some(UiCursor::Text) => Some(winit::window::CursorIcon::Text),
             Some(UiCursor::Default) => Some(winit::window::CursorIcon::Default),
+            // Fullscreen video: the pointer hides with the controls.
+            None if self.player.mode() == PlayerMode::Fullscreen && !self.player.is_shown() => None,
             None => input::cursor_icon(self.page_cursor),
         };
         self.window.set_cursor_visible(icon.is_some());
@@ -1485,8 +1685,20 @@ impl Browser {
             return false;
         }
         if pressed
+            && self.chrome.page_fullscreen()
+            && self.player.mode() != PlayerMode::Fullscreen
+            && input::key(event) == Some(Key::Named("Escape".into()))
+            && let Some(view) = self.active_view()
+        {
+            // Off-screen pages can't leave fullscreen on Escape by themselves.
+            self.engine.run_script(view, "document.fullscreenElement && document.exitFullscreen();", false);
+            return false;
+        }
+        if pressed
             && let Some(chord) = input::chord(event, self.modifiers)
             && let Some(action) = self.keymap.action_for(&chord)
+            // Media keys (Space, arrows…) are ours only while a video is fullscreen.
+            && (!action.is_media() || self.player.mode() == PlayerMode::Fullscreen && self.ui.focused().is_none())
         {
             if action == Action::Quit {
                 return true;
@@ -1550,6 +1762,7 @@ impl Browser {
             self.update_layout();
         }
         if std::mem::take(&mut self.tabs_changed) {
+            self.update_now_playing();
             self.session_dirty = true;
             self.session_changed = Instant::now();
             self.chrome.sync_tabs(&mut self.ui, &self.tabs, &self.favicons);
@@ -1573,12 +1786,35 @@ impl Browser {
                 "bookmarks" => self.show_panel(Panel::Bookmarks),
                 "settings" => self.run(Action::OpenSettings),
                 "next-tab" => self.run(Action::NextTab),
+                // Capture aid: what a site's own fullscreen button does (its player's frame).
+                "page-fullscreen" => {
+                    if let Some(view) = self.active_view() {
+                        let script = "(document.querySelector('iframe') || document.querySelector('video')).requestFullscreen();";
+                        self.engine.run_script(view, script, true);
+                    }
+                }
+                // Capture aids for the media controls: play the page's video (and fullscreen it).
+                "media-play" | "media-fullscreen" => {
+                    let mut controls = vec![PlayerControl::PlayPause];
+                    if what == "media-fullscreen" {
+                        controls.push(PlayerControl::Fullscreen);
+                    }
+                    for control in controls {
+                        if let Some((view, command)) = self.player.command(control, &self.config) {
+                            self.media_command(view, &command);
+                        }
+                    }
+                }
                 "shields-settings" => {
                     self.settings.set_category(Category::Shields);
                     self.run(Action::OpenSettings);
                 }
                 "tabs-settings" => {
                     self.settings.set_category(Category::Tabs);
+                    self.run(Action::OpenSettings);
+                }
+                "media-settings" => {
+                    self.settings.set_category(Category::Media);
                     self.run(Action::OpenSettings);
                 }
                 "private" => self.toggle_private_mode(),
@@ -1602,6 +1838,7 @@ impl Browser {
         self.chrome.animate(&mut self.ui, dt);
         self.menu.animate(&mut self.ui, dt);
         self.shields_popover.animate(&mut self.ui, dt);
+        self.update_player(dt);
         self.suggestions.animate(&mut self.ui, dt);
         if self.overview.is_open() {
             let query = self.ui.field_text(self.overview.search_field()).unwrap_or_default().to_owned();
@@ -1797,6 +2034,13 @@ fn find_tab<'a>(tabs: &'a Tabs, parked: &'a Tabs, view: ViewId) -> Option<&'a Ta
 
 fn tab_mut<'a>(tabs: &'a mut Tabs, parked: &'a mut Tabs, view: ViewId) -> Option<&'a mut Tab> {
     if tabs.all().iter().any(|t| t.view == view) { tabs.by_view_mut(view) } else { parked.by_view_mut(view) }
+}
+
+/// A per-run secret that keeps the media bridge's frame messages apart from the page's.
+fn bridge_secret() -> String {
+    let nanos =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    format!("{nanos:x}{:x}", std::process::id())
 }
 
 fn unix_now() -> i64 {

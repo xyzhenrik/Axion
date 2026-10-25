@@ -16,6 +16,7 @@ axion-glass = { path = "crates/axion-glass" }
 axion-physics = { path = "crates/axion-physics" }
 axion-shields = { path = "crates/axion-shields" }
 axion-tabs = { path = "crates/axion-tabs" }
+axion-media = { path = "crates/axion-media" }
 axion-store = { path = "crates/axion-store" }
 axion-ui = { path = "crates/axion-ui" }
 

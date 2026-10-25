@@ -20,6 +20,17 @@ use crate::favicons::{Favicons, favicon_node};
 use crate::tabs::Tabs;
 use crate::url::display_host;
 
+/// The Now Playing card's content.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NowPlaying {
+    pub title: String,
+    pub subtitle: String,
+    pub playing: bool,
+}
+
+const NOW_PLAYING_HEIGHT: f32 = 60.0;
+const NOW_PLAYING_RADIUS: f32 = 20.0;
+
 /// What a click in the chrome means.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChromeAction {
@@ -41,6 +52,9 @@ pub enum ChromeAction {
     ReadingList,
     History,
     ClosePanel,
+    /// The Now Playing card: open its tab.
+    NowPlaying,
+    NowPlayingToggle,
     SelectTab(usize),
     CloseTab(usize),
     /// An entry in the open bookmarks/history panel.
@@ -52,7 +66,7 @@ const CLOSE_TAB_BASE: u32 = 2000;
 const PANEL_ITEM_BASE: u32 = 7000;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 18] = [
+    const SIMPLE: [ChromeAction; 20] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -71,6 +85,8 @@ impl ChromeAction {
         ChromeAction::ReadingList,
         ChromeAction::History,
         ChromeAction::ClosePanel,
+        ChromeAction::NowPlaying,
+        ChromeAction::NowPlayingToggle,
     ];
 
     fn id(self) -> ActionId {
@@ -84,7 +100,7 @@ impl ChromeAction {
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=18 => Some(Self::SIMPLE[n as usize - 1]),
+            n @ 1..=20 => Some(Self::SIMPLE[n as usize - 1]),
             n if (PANEL_ITEM_BASE..PANEL_ITEM_BASE + 1000).contains(&n) => {
                 Some(ChromeAction::OpenPanelItem((n - PANEL_ITEM_BASE) as usize))
             }
@@ -136,6 +152,10 @@ const SLIDE_SETTLED: f32 = 0.3;
 const TAB_INDENT: f32 = 18.0;
 
 pub struct Chrome {
+    now_playing: NodeId,
+    now_playing_title: NodeId,
+    now_playing_subtitle: NodeId,
+    now_playing_icon: NodeId,
     mode: Mode,
     docked: bool,
     /// Sidebar shown while docked (remembered across resizes).
@@ -421,6 +441,45 @@ impl Chrome {
         let panel_list = ui.add(panel, Widget::container(), column(2.0));
         ui.set_visible(panel, false);
 
+        // Now Playing: at the bottom of the sidebar while a tab plays media.
+        let now_playing = ui.add(
+            sidebar,
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thin))
+                .with_radius(NOW_PLAYING_RADIUS)
+                .with_action(ChromeAction::NowPlaying.id()),
+            Style {
+                margin: Rect { left: length(0.0), right: length(0.0), top: auto(), bottom: length(0.0) },
+                size: Size { width: auto(), height: length(NOW_PLAYING_HEIGHT) },
+                padding: padding(14.0, 8.0, 0.0, 0.0),
+                ..row(12.0)
+            },
+        );
+        ui.add(now_playing, Widget::icon(Icon::Media, 22.0).with_paint(Paint::Accent), Style::default());
+        let titles = ui.add(
+            now_playing,
+            Widget::container(),
+            Style {
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                min_size: Size { width: length(0.0), height: auto() },
+                ..column(0.0)
+            },
+        );
+        let now_playing_title = ui.add_label(titles, "", TextStyle::Callout, shrinking_label());
+        let now_playing_subtitle = ui.add_label(titles, "", TextStyle::Footnote, shrinking_label());
+        if let Some(w) = ui.widget_mut(now_playing_subtitle) {
+            w.set_paint(Paint::Secondary);
+        }
+        let (_, now_playing_icon) = icon_button(
+            ui,
+            now_playing,
+            ChromeAction::NowPlayingToggle,
+            Widget::icon(Icon::Pause, 20.0),
+            40.0,
+        );
+        ui.set_visible(now_playing, false);
+
         // ---- toolbar ----
         let bar = ui.add(
             root,
@@ -513,6 +572,10 @@ impl Chrome {
         let tab_count_label = ui.add_label(count_box, "1", TextStyle::Caption, Style::default());
 
         let mut chrome = Self {
+            now_playing,
+            now_playing_title,
+            now_playing_subtitle,
+            now_playing_icon,
             mode: Mode::Wide,
             docked: true,
             docked_open: layout.sidebar_visible,
@@ -774,6 +837,15 @@ impl Chrome {
     /// The page menu button's frame (logical px), for anchoring the menu.
     pub fn page_menu_frame(&self, ui: &Ui) -> Frame {
         ui.frame(self.page_menu)
+    }
+
+    /// Shows the Now Playing card (`None` hides it).
+    pub fn set_now_playing(&self, ui: &mut Ui, now: Option<&NowPlaying>) {
+        ui.set_visible(self.now_playing, now.is_some());
+        let Some(now) = now else { return };
+        ui.set_text(self.now_playing_title, &now.title);
+        ui.set_text(self.now_playing_subtitle, &now.subtitle);
+        ui.set_icon(self.now_playing_icon, if now.playing { Icon::Pause } else { Icon::Play });
     }
 
     pub fn shield_frame(&self, ui: &Ui) -> Frame {

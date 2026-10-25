@@ -51,8 +51,8 @@ crates/
                      (the engine asks it through `axion_engine::RequestPolicy`, glue in app/shields.rs)
   axion-store/       SQLite: history, bookmarks, meta, per-site settings (session restore planned)
   axion-tabs/        tab lifecycle planner (freeze/discard by idle time + memory budget), PSS monitor
-planned:
-  axion-media/       media bridge (injected JS ↔ IPC), controls state, fullscreen/PiP, MPRIS
+  axion-media/       media bridge script (bridge.js) + its protocol; controls live in app/player.rs,
+                     MPRIS in app/mpris.rs
 ```
 
 Dependency direction: `app` → everything; `ui` → `compositor`, `glass`, `config`;

@@ -18,6 +18,7 @@ pub struct Config {
     pub privacy: Privacy,
     pub shields: Shields,
     pub tabs: Tabs,
+    pub media: Media,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -411,6 +412,43 @@ impl Default for Tabs {
             keep_media_awake: true,
             restore_session: true,
             check_interval_seconds: 5.0,
+        }
+    }
+}
+
+/// The media player.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Media {
+    /// Replace the native controls of page videos with Axion's glass controls.
+    pub own_controls: bool,
+    /// Show Axion's controls over every fullscreen video, also ones with a site's own player.
+    pub own_fullscreen_controls: bool,
+    /// Hide the controls of a playing video after this long without pointer movement.
+    pub hide_controls_after_seconds: f32,
+    /// How far the skip buttons and arrow keys jump.
+    pub skip_seconds: f32,
+    /// Volume step of the arrow keys (0–1).
+    pub volume_step: f32,
+    /// The speed button cycles through these.
+    pub playback_speeds: Vec<f32>,
+    /// Decode video on the GPU (VA-API).
+    pub hardware_decoding: bool,
+    /// Show what plays in the desktop's media controls and take the media keys (MPRIS).
+    pub desktop_integration: bool,
+}
+
+impl Default for Media {
+    fn default() -> Self {
+        Self {
+            own_controls: true,
+            own_fullscreen_controls: true,
+            hide_controls_after_seconds: 2.5,
+            skip_seconds: 10.0,
+            volume_step: 0.1,
+            playback_speeds: vec![1.0, 1.25, 1.5, 2.0, 0.5, 0.75],
+            hardware_decoding: true,
+            desktop_integration: true,
         }
     }
 }

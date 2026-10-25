@@ -20,9 +20,7 @@ use cef::*;
 pub use gpu::render_node_for;
 
 use crate::{Engine, EngineError, EngineEvent, Frame, InputEvent, RequestPolicy, ViewId, ViewSize};
-use client::{
-    FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, ViewMedia, build_client, favicon_callback,
-};
+use client::{FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, build_client, favicon_callback};
 use input::InputState;
 use network::Network;
 
@@ -37,6 +35,7 @@ const PAGE_BACKGROUND: u32 = 0xFFFF_FFFF;
 struct ProcessFlags {
     no_sandbox: bool,
     render_node: Option<PathBuf>,
+    hardware_video_decoding: bool,
 }
 
 wrap_app! {
@@ -63,6 +62,13 @@ wrap_app! {
             // Without a Wayland display (e.g. forced onto XWayland), Chromium must use X11 too.
             if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some() {
                 command_line.append_switch_with_value(Some(&"ozone-platform".into()), Some(&"x11".into()));
+            }
+            if self.flags.hardware_video_decoding {
+                // VA-API video decoding (Chromium's Linux names for it since M131).
+                command_line.append_switch_with_value(
+                    Some(&"enable-features".into()),
+                    Some(&"AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL".into()),
+                );
             }
             // Debugging aid: extra Chromium switches, e.g. "autoplay-policy=no-user-gesture-required".
             if let Ok(extra) = std::env::var("AXION_CHROMIUM_SWITCHES") {
@@ -91,7 +97,11 @@ pub fn run_subprocess_if_needed() -> Option<i32> {
     if !is_helper {
         return None;
     }
-    let mut app = AppBuilder::new(ProcessFlags { no_sandbox: false, render_node: None });
+    let mut app = AppBuilder::new(ProcessFlags {
+        no_sandbox: false,
+        render_node: None,
+        hardware_video_decoding: false,
+    });
     Some(execute_process(Some(args.as_main_args()), Some(&mut app), std::ptr::null_mut()))
 }
 
@@ -112,6 +122,8 @@ pub struct CefOptions {
     pub no_sandbox: bool,
     /// Upper bound for frames per second per view.
     pub max_frame_rate: u32,
+    /// Decode video on the GPU (VA-API).
+    pub hardware_video_decoding: bool,
 }
 
 struct ViewState {
@@ -146,6 +158,7 @@ impl CefEngine {
         let mut app = AppBuilder::new(ProcessFlags {
             no_sandbox: options.no_sandbox,
             render_node: options.render_node.clone(),
+            hardware_video_decoding: options.hardware_video_decoding,
         });
         let profile = options.profile_dir.to_string_lossy().into_owned();
         let settings = Settings {
@@ -325,7 +338,6 @@ impl Engine for CefEngine {
             queue: self.queue.clone(),
             geometry: Rc::new(ViewGeometry { logical: size.logical.into(), scale: size.scale.into() }),
             frames: Rc::new(ViewFrames::default()),
-            media: Rc::new(ViewMedia::default()),
             shared: self.shared.clone(),
             net: self.net.clone(),
         };
@@ -366,6 +378,25 @@ impl Engine for CefEngine {
         host.execute_dev_tools_method(0, Some(&"Page.setWebLifecycleState".into()), Some(&mut params));
     }
 
+    fn set_page_script(&mut self, script: Option<String>) {
+        self.shared.page_script.replace(script);
+    }
+
+    fn run_script(&mut self, view: ViewId, script: &str, user_gesture: bool) {
+        if !user_gesture {
+            if let Some(frame) = self.browser(view).and_then(|b| b.main_frame()) {
+                frame.execute_java_script(Some(&script.into()), None, 0);
+            }
+            return;
+        }
+        // Only DevTools can run a script as if the user had clicked (fullscreen, play).
+        let Some(host) = self.host(view) else { return };
+        let Some(mut params) = dictionary_value_create() else { return };
+        params.set_string(Some(&"expression".into()), Some(&script.into()));
+        params.set_bool(Some(&"userGesture".into()), 1);
+        host.execute_dev_tools_method(0, Some(&"Runtime.evaluate".into()), Some(&mut params));
+    }
+
     fn discard(&mut self, view: ViewId) {
         let Some(state) = self.views.get_mut(&view).filter(|v| !v.closing) else { return };
         let Some(browser) = state.browser.take() else { return };
@@ -376,7 +407,6 @@ impl Engine for CefEngine {
         frames.texture.replace(snapshot);
         // Events of the closed page (its `Closed` included) no longer match and are dropped.
         state.browser_id = NO_BROWSER;
-        state.ctx.media.clear();
         if let Some(host) = browser.host() {
             host.close_browser(1);
         }
@@ -517,7 +547,7 @@ impl Engine for CefEngine {
                 | EngineEvent::FaviconReady { view, .. }
                 | EngineEvent::CursorChanged { view, .. }
                 | EngineEvent::FullscreenRequested { view, .. }
-                | EngineEvent::MediaStateChanged { view, .. }
+                | EngineEvent::PageMessage { view, .. }
                 | EngineEvent::RequestBlocked { view, .. }
                 | EngineEvent::NavigationBlocked { view, .. }
                 | EngineEvent::Closed { view } => *view,

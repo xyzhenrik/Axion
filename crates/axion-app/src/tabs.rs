@@ -33,6 +33,8 @@ pub struct Tab {
     pub hidden_since: Option<Instant>,
     /// Plays audible media.
     pub playing_media: bool,
+    /// The page's media, as the bridge last reported it.
+    pub media: Option<axion_media::PageMedia>,
 }
 
 impl Tab {
@@ -53,6 +55,7 @@ impl Tab {
             lifecycle: Lifecycle::Background,
             hidden_since: Some(Instant::now()),
             playing_media: false,
+            media: None,
         }
     }
 

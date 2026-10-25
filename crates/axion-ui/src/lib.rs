@@ -10,8 +10,8 @@ mod editor;
 mod theme;
 mod widget;
 
-use std::cell::{RefCell, RefMut};
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell, RefMut};
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use axion_compositor::glyphon::{self, FontSystem};
@@ -103,6 +103,11 @@ pub struct Ui {
     // font system mutably) can coexist.
     fonts: RefCell<FontSystem>,
     theme: Theme,
+    /// The theme in dark, for planes that are always dark (see `set_plane_dark`).
+    dark_theme: Theme,
+    dark_planes: HashSet<NodeId>,
+    /// Set while painting a dark plane.
+    painting_dark: Cell<bool>,
     scale: f32,
     size: Vec2,
     pointer: Option<Vec2>,
@@ -128,6 +133,9 @@ impl Ui {
             tree,
             root,
             fonts: RefCell::new(FontSystem::new()),
+            dark_theme: Theme::new(theme.config(), true),
+            dark_planes: HashSet::new(),
+            painting_dark: Cell::new(false),
             theme,
             scale,
             size: Vec2::ONE,
@@ -157,10 +165,25 @@ impl Ui {
 
     pub fn set_theme(&mut self, theme: Theme) {
         let family_changed = theme.font_family() != self.theme.font_family();
+        self.dark_theme = Theme::new(theme.config(), true);
         self.theme = theme;
         if family_changed {
             self.reshape_all();
         }
+    }
+
+    /// Paints a plane (a child of the root) in the dark scheme whatever the theme — for
+    /// controls over video, which is dark-surrounded however the browser looks.
+    pub fn set_plane_dark(&mut self, plane: NodeId, dark: bool) {
+        if dark {
+            self.dark_planes.insert(plane);
+        } else {
+            self.dark_planes.remove(&plane);
+        }
+    }
+
+    fn paint_theme(&self) -> &Theme {
+        if self.painting_dark.get() { &self.dark_theme } else { &self.theme }
     }
 
     /// Window size in logical pixels and the scale factor to physical pixels.
@@ -735,6 +758,20 @@ impl Ui {
     }
 
     /// Sets a toggle (> 0.5 is on) or slider (0–1) without emitting an event.
+    /// Swaps an icon widget's glyph.
+    pub fn set_icon(&mut self, node: NodeId, icon: axion_compositor::Icon) {
+        if let Some(WidgetKind::Icon { icon: i, .. }) =
+            self.tree.get_node_context_mut(node).map(|w| &mut w.kind)
+        {
+            *i = icon;
+        }
+    }
+
+    /// The slider being dragged, if any.
+    pub fn dragging(&self) -> Option<NodeId> {
+        self.dragging
+    }
+
     pub fn set_value(&mut self, node: NodeId, value: f32) {
         match self.tree.get_node_context_mut(node).map(|w| &mut w.kind) {
             Some(WidgetKind::Toggle { on }) => *on = value > 0.5,
@@ -831,8 +868,10 @@ impl Ui {
         // before the next one, so later planes cover earlier ones — including their text.
         for plane in self.tree.children(self.root).unwrap_or_default() {
             let mut stacks: Vec<Stack<'a>> = Vec::new();
+            self.painting_dark.set(self.dark_planes.contains(&plane));
             self.paint_node(plane, 0, 1.0, 1.0, &mut stacks);
             self.flush(stacks, layers);
+            self.painting_dark.set(false);
         }
     }
 
@@ -856,7 +895,7 @@ impl Ui {
                     .filter(|g| g.level == level && g.fade == fade)
                     .map(|g| g.shape)
                     .collect();
-                let mut params = self.theme.glass(level, s);
+                let mut params = self.paint_theme().glass(level, s);
                 if fade < 1.0 {
                     // Fading glass loses blur, tint, refraction and light together.
                     params.blur_radius *= fade;
@@ -897,7 +936,7 @@ impl Ui {
             stacks.push(Stack::default());
         }
         let s = self.scale;
-        let theme = &self.theme;
+        let theme = self.paint_theme();
         let frame = widget.frame;
         let px = Rect { origin: frame.origin * s, size: frame.size * s };
         let radius = widget.radius.min(frame.size.min_element() / 2.0) * s;
@@ -1061,7 +1100,7 @@ impl Ui {
         content: &mut Content<'a>,
     ) {
         let s = self.scale;
-        let theme = &self.theme;
+        let theme = self.paint_theme();
         let focused = self.focus == Some(node);
         let empty = field.editor.text().is_empty();
         let (_, h) = measure(&field.buffer);
