@@ -1,21 +1,49 @@
 //! Axion's password manager: logins, cards, addresses and secure notes in an encrypted vault.
 //!
-//! The vault is its own SQLite file in the profile. A key is derived from the master password
-//! with Argon2id (random salt, cost stored with the vault); every item is encrypted on its own
-//! with XChaCha20-Poly1305, its id authenticated alongside so ciphertexts can't be swapped.
-//! A known value encrypted at setup tells a wrong password from a damaged vault.
+//! The vault is its own SQLite file in the profile; every item is encrypted on its own with
+//! XChaCha20-Poly1305, its id authenticated alongside so ciphertexts can't be swapped.
 //!
-//! While unlocked, the key and the decrypted items live only in memory; locking (on demand or
-//! after inactivity) wipes both. Nothing secret is ever logged.
+//! # Keys
+//!
+//! The vault key needs two factors, the master password and this device's secret
+//! ([`device`]: sealed by the TPM, or a private file outside every profile):
+//!
+//! ```text
+//! password_key = Argon2id(password, salt, kdf)              salt: 16 random bytes per key
+//! vault_key    = HKDF-SHA256(salt, password_key ‖ device_secret, "axion-vault/v2/vault-key")
+//! device_check = HKDF-SHA256(salt, device_secret, "axion-vault/v2/device-check")
+//! ```
+//!
+//! Salt, cost and `device_check` are stored in the vault, with a known value sealed under the
+//! vault key. Unlocking first compares `device_check` (a mismatch is
+//! [`VaultError::OtherDevice`]: the vault, or a copy of the whole profile, came from another
+//! machine) and then the sealed check value (a mismatch is [`VaultError::WrongPassword`]).
+//! A copied `vault.sqlite` is useless without the device secret, even with the password, and
+//! the device secret alone is useless without the password (Argon2id still guards it).
+//!
+//! Changing the password draws a new salt and re-encrypts every item under the same device
+//! secret. Vaults from before device binding (format 1: `vault_key = password_key`) are
+//! upgraded on their next successful unlock, in one transaction; if that fails they stay as
+//! they were and still open. `meta.format` holds the version.
+//!
+//! [`Vault::export_encrypted`] writes a portable copy encrypted with the password alone (see
+//! [`export`]), the only way to move the passwords to another device.
+//!
+//! While unlocked, the key and the decrypted items live only in memory; locking wipes both.
+//! Nothing secret is ever logged.
 
 pub mod autofill;
 mod crypto;
+pub mod device;
+pub mod export;
 pub mod generator;
 pub mod import;
 mod item;
+mod platform;
 pub mod site;
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -23,6 +51,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 pub use crypto::KdfParams;
+pub use device::{DeviceKey, DeviceKeyError, MemoryDeviceKey, SystemDeviceKey};
 pub use item::{Address, Card, Item, ItemData, Kind, Login, Note};
 
 use crypto::{Key, SALT_LEN};
@@ -31,8 +60,14 @@ const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BLOB NOT NULL);
     CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, nonce BLOB NOT NULL, data BLOB NOT NULL);
 ";
-/// Encrypted at setup; decrypting it proves the password.
-const CHECK_PLAINTEXT: &[u8] = b"axion-vault-v1";
+/// Format 1: the key comes from the password alone.
+const FORMAT_PASSWORD_ONLY: u32 = 1;
+/// Format 2: the key needs the password and the device secret.
+const FORMAT_DEVICE_BOUND: u32 = 2;
+/// Encrypted at setup; decrypting it proves the password (format 1).
+const CHECK_PLAINTEXT_V1: &[u8] = b"axion-vault-v1";
+/// The same for format 2.
+const CHECK_PLAINTEXT_V2: &[u8] = b"axion-vault-v2";
 const CHECK_AAD: &[u8] = b"check";
 
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +76,12 @@ pub enum VaultError {
     Sql(#[from] rusqlite::Error),
     #[error("wrong password")]
     WrongPassword,
+    /// The vault was made on another device (copied file or profile): only an export moves it.
+    #[error("this vault belongs to another device; restore it from an Axion export")]
+    OtherDevice,
+    /// This device's key can't be read (e.g. the TPM refuses).
+    #[error("this device's key is unavailable: {0}")]
+    DeviceKey(#[from] DeviceKeyError),
     #[error("the vault is locked")]
     Locked,
     #[error("the vault has no master password yet")]
@@ -53,6 +94,12 @@ pub enum VaultError {
     Corrupt(&'static str),
     #[error("no item with that id")]
     NoSuchItem,
+    #[error("file error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("this isn't an Axion passwords export")]
+    NotAnExport,
+    #[error("this export was made by a newer Axion (version {0})")]
+    UnsupportedExport(u32),
 }
 
 pub type Result<T> = std::result::Result<T, VaultError>;
@@ -67,9 +114,13 @@ struct Envelope {
 
 pub struct Vault {
     conn: Connection,
+    device: Arc<dyn DeviceKey>,
     key: Option<Key>,
     items: Vec<Item>,
     last_activity: Instant,
+    /// Tests: make the format upgrade fail just before it commits.
+    #[cfg(test)]
+    fail_upgrade: bool,
 }
 
 fn now() -> i64 {
@@ -81,18 +132,26 @@ fn new_id() -> String {
 }
 
 impl Vault {
-    /// Opens (or creates) the vault file. It starts locked.
-    pub fn open(path: &Path) -> Result<Self> {
-        Self::init(Connection::open(path)?)
+    /// Opens (or creates) the vault file, bound to `device`. It starts locked.
+    pub fn open(path: &Path, device: Arc<dyn DeviceKey>) -> Result<Self> {
+        Self::init(Connection::open(path)?, device)
     }
 
-    pub fn in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?)
+    pub fn in_memory(device: Arc<dyn DeviceKey>) -> Result<Self> {
+        Self::init(Connection::open_in_memory()?, device)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    fn init(conn: Connection, device: Arc<dyn DeviceKey>) -> Result<Self> {
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn, key: None, items: Vec::new(), last_activity: Instant::now() })
+        Ok(Self {
+            conn,
+            device,
+            key: None,
+            items: Vec::new(),
+            last_activity: Instant::now(),
+            #[cfg(test)]
+            fail_upgrade: false,
+        })
     }
 
     fn meta(&self, key: &str) -> Result<Option<Vec<u8>>> {
@@ -116,6 +175,17 @@ impl Vault {
         self.key.is_some()
     }
 
+    /// The key scheme of the vault on disk (1: password only, 2: password and device).
+    fn format(&self) -> Result<u32> {
+        match self.meta("format")? {
+            None => Ok(FORMAT_PASSWORD_ONLY),
+            Some(raw) => std::str::from_utf8(&raw)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .ok_or(VaultError::Corrupt("format")),
+        }
+    }
+
     /// Sets the master password of a new vault and unlocks it.
     pub fn setup(&mut self, password: &str) -> Result<()> {
         self.setup_with(password, KdfParams::DEFAULT)
@@ -131,21 +201,29 @@ impl Vault {
         Ok(())
     }
 
-    /// Derives a new key with a fresh salt and stores salt, cost and check value.
+    /// Derives a new device-bound key with a fresh salt and stores salt, cost, device check,
+    /// check value and format.
     fn write_key(&self, password: &str, params: KdfParams) -> Result<Key> {
         if password.is_empty() {
             return Err(VaultError::EmptyPassword);
         }
+        let device = self.device.secret()?;
         let salt = crypto::random_bytes::<SALT_LEN>();
-        let key =
+        let password_key =
             crypto::derive_key(password, &salt, params).map_err(|_| VaultError::Corrupt("key derivation"))?;
-        let (nonce, check) =
-            crypto::seal(&key, CHECK_PLAINTEXT, CHECK_AAD).map_err(|_| VaultError::Corrupt("encryption"))?;
+        let key = crypto::combine(&password_key, &device, &salt)
+            .map_err(|_| VaultError::Corrupt("key derivation"))?;
+        let device_check =
+            crypto::device_check(&device, &salt).map_err(|_| VaultError::Corrupt("key derivation"))?;
+        let (nonce, check) = crypto::seal(&key, CHECK_PLAINTEXT_V2, CHECK_AAD)
+            .map_err(|_| VaultError::Corrupt("encryption"))?;
         let kdf = format!("{},{},{}", params.memory, params.iterations, params.parallelism);
         self.set_meta("salt", &salt)?;
         self.set_meta("kdf", kdf.as_bytes())?;
+        self.set_meta("device_check", &device_check)?;
         self.set_meta("check_nonce", &nonce)?;
         self.set_meta("check", &check)?;
+        self.set_meta("format", FORMAT_DEVICE_BOUND.to_string().as_bytes())?;
         Ok(key)
     }
 
@@ -159,15 +237,36 @@ impl Vault {
         }
     }
 
-    /// Derives the key from `password` and checks it, without unlocking.
+    /// Derives the key from `password` (and the device secret) and checks it, without
+    /// unlocking.
     fn key_for(&self, password: &str) -> Result<Key> {
         let salt = self.meta("salt")?.ok_or(VaultError::NotSetUp)?;
-        let key = crypto::derive_key(password, &salt, self.kdf_params()?)
-            .map_err(|_| VaultError::Corrupt("key derivation"))?;
+        let (key, expected) = match self.format()? {
+            FORMAT_PASSWORD_ONLY => {
+                let key = crypto::derive_key(password, &salt, self.kdf_params()?)
+                    .map_err(|_| VaultError::Corrupt("key derivation"))?;
+                (key, CHECK_PLAINTEXT_V1)
+            }
+            FORMAT_DEVICE_BOUND => {
+                let stored = self.meta("device_check")?.ok_or(VaultError::Corrupt("device check"))?;
+                let device = self.device.secret()?;
+                let check = crypto::device_check(&device, &salt)
+                    .map_err(|_| VaultError::Corrupt("key derivation"))?;
+                if stored != check {
+                    return Err(VaultError::OtherDevice);
+                }
+                let password_key = crypto::derive_key(password, &salt, self.kdf_params()?)
+                    .map_err(|_| VaultError::Corrupt("key derivation"))?;
+                let key = crypto::combine(&password_key, &device, &salt)
+                    .map_err(|_| VaultError::Corrupt("key derivation"))?;
+                (key, CHECK_PLAINTEXT_V2)
+            }
+            _ => return Err(VaultError::Corrupt("made by a newer Axion")),
+        };
         let nonce = self.meta("check_nonce")?.ok_or(VaultError::Corrupt("check"))?;
         let check = self.meta("check")?.ok_or(VaultError::Corrupt("check"))?;
         match crypto::open(&key, &nonce, &check, CHECK_AAD) {
-            Ok(plain) if plain.as_slice() == CHECK_PLAINTEXT => Ok(key),
+            Ok(plain) if plain.as_slice() == expected => Ok(key),
             _ => Err(VaultError::WrongPassword),
         }
     }
@@ -178,9 +277,34 @@ impl Vault {
         self.key_for(password).map(|_| ())
     }
 
-    /// Unlocks with the master password and decrypts the items.
+    /// Unlocks with the master password and decrypts the items. A vault from before device
+    /// binding is upgraded on the way (or, if that fails, opens as it is).
     pub fn unlock(&mut self, password: &str) -> Result<()> {
         let key = self.key_for(password)?;
+        self.items = self.read_items(&key)?;
+        self.sort();
+        let key = if self.format()? == FORMAT_PASSWORD_ONLY {
+            match self.upgrade(password) {
+                Ok(new) => {
+                    tracing::info!("vault upgraded to a device-bound key");
+                    new
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "upgrading the vault to a device-bound key failed, it stays as it was: {e}"
+                    );
+                    key
+                }
+            }
+        } else {
+            key
+        };
+        self.key = Some(key);
+        self.last_activity = Instant::now();
+        Ok(())
+    }
+
+    fn read_items(&self, key: &Key) -> Result<Vec<Item>> {
         let mut stmt = self.conn.prepare("SELECT id, nonce, data FROM items")?;
         let rows = stmt.query_map([], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?, r.get::<_, Vec<u8>>(2)?))
@@ -188,7 +312,7 @@ impl Vault {
         let mut items = Vec::new();
         for row in rows {
             let (id, nonce, data) = row?;
-            let plain = crypto::open(&key, &nonce, &data, id.as_bytes())
+            let plain = crypto::open(key, &nonce, &data, id.as_bytes())
                 .map_err(|_| VaultError::Corrupt("an item doesn't decrypt"))?;
             let envelope: Envelope =
                 serde_json::from_slice(&plain).map_err(|_| VaultError::Corrupt("an item doesn't parse"))?;
@@ -199,11 +323,30 @@ impl Vault {
                 modified: envelope.modified,
             });
         }
-        drop(stmt);
-        self.key = Some(key);
-        self.items = items;
-        self.sort();
-        self.last_activity = Instant::now();
+        Ok(items)
+    }
+
+    /// Re-encrypts the (decrypted) items under a new device-bound key from `password`, all in
+    /// one transaction: on any failure nothing on disk changes.
+    fn upgrade(&self, password: &str) -> Result<Key> {
+        let tx = self.conn.unchecked_transaction()?;
+        let key = self.write_key(password, self.kdf_params()?)?;
+        self.rewrite_items(&key)?;
+        #[cfg(test)]
+        if self.fail_upgrade {
+            return Err(VaultError::Corrupt("test: upgrade fails"));
+        }
+        tx.commit()?;
+        Ok(key)
+    }
+
+    /// Writes every item in memory again, encrypted with `key`.
+    fn rewrite_items(&self, key: &Key) -> Result<()> {
+        for item in &self.items {
+            let envelope =
+                Envelope { data: item.data.clone(), created: item.created, modified: item.modified };
+            self.write_with(key, &item.id, &envelope)?;
+        }
         Ok(())
     }
 
@@ -311,7 +454,8 @@ impl Vault {
             .find(|i| matches!(&i.data, ItemData::Login(l) if l.username == username))
     }
 
-    /// Changes the master password: new salt and key, every item re-encrypted.
+    /// Changes the master password: new salt and key (under the same device secret), every
+    /// item re-encrypted.
     pub fn change_password(&mut self, old: &str, new: &str) -> Result<()> {
         self.key_for(old)?;
         if new.is_empty() {
@@ -322,11 +466,7 @@ impl Vault {
         }
         let tx = self.conn.unchecked_transaction()?;
         let key = self.write_key(new, self.kdf_params()?)?;
-        for item in &self.items {
-            let envelope =
-                Envelope { data: item.data.clone(), created: item.created, modified: item.modified };
-            self.write_with(&key, &item.id, &envelope)?;
-        }
+        self.rewrite_items(&key)?;
         tx.commit()?;
         self.key = Some(key);
         self.touch();
@@ -348,13 +488,71 @@ impl Vault {
         Ok(added)
     }
 
-    /// Writes an encrypted copy of the vault (same master password) to `path`.
-    pub fn export_encrypted(&self, path: &Path) -> Result<()> {
-        if path.exists() {
-            std::fs::remove_file(path).map_err(|_| VaultError::Corrupt("can't replace the export file"))?;
-        }
-        self.conn.execute("VACUUM INTO ?1", [path.to_string_lossy()])?;
+    /// Writes a portable export (see [`export`]) to `path`: every item, encrypted with the
+    /// master password alone, so it can be restored on another device. `password` must be the
+    /// master password.
+    pub fn export_encrypted(&self, path: &Path, password: &str) -> Result<()> {
+        self.key()?;
+        self.key_for(password)?;
+        let bytes = export::seal(&self.items, password, self.kdf_params()?)?;
+        platform::write_private(path, &bytes)?;
         Ok(())
+    }
+
+    /// Adds the items of an export (made with `password`) to this unlocked vault, encrypted
+    /// for this device. Items already here (same contents) are skipped. Returns how many were
+    /// added.
+    pub fn import_export(&mut self, bytes: &[u8], password: &str) -> Result<usize> {
+        let key = self.key()?.clone();
+        let (items, _) = export::open(bytes, password)?;
+        let tx = self.conn.unchecked_transaction()?;
+        let added = self.insert(&key, items)?;
+        tx.commit()?;
+        let count = added.len();
+        self.items.extend(added);
+        self.sort();
+        self.touch();
+        Ok(count)
+    }
+
+    /// Sets up this new vault from an export: the export's password becomes the master
+    /// password and its items are encrypted for this device. Leaves the vault unlocked;
+    /// returns how many items were restored.
+    pub fn setup_from_export(&mut self, bytes: &[u8], password: &str) -> Result<usize> {
+        if self.is_set_up() {
+            return Err(VaultError::AlreadySetUp);
+        }
+        let (items, params) = export::open(bytes, password)?;
+        self.items.clear();
+        let tx = self.conn.unchecked_transaction()?;
+        let key = self.write_key(password, params)?;
+        let added = self.insert(&key, items)?;
+        tx.commit()?;
+        let count = added.len();
+        self.items = added;
+        self.sort();
+        self.key = Some(key);
+        self.touch();
+        Ok(count)
+    }
+
+    /// Writes the items that aren't here yet with `key` (keeping their ids unless taken) and
+    /// returns them; the caller commits and adds them to memory.
+    fn insert(&self, key: &Key, items: Vec<Item>) -> Result<Vec<Item>> {
+        let mut added: Vec<Item> = Vec::new();
+        for mut item in items {
+            if self.items.iter().chain(&added).any(|i| i.data == item.data) {
+                continue;
+            }
+            if item.id.is_empty() || self.items.iter().chain(&added).any(|i| i.id == item.id) {
+                item.id = new_id();
+            }
+            let envelope =
+                Envelope { data: item.data.clone(), created: item.created, modified: item.modified };
+            self.write_with(key, &item.id, &envelope)?;
+            added.push(item);
+        }
+        Ok(added)
     }
 }
 
@@ -362,8 +560,52 @@ impl Vault {
 mod tests {
     use super::*;
 
+    /// Two fake devices.
+    fn device_a() -> Arc<dyn DeviceKey> {
+        Arc::new(MemoryDeviceKey::new([0xa1; 32]))
+    }
+
+    fn device_b() -> Arc<dyn DeviceKey> {
+        Arc::new(MemoryDeviceKey::new([0xb2; 32]))
+    }
+
+    /// A device whose key can't be read (e.g. the TPM refuses).
+    struct BrokenDevice;
+
+    impl DeviceKey for BrokenDevice {
+        fn secret(&self) -> std::result::Result<device::DeviceSecret, DeviceKeyError> {
+            Err(DeviceKeyError::Tpm("test: no TPM".into()))
+        }
+    }
+
+    fn scratch_file(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("axion-vault-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    /// A vault as Axion wrote it before device binding (format 1), with `items`.
+    fn password_only_vault(conn_path: Option<&Path>, items: &[ItemData]) -> Vault {
+        let v = match conn_path {
+            Some(path) => Vault::open(path, device_a()).unwrap(),
+            None => Vault::in_memory(device_a()).unwrap(),
+        };
+        let salt = [3; SALT_LEN];
+        let key = crypto::derive_key("test-only-pass", &salt, KdfParams::TEST).unwrap();
+        let (nonce, check) = crypto::seal(&key, CHECK_PLAINTEXT_V1, CHECK_AAD).unwrap();
+        v.set_meta("salt", &salt).unwrap();
+        v.set_meta("kdf", b"256,1,1").unwrap();
+        v.set_meta("check_nonce", &nonce).unwrap();
+        v.set_meta("check", &check).unwrap();
+        for (i, data) in items.iter().enumerate() {
+            let envelope = Envelope { data: data.clone(), created: i as i64, modified: i as i64 };
+            v.write_with(&key, &format!("old-{i}"), &envelope).unwrap();
+        }
+        v
+    }
+
     fn vault() -> Vault {
-        let mut v = Vault::in_memory().unwrap();
+        let mut v = Vault::in_memory(device_a()).unwrap();
         v.setup_with("test-only-pass", KdfParams::TEST).unwrap();
         v
     }
@@ -382,7 +624,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("axion-vault-test-{}.sqlite", std::process::id()));
         let _ = std::fs::remove_file(&path);
         {
-            let mut v = Vault::open(&path).unwrap();
+            let mut v = Vault::open(&path, device_a()).unwrap();
             assert!(!v.is_set_up());
             v.setup_with("test-only-pass", KdfParams::TEST).unwrap();
             v.add(login("example.com", "me", "test-only-secret")).unwrap();
@@ -397,7 +639,7 @@ mod tests {
                 && !raw.contains("example.com")
         );
 
-        let mut v = Vault::open(&path).unwrap();
+        let mut v = Vault::open(&path, device_a()).unwrap();
         assert!(v.is_set_up() && !v.is_unlocked());
         assert!(v.items().is_empty());
         assert!(matches!(v.unlock("wrong"), Err(VaultError::WrongPassword)));
@@ -421,7 +663,7 @@ mod tests {
         v.lock();
         v.verify("test-only-pass").unwrap();
         assert!(!v.is_unlocked());
-        assert!(matches!(Vault::in_memory().unwrap().verify("x"), Err(VaultError::NotSetUp)));
+        assert!(matches!(Vault::in_memory(device_a()).unwrap().verify("x"), Err(VaultError::NotSetUp)));
     }
 
     #[test]
@@ -470,5 +712,172 @@ mod tests {
         assert!(!v.lock_if_idle(Duration::from_secs(3600)));
         assert!(v.lock_if_idle(Duration::ZERO));
         assert!(!v.is_unlocked());
+    }
+
+    #[test]
+    fn a_copied_vault_doesnt_open_on_another_device() {
+        let path = scratch_file("copied.sqlite");
+        {
+            let mut v = Vault::open(&path, device_a()).unwrap();
+            v.setup_with("test-only-pass", KdfParams::TEST).unwrap();
+            v.add(login("a.com", "u", "pw")).unwrap();
+        }
+        // The same file (a copy of vault.sqlite, or of the whole profile) on device B.
+        let mut b = Vault::open(&path, device_b()).unwrap();
+        assert!(b.is_set_up());
+        assert!(matches!(b.unlock("test-only-pass"), Err(VaultError::OtherDevice)));
+        assert!(matches!(b.unlock("wrong"), Err(VaultError::OtherDevice)));
+        assert!(matches!(b.verify("test-only-pass"), Err(VaultError::OtherDevice)));
+        assert!(matches!(b.change_password("test-only-pass", "x"), Err(VaultError::OtherDevice)));
+        assert!(!b.is_unlocked());
+        // Back on A it still opens, and a wrong password is still just that.
+        let mut a = Vault::open(&path, device_a()).unwrap();
+        assert!(matches!(a.unlock("wrong"), Err(VaultError::WrongPassword)));
+        a.unlock("test-only-pass").unwrap();
+        assert_eq!(a.items().len(), 1);
+        // A device whose key is unavailable says so (not "wrong password").
+        let broken = Vault::open(&path, Arc::new(BrokenDevice)).unwrap();
+        assert!(matches!(broken.verify("test-only-pass"), Err(VaultError::DeviceKey(_))));
+        drop((a, b, broken));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn export_on_a_restore_on_b() {
+        let mut a = vault();
+        a.add(login("a.com", "u", "test-only-secret")).unwrap();
+        a.add(ItemData::Note(Note { title: "n".into(), text: "t".into() })).unwrap();
+        let path = scratch_file("export.json");
+        // Only unlocked, and only with the master password.
+        assert!(matches!(a.export_encrypted(&path, "wrong"), Err(VaultError::WrongPassword)));
+        a.lock();
+        assert!(matches!(a.export_encrypted(&path, "test-only-pass"), Err(VaultError::Locked)));
+        a.unlock("test-only-pass").unwrap();
+        a.export_encrypted(&path, "test-only-pass").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("test-only-secret"));
+
+        // A new vault on device B, from the export: the export's password is its password.
+        let mut b = Vault::in_memory(device_b()).unwrap();
+        assert!(matches!(b.setup_from_export(&bytes, "wrong"), Err(VaultError::WrongPassword)));
+        assert!(!b.is_set_up());
+        assert_eq!(b.setup_from_export(&bytes, "test-only-pass").unwrap(), 2);
+        assert!(b.is_unlocked());
+        b.lock();
+        b.unlock("test-only-pass").unwrap();
+        assert_eq!(b.items(), a.items(), "ids, contents and dates survive");
+        assert_eq!(b.format().unwrap(), FORMAT_DEVICE_BOUND);
+        assert!(matches!(b.setup_from_export(&bytes, "test-only-pass"), Err(VaultError::AlreadySetUp)));
+
+        // Into an existing vault on B with another password: new items only.
+        let mut c = Vault::in_memory(device_b()).unwrap();
+        c.setup_with("test-only-other", KdfParams::TEST).unwrap();
+        c.add(login("a.com", "u", "test-only-secret")).unwrap();
+        assert!(matches!(c.import_export(&bytes, "test-only-other"), Err(VaultError::WrongPassword)));
+        assert_eq!(c.import_export(&bytes, "test-only-pass").unwrap(), 1, "the login is already there");
+        assert_eq!(c.import_export(&bytes, "test-only-pass").unwrap(), 0);
+        c.lock();
+        c.unlock("test-only-other").unwrap();
+        assert_eq!(c.items().len(), 2);
+        assert!(matches!(c.import_export(b"name,url\n", "x"), Err(VaultError::NotAnExport)));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn password_only_vaults_are_upgraded_on_unlock() {
+        let path = scratch_file("upgrade.sqlite");
+        let items = [login("a.com", "u", "pw"), ItemData::Note(Note { title: "n".into(), text: "t".into() })];
+        let mut v = password_only_vault(Some(&path), &items);
+        assert_eq!(v.format().unwrap(), FORMAT_PASSWORD_ONLY);
+        // A wrong password changes nothing.
+        assert!(matches!(v.unlock("wrong"), Err(VaultError::WrongPassword)));
+        assert_eq!(v.format().unwrap(), FORMAT_PASSWORD_ONLY);
+        // verify doesn't upgrade either.
+        v.verify("test-only-pass").unwrap();
+        assert_eq!(v.format().unwrap(), FORMAT_PASSWORD_ONLY);
+        v.unlock("test-only-pass").unwrap();
+        assert_eq!(v.format().unwrap(), FORMAT_DEVICE_BOUND);
+        assert_eq!(v.items().len(), 2);
+        let before = v.items().to_vec();
+        // Writes after the upgrade use the new key.
+        v.add(login("b.com", "u", "pw")).unwrap();
+        drop(v);
+        let mut v = Vault::open(&path, device_a()).unwrap();
+        v.unlock("test-only-pass").unwrap();
+        assert_eq!(v.items().len(), 3);
+        assert!(before.iter().all(|i| v.items().contains(i)), "ids, contents and dates survive");
+        // Now it is bound to device A.
+        let mut b = Vault::open(&path, device_b()).unwrap();
+        assert!(matches!(b.unlock("test-only-pass"), Err(VaultError::OtherDevice)));
+        drop((v, b));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_failed_upgrade_keeps_the_old_format() {
+        let items = [login("a.com", "u", "pw")];
+        let mut v = password_only_vault(None, &items);
+        let raw = |v: &Vault| -> Vec<(String, Vec<u8>, Vec<u8>)> {
+            let mut stmt = v.conn.prepare("SELECT id, nonce, data FROM items ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        let meta = |v: &Vault| (v.meta("salt").unwrap(), v.meta("check").unwrap(), v.meta("format").unwrap());
+        let (raw_before, meta_before) = (raw(&v), meta(&v));
+        v.fail_upgrade = true;
+        // It still opens (with the old key) …
+        v.unlock("test-only-pass").unwrap();
+        assert_eq!(v.items().len(), 1);
+        // … and nothing on disk changed.
+        assert_eq!(v.format().unwrap(), FORMAT_PASSWORD_ONLY);
+        assert_eq!(raw(&v), raw_before);
+        assert_eq!(meta(&v), meta_before);
+        // Edits while in the old format stay readable.
+        v.add(login("b.com", "u", "pw")).unwrap();
+        v.lock();
+        v.fail_upgrade = false;
+        v.unlock("test-only-pass").unwrap();
+        assert_eq!(v.format().unwrap(), FORMAT_DEVICE_BOUND);
+        assert_eq!(v.items().len(), 2);
+        v.lock();
+        v.unlock("test-only-pass").unwrap();
+        assert_eq!(v.items().len(), 2);
+    }
+
+    #[test]
+    fn upgrade_waits_for_the_device_key() {
+        let v = password_only_vault(None, &[login("a.com", "u", "pw")]);
+        let Vault { conn, .. } = v;
+        let mut v = Vault::init(conn, Arc::new(BrokenDevice)).unwrap();
+        v.unlock("test-only-pass").unwrap();
+        assert_eq!(v.items().len(), 1);
+        assert_eq!(v.format().unwrap(), FORMAT_PASSWORD_ONLY);
+    }
+
+    #[test]
+    fn change_password_stays_on_this_device() {
+        let path = scratch_file("change.sqlite");
+        {
+            let mut v = Vault::open(&path, device_a()).unwrap();
+            v.setup_with("test-only-pass", KdfParams::TEST).unwrap();
+            v.add(login("a.com", "u", "pw")).unwrap();
+            v.lock();
+            v.change_password("test-only-pass", "test-only-pass-2").unwrap();
+        }
+        let mut b = Vault::open(&path, device_b()).unwrap();
+        assert!(matches!(b.unlock("test-only-pass-2"), Err(VaultError::OtherDevice)));
+        let mut a = Vault::open(&path, device_a()).unwrap();
+        assert!(matches!(a.unlock("test-only-pass"), Err(VaultError::WrongPassword)));
+        a.unlock("test-only-pass-2").unwrap();
+        assert_eq!(a.items().len(), 1);
+        drop((a, b));
+        std::fs::remove_file(&path).unwrap();
     }
 }

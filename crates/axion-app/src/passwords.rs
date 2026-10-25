@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axion_compositor::{Icon, Rect as Frame};
@@ -16,7 +17,7 @@ use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
 use axion_vault::autofill::PageEvent;
-use axion_vault::{ItemData, Kind, Login, Vault, VaultError, site};
+use axion_vault::{DeviceKey, ItemData, Kind, Login, Vault, VaultError, site};
 use glam::Vec2;
 use zeroize::Zeroizing;
 
@@ -448,11 +449,13 @@ fn scale_in(ui: &mut Ui, node: NodeId, k: f32) {
 }
 
 impl Passwords {
-    /// Builds the sheet and prompt and opens the vault at `path` (locked). The vault's master
-    /// password is the password of the account named `account`.
+    /// Builds the sheet and prompt and opens the vault at `path` (locked), bound to this
+    /// device's key. The vault's master password is the password of the account named
+    /// `account`.
     /// The prompt's glass lives in `bar` (the toolbar), so it flows out of the address field.
-    pub fn build(ui: &mut Ui, bar: NodeId, path: &Path, account: &str) -> Self {
-        let vault = Vault::open(path).inspect_err(|e| tracing::error!("passwords unavailable: {e}")).ok();
+    pub fn build(ui: &mut Ui, bar: NodeId, path: &Path, device: Arc<dyn DeviceKey>, account: &str) -> Self {
+        let vault =
+            Vault::open(path, device).inspect_err(|e| tracing::error!("passwords unavailable: {e}")).ok();
         let prompt = Prompt::build(ui, bar);
         let root = ui.add(
             ui.root(),
@@ -957,7 +960,7 @@ impl Passwords {
             Err(VaultError::WrongPassword) => self.alert_failed(ui, "Wrong password"),
             Err(e) => {
                 tracing::error!("checking the account password failed: {e}");
-                self.alert_failed(ui, &e.to_string())
+                self.alert_failed(ui, &describe(&e))
             }
         }
     }
@@ -1001,7 +1004,7 @@ impl Passwords {
             Err(VaultError::WrongPassword) => self.alert_failed(ui, "Wrong password"),
             Err(e) => {
                 tracing::error!("unlocking passwords failed: {e}");
-                self.alert_failed(ui, &e.to_string())
+                self.alert_failed(ui, &describe(&e))
             }
         }
     }
@@ -1798,12 +1801,7 @@ impl Passwords {
                 if !matches!(e, VaultError::WrongPassword) {
                     tracing::error!("unlocking passwords failed: {e}");
                 }
-                let text = if matches!(e, VaultError::WrongPassword) {
-                    "Wrong password".to_owned()
-                } else {
-                    e.to_string()
-                };
-                self.prompt.set_error(ui, config, Some(&text));
+                self.prompt.set_error(ui, config, Some(&describe(&e)));
                 Outcome::Events(ui.focus(field))
             }
         }
@@ -1963,17 +1961,67 @@ impl Passwords {
         Outcome::Nothing
     }
 
-    /// Writes an encrypted copy of the vault (Settings › Passwords). Returns a status line.
-    pub fn export(&self, path: &Path) -> String {
+    /// Writes a portable encrypted export (Settings › Passwords); `password` must be the
+    /// account password. Returns a status line.
+    pub fn export(&self, path: &Path, password: &str) -> String {
         match &self.vault {
-            Some(vault) if vault.is_unlocked() => match vault.export_encrypted(path) {
+            Some(vault) if vault.is_unlocked() => match vault.export_encrypted(path, password) {
                 Ok(()) => format!("Exported to {}", path.display()),
+                Err(VaultError::WrongPassword) => {
+                    "Export failed: that isn't the account password.".to_owned()
+                }
                 Err(e) => {
                     tracing::error!("exporting passwords failed: {e}");
-                    format!("Export failed: {e}")
+                    format!("Export failed: {}", describe(&e))
                 }
             },
             _ => "Unlock Passwords first (open Passwords in the sidebar).".to_owned(),
+        }
+    }
+
+    /// Restores an Axion export made with `password` (Settings › Passwords): into the unlocked
+    /// vault, or, while the account has no password yet, as a new vault whose password (and so
+    /// the account's) becomes the export's. Returns a status line and whether the account
+    /// got its password just now.
+    pub fn restore(&mut self, ui: &mut Ui, config: &Config, path: &Path, password: &str) -> (String, bool) {
+        let Some(vault) = self.vault.as_mut() else {
+            return ("Passwords are unavailable.".to_owned(), false);
+        };
+        let set_up = vault.is_set_up();
+        if set_up && !vault.is_unlocked() {
+            return ("Unlock Passwords first (open Passwords in the sidebar).".to_owned(), false);
+        }
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => Zeroizing::new(bytes),
+            Err(e) => return (format!("Can't read {}: {e}", path.display()), false),
+        };
+        let result = if set_up {
+            vault.import_export(&bytes, password)
+        } else {
+            vault.setup_from_export(&bytes, password)
+        };
+        match result {
+            Ok(n) => {
+                tracing::info!(items = n, "passwords restored from an export");
+                if !set_up {
+                    self.after_unlock(ui, config);
+                }
+                let mut status = match n {
+                    0 => "Nothing new to restore.".to_owned(),
+                    n => format!("Restored {n} item{}.", if n == 1 { "" } else { "s" }),
+                };
+                if !set_up {
+                    status.push_str(" Its password is now the account password.");
+                }
+                (status, !set_up)
+            }
+            Err(VaultError::WrongPassword) => {
+                ("Restore failed: wrong password for this export.".to_owned(), false)
+            }
+            Err(e) => {
+                tracing::error!("restoring passwords failed: {e}");
+                (format!("Restore failed: {}", describe(&e)), false)
+            }
         }
     }
 
@@ -2161,6 +2209,21 @@ impl Prompt {
             ui.clear_children(self.root);
             self.field = None;
             self.error = None;
+        }
+    }
+}
+
+/// What to tell the user about a vault error.
+pub fn describe(e: &VaultError) -> String {
+    match e {
+        VaultError::WrongPassword => "Wrong password".to_owned(),
+        VaultError::OtherDevice => "These passwords belong to another device. Restore them from an Axion \
+                                    export in Settings › Passwords."
+            .to_owned(),
+        e => {
+            let text = e.to_string();
+            let mut chars = text.chars();
+            chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or(text)
         }
     }
 }

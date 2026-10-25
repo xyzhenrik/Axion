@@ -7,8 +7,9 @@
 //! Environment: `AXION_GPU=low` uses the integrated GPU, `AXION_OSR=software` disables GPU
 //! frame sharing, `AXION_NO_SANDBOX=1` disables Chromium's sandbox, `AXION_CONFIG_DIR` and
 //! `AXION_PROFILE_DIR` move the bases of settings and browsing data (each account has its own
-//! directory in them, see `axion-accounts`), `AXION_MONITOR=HDMI-A-1` opens the window on that
-//! monitor (X11/XWayland only).
+//! directory in them, see `axion-accounts`), `AXION_DEVICE_KEY_DIR` moves the password vault's
+//! device key (default `~/.local/share/axion`), `AXION_MONITOR=HDMI-A-1` opens the window on
+//! that monitor (X11/XWayland only).
 
 mod accounts;
 mod browser;

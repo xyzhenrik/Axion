@@ -126,6 +126,8 @@ cargo run -p axion-glass --example playground --release -- --capture=out.png  # 
 AXION_GPU=low ...            # force the integrated GPU
 AXION_OSR=software|gpu ...   # force page frame sharing off/on (default: on for NVIDIA only)
 AXION_CONFIG_DIR / AXION_PROFILE_DIR   # use throwaway settings/profile bases (do this for test runs)
+AXION_DEVICE_KEY_DIR                   # throwaway vault device key (default ~/.local/share/axion; set it too)
+cargo test -p axion-vault -- --ignored real_tpm --nocapture   # seal/unseal with the real TPM (needs tss group)
 axion --account=ID           # open that account (else the last one used; ids in accounts.toml)
 AXION_MONITOR=HDMI-A-1 ...   # open on that monitor (X11/XWayland only: run with `env -u WAYLAND_DISPLAY`)
 AXION_CHROMIUM_SWITCHES=autoplay-policy=no-user-gesture-required ...   # extra Chromium switches (comma-separated)
@@ -138,7 +140,12 @@ axion url --after=20 --capture=out.png        # capture after 20 s instead of 8
 - CEF OSR + dmabuf on Wayland is the biggest technical risk — see Phase 0 in plan.md.
   **Never force `AXION_OSR=gpu` on the AMD iGPU** while investigating: it has caused a GPU
   context loss (hard recovery) on the user's machine.
-- Test runs of the browser use a throwaway `AXION_PROFILE_DIR`/`AXION_CONFIG_DIR` in the
+- The password vault is device-bound (`axion-vault`: Argon2id(password) + a device key, TPM-sealed
+  where `/dev/tpmrm0` is accessible, else `device.key`, both outside the profile; a key file
+  moves into the TPM once it becomes usable). Building
+  without libtss2: `--no-default-features` (drops the `tpm` feature). Never touch the user's
+  real `~/.local/share/axion/device.tpm|device.key`: losing it makes the vault unreadable.
+- Test runs of the browser use a throwaway `AXION_PROFILE_DIR`/`AXION_CONFIG_DIR`/`AXION_DEVICE_KEY_DIR` in the
   scratchpad, never the user's real profile.
 - Memory: Chromium renderers are heavy. Respect the user's memory budget in `axion-tabs`;
   freezing uses the DevTools protocol (`Page.setWebLifecycleState`), discarding closes the

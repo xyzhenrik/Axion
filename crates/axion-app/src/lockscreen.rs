@@ -340,6 +340,12 @@ impl LockScreen {
     }
 
     pub fn wrong_password(&mut self, ui: &mut Ui) {
+        self.show_error(ui, "Wrong password");
+    }
+
+    /// Shows why unlocking failed (and clears the field).
+    pub fn show_error(&mut self, ui: &mut Ui, message: &str) {
+        ui.set_text(self.error, message);
         ui.set_visible(self.error, true);
         ui.set_field_text(self.field, "");
     }
