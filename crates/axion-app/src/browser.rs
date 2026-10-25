@@ -68,7 +68,10 @@ const SCROLL_SHOW_NEAR_TOP: f32 = 40.0;
 const OPEN_STEP_INTERVAL: Duration = Duration::from_millis(2500);
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 /// History rows shown in the sidebar panel.
-const PANEL_HISTORY_LIMIT: usize = 100;
+const PANEL_HISTORY_LIMIT: usize = 300;
+/// The History panel's clear button, and what it says while asking to confirm.
+const CLEAR_HISTORY: &str = "Clear History…";
+const CLEAR_HISTORY_CONFIRM: &str = "Click Again to Clear";
 /// Chromium's zoom levels are powers of this factor.
 const ZOOM_BASE: f64 = 1.2;
 /// Pixels per wheel notch.
@@ -143,6 +146,8 @@ pub struct Browser {
     last_saved_config: Option<String>,
     /// URLs of the open sidebar panel's rows, by index.
     panel_urls: Vec<String>,
+    /// The open sidebar panel, and whether its clear button asks for confirmation.
+    panel: Option<(Panel, bool)>,
     favicons: Favicons,
     /// History and bookmarks; `None` if the database couldn't be opened (browsing still works).
     store: Option<axion_store::Store>,
@@ -315,6 +320,7 @@ impl Browser {
             config_dirty_since: None,
             last_saved_config: None,
             panel_urls: Vec::new(),
+            panel: None,
             store,
             favicons,
             overview_query: String::new(),
@@ -1282,20 +1288,29 @@ impl Browser {
     }
 
     fn show_panel(&mut self, panel: Panel) {
+        self.show_panel_with(panel, false);
+    }
+
+    /// Shows a sidebar panel; `keep_scroll` after a change in it (an entry deleted).
+    fn show_panel_with(&mut self, panel: Panel, keep_scroll: bool) {
         let Some(store) = &self.store else { return };
         let items: Vec<PanelItem> = match panel {
             Panel::Bookmarks => store
                 .bookmarks()
                 .unwrap_or_default()
                 .into_iter()
-                .map(|b| PanelItem { detail: display_host(&b.url), title: b.title, url: b.url })
+                .map(|b| PanelItem {
+                    detail: display_host(&b.url),
+                    title: b.title,
+                    url: b.url,
+                    section: None,
+                    deletable: false,
+                })
                 .collect(),
-            Panel::History => store
-                .recent_history(PANEL_HISTORY_LIMIT)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|h| PanelItem { detail: display_host(&h.url), title: h.title, url: h.url })
-                .collect(),
+            Panel::History => crate::history::panel_items(
+                store.recent_history(PANEL_HISTORY_LIMIT).unwrap_or_default(),
+                unix_now(),
+            ),
             // Reading list entries arrive with Phase 6.
             Panel::ReadingList => Vec::new(),
         };
@@ -1305,7 +1320,34 @@ impl Browser {
             Panel::ReadingList => "Reading List",
         };
         self.panel_urls = items.iter().map(|i| i.url.clone()).collect();
-        self.chrome.show_panel(&mut self.ui, title, &items, &self.favicons);
+        let clear = (panel == Panel::History && !items.is_empty()).then_some(CLEAR_HISTORY);
+        self.panel = Some((panel, false));
+        self.chrome.show_panel(&mut self.ui, title, &items, &self.favicons, clear, keep_scroll);
+    }
+
+    /// The History panel's clear button: the first click asks, the second clears.
+    fn clear_panel(&mut self) {
+        let Some((Panel::History, confirming)) = self.panel else { return };
+        if !confirming {
+            self.panel = Some((Panel::History, true));
+            self.chrome.set_panel_clear_label(&mut self.ui, CLEAR_HISTORY_CONFIRM);
+            return;
+        }
+        if let Some(store) = &self.store
+            && let Err(e) = store.clear_history_since(0)
+        {
+            tracing::error!("clearing history failed: {e}");
+        }
+        self.show_panel(Panel::History);
+    }
+
+    fn delete_panel_item(&mut self, index: usize) {
+        let Some((panel, _)) = self.panel else { return };
+        let (Some(store), Some(url)) = (&self.store, self.panel_urls.get(index)) else { return };
+        if let Err(e) = store.delete_history_url(url) {
+            tracing::error!("deleting a history entry failed: {e}");
+        }
+        self.show_panel_with(panel, true);
     }
 
     fn open_page_menu(&mut self) {
@@ -1578,8 +1620,11 @@ impl Browser {
                     Some(ChromeAction::ReadingList) => self.show_panel(Panel::ReadingList),
                     Some(ChromeAction::ClosePanel) => {
                         self.panel_urls.clear();
+                        self.panel = None;
                         self.chrome.close_panel(&mut self.ui);
                     }
+                    Some(ChromeAction::ClearPanel) => self.clear_panel(),
+                    Some(ChromeAction::DeletePanelItem(i)) => self.delete_panel_item(i),
                     Some(ChromeAction::OpenPanelItem(i)) => {
                         if let Some(url) = self.panel_urls.get(i).cloned() {
                             self.navigate_to(url);
@@ -1915,6 +1960,8 @@ impl Browser {
                     self.overview.scroll_by(&mut self.ui, delta.y);
                 } else if self.settings.is_open() {
                     self.settings.scroll_by(&mut self.ui, delta.y);
+                } else if self.pointer.is_some_and(|p| self.chrome.panel_contains(&self.ui, p)) {
+                    self.chrome.scroll_panel(&mut self.ui, delta.y);
                 } else if let (Some(p), Some(view)) = (self.pointer, self.active_view())
                     && !self.ui.covers(p)
                     && self.page_rect().contains(p)
@@ -2135,6 +2182,9 @@ impl Browser {
                 {
                     let (_, events) = self.ui.handle(UiInput::Text(text.to_string()));
                     self.handle_ui_events(events);
+                    if self.ui.focused() == Some(self.chrome.address_field) {
+                        self.autocomplete_address();
+                    }
                 }
             }
             return false;
@@ -2186,6 +2236,13 @@ impl Browser {
                 "menu" => self.open_page_menu(),
                 "shields" => self.toggle_shields_popover(),
                 "history" => self.show_panel(Panel::History),
+                // Capture aid: type "type:TEXT" into the address bar like the keyboard does.
+                typed if typed.starts_with("type:") => {
+                    self.edit_address();
+                    let (_, events) = self.ui.handle(UiInput::Text(typed["type:".len()..].to_owned()));
+                    self.handle_ui_events(events);
+                    self.autocomplete_address();
+                }
                 "bookmarks" => self.show_panel(Panel::Bookmarks),
                 "settings" => self.run(Action::OpenSettings),
                 "next-tab" => self.run(Action::NextTab),
@@ -2408,9 +2465,36 @@ impl Browser {
     }
 
     /// Shows suggestions while the address field is being edited and differs from the page.
+    /// After a keystroke in the address bar: completes what was typed inline from history, the
+    /// completed part selected so the next keystroke replaces it (Backspace removes it).
+    fn autocomplete_address(&mut self) {
+        let field = self.chrome.address_field;
+        let typed = self.ui.field_text(field).unwrap_or_default().to_owned();
+        // Only while typing at the end of the text.
+        if self.ui.field_caret(field) != Some((typed.len(), None)) {
+            return;
+        }
+        let Some(completion) = self.store.as_ref().and_then(|s| s.autocomplete(&typed).ok().flatten()) else {
+            return;
+        };
+        if completion.len() > typed.len() && completion.starts_with(&typed) {
+            self.ui.set_field_text_selecting(field, &completion, typed.len()..completion.len());
+        }
+    }
+
+    /// What the user typed in the address bar, without an inline completion.
+    fn typed_address(&self) -> String {
+        let field = self.chrome.address_field;
+        let text = self.ui.field_text(field).unwrap_or_default();
+        match self.ui.field_caret(field) {
+            Some((_, Some(selection))) if selection.end == text.len() => text[..selection.start].to_owned(),
+            _ => text.to_owned(),
+        }
+    }
+
     fn update_suggestions(&mut self) {
         let editing = self.ui.focused() == Some(self.chrome.address_field) && !self.overview.is_open();
-        let text = self.ui.field_text(self.chrome.address_field).unwrap_or_default().to_owned();
+        let text = self.typed_address();
         let typed = editing && self.tabs.active().is_none_or(|t| t.url != text);
         if !typed {
             if self.suggestions.is_visible() {

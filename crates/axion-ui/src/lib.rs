@@ -468,6 +468,24 @@ impl Ui {
         self.edit_field(node, |e| e.set_text(text));
     }
 
+    /// Replaces a field's text and selects `selected` (byte range), caret at its end — an
+    /// inline completion that the next keystroke replaces.
+    pub fn set_field_text_selecting(&mut self, node: NodeId, text: &str, selected: std::ops::Range<usize>) {
+        self.edit_field(node, |e| {
+            e.set_text(text);
+            e.move_to(selected.start, false);
+            e.move_to(selected.end, true);
+        });
+    }
+
+    /// A field's caret (byte index) and selection.
+    pub fn field_caret(&self, node: NodeId) -> Option<(usize, Option<std::ops::Range<usize>>)> {
+        match &self.widget(node)?.kind {
+            WidgetKind::TextField(f) => Some((f.editor.cursor(), f.editor.selection())),
+            _ => None,
+        }
+    }
+
     pub fn focused(&self) -> Option<NodeId> {
         self.focus
     }

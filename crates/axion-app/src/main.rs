@@ -14,6 +14,7 @@ mod chrome;
 mod drip;
 mod favicons;
 mod gpu;
+mod history;
 mod input;
 mod lifecycle;
 mod lockscreen;
