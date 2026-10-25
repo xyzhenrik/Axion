@@ -1927,10 +1927,16 @@ impl Chrome {
     /// Updates the active segment (address, back/forward, reload/stop, progress).
     pub fn sync_active(&mut self, ui: &mut Ui, tabs: &Tabs) {
         let Some(tab) = tabs.active() else { return };
-        let host = if self.locked { "Private Browsing".to_owned() } else { display_host(&tab.url) };
+        let home = crate::home::is_home_url(&tab.url);
+        let host = match () {
+            _ if self.locked => "Private Browsing".to_owned(),
+            _ if home => crate::home::ADDRESS_PLACEHOLDER.to_owned(),
+            _ => display_host(&tab.url),
+        };
         ui.set_text(self.address_label, &host);
         if ui.focused() != Some(self.address_field) {
-            ui.set_field_text(self.address_field, &tab.url);
+            // The start page's address stays out of the field (typing starts fresh).
+            ui.set_field_text(self.address_field, if home { "" } else { &tab.url });
         }
         if let Some(w) = ui.widget_mut(self.back) {
             w.enabled = tab.can_go_back;

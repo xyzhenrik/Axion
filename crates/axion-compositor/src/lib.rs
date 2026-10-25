@@ -12,6 +12,9 @@
 mod icons;
 mod probe;
 
+/// Cells per side of a page palette measurement ([`Compositor::sample_palette`]).
+pub const PALETTE_CELLS: u32 = 32;
+
 use axion_glass::{GlassFrame, GlassParams, GlassRenderer, GlassShape};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
@@ -177,6 +180,8 @@ pub struct Compositor {
     swash: SwashCache,
     empty_text: glyphon::Buffer,
     probe: probe::LuminanceProbe,
+    /// The page palette (see [`Compositor::sample_palette`]).
+    palette: probe::LuminanceProbe,
     targets: Option<Targets>,
     /// Which target holds the finished frame after [`Compositor::render`].
     last: usize,
@@ -290,7 +295,8 @@ impl Compositor {
             text_batches: vec![first],
             swash: SwashCache::new(),
             empty_text,
-            probe: probe::LuminanceProbe::new(device),
+            probe: probe::LuminanceProbe::new(device, 1),
+            palette: probe::LuminanceProbe::new(device, PALETTE_CELLS),
             targets: None,
             last: 0,
         }
@@ -543,6 +549,18 @@ impl Compositor {
     pub fn probe_color(&mut self, texture: &wgpu::TextureView, region: Rect) -> Option<[f32; 3]> {
         self.probe.update(&self.device, &self.queue, texture, region);
         self.probe.latest()
+    }
+
+    /// Starts measuring the colours of `texture` (a page frame) as a grid of
+    /// [`PALETTE_CELLS`]² averages, unless a measurement is in flight; returns whether it started.
+    /// The result comes from [`Compositor::take_palette`] a frame or two later.
+    pub fn sample_palette(&mut self, texture: &wgpu::TextureView) -> bool {
+        self.palette.start(&self.device, &self.queue, texture, Rect::new(0.0, 0.0, 1.0, 1.0))
+    }
+
+    /// The finished palette measurement (sRGB colours row by row, top first), once.
+    pub fn take_palette(&mut self) -> Option<Vec<[u8; 3]>> {
+        self.palette.poll(&self.device)
     }
 
     /// Reads back the last rendered frame as tightly packed RGBA8 (for screenshots and tests).

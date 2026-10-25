@@ -113,6 +113,12 @@ impl Category {
 /// A setting edited with a toggle or slider; sliders map 0–1 onto the setting's range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Setting {
+    HomeClock,
+    HomeGreeting,
+    HomeSearch,
+    HomeTopSites,
+    HomeStats,
+    HomeBackground,
     TintFromPage,
     AdaptToPage,
     TextScale,
@@ -157,6 +163,12 @@ enum Setting {
 impl Setting {
     fn label(self) -> &'static str {
         match self {
+            Setting::HomeClock => "Clock",
+            Setting::HomeGreeting => "Greeting",
+            Setting::HomeSearch => "Search field",
+            Setting::HomeTopSites => "Top sites",
+            Setting::HomeStats => "Shields statistics",
+            Setting::HomeBackground => "Background image",
             Setting::TintFromPage => "Colour in tab bar",
             Setting::AdaptToPage => "Light or dark chrome to match the page",
             Setting::TextScale => "Text size",
@@ -202,7 +214,13 @@ impl Setting {
     fn is_toggle(self) -> bool {
         matches!(
             self,
-            Setting::TintFromPage
+            Setting::HomeClock
+                | Setting::HomeGreeting
+                | Setting::HomeSearch
+                | Setting::HomeTopSites
+                | Setting::HomeStats
+                | Setting::HomeBackground
+                | Setting::TintFromPage
                 | Setting::AdaptToPage
                 | Setting::ReduceTransparency
                 | Setting::ReduceMotion
@@ -295,6 +313,12 @@ impl Setting {
     fn get(self, c: &Config) -> f32 {
         let defaults = Config::default();
         let raw = match self {
+            Setting::HomeClock => return c.home.show_clock as u8 as f32,
+            Setting::HomeGreeting => return c.home.show_greeting as u8 as f32,
+            Setting::HomeSearch => return c.home.show_search as u8 as f32,
+            Setting::HomeTopSites => return c.home.show_top_sites as u8 as f32,
+            Setting::HomeStats => return c.home.show_stats as u8 as f32,
+            Setting::HomeBackground => return c.home.show_background_image as u8 as f32,
             Setting::TintFromPage => return c.appearance.tint_from_page as u8 as f32,
             Setting::AdaptToPage => return c.appearance.adapt_to_page as u8 as f32,
             Setting::ReduceTransparency => return c.glass.reduce_transparency as u8 as f32,
@@ -345,6 +369,12 @@ impl Setting {
         let on = value > 0.5;
         let defaults = Config::default();
         match self {
+            Setting::HomeClock => c.home.show_clock = on,
+            Setting::HomeGreeting => c.home.show_greeting = on,
+            Setting::HomeSearch => c.home.show_search = on,
+            Setting::HomeTopSites => c.home.show_top_sites = on,
+            Setting::HomeStats => c.home.show_stats = on,
+            Setting::HomeBackground => c.home.show_background_image = on,
             Setting::TintFromPage => c.appearance.tint_from_page = on,
             Setting::AdaptToPage => c.appearance.adapt_to_page = on,
             Setting::ReduceTransparency => c.glass.reduce_transparency = on,
@@ -1038,6 +1068,18 @@ impl SettingsSheet {
                     .map(|(i, (name, _))| (*name, SettingsAction::SearchEngine(i).id()))
                     .collect();
                 segmented(ui, row_node, &options, current);
+                self.section(ui, "Start page");
+                for setting in [
+                    Setting::HomeClock,
+                    Setting::HomeGreeting,
+                    Setting::HomeSearch,
+                    Setting::HomeTopSites,
+                    Setting::HomeStats,
+                    Setting::HomeBackground,
+                ] {
+                    self.control(ui, config, setting);
+                }
+                self.note(ui, "Choose the background image with the gear on the start page.");
             }
             Category::Appearance => {
                 let row_node = self.row(ui, "Appearance");

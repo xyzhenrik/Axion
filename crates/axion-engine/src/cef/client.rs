@@ -12,7 +12,15 @@ use cef::*;
 use glam::Vec2;
 
 use super::network::{Network, build_request_handler};
-use crate::{CursorKind, EngineEvent, NewViewKind, PAGE_MESSAGE_PREFIX, ViewId};
+use crate::{
+    CursorKind, EngineEvent, INTERNAL_SCHEME, IconLink, NewViewKind, PAGE_MESSAGE_PREFIX, PageMeta,
+    ThemeColor, ViewId,
+};
+
+/// Console messages of the page meta script ([`PAGE_META_SCRIPT`]) start with this.
+const PAGE_META_PREFIX: &str = "\u{1}axion-meta:";
+/// Reports icon links and theme colours of every top-level document.
+const PAGE_META_SCRIPT: &str = include_str!("page_meta.js");
 
 /// Events from all views, tagged with the CEF browser they came from so events from a browser
 /// that was replaced (see the software fallback) can be dropped.
@@ -246,6 +254,11 @@ wrap_display_handler! {
             _line: ::std::os::raw::c_int,
         ) -> ::std::os::raw::c_int {
             let message = message.map(|m| m.to_string()).unwrap_or_default();
+            if let Some(meta) = message.strip_prefix(PAGE_META_PREFIX) {
+                let meta = parse_page_meta(meta);
+                self.ctx.emit(browser, EngineEvent::PageMetaChanged { view: self.ctx.view, meta });
+                return 1;
+            }
             if !message.starts_with(PAGE_MESSAGE_PREFIX) {
                 return 0;
             }
@@ -303,6 +316,13 @@ wrap_load_handler! {
         fn on_load_start(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, _transition_type: TransitionType) {
             let Some(frame) = frame else { return };
             let url = CefString::from(&frame.url()).to_string();
+            if frame.is_main() == 1 {
+                frame.execute_java_script(Some(&PAGE_META_SCRIPT.into()), Some(&url.as_str().into()), 0);
+            }
+            // Axion's own pages get none of the scripts meant for web pages.
+            if is_internal(&url) {
+                return;
+            }
             let page_script = self.ctx.shared.page_script.borrow().clone();
             if let Some(script) = page_script {
                 frame.execute_java_script(Some(&script.as_str().into()), Some(&url.as_str().into()), 0);
@@ -372,6 +392,9 @@ wrap_life_span_handler! {
         }
 
         fn on_before_close(&self, browser: Option<&mut Browser>) {
+            if let Some(browser) = browser.as_ref() {
+                self.ctx.net.set_browser(browser.identifier(), None);
+            }
             self.ctx.emit(browser, EngineEvent::Closed { view: self.ctx.view });
         }
     }
@@ -438,6 +461,42 @@ wrap_download_image_callback! {
             ));
         }
     }
+}
+
+fn is_internal(url: &str) -> bool {
+    url.strip_prefix(INTERNAL_SCHEME).is_some_and(|rest| rest.starts_with(':'))
+}
+
+/// Parses the page meta script's report (see `page_meta.js`).
+fn parse_page_meta(text: &str) -> PageMeta {
+    let mut meta = PageMeta::default();
+    for line in text.lines() {
+        let mut fields = line.split('\t');
+        match fields.next() {
+            Some("i") => {
+                let url = fields.next().unwrap_or_default().to_owned();
+                if url.is_empty() {
+                    continue;
+                }
+                let media = fields.next().unwrap_or_default().to_owned();
+                let sizes = fields.next().unwrap_or_default().to_owned();
+                meta.icons.push(IconLink { url, media, sizes });
+            }
+            Some("c") => {
+                let channels: Vec<u8> = fields
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|c| c.trim().parse().ok())
+                    .collect();
+                let Ok(rgb) = <[u8; 3]>::try_from(channels) else { continue };
+                let media = fields.next().unwrap_or_default().to_owned();
+                meta.theme_colors.push(ThemeColor { rgb, media });
+            }
+            _ => {}
+        }
+    }
+    meta
 }
 
 /// The strings of a list CEF lends to a callback. (The `cef` crate's `clone().into_iter()`
@@ -632,4 +691,25 @@ fn is_drawn(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture)
         row.as_chunks::<4>().0.iter().all(|pixel| pixel[3] != 0)
     });
     Some(drawn)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_page_meta() {
+        let meta = parse_page_meta(
+            "i\thttps://a.example/l.svg\t(prefers-color-scheme: light)\t\n\
+             i\thttps://a.example/d.svg\t(prefers-color-scheme: dark)\tany\n\
+             c\t13,17,23\t\nc\tbad\t\nx\ty",
+        );
+        assert_eq!(meta.icons.len(), 2);
+        assert_eq!(meta.icons[1].media, "(prefers-color-scheme: dark)");
+        assert_eq!(meta.icons[1].sizes, "any");
+        assert_eq!(meta.theme_colors, vec![ThemeColor { rgb: [13, 17, 23], media: String::new() }]);
+        assert!(
+            is_internal("axion://home/") && !is_internal("axionx://home") && !is_internal("https://axion")
+        );
+    }
 }

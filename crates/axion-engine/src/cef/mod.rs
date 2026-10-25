@@ -9,6 +9,7 @@ mod download;
 mod gpu;
 mod input;
 mod network;
+mod scheme;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -45,6 +46,12 @@ wrap_app! {
     }
 
     impl App {
+        fn on_register_custom_schemes(&self, registrar: Option<&mut SchemeRegistrar>) {
+            if let Some(registrar) = registrar {
+                scheme::register_scheme(registrar);
+            }
+        }
+
         fn on_before_command_line_processing(
             &self,
             process_type: Option<&CefStringUtf16>,
@@ -181,6 +188,8 @@ impl CefEngine {
             return Err(EngineError::Init("cef_initialize returned an error; see the log above".into()));
         }
         tracing::info!(accelerated = options.accelerated, render_node = ?options.render_node, "Chromium ready");
+        let net = Arc::<Network>::default();
+        scheme::install(&net, None, false);
         Ok(Self {
             device,
             queue,
@@ -191,7 +200,7 @@ impl CefEngine {
             max_frame_rate: options.max_frame_rate,
             input: InputState::default(),
             private_context: None,
-            net: Arc::default(),
+            net,
             dark: None,
             shut_down: false,
         })
@@ -202,6 +211,9 @@ impl CefEngine {
             // An empty cache path makes the context in-memory only.
             let settings = RequestContextSettings { persist_session_cookies: 0, ..Default::default() };
             self.private_context = request_context_create_context(Some(&settings), None);
+            if let Some(context) = &self.private_context {
+                scheme::install(&self.net, Some(context), true);
+            }
             match (&self.private_context, self.dark) {
                 (Some(context), Some(dark)) => apply_color_scheme(context, dark),
                 (None, _) => tracing::error!("could not create the private browsing context"),
@@ -247,6 +259,7 @@ impl CefEngine {
         )
         .ok_or_else(|| EngineError::CreateView(format!("Chromium refused to open {url}")))?;
         let id = browser.identifier();
+        self.net.set_browser(id, Some(ctx.view));
         Ok((browser, id))
     }
 
@@ -477,6 +490,10 @@ impl Engine for CefEngine {
         self.shared.page_script.replace(script);
     }
 
+    fn set_internal_pages(&mut self, pages: Option<Arc<dyn crate::InternalPages>>) {
+        *self.net.internal.write().unwrap_or_else(PoisonError::into_inner) = pages;
+    }
+
     fn run_script(&mut self, view: ViewId, script: &str, user_gesture: bool) {
         if !user_gesture {
             if let Some(frame) = self.browser(view).and_then(|b| b.main_frame()) {
@@ -643,6 +660,8 @@ impl Engine for CefEngine {
                 | EngineEvent::LoadingStateChanged { view, .. }
                 | EngineEvent::LoadProgress { view, .. }
                 | EngineEvent::FaviconUrlsChanged { view, .. }
+                | EngineEvent::PageMetaChanged { view, .. }
+                | EngineEvent::InternalMessage { view, .. }
                 | EngineEvent::FaviconReady { view, .. }
                 | EngineEvent::FaviconFailed { view, .. }
                 | EngineEvent::CursorChanged { view, .. }

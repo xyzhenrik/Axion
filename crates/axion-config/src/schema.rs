@@ -9,6 +9,7 @@ use crate::Color;
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub general: General,
+    pub home: Home,
     pub appearance: Appearance,
     pub glass: Glass,
     pub colors: Colors,
@@ -24,10 +25,13 @@ pub struct Config {
     pub passwords: Passwords,
 }
 
+/// Axion's own start page, served at this address.
+pub const START_PAGE_URL: &str = "axion://home/";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct General {
-    /// Page opened in new windows and tabs.
+    /// Page opened in new windows and tabs (`axion://home/`: Axion's start page).
     pub homepage: String,
     /// Search URL; `{}` is replaced by the URL-encoded query.
     pub search_url: String,
@@ -35,7 +39,69 @@ pub struct General {
 
 impl Default for General {
     fn default() -> Self {
-        Self { homepage: "https://duckduckgo.com/".into(), search_url: "https://duckduckgo.com/?q={}".into() }
+        Self { homepage: START_PAGE_URL.into(), search_url: "https://duckduckgo.com/?q={}".into() }
+    }
+}
+
+/// 12- or 24-hour clock on the start page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClockFormat {
+    /// From the locale (`LC_TIME` / `LANG`).
+    #[default]
+    Auto,
+    #[serde(rename = "12h")]
+    H12,
+    #[serde(rename = "24h")]
+    H24,
+}
+
+/// The start page (`axion://home/`): which widgets it shows. Toggled from the gear on the page
+/// itself or in Settings › General.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Home {
+    pub show_clock: bool,
+    pub clock_format: ClockFormat,
+    /// "Good morning, <account name>" under the clock.
+    pub show_greeting: bool,
+    pub show_search: bool,
+    /// Most visited sites (and pinned ones) as tiles.
+    pub show_top_sites: bool,
+    /// Tiles per row, rows per page, and pages (with dots to switch) at most.
+    pub top_sites_columns: u32,
+    pub top_sites_rows: u32,
+    pub top_sites_pages: u32,
+    /// Trackers & ads blocked, bandwidth and time saved.
+    pub show_stats: bool,
+    /// Show the background image chosen on the page (kept in the profile); otherwise the
+    /// background is plain white or black with the theme.
+    pub show_background_image: bool,
+    /// Darkens the background image for legibility (0–1).
+    pub background_dim: f32,
+    /// Blurs the background image (CSS px).
+    pub background_blur: f32,
+    /// An open start page refreshes its Shields numbers at most this often.
+    pub stats_refresh_seconds: f32,
+}
+
+impl Default for Home {
+    fn default() -> Self {
+        Self {
+            show_clock: true,
+            clock_format: ClockFormat::Auto,
+            show_greeting: true,
+            show_search: true,
+            show_top_sites: true,
+            top_sites_columns: 6,
+            top_sites_rows: 2,
+            top_sites_pages: 3,
+            show_stats: true,
+            show_background_image: false,
+            background_dim: 0.2,
+            background_blur: 0.0,
+            stats_refresh_seconds: 2.0,
+        }
     }
 }
 
@@ -63,8 +129,12 @@ pub struct Appearance {
     pub text_scale: f32,
     /// Switch the chrome between light and dark to stay legible over the page behind it.
     pub adapt_to_page: bool,
-    /// Give the window around the page the page's own background colour (like Safari).
+    /// Give the window around the page the page's own background colour (like Safari): its
+    /// `theme-color`, else the colour most of the page shows, measured once per page.
     pub tint_from_page: bool,
+    /// The page's colour is measured this long after it finished loading (ms), so late
+    /// styles and images are in.
+    pub page_color_delay_ms: f32,
 }
 
 impl Default for Appearance {
@@ -77,6 +147,7 @@ impl Default for Appearance {
             text_scale: 1.0,
             adapt_to_page: true,
             tint_from_page: true,
+            page_color_delay_ms: 350.0,
         }
     }
 }

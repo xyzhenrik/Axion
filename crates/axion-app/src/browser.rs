@@ -26,6 +26,7 @@ use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
 use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
 use crate::favicons::{FETCH_SIZE, Favicons};
+use crate::home::{HomeAction, HomePage, REFRESH_SCRIPT, is_home_url};
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
 use crate::lockscreen::LockScreen;
@@ -36,6 +37,7 @@ use crate::menu::{
 use crate::morph::Origin;
 use crate::mpris::{Mpris, MprisCommand, Track};
 use crate::overview::{Overview, OverviewAction};
+use crate::page_color::{PageTint, lightness};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
 use crate::pip::{PipOutcome, PipWindow};
 use crate::player::{
@@ -119,13 +121,8 @@ const ZOOM_BASE: f64 = 1.2;
 const LINE_SCROLL: f32 = 100.0;
 /// Upper bound for the page's frame rate.
 const MAX_FRAME_RATE: u32 = 120;
-/// Height (logical px) of the page's top strip whose lightness picks the chrome appearance.
-const PROBE_HEIGHT: f32 = 48.0;
-/// The chrome turns dark below this page lightness, and light again above `LIGHT_ABOVE`.
-const DARK_BELOW: f32 = 0.4;
-/// Fraction of the way the window tint moves towards the page colour per frame.
-const TINT_EASE: f32 = 0.2;
-const LIGHT_ABOVE: f32 = 0.6;
+/// The chrome turns dark on pages whose colour is darker than this.
+const DARK_BELOW: f32 = 0.5;
 /// PCI vendor id of NVIDIA, the one driver where zero-copy frame import is verified.
 const NVIDIA_VENDOR_ID: u32 = 0x10DE;
 
@@ -254,8 +251,14 @@ pub struct Browser {
     tabs_changed: bool,
     layout_size: Vec2,
     capture: Option<(PathBuf, Instant)>,
-    /// The page's top-edge colour, used as the window background (`appearance.tint_from_page`).
-    page_tint: Option<[f32; 4]>,
+    /// The window colour around the page (`appearance.tint_from_page`), springing between
+    /// the pages' colours.
+    window_tint: Option<[f32; 4]>,
+    last_tint_step: Instant,
+    /// Each page's own colour (theme colour or measured once per load).
+    page_colors: PageTint,
+    /// The start page (`axion://home/`).
+    home: HomePage,
     /// When to open the overview for a `--capture --overview` screenshot.
     overview_at: Option<Instant>,
     address_at: Option<(Instant, String)>,
@@ -389,7 +392,10 @@ impl Browser {
         let settings = SettingsSheet::build(&mut ui);
         let passwords = Passwords::build(&mut ui, chrome.bar_node(), &vault_path, &account_name);
         let lock = PrivateLock::new();
-        let favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
+        let mut favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
+        favicons.set_dark(dark);
+        let home = HomePage::new(&profile, favicons.dir().map(Into::into));
+        engine.set_internal_pages(Some(home.service()));
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
         let add_account = AddAccountSheet::build(&mut ui);
@@ -450,7 +456,10 @@ impl Browser {
             downloads,
             overview_query: String::new(),
             last_frame: Instant::now(),
-            page_tint: None,
+            window_tint: None,
+            last_tint_step: Instant::now(),
+            page_colors: PageTint::new(dark),
+            home,
             tabs: Tabs::default(),
             parked: Tabs::default(),
             private_mode: false,
@@ -655,6 +664,12 @@ impl Browser {
         }
         if let Some(tab) = self.tabs.active() {
             let view = tab.view;
+            let delay = self.page_color_delay();
+            self.page_colors.shown(view, tab.loading, delay);
+            if is_home_url(&tab.url) {
+                // Fresh Shields numbers and top sites.
+                self.engine.run_script(view, REFRESH_SCRIPT, false);
+            }
             self.wake(view);
             self.engine.set_hidden(view, false);
             self.engine.resize(view, self.view_size());
@@ -2189,7 +2204,9 @@ impl Browser {
         // Editing starts from the shown tab's address: the field keeps its text while focused,
         // so a tab opened just now (new tab) would otherwise show the previous tab's.
         if let Some(url) = self.tabs.active().map(|t| t.url.clone()) {
-            self.ui.set_field_text(self.chrome.address_field, &url);
+            // On the start page the field starts empty, ready for typing.
+            let text = if is_home_url(&url) { "" } else { url.as_str() };
+            self.ui.set_field_text(self.chrome.address_field, text);
         }
         let events = self.chrome.set_editing(&mut self.ui, true);
         self.handle_ui_events(events);
@@ -2573,6 +2590,14 @@ impl Browser {
                         tracing::debug!("fetching icon {icon}");
                         self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
                     }
+                    if let Some(tab) = find_tab(&self.tabs, &self.parked, view) {
+                        if loading && !tab.loading {
+                            self.page_colors.page_started(view);
+                        } else if !loading && tab.loading {
+                            let delay = self.page_color_delay();
+                            self.page_colors.page_loaded(view, delay);
+                        }
+                    }
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
                         if loading && !tab.loading {
                             // A new page: its count starts over.
@@ -2612,6 +2637,13 @@ impl Browser {
                 }
                 EngineEvent::NewViewRequested { opener, url, kind, user_gesture, opener_frame } => {
                     let opener_url = find_tab(&self.tabs, &self.parked, opener).map(|t| t.url.clone());
+                    // Axion's own pages open only from the browser or from each other.
+                    if url.starts_with("axion:")
+                        && !opener_url.as_deref().is_some_and(|u| u.starts_with("axion:"))
+                    {
+                        tracing::warn!(%url, "refused a page's new tab with an axion:// page");
+                        continue;
+                    }
                     if !self.shields.allow_popup(
                         opener_url.as_deref().unwrap_or_default(),
                         opener_frame.as_deref(),
@@ -2631,27 +2663,43 @@ impl Browser {
                 }
                 EngineEvent::FaviconUrlsChanged { view, urls } => {
                     if let Some(page) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone())
-                        && let Some(icon) = self.favicons.icon_links(&page, &urls)
+                        && let Some(icon) = self.favicons.icon_urls(&page, &urls)
                     {
                         tracing::debug!("fetching icon {icon}");
                         self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
                     }
+                }
+                EngineEvent::PageMetaChanged { view, meta } => {
+                    let delay = self.page_color_delay();
+                    self.page_colors.theme_colors(view, &meta.theme_colors, delay);
+                    if let Some(page) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone())
+                        && let Some(icon) = self.favicons.icon_links(&page, &meta.icons)
+                    {
+                        tracing::debug!("fetching icon {icon}");
+                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                    }
+                }
+                EngineEvent::InternalMessage { view, host, message } => {
+                    self.internal_message(view, &host, &message);
                 }
                 EngineEvent::FaviconFailed { view, url } => {
                     tracing::debug!("no usable icon at {url}");
                     if let Some(page) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone())
-                        && let Some(icon) = self.favicons.failed(&page)
+                        && let Some(icon) = self.favicons.failed(&page, &url)
                     {
                         tracing::debug!("fetching icon {icon}");
                         self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
                     }
                 }
-                EngineEvent::FaviconReady { view, width, height, rgba, .. } => {
+                EngineEvent::FaviconReady { view, url, width, height, rgba } => {
                     if let Some((page, private)) =
                         find_tab(&self.tabs, &self.parked, view).map(|t| (t.url.clone(), t.private))
                     {
                         // Private tabs leave no icon on disk.
-                        self.favicons.insert(&page, width, height, &rgba, !private);
+                        self.favicons.insert(&page, &url, width, height, &rgba, !private);
+                        if !private {
+                            self.home.icons_changed();
+                        }
                         self.tabs_changed = true;
                         if self.overview.is_open() {
                             self.rebuild_overview();
@@ -2662,7 +2710,7 @@ impl Browser {
                 EngineEvent::RequestBlocked { view, url } | EngineEvent::NavigationBlocked { view, url } => {
                     self.count_blocked(view, url);
                 }
-                EngineEvent::Closed { .. } => {}
+                EngineEvent::Closed { view } => self.page_colors.closed(view),
                 EngineEvent::DownloadUpdated(info) => {
                     self.downloads.update(info, self.store.as_ref(), &self.config, unix_now());
                     downloads_changed = true;
@@ -2674,6 +2722,7 @@ impl Browser {
             }
         }
         self.downloads_pump(downloads_changed);
+        self.update_home();
         let outcome = self.passwords.tick(&mut self.ui, &self.config, &mut self.clipboard);
         self.passwords_outcome(outcome);
         self.reload_config_if_changed();
@@ -2891,34 +2940,109 @@ impl Browser {
         }
     }
 
-    /// Follows the page's top edge: tints the window around the page with its colour (like
-    /// Safari) and flips the chrome light/dark to stay legible (with hysteresis).
-    fn adapt_appearance(&mut self, page: &wgpu::TextureView, texture: &wgpu::Texture) {
+    /// How long after loading a page's colour is measured.
+    fn page_color_delay(&self) -> Duration {
+        Duration::from_secs_f32(self.config.appearance.page_color_delay_ms.max(0.0) / 1000.0)
+    }
+
+    /// Tints the window around the page with the page's colour (like Safari) and flips the
+    /// chrome light/dark to stay legible on it. The colour is one per page (see `page_color`),
+    /// measured on the frame once after loading, so scrolling never changes it.
+    fn adapt_appearance(&mut self, page: Option<&wgpu::TextureView>, dt: f32) {
+        if let Some(cells) = self.compositor.take_palette() {
+            self.page_colors.measured(&cells);
+        }
         let appearance = &self.config.appearance;
         let adapt = appearance.adapt_to_page && appearance.theme == ThemeMode::Auto;
-        if !appearance.tint_from_page && !adapt {
-            self.page_tint = None;
-            return;
+        let view = self.active_view().filter(|_| !self.is_locked());
+        if let (Some(view), Some(page)) = (view, page)
+            && (appearance.tint_from_page || adapt)
+            && self.page_colors.wants_measure(view)
+            && self.compositor.sample_palette(page)
+        {
+            self.page_colors.measuring(view);
         }
-        let edge = (PROBE_HEIGHT * self.scale() / texture.height() as f32).min(1.0);
-        let Some(color) = self.compositor.probe_color(page, Rect::new(0.0, 0.0, 1.0, edge)) else { return };
-        if self.config.appearance.tint_from_page {
-            // Ease towards the new colour so navigations don't flash.
-            let target = [color[0], color[1], color[2], 1.0];
-            let current = self.page_tint.unwrap_or(target);
-            self.page_tint = Some(std::array::from_fn(|i| current[i] + (target[i] - current[i]) * TINT_EASE));
-        } else {
-            self.page_tint = None;
-        }
-        if !adapt {
-            return;
-        }
-        // Rec. 709 luma of the sRGB-encoded colour: what the eye judges as light or dark.
-        let lightness = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
-        let dark = if self.dark { lightness < LIGHT_ABOVE } else { lightness < DARK_BELOW };
+        let color = view.and_then(|v| self.page_colors.color(v));
+        let spring = crate::drip::spring(&self.config, self.config.motion.smooth);
+        let tint = color.filter(|_| self.config.appearance.tint_from_page);
+        self.window_tint = self.page_colors.step(tint, spring, dt);
+        let Some(color) = color.filter(|_| adapt) else { return };
+        let dark = lightness(color) < DARK_BELOW;
         if dark != self.dark {
             self.dark = dark;
             self.ui.set_theme(Theme::new(&self.config, dark || self.private_mode));
+        }
+    }
+
+    // ---- the start page ----
+
+    /// Keeps the start page's data current; open start pages pull it again when it changed.
+    fn update_home(&mut self) {
+        if self.home.poll_chooser(&mut self.config) {
+            self.config_dirty_since.get_or_insert(Instant::now());
+        }
+        let name = self.account().map(|a| a.name.clone()).unwrap_or_default();
+        let dark = is_dark(&self.config, &self.window, self.desktop_theme.dark());
+        if self.home.update(&self.config, self.store.as_ref(), self.shields.total(), &name, dark) {
+            self.refresh_home_pages();
+        }
+    }
+
+    fn refresh_home_pages(&mut self) {
+        let views: Vec<ViewId> = self
+            .tabs
+            .all()
+            .iter()
+            .chain(self.parked.all())
+            .filter(|t| is_home_url(&t.url))
+            .map(|t| t.view)
+            .collect();
+        for view in views {
+            if !self.engine.is_discarded(view) {
+                self.engine.run_script(view, REFRESH_SCRIPT, false);
+            }
+        }
+    }
+
+    /// A message from one of Axion's own pages (the engine made sure it came from one).
+    fn internal_message(&mut self, view: ViewId, host: &str, message: &str) {
+        let Some(tab) = find_tab(&self.tabs, &self.parked, view) else { return };
+        if host != "home" || !is_home_url(&tab.url) {
+            tracing::debug!(host, "message from an axion:// page that isn't shown");
+            return;
+        }
+        let private = tab.private;
+        // Private start pages may search, nothing else: no settings, no history.
+        let mut scratch = self.config.clone();
+        let (config, store) =
+            if private { (&mut scratch, None) } else { (&mut self.config, self.store.as_ref()) };
+        let action = self.home.handle(message, config, store);
+        match action {
+            HomeAction::Nothing => {}
+            HomeAction::Go(text) => {
+                if let Some(url) = resolve_input(&text, &self.config.general.search_url)
+                    && let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view)
+                {
+                    tab.url.clone_from(&url);
+                    self.engine.navigate(view, &url);
+                    self.engine.set_focus(view, true);
+                    self.tabs_changed = true;
+                }
+            }
+            HomeAction::ConfigChanged if !private => {
+                self.config_dirty_since.get_or_insert(Instant::now());
+                self.refresh_settings();
+            }
+            HomeAction::Refresh if !private => self.update_home(),
+            HomeAction::OpenSettings if !private => {
+                self.settings.set_category(Category::General);
+                if self.settings.is_open() {
+                    self.refresh_settings();
+                } else {
+                    self.run(Action::OpenSettings);
+                }
+            }
+            HomeAction::ConfigChanged | HomeAction::Refresh | HomeAction::OpenSettings => {}
         }
     }
 
@@ -2929,6 +3053,28 @@ impl Browser {
         self.dark = is_dark(&self.config, &self.window, self.desktop_theme.dark());
         // Pages follow the chosen scheme live (not the page-adaptive chrome flip below).
         self.engine.set_color_scheme(self.dark);
+        let delay = self.page_color_delay();
+        self.page_colors.set_dark(self.dark, self.active_view(), delay);
+        if self.favicons.set_dark(self.dark) {
+            // Sites with their own icon for the scheme show it at once.
+            let pages: Vec<(ViewId, String)> = self
+                .tabs
+                .all()
+                .iter()
+                .chain(self.parked.all())
+                .filter(|t| !self.engine.is_discarded(t.view))
+                .map(|t| (t.view, t.url.clone()))
+                .collect();
+            for (view, page) in pages {
+                if let Some(icon) = self.favicons.resolve(&page) {
+                    self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                }
+            }
+            self.tabs_changed = true;
+            if self.overview.is_open() {
+                self.rebuild_overview();
+            }
+        }
         self.update_lock();
         // Private browsing is always dark, like Safari's.
         self.ui.set_theme(Theme::new(&self.config, self.dark || self.private_mode));
@@ -3719,9 +3865,9 @@ impl Browser {
         let page_view = frame.as_ref().map(|f| f.texture.create_view(&Default::default()));
         let s = self.scale();
         let page = self.page_rect();
-        if let (Some(view), Some(frame)) = (&page_view, &frame) {
-            self.adapt_appearance(view, &frame.texture);
-        }
+        let tint_dt = self.last_tint_step.elapsed().as_secs_f32();
+        self.last_tint_step = Instant::now();
+        self.adapt_appearance(page_view.as_ref(), tint_dt);
         let page_px = Rect { origin: page.origin * s, size: page.size * s };
 
         let theme = self.ui.theme();
@@ -3779,7 +3925,7 @@ impl Browser {
             tracing::trace!(?kinds, "layers");
         }
         let clear = self
-            .page_tint
+            .window_tint
             .filter(|_| !self.overview.is_open() && !self.is_locked())
             .unwrap_or(theme.color(Paint::Ground));
         let scene = Scene { clear, layers };
@@ -3873,7 +4019,7 @@ impl Browser {
         }
         let anchor = self.chrome.address_frame(&self.ui);
         let (store, search_url) = (self.store.as_ref(), self.config.general.search_url.clone());
-        self.suggestions.update(&mut self.ui, &self.config, &text, anchor, || {
+        self.suggestions.update(&mut self.ui, &self.config, &text, anchor, &self.favicons, || {
             suggest(&text, store, &search_url, unix_now())
         });
         self.suggestions.reposition(&mut self.ui, anchor);

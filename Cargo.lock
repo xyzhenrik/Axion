@@ -421,6 +421,7 @@ dependencies = [
  "image",
  "jiff",
  "pollster",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "wgpu",

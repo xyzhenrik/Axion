@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<title>Start Page</title>
+<link rel="stylesheet" href="/home.css">
+<script src="/home.js" defer></script>
+</head>
+<body>
+<div id="backdrop" aria-hidden="true"></div>
+
+<button id="gear" class="glass round" type="button" aria-label="Customize start page" aria-haspopup="dialog" aria-expanded="false">
+  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path class="i" d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"/><path class="i" d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.6-2-3.4-2.4.9a7.5 7.5 0 0 0-2.6-1.5L14 2.4h-4l-.4 2.5A7.5 7.5 0 0 0 7 6.4l-2.4-.9-2 3.4 2 1.6a7.6 7.6 0 0 0 0 3l-2 1.6 2 3.4 2.4-.9a7.5 7.5 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.5 7.5 0 0 0 2.6-1.5l2.4.9 2-3.4z"/></svg>
+</button>
+
+<section id="panel" class="glass thick" role="dialog" aria-label="Customize start page" hidden>
+  <h2>Start Page</h2>
+  <div class="rows">
+    <label class="row"><span>Clock</span><input type="checkbox" class="switch" data-widget="clock"></label>
+    <div class="row sub" id="clock-format-row"><span>Format</span>
+      <div class="segments" role="radiogroup" aria-label="Clock format">
+        <button type="button" data-format="auto">Auto</button><button type="button" data-format="12h">12 h</button><button type="button" data-format="24h">24 h</button>
+      </div>
+    </div>
+    <label class="row"><span>Greeting</span><input type="checkbox" class="switch" data-widget="greeting"></label>
+    <label class="row"><span>Search field</span><input type="checkbox" class="switch" data-widget="search"></label>
+    <label class="row"><span>Top sites</span><input type="checkbox" class="switch" data-widget="topSites"></label>
+    <div class="row sub" id="restore-row" hidden><span id="restore-label">Removed sites</span><button type="button" class="link" id="restore">Restore</button></div>
+    <label class="row"><span>Shields statistics</span><input type="checkbox" class="switch" data-widget="stats"></label>
+    <label class="row"><span>Background image</span><input type="checkbox" class="switch" data-widget="background"></label>
+    <div class="sub" id="background-rows">
+      <div class="row buttons">
+        <button type="button" class="pill" id="choose">Choose Image…</button>
+        <button type="button" class="pill" id="clear-background">Remove</button>
+      </div>
+      <form class="row path" id="path-form">
+        <input type="text" id="path" placeholder="or a file path, e.g. ~/Pictures/sea.jpg" aria-label="Image file path" spellcheck="false" autocomplete="off">
+        <button type="submit" class="pill">Use</button>
+      </form>
+      <label class="row"><span>Dim</span><input type="range" id="dim" min="0" max="0.8" step="0.05"></label>
+      <label class="row"><span>Blur</span><input type="range" id="blur" min="0" max="30" step="1"></label>
+    </div>
+  </div>
+  <button type="button" class="link" id="more-settings">More Settings…</button>
+</section>
+
+<main id="main">
+  <section id="clock-block" aria-live="off">
+    <div id="clock" class="clock"></div>
+    <div id="greeting" class="greeting"></div>
+  </section>
+
+  <section id="private-card" class="glass card" hidden>
+    <div class="private-title">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path class="i" d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><path class="i" d="M4 4l16 16"/></svg>
+      <span>Private Browsing</span>
+    </div>
+    <p>Axion doesn't remember the pages you visit in private tabs, your searches or what you type into forms. Their cookies and site data are gone when the private tabs close. Downloads and bookmarks you save are kept.</p>
+  </section>
+
+  <form id="search" class="glass search" role="search" autocomplete="off">
+    <button type="button" id="engine" class="engine" aria-label="Search engine" aria-haspopup="menu" aria-expanded="false"><span id="engine-icon" class="engine-icon"></span><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path class="i" d="M7 10l5 5 5-5"/></svg></button>
+    <input id="query" type="text" enterkeyhint="search" spellcheck="false" aria-label="Search or enter website">
+    <svg class="search-glyph" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path class="i" d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM16.2 16.2l4.3 4.3"/></svg>
+    <div id="engine-menu" class="glass thick menu" role="menu" hidden></div>
+  </form>
+
+  <section id="sites" aria-label="Top sites">
+    <div id="pages" class="pages"></div>
+    <div id="dots" class="dots" role="tablist" aria-label="Top site pages"></div>
+  </section>
+
+  <section id="stats" class="glass card stats" aria-label="Shields">
+    <div class="stat main-stat"><span class="shield" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path class="i" d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6zM9 12l2 2 4-4"/></svg></span><div><div id="blocked" class="value"></div><div class="label">trackers &amp; ads blocked</div></div></div>
+    <div class="stat"><div id="bandwidth" class="value"></div><div class="label">bandwidth saved</div></div>
+    <div class="stat"><div id="time" class="value"></div><div class="label">time saved</div></div>
+  </section>
+</main>
+
+<dialog id="edit" class="glass thick">
+  <form method="dialog" id="edit-form">
+    <h2 id="edit-title">Add Site</h2>
+    <label class="field"><span>Name</span><input id="edit-name" type="text" spellcheck="false" autocomplete="off"></label>
+    <label class="field"><span>Address</span><input id="edit-url" type="text" spellcheck="false" autocomplete="off" placeholder="example.com" required></label>
+    <div class="row buttons end">
+      <button type="button" class="pill" id="edit-cancel">Cancel</button>
+      <button type="submit" class="pill primary" id="edit-save">Save</button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>

@@ -7,6 +7,7 @@ use axion_store::Store;
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
 
+use crate::favicons::{Favicons, favicon_or};
 use crate::popover::Popover;
 
 use crate::url::{is_address, resolve_input};
@@ -15,6 +16,8 @@ const ROW_BASE: u32 = 5000;
 const MAX_HISTORY: usize = 6;
 const MAX_BOOKMARKS: usize = 2;
 const ROW_HEIGHT: f32 = 48.0;
+/// Side of a row's icon (site icon or symbol).
+const ICON_SIZE: f32 = 18.0;
 const GAP_BELOW_BAR: f32 = 14.0;
 const RADIUS: f32 = 22.0;
 const PADDING: f32 = 6.0;
@@ -119,6 +122,7 @@ impl SuggestionList {
         config: &Config,
         query: &str,
         anchor: Frame,
+        favicons: &Favicons,
         items: impl FnOnce() -> Vec<Suggestion>,
     ) {
         if query == self.query {
@@ -127,7 +131,7 @@ impl SuggestionList {
         self.query = query.to_owned();
         self.items = if query.trim().is_empty() { Vec::new() } else { items() };
         self.selected = None;
-        self.rebuild(ui, config, anchor);
+        self.rebuild(ui, config, anchor, favicons);
     }
 
     pub fn hide(&mut self, ui: &mut Ui, config: &Config) {
@@ -152,7 +156,7 @@ impl SuggestionList {
         )
     }
 
-    fn rebuild(&mut self, ui: &mut Ui, config: &Config, anchor: Frame) {
+    fn rebuild(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, favicons: &Favicons) {
         ui.clear_children(self.plate);
         self.rows.clear();
         if self.items.is_empty() {
@@ -180,17 +184,23 @@ impl SuggestionList {
                     ..Default::default()
                 },
             );
-            let icon = match item.kind {
-                Kind::Search => Icon::Search,
-                Kind::Address => Icon::Forward,
-                Kind::Bookmark => Icon::Bookmark,
-                Kind::History => Icon::History,
-            };
-            ui.add(
-                row,
-                Widget::icon(icon, 18.0).with_paint(Paint::Secondary),
-                Style { flex_shrink: 0.0, ..Default::default() },
-            );
+            match item.kind {
+                // Pages show their site's icon (the generic one while none is cached).
+                Kind::Bookmark => {
+                    favicon_or(ui, row, &item.url, ICON_SIZE, favicons, Icon::Bookmark);
+                }
+                Kind::History => {
+                    favicon_or(ui, row, &item.url, ICON_SIZE, favicons, Icon::History);
+                }
+                Kind::Search | Kind::Address => {
+                    let icon = if item.kind == Kind::Search { Icon::Search } else { Icon::Forward };
+                    ui.add(
+                        row,
+                        Widget::icon(icon, ICON_SIZE).with_paint(Paint::Secondary),
+                        Style { flex_shrink: 0.0, ..Default::default() },
+                    );
+                }
+            }
             let text = ui.add(
                 row,
                 Widget::container(),
