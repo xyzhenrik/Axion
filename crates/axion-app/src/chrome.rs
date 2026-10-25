@@ -8,14 +8,14 @@
 //!   bookmarks, reading list and history. Docked in wide windows, floating otherwise.
 
 use axion_compositor::{Icon, IconWeight, Rect as Frame};
-use axion_config::{Color, Config, SidebarMode, TabBarStyle};
+use axion_config::{Config, SidebarMode, TabBarStyle};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Align, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
 use glam::Vec2;
 
 use crate::favicons::{Favicons, favicon_node};
-use crate::tabs::Tabs;
+use crate::tabs::{Tab, Tabs};
 use crate::url::display_host;
 
 /// The Now Playing card's content.
@@ -69,6 +69,9 @@ pub enum ChromeAction {
     NowPlaying,
     NowPlayingToggle,
     SelectTab(usize),
+    /// A tab of the other group (private while browsing normally, or the reverse): switches
+    /// group and selects it.
+    SelectOtherTab(usize),
     CloseTab(usize),
     /// An entry in the open bookmarks/history panel.
     OpenPanelItem(usize),
@@ -84,6 +87,7 @@ const SELECT_TAB_BASE: u32 = 1000;
 const CLOSE_TAB_BASE: u32 = 2000;
 const PANEL_ITEM_BASE: u32 = 7000;
 const DELETE_PANEL_ITEM_BASE: u32 = 10_000;
+const SELECT_OTHER_TAB_BASE: u32 = 12_000;
 
 impl ChromeAction {
     const SIMPLE: [ChromeAction; 24] = [
@@ -117,6 +121,7 @@ impl ChromeAction {
         ActionId(match self {
             ChromeAction::SelectTab(i) => SELECT_TAB_BASE + i as u32,
             ChromeAction::CloseTab(i) => CLOSE_TAB_BASE + i as u32,
+            ChromeAction::SelectOtherTab(i) => SELECT_OTHER_TAB_BASE + i as u32,
             ChromeAction::OpenPanelItem(i) => PANEL_ITEM_BASE + i as u32,
             ChromeAction::DeletePanelItem(i) => DELETE_PANEL_ITEM_BASE + i as u32,
             simple => 1 + Self::SIMPLE.iter().position(|&a| a == simple).unwrap_or(0) as u32,
@@ -126,6 +131,9 @@ impl ChromeAction {
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
             n @ 1..=24 => Some(Self::SIMPLE[n as usize - 1]),
+            n if (SELECT_OTHER_TAB_BASE..SELECT_OTHER_TAB_BASE + 1000).contains(&n) => {
+                Some(ChromeAction::SelectOtherTab((n - SELECT_OTHER_TAB_BASE) as usize))
+            }
             n if (DELETE_PANEL_ITEM_BASE..DELETE_PANEL_ITEM_BASE + 1000).contains(&n) => {
                 Some(ChromeAction::DeletePanelItem((n - DELETE_PANEL_ITEM_BASE) as usize))
             }
@@ -210,6 +218,8 @@ pub struct Chrome {
     /// How many normal tabs there are while private tabs are shown.
     normal_count: usize,
     locked: bool,
+    /// Private tab titles are hidden (a lock is set and locked), in either mode.
+    private_hidden: bool,
     sections: NodeId,
     panel: NodeId,
     panel_title: NodeId,
@@ -221,7 +231,10 @@ pub struct Chrome {
     panel_list: NodeId,
     tab_group_label: NodeId,
     tab_group_chevron: NodeId,
+    /// The current group's tabs, under its row.
     sidebar_tabs: NodeId,
+    /// The other group's tabs, under its row (normal tabs under "N Tabs" in private browsing).
+    sidebar_other: NodeId,
     saved_chevron: NodeId,
     saved_list: NodeId,
 
@@ -347,14 +360,6 @@ fn glass_group(ui: &mut Ui, parent: NodeId) -> NodeId {
     )
 }
 
-/// A favicon stand-in: a rounded square in a colour derived from the host (as in the design).
-pub fn favicon_color(url: &str) -> Color {
-    const COLORS: [u32; 8] = [0xF2742B, 0x2E6BFF, 0x7C5CFF, 0x1F9D57, 0xE2457A, 0x1C5FA6, 0xD98A06, 0x8E3FA6];
-    let host = display_host(url);
-    let hash = host.bytes().fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
-    Color::rgb(COLORS[hash as usize % COLORS.len()])
-}
-
 /// A sidebar row: accent icon, label, optional trailing glyph. Returns (label, trailing).
 fn sidebar_row(
     ui: &mut Ui,
@@ -444,6 +449,7 @@ impl Chrome {
                 ..Default::default()
             },
         );
+        let sidebar_other = ui.add(sections, Widget::container(), ui.style(sidebar_tabs));
         let (private_label, private_lock) =
             sidebar_row(ui, sections, ChromeAction::Private, Icon::Hand, "Private", Some(Icon::Lock));
         let saved_header = ui.add(
@@ -626,7 +632,7 @@ impl Chrome {
         let address = ui.add(
             tab_capsule,
             Widget::container()
-                .with_background(Background::Glass(GlassLevel::Regular))
+                .with_background(Background::Glass(GlassLevel::Thin))
                 .with_radius(CAPSULE)
                 .with_action(ChromeAction::EditAddress.id()),
             Style {
@@ -759,6 +765,7 @@ impl Chrome {
             private_mode: false,
             normal_count: 0,
             locked: false,
+            private_hidden: false,
             sections,
             panel,
             panel_title,
@@ -770,6 +777,7 @@ impl Chrome {
             tab_group_label,
             tab_group_chevron: tab_group_chevron.unwrap_or(sidebar),
             sidebar_tabs,
+            sidebar_other,
             saved_chevron,
             saved_list,
             bar,
@@ -851,7 +859,8 @@ impl Chrome {
     pub fn toggle_section(&mut self, ui: &mut Ui, tabs_section: bool) {
         let (open, list, chevron) = if tabs_section {
             self.tabs_section_open = !self.tabs_section_open;
-            (self.tabs_section_open, self.sidebar_tabs, self.tab_group_chevron)
+            let list = if self.private_mode { self.sidebar_other } else { self.sidebar_tabs };
+            (self.tabs_section_open, list, self.tab_group_chevron)
         } else {
             self.saved_section_open = !self.saved_section_open;
             (self.saved_section_open, self.saved_list, self.saved_chevron)
@@ -984,8 +993,11 @@ impl Chrome {
         self.normal_count = count;
     }
 
-    pub fn set_private(&mut self, ui: &mut Ui, private: bool, has_lock: bool) {
+    /// `hidden`: private tabs are locked away, so their titles are not listed.
+    pub fn set_private(&mut self, ui: &mut Ui, private: bool, has_lock: bool, hidden: bool) {
         self.private_mode = private;
+        self.private_hidden = hidden;
+        self.update_tab_lists(ui);
         if let Some(w) = ui.widget_mut(self.private_row) {
             w.background = if private { Background::Fill(Paint::Label, 0.08) } else { Background::None };
         }
@@ -995,7 +1007,7 @@ impl Chrome {
     /// While private browsing is locked, tab titles and the address stay hidden.
     pub fn set_locked(&mut self, ui: &mut Ui, locked: bool) {
         self.locked = locked;
-        ui.set_visible(self.sidebar_tabs, !locked && self.tabs_section_open);
+        self.update_tab_lists(ui);
         for &pill in &self.pills {
             ui.set_visible(pill, !locked && self.mode != Mode::Narrow);
         }
@@ -1230,8 +1242,20 @@ impl Chrome {
         self.page_fullscreen = fullscreen;
     }
 
-    /// Rebuilds the tab segments and sidebar rows from the tab model.
-    pub fn sync_tabs(&mut self, ui: &mut Ui, tabs: &Tabs, favicons: &Favicons) {
+    /// Shows the normal tabs' list while "N Tabs" is expanded and the private one unless locked.
+    fn update_tab_lists(&self, ui: &mut Ui) {
+        let (normal, private) = if self.private_mode {
+            (self.sidebar_other, self.sidebar_tabs)
+        } else {
+            (self.sidebar_tabs, self.sidebar_other)
+        };
+        ui.set_visible(normal, self.tabs_section_open);
+        ui.set_visible(private, !self.private_hidden && !self.locked);
+    }
+
+    /// Rebuilds the tab segments and sidebar rows from the tab model. `other` is the group
+    /// not shown (listed in the sidebar only).
+    pub fn sync_tabs(&mut self, ui: &mut Ui, tabs: &Tabs, other: &Tabs, favicons: &Favicons) {
         for pill in std::mem::take(&mut self.pills) {
             ui.remove(pill);
         }
@@ -1246,7 +1270,7 @@ impl Chrome {
                 continue;
             }
             let parent = if separate { self.tab_strip } else { self.tab_capsule };
-            let background = if active { Background::Glass(GlassLevel::Regular) } else { Background::None };
+            let background = if active { Background::Glass(GlassLevel::Thin) } else { Background::None };
             let height = if separate { TAB_STRIP_HEIGHT - 8.0 } else { SEGMENT_HEIGHT };
             let pill = ui.add(
                 parent,
@@ -1293,49 +1317,36 @@ impl Chrome {
         }
         ui.set_visible(self.address_favicon, !self.locked);
 
-        // Sidebar: each group's tabs are listed under its row — under "N Tabs" normally, under
-        // "Private" in private browsing (where "N Tabs" counts the normal tabs and switches back).
+        // Sidebar: each group's tabs are listed under its row: the normal ones under "N Tabs",
+        // the private ones under "Private". Rows of the other group switch to it.
         let count = if self.private_mode { self.normal_count } else { tabs.len() };
         ui.set_text(self.tab_group_label, &format!("{count} {}", if count == 1 { "Tab" } else { "Tabs" }));
         if let Some(header) = ui.parent(self.tab_group_label) {
+            let (normal, private) = if self.private_mode {
+                (self.sidebar_other, self.sidebar_tabs)
+            } else {
+                (self.sidebar_tabs, self.sidebar_other)
+            };
             let mut order: Vec<NodeId> =
-                ui.children(self.sections).into_iter().filter(|&n| n != self.sidebar_tabs).collect();
-            let after = if self.private_mode { self.private_row } else { header };
-            if let Some(at) = order.iter().position(|&n| n == after) {
-                order.insert(at + 1, self.sidebar_tabs);
-                ui.set_children(self.sections, &order);
+                ui.children(self.sections).into_iter().filter(|&n| n != normal && n != private).collect();
+            if let Some(at) = order.iter().position(|&n| n == header) {
+                order.insert(at + 1, normal);
             }
+            if let Some(at) = order.iter().position(|&n| n == self.private_row) {
+                order.insert(at + 1, private);
+            }
+            ui.set_children(self.sections, &order);
         }
         ui.clear_children(self.sidebar_tabs);
         for (i, tab) in tabs.all().iter().enumerate() {
             let active = i == tabs.active_index();
-            let background = if active { Background::Fill(Paint::Label, 0.08) } else { Background::None };
-            let row_node = ui.add(
-                self.sidebar_tabs,
-                Widget::container()
-                    .with_action(ChromeAction::SelectTab(i).id())
-                    .with_radius(CAPSULE)
-                    .with_background(background),
-                Style {
-                    size: Size { width: auto(), height: length(ROW_HEIGHT) },
-                    padding: padding(TAB_INDENT, 12.0, 0.0, 0.0),
-                    ..row(12.0)
-                },
-            );
-            if active {
-                close_dot(ui, row_node, ChromeAction::CloseTab(i), 24.0);
-            } else {
-                // Same width as the close button, so titles line up.
-                let slot = ui.add(
-                    row_node,
-                    Widget::container(),
-                    Style { size: square(24.0), justify_content: JustifyContent::CENTER, ..row(0.0) },
-                );
-                favicon_node(ui, slot, &tab.url, 20.0, favicons);
-            }
-            let style = if active { TextStyle::BodyEmphasis } else { TextStyle::Body };
-            ui.add_label(row_node, &tab.label(), style, shrinking_label());
+            sidebar_tab_row(ui, self.sidebar_tabs, tab, active, ChromeAction::SelectTab(i), favicons);
         }
+        ui.clear_children(self.sidebar_other);
+        for (i, tab) in other.all().iter().enumerate() {
+            sidebar_tab_row(ui, self.sidebar_other, tab, false, ChromeAction::SelectOtherTab(i), favicons);
+        }
+        self.update_tab_lists(ui);
         ui.set_text(self.tab_count_label, &count.to_string());
         self.sync_active(ui, tabs);
     }
@@ -1366,4 +1377,42 @@ impl Chrome {
         ui.set_visible(self.address_field, editing);
         if editing { ui.focus(self.address_field) } else { ui.blur() }
     }
+}
+
+/// One tab in a sidebar list: the active one is a grey capsule with a close button in place
+/// of its favicon.
+fn sidebar_tab_row(
+    ui: &mut Ui,
+    parent: NodeId,
+    tab: &Tab,
+    active: bool,
+    select: ChromeAction,
+    favicons: &Favicons,
+) {
+    let background = if active { Background::Fill(Paint::Label, 0.08) } else { Background::None };
+    let row_node = ui.add(
+        parent,
+        Widget::container().with_action(select.id()).with_radius(CAPSULE).with_background(background),
+        Style {
+            size: Size { width: auto(), height: length(ROW_HEIGHT) },
+            padding: padding(TAB_INDENT, 12.0, 0.0, 0.0),
+            ..row(12.0)
+        },
+    );
+    match select {
+        ChromeAction::SelectTab(i) if active => {
+            close_dot(ui, row_node, ChromeAction::CloseTab(i), 24.0);
+        }
+        _ => {
+            // Same width as the close button, so titles line up.
+            let slot = ui.add(
+                row_node,
+                Widget::container(),
+                Style { size: square(24.0), justify_content: JustifyContent::CENTER, ..row(0.0) },
+            );
+            favicon_node(ui, slot, &tab.url, 20.0, favicons);
+        }
+    }
+    let style = if active { TextStyle::BodyEmphasis } else { TextStyle::Body };
+    ui.add_label(row_node, &tab.label(), style, shrinking_label());
 }

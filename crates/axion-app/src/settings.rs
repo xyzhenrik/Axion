@@ -9,6 +9,8 @@ use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
 
+mod search;
+
 const ACTION_BASE: u32 = 8000;
 const SHEET_MAX: Vec2 = Vec2::new(920.0, 660.0);
 const SHEET_MARGIN: f32 = 32.0;
@@ -211,7 +213,7 @@ impl Setting {
             Setting::FreezeAfter => (0.0, 60.0),
             Setting::HideControlsAfter => (1.0, 10.0),
             Setting::DiscardAfter => (0.0, 480.0),
-            Setting::MemoryBudget => (0.0, system_memory_mb()),
+            Setting::MemoryBudget => (0.0, memory_slider_max_mb()),
             Setting::PasswordsLockAfter => (0.0, 120.0),
             Setting::ClearClipboardAfter => (0.0, 300.0),
             _ => (0.0, 1.0),
@@ -506,6 +508,9 @@ pub struct SettingsSheet {
     memory_used: Option<u64>,
     confirm_clear: bool,
     open: bool,
+    /// The search field above the categories, and what it held when the page was built.
+    search: NodeId,
+    query: String,
 }
 
 fn row(gap: f32) -> Style {
@@ -576,6 +581,33 @@ impl SettingsSheet {
             },
         );
         let _ = title;
+        let search_box = ui.add(
+            nav_column,
+            Widget::container().with_background(Background::Fill(Paint::Label, 0.07)).with_radius(CAPSULE),
+            Style {
+                size: Size { width: auto(), height: length(36.0) },
+                flex_shrink: 0.0,
+                padding: padding(12.0, 0.0),
+                margin: Rect {
+                    left: length(0.0),
+                    right: length(0.0),
+                    top: length(0.0),
+                    bottom: length(10.0),
+                },
+                ..row(8.0)
+            },
+        );
+        ui.add(search_box, Widget::icon(Icon::Search, 15.0).with_paint(Paint::Secondary), Style::default());
+        let search = ui.add_text_field(
+            search_box,
+            "Search",
+            TextStyle::Body,
+            Style {
+                flex_grow: 1.0,
+                size: Size { width: auto(), height: length(22.0) },
+                ..Default::default()
+            },
+        );
         let mut nav = Vec::new();
         for category in Category::ALL {
             let item = ui.add(
@@ -642,6 +674,8 @@ impl SettingsSheet {
             group: None,
             confirm_clear: false,
             open: false,
+            search,
+            query: String::new(),
         }
     }
 
@@ -702,6 +736,23 @@ impl SettingsSheet {
         ui.set_style(self.content, style);
     }
 
+    pub fn search_field(&self) -> NodeId {
+        self.search
+    }
+
+    /// Rebuilds the page as search results when the search text changed. Call every frame.
+    pub fn poll_search(&mut self, ui: &mut Ui, config: &Config, keymap: &Keymap) {
+        if !self.open {
+            return;
+        }
+        let text = ui.field_text(self.search).unwrap_or_default().trim().to_owned();
+        if text != self.query {
+            self.query = text;
+            self.set_scroll(ui, 0.0);
+            self.show(ui, config, keymap);
+        }
+    }
+
     /// Shows this category next time the sheet opens (or now, if open).
     pub fn set_category(&mut self, category: Category) {
         self.category = category;
@@ -709,6 +760,8 @@ impl SettingsSheet {
 
     pub fn close(&mut self, ui: &mut Ui) {
         self.open = false;
+        self.query.clear();
+        ui.set_field_text(self.search, "");
         self.confirm_clear = false;
         ui.set_visible(self.root, false);
     }
@@ -726,7 +779,7 @@ impl SettingsSheet {
     pub fn show(&mut self, ui: &mut Ui, config: &Config, keymap: &Keymap) {
         for &(category, node) in &self.nav {
             if let Some(w) = ui.widget_mut(node) {
-                w.background = if category == self.category {
+                w.background = if category == self.category && self.query.is_empty() {
                     Background::Fill(Paint::Accent, 0.14)
                 } else {
                     Background::None
@@ -745,6 +798,10 @@ impl SettingsSheet {
         self.trusted_site = None;
         self.password = None;
         self.passwords_file = None;
+        if !self.query.is_empty() {
+            self.show_results(ui, config);
+            return;
+        }
         ui.add_label(
             self.content,
             self.category.title(),
@@ -1089,6 +1146,57 @@ impl SettingsSheet {
         self.row_with_height(ui, label, ROW_HEIGHT)
     }
 
+    /// The settings matching the search, grouped by page: toggles and sliders work right
+    /// here, everything else has a button that opens its page.
+    fn show_results(&mut self, ui: &mut Ui, config: &Config) {
+        ui.add_label(
+            self.content,
+            "Search Results",
+            TextStyle::Title1,
+            Style {
+                margin: Rect {
+                    left: length(0.0),
+                    right: length(0.0),
+                    top: length(0.0),
+                    bottom: length(12.0),
+                },
+                ..Default::default()
+            },
+        );
+        let hits = search::search(&self.query);
+        if hits.is_empty() {
+            let label = ui.add_label(
+                self.content,
+                &format!("No settings match “{}”.", self.query),
+                TextStyle::Body,
+                Style::default(),
+            );
+            if let Some(w) = ui.widget_mut(label) {
+                w.set_paint(Paint::Secondary);
+            }
+            return;
+        }
+        // Pages in the order of the best hit on each.
+        let mut pages: Vec<Category> = Vec::new();
+        for hit in &hits {
+            if !pages.contains(&hit.category) {
+                pages.push(hit.category);
+            }
+        }
+        for category in pages {
+            self.section(ui, category.title());
+            for hit in hits.iter().filter(|h| h.category == category) {
+                match hit.target {
+                    search::Target::Control(setting) => self.control(ui, config, setting),
+                    search::Target::Page(title) => {
+                        let row_node = self.row(ui, title);
+                        pill_button(ui, row_node, "Show", SettingsAction::Category(category), false);
+                    }
+                }
+            }
+        }
+    }
+
     /// Safari's two tab bar layouts as small pictures with a radio mark under each.
     fn tab_bar_choice(&mut self, ui: &mut Ui, config: &Config) {
         let parent = self.group_for_row(ui);
@@ -1295,6 +1403,8 @@ impl SettingsSheet {
             SettingsAction::Close => return Outcome::Close,
             SettingsAction::Category(category) => {
                 self.category = category;
+                self.query.clear();
+                ui.set_field_text(self.search, "");
                 self.confirm_clear = false;
                 Outcome::Nothing
             }
@@ -1527,8 +1637,13 @@ fn trim_number(v: f32) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-fn system_memory_mb() -> f32 {
-    axion_tabs::system_memory().map_or(16384.0, |b| (b / (1024 * 1024)) as f32)
+/// The memory slider's upper end: budgets above this are unrealistic for tabs (a typed
+/// value in the config can still go higher).
+const MEMORY_SLIDER_MAX_MB: f32 = 6144.0;
+
+fn memory_slider_max_mb() -> f32 {
+    let system = axion_tabs::system_memory().map_or(f32::MAX, |b| (b / (1024 * 1024)) as f32);
+    MEMORY_SLIDER_MAX_MB.min(system)
 }
 
 /// 1536 MiB → "1.5 GB".

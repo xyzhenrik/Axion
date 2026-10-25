@@ -64,11 +64,13 @@ const MAX_TEXT_SCALE: f32 = 3.0;
 /// A held glass grows at most this many logical px at each edge (wide bars barely swell) …
 const PRESS_GROW_PX: f32 = 5.0;
 /// … and surfaces bigger than this (sheets, the sidebar) don't react at all.
-const PRESS_MAX_SIZE: f32 = 420.0;
+const PRESS_MAX_SIZE: f32 = 200.0;
 /// How far held glass follows the pointer when it is dragged away (rubber band limit, px) …
-const PULL_LIMIT: f32 = 9.0;
+const PULL_LIMIT: f32 = 5.0;
 /// … and how much it stretches toward it (relative to the pull over the glass's size).
 const PULL_STRETCH: f32 = 1.4;
+/// Content under held glass moves this share of the glass's pull.
+const CONTENT_FOLLOW: f32 = 0.4;
 const PRESS_SETTLED: f32 = 0.001;
 /// Fading glass is grouped into this many opacity steps (each step is one glass pass).
 const GLASS_FADE_STEPS: f32 = 24.0;
@@ -1111,7 +1113,8 @@ impl Ui {
 
     fn press_glass(&mut self, glass: NodeId, pressed: bool) {
         let size = self.frame(glass).size;
-        if size.max_element() > PRESS_MAX_SIZE {
+        // Only surfaces big in both directions (sheets, the sidebar) stay still; bars swell.
+        if size.min_element() > PRESS_MAX_SIZE {
             return;
         }
         let swell = (PRESS_GROW_PX / (size.max_element() / 2.0).max(1.0)).min(PRESS_SCALE - 1.0);
@@ -1284,12 +1287,18 @@ impl Ui {
             let offset = press.offset.value * s;
             let pull = offset.length();
             let e = (pull * PULL_STRETCH / bg_px.size.max_element().max(1.0)).min(self.squash());
+            let dir = if pull > 0.0 { (offset / pull).abs() } else { Vec2::ZERO };
+            // Along the pull it stretches, across it it narrows a little (like the glass).
+            let along = Vec2::ONE + dir * e;
+            let across = Vec2::ONE - Vec2::new(dir.y, dir.x) * e * 0.5;
             PressXf {
                 center: bg_px.center(),
                 scale: press.scale.value,
                 offset,
                 stretch: Vec2::new(1.0 + e, 1.0 / (1.0 + e)),
                 angle: offset.y.atan2(offset.x),
+                content_scale: press.scale.value * along * across,
+                content_offset: offset * CONTENT_FOLLOW,
             }
         });
         let mark = press_xf.as_ref().map(|_| marks(stacks));
@@ -1632,15 +1641,24 @@ struct PressXf {
     offset: Vec2,
     stretch: Vec2,
     angle: f32,
+    /// The content's own deformation: it stretches with the glass (per axis) and moves
+    /// only part of the way, so it looks pulled rather than carried along.
+    content_scale: Vec2,
+    content_offset: Vec2,
 }
 
 impl PressXf {
     fn point(&self, p: Vec2) -> Vec2 {
-        self.center + (p - self.center) * self.scale + self.offset
+        self.center + (p - self.center) * self.content_scale + self.content_offset
     }
 
     fn rect(&self, r: Rect) -> Rect {
-        Rect { origin: self.point(r.origin), size: r.size * self.scale }
+        Rect { origin: self.point(r.origin), size: r.size * self.content_scale }
+    }
+
+    /// For text, which only scales uniformly.
+    fn uniform(&self) -> f32 {
+        self.content_scale.min_element()
     }
 }
 
@@ -1671,7 +1689,7 @@ fn transform_since(stacks: &mut [Stack<'_>], mark: &[Mark], xf: &PressXf, from_d
         let c = &mut stack.content;
         for q in c.quads.iter_mut().skip(m.quads) {
             q.rect = xf.rect(q.rect);
-            q.radius *= xf.scale;
+            q.radius *= xf.uniform();
         }
         for i in c.images.iter_mut().skip(m.images) {
             i.rect = xf.rect(i.rect);
@@ -1683,7 +1701,7 @@ fn transform_since(stacks: &mut [Stack<'_>], mark: &[Mark], xf: &PressXf, from_d
             let p = xf.point(Vec2::new(t.left, t.top));
             t.left = p.x;
             t.top = p.y;
-            t.scale *= xf.scale;
+            t.scale *= xf.uniform();
             let b = &mut t.bounds;
             let tl = xf.point(Vec2::new(b.left as f32, b.top as f32));
             let br = xf.point(Vec2::new(b.right as f32, b.bottom as f32));

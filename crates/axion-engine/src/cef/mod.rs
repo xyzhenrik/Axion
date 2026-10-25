@@ -578,6 +578,7 @@ impl Engine for CefEngine {
                 | EngineEvent::LoadProgress { view, .. }
                 | EngineEvent::FaviconUrlsChanged { view, .. }
                 | EngineEvent::FaviconReady { view, .. }
+                | EngineEvent::FaviconFailed { view, .. }
                 | EngineEvent::CursorChanged { view, .. }
                 | EngineEvent::FullscreenRequested { view, .. }
                 | EngineEvent::PageMessage { view, .. }

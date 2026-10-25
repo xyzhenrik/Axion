@@ -91,6 +91,7 @@ icons! {
     Home => "M4 11l8-7 8 7M6 9.5V20h12V9.5M10 20v-5h4v5",
     Trash => "M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5",
     Pencil => "M15.5 4.5l4 4-11 11-4.5.5.5-4.5zM13.5 6.5l4 4",
+    Globe => "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM3 12h18M12 3c-2.6 2.5-3.9 5.5-3.9 9s1.3 6.5 3.9 9M12 3c2.6 2.5 3.9 5.5 3.9 9s-1.3 6.5-3.9 9",
 }
 
 /// Packs icon and weight into glyphon's custom glyph id.

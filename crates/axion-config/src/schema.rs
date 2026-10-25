@@ -182,8 +182,9 @@ pub struct Palette {
 pub struct Colors {
     pub light: Palette,
     pub dark: Palette,
-    /// Shields icon when protection is active.
-    pub shield: Color,
+    /// Shields icon when protection is active (unset: the accent colour).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shield: Option<Color>,
 }
 
 impl Default for Colors {
@@ -203,7 +204,7 @@ impl Default for Colors {
                 secondary: Color::rgb(0xA8AEBB),
                 hairline: Color::rgb(0x2C2F38),
             },
-            shield: Color::rgb(0x1F9D57),
+            shield: None,
         }
     }
 }
