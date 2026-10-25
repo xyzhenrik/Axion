@@ -156,6 +156,8 @@ pub struct Browser {
     player: PlayerOverlay,
     /// The active page's last reported scroll position (CSS px).
     last_scroll_y: f32,
+    /// Frames saved so far by the `AXION_CAPTURE_FRAMES` debug aid.
+    capture_frame: u32,
     /// The Picture in Picture window (kept once opened, hidden while unused).
     pip: Option<PipWindow>,
     /// PiP to start once the window exists (windows are made in `sync_windows`).
@@ -288,7 +290,7 @@ impl Browser {
             device.clone(),
             queue.clone(),
             CefOptions {
-                profile_dir: profile,
+                profile_dir: profile.clone(),
                 accelerated,
                 render_node: if std::env::var_os("AXION_NO_RENDER_NODE").is_some() {
                     None
@@ -318,7 +320,7 @@ impl Browser {
         let lock_screen = LockScreen::build(&mut ui);
         let settings = SettingsSheet::build(&mut ui);
         let lock = PrivateLock::load(store.as_ref());
-        let favicons = Favicons::new(device.clone(), queue.clone());
+        let favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
 
@@ -339,6 +341,7 @@ impl Browser {
             shields_popover,
             player,
             last_scroll_y: 0.0,
+            capture_frame: 0,
             pip: None,
             pip_request: None,
             instance,
@@ -1813,6 +1816,14 @@ impl Browser {
                     {
                         tracing::warn!("saving history failed: {e}");
                     }
+                    // Pages often add their icon links late: look once more when loading ends.
+                    if !loading
+                        && let Some(page) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone())
+                        && let Some(icon) = self.favicons.page_loaded(&page)
+                    {
+                        tracing::debug!("fetching icon {icon}");
+                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                    }
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
                         if loading && !tab.loading {
                             // A new page: its count starts over.
@@ -1870,20 +1881,28 @@ impl Browser {
                     }
                 }
                 EngineEvent::FaviconUrlsChanged { view, urls } => {
-                    let page = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone());
-                    // CEF often reports no icon links; then use the site's /favicon.ico.
-                    let icon =
-                        |page: &str| urls.first().cloned().or_else(|| crate::favicons::fallback_url(page));
-                    if let Some(page) = page
-                        && let Some(icon) = icon(&page)
-                        && self.favicons.should_fetch(&page)
+                    if let Some(page) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone())
+                        && let Some(icon) = self.favicons.icon_links(&page, &urls)
                     {
+                        tracing::debug!("fetching icon {icon}");
+                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                    }
+                }
+                EngineEvent::FaviconFailed { view, url } => {
+                    tracing::debug!("no usable icon at {url}");
+                    if let Some(page) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone())
+                        && let Some(icon) = self.favicons.failed(&page)
+                    {
+                        tracing::debug!("fetching icon {icon}");
                         self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
                     }
                 }
                 EngineEvent::FaviconReady { view, width, height, rgba, .. } => {
-                    if let Some(page) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone()) {
-                        self.favicons.insert(&page, width, height, &rgba);
+                    if let Some((page, private)) =
+                        find_tab(&self.tabs, &self.parked, view).map(|t| (t.url.clone(), t.private))
+                    {
+                        // Private tabs leave no icon on disk.
+                        self.favicons.insert(&page, width, height, &rgba, !private);
                         self.tabs_changed = true;
                         if self.overview.is_open() {
                             self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
@@ -2425,6 +2444,13 @@ impl Browser {
                 // Capture aid: open the player's speed menu.
                 // Capture aid: scroll the page down by 600 px.
                 "toggle-sidebar" => self.run(Action::ToggleSidebar),
+                // Capture aid: move the pointer to window position "hover:X:Y" (logical px).
+                hover if hover.starts_with("hover:") => {
+                    let mut parts = hover.split(':').skip(1).filter_map(|n| n.parse::<f32>().ok());
+                    if let (Some(x), Some(y)) = (parts.next(), parts.next()) {
+                        self.pointer_moved(Vec2::new(x, y));
+                    }
+                }
                 "scroll-page" => {
                     if let Some(view) = self.active_view() {
                         self.engine.run_script(view, "window.scrollBy(0, 600);", false);
@@ -2565,8 +2591,14 @@ impl Browser {
         let mut layers = Vec::new();
         // The page ends where its rectangle ends (below the bar, beside a docked sidebar), with
         // rounded corners; square in page fullscreen (video).
-        if let Some(view) = &page_view {
-            let mut page = ImageDraw::new(view, page_px);
+        if let (Some(view), Some(frame)) = (&page_view, &frame) {
+            // Drawn at its own pixel size from the page's top-left, never stretched: while the
+            // page is resized (sidebar sliding) Chromium's frames lag a little, and stretching
+            // the older size into the new rectangle made the page wobble and flicker.
+            let tex = Vec2::new(frame.texture.width() as f32, frame.texture.height() as f32);
+            let shown = page_px.size.min(tex);
+            let mut page = ImageDraw::new(view, Rect { origin: page_px.origin, size: shown });
+            page.uv = Rect { origin: Vec2::ZERO, size: shown / tex.max(Vec2::ONE) };
             if !self.chrome.page_fullscreen() {
                 page.radius = self.config.layout.page_corner_radius * s;
             }
@@ -2599,12 +2631,28 @@ impl Browser {
         if let Some((path, at)) = &self.capture
             && Instant::now() >= *at
         {
-            let (w, h, pixels) = self.compositor.read_back().context("reading back the frame")?;
-            image::RgbaImage::from_raw(w, h, pixels)
-                .context("frame has the wrong size")?
-                .save(path)
-                .with_context(|| format!("saving {}", path.display()))?;
+            if self.capture_frame == 0 {
+                let (w, h, pixels) = self.compositor.read_back().context("reading back the frame")?;
+                image::RgbaImage::from_raw(w, h, pixels)
+                    .context("frame has the wrong size")?
+                    .save(path)
+                    .with_context(|| format!("saving {}", path.display()))?;
+            }
             tracing::info!(path = %path.display(), "saved screenshot");
+            // Debug aid: AXION_CAPTURE_FRAMES=N also saves the next N frames ("shot-1.png" …).
+            let wanted: u32 =
+                std::env::var("AXION_CAPTURE_FRAMES").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
+            if self.capture_frame < wanted {
+                self.capture_frame += 1;
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("capture").to_owned();
+                let next = path.with_file_name(format!("{stem}-{}.png", self.capture_frame));
+                if let Some((w, h, pixels)) = self.compositor.read_back()
+                    && let Some(img) = image::RgbaImage::from_raw(w, h, pixels)
+                {
+                    let _ = img.save(&next);
+                }
+                return Ok(());
+            }
             // The PiP window too, next to it ("shot.png" → "shot-pip.png").
             if let Some((w, h, pixels)) =
                 self.pip.as_ref().filter(|p| p.is_active()).and_then(PipWindow::read_back)

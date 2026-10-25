@@ -82,6 +82,7 @@ icons! {
     ExitFullscreen => "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5",
     Gauge => "M4.5 16.5a7.5 7.5 0 1 1 15 0M12 16.5l3.5-4.5M7.5 16.5h.01M16.5 16.5h.01",
     Check => "M5 12.5l4.5 4.5L19 7.5",
+    Globe => "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM3 12h18M12 3c-2.6 2.5-3.9 5.5-3.9 9s1.3 6.5 3.9 9M12 3c2.6 2.5 3.9 5.5 3.9 9s-1.3 6.5-3.9 9",
 }
 
 /// Packs icon and weight into glyphon's custom glyph id.
