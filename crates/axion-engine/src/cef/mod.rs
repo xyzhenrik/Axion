@@ -148,6 +148,8 @@ pub struct CefEngine {
     /// In-memory profile shared by private views, created on first use.
     private_context: Option<RequestContext>,
     net: Arc<Network>,
+    /// Pages' colour scheme (`None` until the browser sets one: Chromium's default).
+    dark: Option<bool>,
     shut_down: bool,
 }
 
@@ -185,6 +187,7 @@ impl CefEngine {
             input: InputState::default(),
             private_context: None,
             net: Arc::default(),
+            dark: None,
             shut_down: false,
         })
     }
@@ -194,8 +197,10 @@ impl CefEngine {
             // An empty cache path makes the context in-memory only.
             let settings = RequestContextSettings { persist_session_cookies: 0, ..Default::default() };
             self.private_context = request_context_create_context(Some(&settings), None);
-            if self.private_context.is_none() {
-                tracing::error!("could not create the private browsing context");
+            match (&self.private_context, self.dark) {
+                (Some(context), Some(dark)) => apply_color_scheme(context, dark),
+                (None, _) => tracing::error!("could not create the private browsing context"),
+                _ => {}
             }
         }
         self.private_context.clone()
@@ -274,6 +279,9 @@ impl CefEngine {
             ctx.frames.import_failures.set(0);
             match self.create_browser(&ctx, &url, private) {
                 Ok((browser, browser_id)) => {
+                    if let (Some(dark), Some(host)) = (self.dark, browser.host()) {
+                        emulate_color_scheme(&host, dark);
+                    }
                     if let Some(state) = self.views.get_mut(&id) {
                         state.browser = Some(browser);
                         state.browser_id = browser_id;
@@ -369,6 +377,22 @@ impl Engine for CefEngine {
         }
     }
 
+    fn set_color_scheme(&mut self, dark: bool) {
+        if self.dark == Some(dark) {
+            return;
+        }
+        self.dark = Some(dark);
+        let contexts = [request_context_get_global_context(), self.private_context.clone()];
+        for context in contexts.iter().flatten() {
+            apply_color_scheme(context, dark);
+        }
+        for state in self.views.values().filter(|v| !v.closing) {
+            if let Some(host) = state.browser.as_ref().and_then(|b| b.host()) {
+                emulate_color_scheme(&host, dark);
+            }
+        }
+    }
+
     fn set_audio_muted(&mut self, view: ViewId, muted: bool) {
         if let Some(host) = self.host(view) {
             host.set_audio_muted(muted as _);
@@ -422,6 +446,9 @@ impl Engine for CefEngine {
         let Some(state) = self.views.get(&view).filter(|v| v.browser.is_none()) else { return Ok(()) };
         let (ctx, url, private) = (state.ctx.clone(), state.url.clone(), state.private);
         let (browser, browser_id) = self.create_browser(&ctx, &url, private)?;
+        if let (Some(dark), Some(host)) = (self.dark, browser.host()) {
+            emulate_color_scheme(&host, dark);
+        }
         if let Some(state) = self.views.get_mut(&view) {
             state.browser = Some(browser);
             state.browser_id = browser_id;
@@ -599,4 +626,33 @@ fn keep_frame(device: &wgpu::Device, queue: &wgpu::Queue, frame: &wgpu::Texture)
     encoder.copy_texture_to_texture(frame.as_image_copy(), copy.as_image_copy(), frame.size());
     queue.submit([encoder.finish()]);
     copy
+}
+
+/// Sets a profile's colour scheme; Chromium passes it to its pages' `prefers-color-scheme`
+/// at once, without a reload.
+fn apply_color_scheme(context: &RequestContext, dark: bool) {
+    use cef::sys::cef_color_variant_t;
+    let variant = if dark {
+        cef_color_variant_t::CEF_COLOR_VARIANT_DARK
+    } else {
+        cef_color_variant_t::CEF_COLOR_VARIANT_LIGHT
+    };
+    // Colour 0: keep Chromium's default accent; only the light/dark mode matters here.
+    context.set_chrome_color_scheme(variant.into(), 0);
+}
+
+/// Sets the view's `prefers-color-scheme` through DevTools: off-screen views don't follow the
+/// profile's colour scheme by themselves. Applies at once (pages get a `change` event) and
+/// stays for later navigations of the view.
+fn emulate_color_scheme(host: &BrowserHost, dark: bool) {
+    let (Some(mut params), Some(mut features), Some(mut feature)) =
+        (dictionary_value_create(), list_value_create(), dictionary_value_create())
+    else {
+        return;
+    };
+    feature.set_string(Some(&"name".into()), Some(&"prefers-color-scheme".into()));
+    feature.set_string(Some(&"value".into()), Some(&(if dark { "dark" } else { "light" }).into()));
+    features.set_dictionary(0, Some(&mut feature));
+    params.set_list(Some(&"features".into()), Some(&mut features));
+    host.execute_dev_tools_method(0, Some(&"Emulation.setEmulatedMedia".into()), Some(&mut params));
 }

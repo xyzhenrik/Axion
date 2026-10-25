@@ -11,6 +11,7 @@
 
 mod browser;
 mod chrome;
+mod desktop;
 mod drip;
 mod favicons;
 mod gpu;

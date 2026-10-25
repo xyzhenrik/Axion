@@ -20,6 +20,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Fullscreen, Window};
 
 use crate::chrome::{Chrome, ChromeAction, NowPlaying, PanelItem};
+use crate::desktop::DesktopTheme;
 use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
@@ -167,6 +168,9 @@ pub struct Browser {
     paths: ConfigPaths,
     watcher: Option<ConfigWatcher>,
     dark: bool,
+    /// The desktop's light/dark preference (for `theme = "auto"`) and the last value seen.
+    desktop_theme: DesktopTheme,
+    desktop_dark: Option<bool>,
     modifiers: Modifiers,
     /// Pointer position in logical pixels.
     pointer: Option<Vec2>,
@@ -268,7 +272,8 @@ impl Browser {
         engine.set_request_policy(Some(shields.policy()));
         engine.set_page_script(Some(axion_media::bridge_script(&bridge_secret(), &media_replace(&config))));
 
-        let dark = is_dark(&config, &window);
+        let desktop_theme = DesktopTheme::start();
+        let dark = is_dark(&config, &window, desktop_theme.dark());
         let scale = window.scale_factor() as f32;
         let mut ui = Ui::new(Theme::new(&config, dark), scale);
         let compositor = Compositor::new(&device, &queue, format, &mut ui.fonts());
@@ -337,6 +342,8 @@ impl Browser {
             paths,
             watcher,
             dark,
+            desktop_theme,
+            desktop_dark: None,
             modifiers: Modifiers::default(),
             pointer: None,
             pointer_captured_by_ui: false,
@@ -367,6 +374,7 @@ impl Browser {
             }),
         };
         browser.update_layout();
+        browser.engine.set_color_scheme(browser.dark);
         let mut urls = options.urls;
         if urls.is_empty() && browser.config.tabs.restore_session && browser.restore_session() {
             return Ok(browser);
@@ -1560,7 +1568,7 @@ impl Browser {
                     }
                 }
                 UiEvent::ValueChanged { node, value } => {
-                    let outcome = self.settings.value_changed(node, value, &mut self.config);
+                    let outcome = self.settings.value_changed(&mut self.ui, node, value, &mut self.config);
                     self.settings_outcome(outcome);
                 }
                 UiEvent::Submitted { node, .. } if Some(node) == self.settings.password_field() => {
@@ -1714,6 +1722,14 @@ impl Browser {
 
     /// Runs the engine and applies what happened. Call often (every loop iteration).
     pub fn pump(&mut self) {
+        // The desktop switched light/dark (winit doesn't report it on most Linux desktops).
+        let desktop_dark = self.desktop_theme.dark();
+        if desktop_dark != self.desktop_dark {
+            self.desktop_dark = desktop_dark;
+            if self.config.appearance.theme == ThemeMode::Auto {
+                self.apply_theme();
+            }
+        }
         for event in self.engine.pump() {
             tracing::debug!(?event, "engine");
             match event {
@@ -1944,7 +1960,10 @@ impl Browser {
         if let Some(pip) = &mut self.pip {
             pip.set_theme(&self.config);
         }
-        self.dark = is_dark(&self.config, &self.window);
+        self.dark = is_dark(&self.config, &self.window, self.desktop_theme.dark());
+        // Pages follow the chosen scheme live (not the page-adaptive chrome flip below).
+        self.engine.set_color_scheme(self.dark);
+        self.update_lock();
         // Private browsing is always dark, like Safari's.
         self.ui.set_theme(Theme::new(&self.config, self.dark || self.private_mode));
     }
@@ -2285,6 +2304,12 @@ impl Browser {
                 }
                 "bookmarks" => self.show_panel(Panel::Bookmarks),
                 "settings" => self.run(Action::OpenSettings),
+                // Capture aids: switch the theme while running.
+                "theme-dark" | "theme-light" => {
+                    self.config.appearance.theme =
+                        if what == "theme-dark" { ThemeMode::Dark } else { ThemeMode::Light };
+                    self.apply_theme();
+                }
                 "next-tab" => self.run(Action::NextTab),
                 // Debug aid: the main player logs its loading state from its frame (PageMessage log).
                 "probe-media" => {
@@ -2689,11 +2714,11 @@ fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
-fn is_dark(config: &Config, window: &Window) -> bool {
+fn is_dark(config: &Config, window: &Window, desktop_dark: Option<bool>) -> bool {
     match config.appearance.theme {
         ThemeMode::Light => false,
         ThemeMode::Dark => true,
-        ThemeMode::Auto => window.theme() == Some(winit::window::Theme::Dark),
+        ThemeMode::Auto => desktop_dark.unwrap_or(window.theme() == Some(winit::window::Theme::Dark)),
     }
 }
 

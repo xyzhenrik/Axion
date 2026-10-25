@@ -13,6 +13,10 @@ const SHEET_MARGIN: f32 = 32.0;
 const SHEET_RADIUS: f32 = 30.0;
 const NAV_WIDTH: f32 = 230.0;
 const ROW_HEIGHT: f32 = 46.0;
+const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+/// Width of the value label beside a slider.
+const VALUE_WIDTH: f32 = 150.0;
+const SLIDER_WIDTH: f32 = 180.0;
 /// Grouped list (Safari's settings): rounded cards of rows with hairline separators.
 const GROUP_RADIUS: f32 = 14.0;
 const GROUP_INSET: f32 = 16.0;
@@ -131,22 +135,22 @@ impl Setting {
             Setting::Squash => "Squash when moving",
             Setting::MergeDistance => "Merge distance",
             Setting::LockPrivateTabs => "Lock private tabs with a password",
-            Setting::LockAfter => "Lock after (0 – 10 minutes in background)",
+            Setting::LockAfter => "Lock after time in background",
             Setting::HideAdElements => "Hide empty ad spaces",
             Setting::BlockPopups => "Block popups opened without a click",
             Setting::BlockRedirects => "Block redirects to ad and tracker sites",
             Setting::StripTracking => "Remove tracking parameters from links",
             Setting::ThirdPartyCookies => "Block third-party cookies",
-            Setting::FreezeAfter => "Freeze background tabs after (never – 60 minutes)",
-            Setting::DiscardAfter => "Unload background tabs after (never – 8 hours)",
+            Setting::FreezeAfter => "Freeze background tabs after",
+            Setting::DiscardAfter => "Unload background tabs after",
             Setting::LimitMemory => "Unload tabs when memory runs over the budget",
-            Setting::MemoryBudget => "Memory budget (automatic – all memory)",
+            Setting::MemoryBudget => "Memory budget",
             Setting::KeepMediaAwake => "Keep tabs playing audio awake",
             Setting::RestoreSession => "Reopen last session's tabs at start",
             Setting::HideBarOnScroll => "Hide tab bar when scrolling",
             Setting::OpenInBackground => "Open new tabs in background",
             Setting::OwnFullscreenControls => "Axion's player in fullscreen",
-            Setting::HideControlsAfter => "Hide controls while playing after (1 – 10 seconds)",
+            Setting::HideControlsAfter => "Hide controls while playing after",
             Setting::HardwareDecoding => "Hardware video decoding (after restart)",
             Setting::DesktopIntegration => "Desktop media controls and media keys (after restart)",
         }
@@ -193,6 +197,46 @@ impl Setting {
             Setting::DiscardAfter => (0.0, 480.0),
             Setting::MemoryBudget => (0.0, system_memory_mb()),
             _ => (0.0, 1.0),
+        }
+    }
+
+    /// The slider's current value for people: "Never", "30 min", "2 h", "100 %", …
+    fn display(self, c: &Config) -> String {
+        let percent = |v: f32| format!("{:.0} %", v * 100.0);
+        let minutes = |m: f32| match m {
+            m if m <= 0.0 => "Never".to_owned(),
+            m if m < 60.0 => format!("{m:.0} min"),
+            m => format!("{} h", trim_number(m / 60.0)),
+        };
+        let defaults = Config::default();
+        match self {
+            Setting::TextScale => percent(c.appearance.text_scale),
+            Setting::PageCorner => format!("{:.0} px", c.layout.page_corner_radius),
+            Setting::Refraction => percent(c.glass.light.refraction),
+            Setting::Blur => {
+                percent(c.glass.light.blur.regular / defaults.glass.light.blur.regular.max(0.001))
+            }
+            Setting::Dispersion => percent(c.glass.light.dispersion),
+            Setting::Squash => percent(c.glass.squash),
+            Setting::MergeDistance => format!("{:.0} px", c.glass.merge_distance),
+            Setting::LockAfter => match c.privacy.lock_after_seconds {
+                s if s <= 0.0 => "Immediately".to_owned(),
+                s if s < 60.0 => format!("{s:.0} s"),
+                s => format!("{} min", trim_number(s / 60.0)),
+            },
+            Setting::FreezeAfter => minutes(c.tabs.freeze_after_minutes),
+            Setting::DiscardAfter => minutes(c.tabs.discard_after_minutes),
+            Setting::MemoryBudget => match c.tabs.memory_budget_mb {
+                0 => {
+                    let mut auto = c.clone();
+                    auto.tabs.limit_memory = true;
+                    crate::lifecycle::memory_budget(&auto)
+                        .map_or("Automatic".to_owned(), |b| format!("Automatic ({:.0} GB)", b as f64 / GIB))
+                }
+                mb => format_bytes(u64::from(mb) * 1024 * 1024),
+            },
+            Setting::HideControlsAfter => format!("{} s", trim_number(c.media.hide_controls_after_seconds)),
+            _ => String::new(),
         }
     }
 
@@ -402,6 +446,8 @@ pub struct SettingsSheet {
     shown_category: Category,
     category: Category,
     controls: Vec<(NodeId, Setting)>,
+    /// The value label beside each slider.
+    values: Vec<(Setting, NodeId)>,
     /// The card rows are added to; a new one starts with the next row after `section`.
     group: Option<NodeId>,
     homepage: Option<NodeId>,
@@ -538,6 +584,7 @@ impl SettingsSheet {
             shown_category: Category::General,
             category: Category::General,
             controls: Vec::new(),
+            values: Vec::new(),
             homepage: None,
             trusted_site: None,
             password: None,
@@ -634,6 +681,7 @@ impl SettingsSheet {
         }
         ui.clear_children(self.content);
         self.controls.clear();
+        self.values.clear();
         self.group = None;
         if self.category != self.shown_category {
             self.shown_category = self.category;
@@ -1097,20 +1145,44 @@ impl SettingsSheet {
         let node = if setting.is_toggle() {
             ui.add(row_node, Widget::toggle(value > 0.5), Style::default())
         } else {
-            ui.add(
+            let slider = ui.add(
                 row_node,
                 Widget::slider(value),
-                Style { size: Size { width: length(260.0), height: auto() }, ..Default::default() },
-            )
+                Style {
+                    size: Size { width: length(SLIDER_WIDTH), height: auto() },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+            );
+            // The current value, right of the slider; a fixed width keeps the sliders aligned.
+            let label = ui.add_label(
+                row_node,
+                &setting.display(config),
+                TextStyle::Footnote,
+                Style {
+                    size: Size { width: length(VALUE_WIDTH), height: auto() },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+            );
+            if let Some(w) = ui.widget_mut(label) {
+                w.set_paint(Paint::Secondary);
+            }
+            self.values.push((setting, label));
+            slider
         };
         self.controls.push((node, setting));
     }
 
     /// A toggle or slider moved.
-    pub fn value_changed(&mut self, node: NodeId, value: f32, config: &mut Config) -> Outcome {
+    pub fn value_changed(&mut self, ui: &mut Ui, node: NodeId, value: f32, config: &mut Config) -> Outcome {
         match self.controls.iter().find(|(n, _)| *n == node) {
             Some(&(_, setting)) => {
                 setting.set(config, value);
+                // Live while dragging.
+                for &(_, label) in self.values.iter().filter(|(s, _)| *s == setting) {
+                    ui.set_text(label, &setting.display(config));
+                }
                 Outcome::Changed
             }
             None => Outcome::Nothing,
@@ -1329,6 +1401,12 @@ fn tab_bar_picture(ui: &mut Ui, parent: NodeId, style: TabBarStyle, selected: bo
             }
         }
     }
+}
+
+/// 2.0 → "2", 2.5 → "2.5".
+fn trim_number(v: f32) -> String {
+    let text = format!("{v:.1}");
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
 fn system_memory_mb() -> f32 {
