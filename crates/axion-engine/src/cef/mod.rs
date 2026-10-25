@@ -97,6 +97,7 @@ pub struct CefOptions {
 
 struct ViewState {
     browser: Browser,
+    private: bool,
     browser_id: i32,
     ctx: ViewContext,
     url: String,
@@ -112,6 +113,8 @@ pub struct CefEngine {
     accelerated: bool,
     max_frame_rate: u32,
     input: InputState,
+    /// In-memory profile shared by private views, created on first use.
+    private_context: Option<RequestContext>,
     shut_down: bool,
 }
 
@@ -146,11 +149,34 @@ impl CefEngine {
             accelerated: options.accelerated,
             max_frame_rate: options.max_frame_rate,
             input: InputState::default(),
+            private_context: None,
             shut_down: false,
         })
     }
 
-    fn create_browser(&self, ctx: &ViewContext, url: &str) -> Result<(Browser, i32), EngineError> {
+    fn private_context(&mut self) -> Option<RequestContext> {
+        if self.private_context.is_none() {
+            // An empty cache path makes the context in-memory only.
+            let settings = RequestContextSettings { persist_session_cookies: 0, ..Default::default() };
+            self.private_context = request_context_create_context(Some(&settings), None);
+            if self.private_context.is_none() {
+                tracing::error!("could not create the private browsing context");
+            }
+        }
+        self.private_context.clone()
+    }
+
+    fn create_browser(
+        &mut self,
+        ctx: &ViewContext,
+        url: &str,
+        private: bool,
+    ) -> Result<(Browser, i32), EngineError> {
+        let mut context = if private {
+            Some(self.private_context().ok_or_else(|| EngineError::CreateView("no private context".into()))?)
+        } else {
+            None
+        };
         let mut client = build_client(ctx);
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
@@ -167,7 +193,7 @@ impl CefEngine {
             Some(&url.into()),
             Some(&settings),
             None,
-            None,
+            context.as_mut(),
         )
         .ok_or_else(|| EngineError::CreateView(format!("Chromium refused to open {url}")))?;
         let id = browser.identifier();
@@ -205,8 +231,9 @@ impl CefEngine {
             }
             let ctx = state.ctx.clone();
             let url = state.url.clone();
+            let private = state.private;
             ctx.frames.import_failures.set(0);
-            match self.create_browser(&ctx, &url) {
+            match self.create_browser(&ctx, &url, private) {
                 Ok((browser, browser_id)) => {
                     if let Some(state) = self.views.get_mut(&id) {
                         state.browser = browser;
@@ -252,7 +279,7 @@ impl Drop for CefEngine {
 }
 
 impl Engine for CefEngine {
-    fn create_view(&mut self, url: &str, size: ViewSize) -> Result<ViewId, EngineError> {
+    fn create_view(&mut self, url: &str, size: ViewSize, private: bool) -> Result<ViewId, EngineError> {
         let view = ViewId(self.next_id);
         self.next_id += 1;
         let ctx = ViewContext {
@@ -263,8 +290,11 @@ impl Engine for CefEngine {
             frames: Rc::new(ViewFrames::default()),
             shared: self.shared.clone(),
         };
-        let (browser, browser_id) = self.create_browser(&ctx, url)?;
-        self.views.insert(view, ViewState { browser, browser_id, ctx, url: url.to_owned(), closing: false });
+        let (browser, browser_id) = self.create_browser(&ctx, url, private)?;
+        self.views.insert(
+            view,
+            ViewState { browser, private, browser_id, ctx, url: url.to_owned(), closing: false },
+        );
         Ok(view)
     }
 

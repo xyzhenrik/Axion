@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+argon2 = "0.6"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 axion-compositor.workspace = true
 axion-config.workspace = true

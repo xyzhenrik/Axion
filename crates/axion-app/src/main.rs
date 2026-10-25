@@ -1,7 +1,7 @@
 //! Axion — a Liquid Glass web browser.
 //!
 //! ```bash
-//! axion [url…] [--capture=out.png] [--size=1440x900] [--overview] [--address=TEXT] [--open=menu|history|bookmarks]
+//! axion [url…] [--capture=out.png] [--size=1440x900] [--overview] [--address=TEXT] [--open=menu|history|bookmarks|settings|private|private-locked]
 //! ```
 //!
 //! Environment: `AXION_GPU=low` uses the integrated GPU, `AXION_OSR=software` disables GPU
@@ -14,8 +14,10 @@ mod chrome;
 mod favicons;
 mod gpu;
 mod input;
+mod lockscreen;
 mod menu;
 mod overview;
+mod private;
 mod settings;
 mod suggestions;
 mod tabs;

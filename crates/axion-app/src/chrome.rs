@@ -143,6 +143,9 @@ pub struct Chrome {
     saved_section_open: bool,
 
     sidebar: NodeId,
+    private_row: NodeId,
+    private_lock: NodeId,
+    locked: bool,
     sections: NodeId,
     panel: NodeId,
     panel_title: NodeId,
@@ -354,7 +357,8 @@ impl Chrome {
                 ..Default::default()
             },
         );
-        sidebar_row(ui, sections, ChromeAction::Private, Icon::Hand, "Private", Some(Icon::Lock));
+        let (private_label, private_lock) =
+            sidebar_row(ui, sections, ChromeAction::Private, Icon::Hand, "Private", Some(Icon::Lock));
         let saved_header = ui.add(
             sections,
             Widget::container().with_action(ChromeAction::ToggleSavedSection.id()).with_radius(CAPSULE),
@@ -509,6 +513,9 @@ impl Chrome {
             tabs_section_open: true,
             saved_section_open: true,
             sidebar,
+            private_row: ui.parent(private_label).unwrap_or(sidebar),
+            private_lock: private_lock.unwrap_or(sidebar),
+            locked: false,
             sections,
             panel,
             panel_title,
@@ -635,6 +642,26 @@ impl Chrome {
         ui.set_visible(self.sections, true);
     }
 
+    /// Marks private mode in the sidebar, and whether a password lock exists (lock icon).
+    pub fn set_private(&mut self, ui: &mut Ui, private: bool, has_lock: bool) {
+        if let Some(w) = ui.widget_mut(self.private_row) {
+            w.background = if private { Background::Fill(Paint::Label, 0.08) } else { Background::None };
+        }
+        ui.set_visible(self.private_lock, has_lock);
+    }
+
+    /// While private browsing is locked, tab titles and the address stay hidden.
+    pub fn set_locked(&mut self, ui: &mut Ui, locked: bool) {
+        self.locked = locked;
+        ui.set_visible(self.sidebar_tabs, !locked && self.tabs_section_open);
+        for &pill in &self.pills {
+            ui.set_visible(pill, !locked && self.mode != Mode::Narrow);
+        }
+        if locked {
+            ui.set_text(self.address_label, "Private Browsing");
+        }
+    }
+
     /// Positions the toolbar and sidebar for the window size (logical px).
     pub fn apply_layout(&mut self, ui: &mut Ui, config: &Config, window: Vec2) {
         let l = &config.layout;
@@ -666,7 +693,7 @@ impl Chrome {
                 Background::Glass(if self.docked { GlassLevel::Regular } else { GlassLevel::Thick });
         }
 
-        let narrow = self.mode == Mode::Narrow;
+        let narrow = self.mode == Mode::Narrow || self.locked;
         // With the sidebar open, its own header holds the toggle.
         ui.set_visible(self.bar_sidebar_button, !show_sidebar);
         ui.set_visible(self.forward, !narrow);
@@ -791,7 +818,8 @@ impl Chrome {
     /// Updates the active segment (address, back/forward, reload/stop, progress).
     pub fn sync_active(&mut self, ui: &mut Ui, tabs: &Tabs) {
         let Some(tab) = tabs.active() else { return };
-        ui.set_text(self.address_label, &display_host(&tab.url));
+        let host = if self.locked { "Private Browsing".to_owned() } else { display_host(&tab.url) };
+        ui.set_text(self.address_label, &host);
         if ui.focused() != Some(self.address_field) {
             ui.set_field_text(self.address_field, &tab.url);
         }

@@ -19,6 +19,8 @@ pub struct Tab {
     pub zoom: f64,
     /// A background tab keeps rendering until it has a thumbnail, then gets hidden.
     pub needs_snapshot: bool,
+    /// Private tabs keep no history.
+    pub private: bool,
 }
 
 impl Tab {
@@ -33,6 +35,7 @@ impl Tab {
             can_go_forward: false,
             zoom: 0.0,
             needs_snapshot: false,
+            private: false,
         }
     }
 

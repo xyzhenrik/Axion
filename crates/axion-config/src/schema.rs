@@ -15,6 +15,7 @@ pub struct Config {
     pub radii: Radii,
     pub motion: Motion,
     pub layout: Layout,
+    pub privacy: Privacy,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -306,6 +307,21 @@ impl Default for Layout {
             page_corner_radius: 10.0,
             page_margin: 8.0,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Privacy {
+    /// Lock private tabs behind the password (set in Settings › Privacy).
+    pub lock_private_tabs: bool,
+    /// Lock after the window has been in the background this long (seconds).
+    pub lock_after_seconds: f32,
+}
+
+impl Default for Privacy {
+    fn default() -> Self {
+        Self { lock_private_tabs: true, lock_after_seconds: 60.0 }
     }
 }
 

@@ -1,6 +1,6 @@
 # Axion Browser — Plan
 
-Status: **Phase 1 done** (2026-10-25) · Target: v0.1 (daily-drivable on Linux)
+Status: **Phase 2 done** (2026-10-25) · Target: v0.1 (daily-drivable on Linux)
 
 ## 1. Vision
 
@@ -143,10 +143,13 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [x] Address field suggestions (history/bookmarks, search), real favicons (download + cache).
 - [x] Toolbar and sidebar rebuilt after iPadOS 26 Safari (see decisions log).
 - [x] Tab overview with snapshots and zoom transition.
-- [ ] Page menu (≡), share sheet, private tabs with password lock, bookmarks/history panels.
+- [x] Page menu (≡) with bookmark/zoom/copy link; Bookmarks/History/Reading List panels.
+- [x] Private tabs (in-memory CEF context, dark chrome) with Argon2 password lock after N s in
+  the background (`[privacy]`), lock screen, settings to set/remove the password.
+- [x] Settings sheet (General, Appearance, Liquid Glass, Keyboard, Privacy), changes live.
+- [ ] Share sheet (Share currently copies the link), reading list entries, tab groups.
 - [ ] Tab pills: open/close/reorder with physics.
-- [ ] Sidebar (overlay + docked), responsive breakpoints.
-- [ ] Settings sheet.
+- [x] Sidebar (overlay + docked), responsive breakpoints.
 
 ### Phase 3 — Liquid Glass integration
 - [ ] Port playground shaders into the compositor; all UI uses glass material.

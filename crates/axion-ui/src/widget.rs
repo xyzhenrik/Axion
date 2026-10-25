@@ -53,6 +53,36 @@ pub struct TextField {
     pub paint: Paint,
     /// Horizontal scroll so the caret stays visible (logical px).
     pub(crate) scroll_x: f32,
+    /// Shows bullets instead of the text and refuses copy/cut (passwords).
+    pub(crate) secure: bool,
+}
+
+/// The bullet shown for each character of a secure field.
+pub(crate) const BULLET: char = '•';
+
+impl TextField {
+    /// The text as displayed (bullets for secure fields).
+    pub(crate) fn display_text(&self) -> String {
+        if self.secure {
+            BULLET.to_string().repeat(self.editor.text().chars().count())
+        } else {
+            self.editor.text().to_owned()
+        }
+    }
+
+    /// Byte index in the displayed text for a byte index in the real text.
+    pub(crate) fn display_index(&self, index: usize) -> usize {
+        if self.secure { self.editor.text()[..index].chars().count() * BULLET.len_utf8() } else { index }
+    }
+
+    /// Byte index in the real text for a byte index in the displayed text.
+    pub(crate) fn real_index(&self, index: usize) -> usize {
+        if !self.secure {
+            return index;
+        }
+        let chars = index / BULLET.len_utf8();
+        self.editor.text().char_indices().nth(chars).map_or(self.editor.text().len(), |(i, _)| i)
+    }
 }
 
 pub enum WidgetKind {
@@ -177,6 +207,7 @@ impl Widget {
             style,
             paint: Paint::Label,
             scroll_x: 0.0,
+            secure: false,
         }))
     }
 

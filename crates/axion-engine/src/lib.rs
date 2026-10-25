@@ -115,7 +115,9 @@ pub enum EngineError {
 
 /// An off-screen web engine.
 pub trait Engine {
-    fn create_view(&mut self, url: &str, size: ViewSize) -> Result<ViewId, EngineError>;
+    /// Creates a view. Private views share one in-memory profile: nothing they do (cookies,
+    /// cache, storage) touches the disk or the normal profile.
+    fn create_view(&mut self, url: &str, size: ViewSize, private: bool) -> Result<ViewId, EngineError>;
     fn close_view(&mut self, view: ViewId);
 
     fn navigate(&mut self, view: ViewId, url: &str);

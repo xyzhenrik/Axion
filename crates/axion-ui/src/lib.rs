@@ -187,7 +187,7 @@ impl Ui {
                 WidgetKind::TextField(field) => {
                     field.buffer = new_buffer(self.fonts.get_mut(), field.style, self.scale);
                     field.placeholder = new_buffer(self.fonts.get_mut(), field.style, self.scale);
-                    let text = field.editor.text().to_owned();
+                    let text = field.display_text();
                     set_buffer_text(
                         &mut field.buffer,
                         self.fonts.get_mut(),
@@ -262,6 +262,10 @@ impl Ui {
     pub fn set_children(&mut self, node: NodeId, children: &[NodeId]) {
         let _ = self.tree.set_children(node, children);
         self.needs_layout = true;
+    }
+
+    pub fn parent(&self, node: NodeId) -> Option<NodeId> {
+        self.tree.parent(node)
     }
 
     pub fn children(&self, node: NodeId) -> Vec<NodeId> {
@@ -367,6 +371,24 @@ impl Ui {
         }
     }
 
+    /// Makes a field show bullets instead of its text and refuse copy/cut (passwords).
+    pub fn set_secure(&mut self, node: NodeId, secure: bool) {
+        let family = self.theme.font_family().to_owned();
+        if let Some(Widget { kind: WidgetKind::TextField(field), .. }) = self.tree.get_node_context_mut(node)
+        {
+            field.secure = secure;
+            let text = field.display_text();
+            set_buffer_text(
+                &mut field.buffer,
+                self.fonts.get_mut(),
+                &family,
+                &text,
+                field.style,
+                Align::Start,
+            );
+        }
+    }
+
     pub fn set_field_text(&mut self, node: NodeId, text: &str) {
         self.edit_field(node, |e| e.set_text(text));
     }
@@ -409,7 +431,7 @@ impl Ui {
         let before = field.editor.text().to_owned();
         edit(&mut field.editor);
         if field.editor.text() != before {
-            let text = field.editor.text().to_owned();
+            let text = field.display_text();
             set_buffer_text(
                 &mut field.buffer,
                 self.fonts.get_mut(),
@@ -491,7 +513,7 @@ impl Ui {
                     field.buffer.set_size(None, Some(frame.size.y * scale));
                     field.buffer.shape_until_scroll(self.fonts.get_mut(), false);
                     // Keep the caret in view.
-                    let caret = caret_x(&field.buffer, field.editor.cursor()) / scale;
+                    let caret = caret_x(&field.buffer, field.display_index(field.editor.cursor())) / scale;
                     let width = frame.size.x;
                     if !focused || caret < field.scroll_x {
                         field.scroll_x = 0.0f32.max(caret - width).min(caret);
@@ -664,7 +686,7 @@ impl Ui {
                 let scale = self.scale;
                 if let Some(Widget { kind: WidgetKind::TextField(field), frame, .. }) = self.widget(hit) {
                     let x = (p.x - frame.origin.x + field.scroll_x) * scale;
-                    let index = index_at(&field.buffer, x);
+                    let index = field.real_index(index_at(&field.buffer, x));
                     self.edit_field(hit, |e| e.move_to(index, false));
                 }
             } else {
@@ -724,7 +746,10 @@ impl Ui {
             },
             Key::Char(c) if m.ctrl && !m.alt => {
                 let selected = |ui: &Self| match ui.widget(node).map(|w| &w.kind) {
-                    Some(WidgetKind::TextField(f)) => f.editor.selected_text().map(str::to_owned),
+                    // Passwords never leave the field.
+                    Some(WidgetKind::TextField(f)) if !f.secure => {
+                        f.editor.selected_text().map(str::to_owned)
+                    }
                     _ => None,
                 };
                 match c {
@@ -981,8 +1006,8 @@ impl Ui {
         let left = px.origin.x - field.scroll_x * s;
 
         if focused && let Some(range) = field.editor.selection() {
-            let x0 = caret_x(&field.buffer, range.start);
-            let x1 = caret_x(&field.buffer, range.end);
+            let x0 = caret_x(&field.buffer, field.display_index(range.start));
+            let x1 = caret_x(&field.buffer, field.display_index(range.end));
             let mut color = theme.color(Paint::Accent);
             color[3] = 0.28;
             let rect = Rect::new(left + x0, top, x1 - x0, h);
@@ -1001,7 +1026,7 @@ impl Ui {
         }
         let blink_on = (self.caret_epoch.elapsed().as_millis() / CARET_BLINK.as_millis()).is_multiple_of(2);
         if focused && field.editor.selection().is_none() && blink_on {
-            let x = left + caret_x(&field.buffer, field.editor.cursor());
+            let x = left + caret_x(&field.buffer, field.display_index(field.editor.cursor()));
             let caret = Rect::new(x.round(), top, CARET_WIDTH * s, h);
             content.quads.push(Quad::fill(caret, 0.0, theme.color(Paint::Accent)));
         }
@@ -1140,6 +1165,30 @@ mod tests {
             ui.handle(UiInput::Key { key: Key::Named("Enter".into()), modifiers: Modifiers::default() });
         assert!(consumed);
         assert_eq!(events, vec![UiEvent::Submitted { node: field, text: "rust".into() }]);
+    }
+
+    #[test]
+    fn secure_fields_hide_and_keep_their_text() {
+        let mut ui = ui();
+        let (_, _, field) = row(&mut ui);
+        ui.set_secure(field, true);
+        ui.focus(field);
+        ui.handle(UiInput::Text("pässwort".into()));
+        assert_eq!(ui.field_text(field), Some("pässwort"));
+        let ctrl = Modifiers { ctrl: true, ..Default::default() };
+        ui.handle(UiInput::Key { key: Key::Char('a'), modifiers: ctrl });
+        let (_, events) = ui.handle(UiInput::Key { key: Key::Char('c'), modifiers: ctrl });
+        assert!(events.is_empty(), "copying a password must do nothing");
+        // Caret positions map between "ä" (2 bytes) and "•" (3 bytes).
+        if let Some(Widget { kind: WidgetKind::TextField(f), .. }) = ui.widget(field) {
+            assert_eq!(f.display_text().chars().count(), 8);
+            // "pä" is 3 bytes; shown as two bullets, 6 bytes.
+            assert_eq!(f.display_index(3), 6);
+            assert_eq!(f.real_index(6), 3);
+        }
+        ui.layout();
+        let mut layers = Vec::new();
+        ui.paint(&mut layers);
     }
 
     #[test]

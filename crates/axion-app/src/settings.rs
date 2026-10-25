@@ -79,6 +79,8 @@ enum Setting {
     Dispersion,
     Squash,
     MergeDistance,
+    LockPrivateTabs,
+    LockAfter,
 }
 
 impl Setting {
@@ -95,6 +97,8 @@ impl Setting {
             Setting::Dispersion => "Colour dispersion",
             Setting::Squash => "Squash when moving",
             Setting::MergeDistance => "Merge distance",
+            Setting::LockPrivateTabs => "Lock private tabs with a password",
+            Setting::LockAfter => "Lock after (0 – 10 minutes in background)",
         }
     }
 
@@ -105,6 +109,7 @@ impl Setting {
                 | Setting::AdaptToPage
                 | Setting::ReduceTransparency
                 | Setting::ReduceMotion
+                | Setting::LockPrivateTabs
         )
     }
 
@@ -119,6 +124,7 @@ impl Setting {
             Setting::Dispersion => (0.0, 0.4),
             Setting::Squash => (0.0, 0.2),
             Setting::MergeDistance => (0.0, 40.0),
+            Setting::LockAfter => (0.0, 600.0),
             _ => (0.0, 1.0),
         }
     }
@@ -130,6 +136,8 @@ impl Setting {
             Setting::AdaptToPage => return c.appearance.adapt_to_page as u8 as f32,
             Setting::ReduceTransparency => return c.glass.reduce_transparency as u8 as f32,
             Setting::ReduceMotion => return c.glass.reduce_motion as u8 as f32,
+            Setting::LockPrivateTabs => return c.privacy.lock_private_tabs as u8 as f32,
+            Setting::LockAfter => c.privacy.lock_after_seconds,
             Setting::TextScale => c.appearance.text_scale,
             Setting::PageCorner => c.layout.page_corner_radius,
             Setting::Refraction => c.glass.light.refraction,
@@ -152,6 +160,8 @@ impl Setting {
             Setting::AdaptToPage => c.appearance.adapt_to_page = on,
             Setting::ReduceTransparency => c.glass.reduce_transparency = on,
             Setting::ReduceMotion => c.glass.reduce_motion = on,
+            Setting::LockPrivateTabs => c.privacy.lock_private_tabs = on,
+            Setting::LockAfter => c.privacy.lock_after_seconds = (v / 10.0).round() * 10.0,
             Setting::TextScale => c.appearance.text_scale = (v * 20.0).round() / 20.0,
             Setting::PageCorner => c.layout.page_corner_radius = v.round(),
             Setting::Refraction => {
@@ -187,6 +197,8 @@ pub enum SettingsAction {
     SearchEngine(usize),
     Accent(usize),
     ClearHistory,
+    SetPassword,
+    RemovePassword,
 }
 
 impl SettingsAction {
@@ -204,6 +216,8 @@ impl SettingsAction {
                     SettingsAction::SearchEngine(i) => 30 + i as u32,
                     SettingsAction::Accent(i) => 40 + i as u32,
                     SettingsAction::ClearHistory => 50,
+                    SettingsAction::SetPassword => 51,
+                    SettingsAction::RemovePassword => 52,
                 },
         )
     }
@@ -221,6 +235,8 @@ impl SettingsAction {
             }
             40..=49 if ((n - 40) as usize) < ACCENTS.len() => SettingsAction::Accent((n - 40) as usize),
             50 => SettingsAction::ClearHistory,
+            51 => SettingsAction::SetPassword,
+            52 => SettingsAction::RemovePassword,
             _ => return None,
         })
     }
@@ -233,6 +249,8 @@ pub enum Outcome {
     Changed,
     Close,
     ClearHistory,
+    SetPassword(String),
+    RemovePassword,
 }
 
 pub struct SettingsSheet {
@@ -243,6 +261,8 @@ pub struct SettingsSheet {
     category: Category,
     controls: Vec<(NodeId, Setting)>,
     homepage: Option<NodeId>,
+    password: Option<NodeId>,
+    has_password: bool,
     confirm_clear: bool,
     open: bool,
 }
@@ -350,6 +370,8 @@ impl SettingsSheet {
             category: Category::General,
             controls: Vec::new(),
             homepage: None,
+            password: None,
+            has_password: false,
             confirm_clear: false,
             open: false,
         }
@@ -362,6 +384,15 @@ impl SettingsSheet {
     /// Whether `p` (logical px) is on the sheet itself (backdrop clicks outside close it).
     pub fn contains(&self, ui: &Ui, p: Vec2) -> bool {
         ui.frame(self.sheet).contains(p)
+    }
+
+    /// Whether a private browsing password exists (changes the Privacy page).
+    pub fn set_has_password(&mut self, has_password: bool) {
+        self.has_password = has_password;
+    }
+
+    pub fn password_field(&self) -> Option<NodeId> {
+        self.password
     }
 
     pub fn homepage_field(&self) -> Option<NodeId> {
@@ -404,6 +435,7 @@ impl SettingsSheet {
         ui.clear_children(self.content);
         self.controls.clear();
         self.homepage = None;
+        self.password = None;
         ui.add_label(
             self.content,
             self.category.title(),
@@ -539,6 +571,35 @@ impl SettingsSheet {
                 }
             }
             Category::Privacy => {
+                let label =
+                    if self.has_password { "Change private tabs password" } else { "Private tabs password" };
+                let row_node = self.row(ui, label);
+                let field_box = ui.add(
+                    row_node,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Label, 0.06))
+                        .with_radius(12.0),
+                    Style {
+                        size: Size { width: auto(), height: length(38.0) },
+                        padding: padding(12.0, 0.0),
+                        ..row(0.0)
+                    },
+                );
+                let field = ui.add_text_field(
+                    field_box,
+                    "New password",
+                    TextStyle::Body,
+                    Style { size: Size { width: length(200.0), height: length(22.0) }, ..Default::default() },
+                );
+                ui.set_secure(field, true);
+                self.password = Some(field);
+                pill_button(ui, row_node, "Save", SettingsAction::SetPassword, false);
+                if self.has_password {
+                    pill_button(ui, row_node, "Remove", SettingsAction::RemovePassword, true);
+                }
+                for setting in [Setting::LockPrivateTabs, Setting::LockAfter] {
+                    self.control(ui, config, setting);
+                }
                 let row_node = self.row(ui, "Browsing history");
                 let text = if self.confirm_clear { "Click again to clear" } else { "Clear History…" };
                 let button = ui.add(
@@ -635,6 +696,20 @@ impl SettingsSheet {
                 config.appearance.accent = Color::rgb(ACCENTS[i]);
                 Outcome::Changed
             }
+            SettingsAction::SetPassword => {
+                let password = self.password.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned();
+                if password.is_empty() {
+                    return Outcome::Nothing;
+                }
+                self.has_password = true;
+                self.show(ui, config, keymap);
+                return Outcome::SetPassword(password);
+            }
+            SettingsAction::RemovePassword => {
+                self.has_password = false;
+                self.show(ui, config, keymap);
+                return Outcome::RemovePassword;
+            }
             SettingsAction::ClearHistory => {
                 if self.confirm_clear {
                     self.confirm_clear = false;
@@ -647,6 +722,23 @@ impl SettingsSheet {
         };
         self.show(ui, config, keymap);
         outcome
+    }
+}
+
+/// A small capsule button (accent tint, or red for destructive ones).
+fn pill_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsAction, destructive: bool) {
+    let color = if destructive { Paint::Fixed(Color::rgb(0xD0362B)) } else { Paint::Accent };
+    let button = ui.add(
+        parent,
+        Widget::container()
+            .with_action(action.id())
+            .with_radius(CAPSULE)
+            .with_background(Background::Fill(color, 0.14)),
+        Style { size: Size { width: auto(), height: length(36.0) }, padding: padding(16.0, 0.0), ..row(0.0) },
+    );
+    let label = ui.add_label(button, text, TextStyle::Callout, Style::default());
+    if let Some(w) = ui.widget_mut(label) {
+        w.set_paint(color);
     }
 }
 

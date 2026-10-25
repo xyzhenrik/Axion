@@ -34,6 +34,8 @@ const MIGRATIONS: &[&str] = &[
         created INTEGER NOT NULL
     );
     CREATE INDEX bookmarks_by_url ON bookmarks(url);",
+    // 2: small key/value settings that don't belong in config.toml (e.g. secrets' hashes)
+    "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
 ];
 
 /// Seconds per day, for the recency buckets.
@@ -199,6 +201,24 @@ impl Store {
         Ok(())
     }
 
+    // ---- meta ----
+
+    pub fn meta(&self, key: &str) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional()?)
+    }
+
+    /// Sets (or with `None`, removes) a meta value.
+    pub fn set_meta(&self, key: &str, value: Option<&str>) -> Result<()> {
+        match value {
+            Some(v) => self.conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, v],
+            )?,
+            None => self.conn.execute("DELETE FROM meta WHERE key = ?1", [key])?,
+        };
+        Ok(())
+    }
+
     // ---- bookmarks ----
 
     pub fn add_bookmark(&self, url: &str, title: &str, now: i64) -> Result<i64> {
@@ -334,6 +354,17 @@ mod tests {
         assert_eq!(s.search_bookmarks("b.ex", 5).unwrap().len(), 1);
         s.remove_bookmark(a).unwrap();
         assert_eq!(s.bookmark_for("https://a.example/").unwrap(), None);
+    }
+
+    #[test]
+    fn meta_values() {
+        let s = store();
+        assert_eq!(s.meta("k").unwrap(), None);
+        s.set_meta("k", Some("v1")).unwrap();
+        s.set_meta("k", Some("v2")).unwrap();
+        assert_eq!(s.meta("k").unwrap().as_deref(), Some("v2"));
+        s.set_meta("k", None).unwrap();
+        assert_eq!(s.meta("k").unwrap(), None);
     }
 
     #[test]
