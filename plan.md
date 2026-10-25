@@ -20,7 +20,10 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   open; zoom transition from tab to card; swipe card away to close; search field.
 - **Responsive**: layout switches between *wide* (sidebar docked), *regular* (sidebar
   overlay) and *narrow* (bottom-ish compact bar) by window width.
-- **Start page**: favourites grid, frequently visited, Shields stats; customizable background.
+- **Start page** (`axion://home/`, default homepage and new tab page): clock + greeting,
+  search field with engine picker, top sites (most visited, pinned/edited/removed, pages with
+  dots), Shields stats (blocked, ≈ bandwidth and time saved), background image (dim/blur),
+  each toggled from a glass gear panel on the page; private tabs get a dark private variant.
 
 ### 2.2 Liquid Glass
 - SDF-based shapes (rounded rects, capsules, circles) with lens-profile refraction.
@@ -387,6 +390,21 @@ Windows/macOS, touchscreen-first mode.
   sidebar slides away and the page card grows to the whole screen (springs); Esc or F11
   leaves. The page's own element fullscreen (video) stays separate. `Chrome::is_fullscreen`
   tells transient UI (find bar…) that nothing else may cover the page.
+
+- 2026-10-26: **Axion's own pages** are served by the browser through a CEF custom scheme
+  (`axion://`, standard + secure + display-isolated + fetch-enabled, not CORS-enabled), behind
+  the engine's `InternalPages` trait. Page → browser: `POST /api/message`, accepted only from
+  a view's main frame showing that `axion://` origin (checked in the scheme handler on the IO
+  thread) → `EngineEvent::InternalMessage`. Browser → page: the page pulls `/api/…` (same
+  check); the browser only nudges it with a data-free script. Web pages can't link to, frame,
+  navigate to or fetch `axion://` (verified with a test page).
+- 2026-10-26: The window tint / chrome light-dark comes from **one colour per page** (its
+  `theme-color` for the scheme, else the dominant colour of a 32×32 GPU grid of the frame,
+  evened to a calm light/dark tone), recomputed on load, theme-colour change or scheme switch
+  and animated on a spring — never from scrolling (`appearance.page_color_delay_ms`).
+- 2026-10-26: Favicons are cached **per colour scheme** (`<host>.png`, `<host>.dark.png`, with
+  the source URL in `.url`); the engine reports icon links with their `media` queries
+  (`EngineEvent::PageMetaChanged`), and a scheme switch re-resolves open pages' icons.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

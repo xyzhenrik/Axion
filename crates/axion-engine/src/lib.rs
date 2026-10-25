@@ -9,11 +9,13 @@
 pub mod cef;
 pub mod download;
 mod input;
+pub mod internal;
 mod policy;
 mod transfer;
 
 pub use download::{ClearData, DownloadAction, DownloadInfo, DownloadOptions, DownloadState};
 pub use input::{CursorKind, InputEvent, Modifiers, MouseButton};
+pub use internal::{INTERNAL_SCHEME, InternalPages, InternalRequest, InternalResponse};
 pub use policy::{NavigationRequest, RequestPolicy, RequestVerdict, ResourceKind, ResourceRequest};
 pub use transfer::{DropData, FindRequest, PasteData, PastedFile};
 
@@ -38,6 +40,32 @@ impl ViewSize {
         let p = (self.logical * self.scale).round();
         (p.x.max(1.0) as u32, p.y.max(1.0) as u32)
     }
+}
+
+/// One `<link rel="icon">` (or apple-touch-icon) of a page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IconLink {
+    pub url: String,
+    /// The link's `media` attribute (empty: all), e.g. `(prefers-color-scheme: dark)`.
+    pub media: String,
+    /// The link's `sizes` attribute (empty if none).
+    pub sizes: String,
+}
+
+/// A `<meta name="theme-color">` of a page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThemeColor {
+    /// sRGB, 0–255.
+    pub rgb: [u8; 3],
+    /// The tag's `media` attribute (empty: all).
+    pub media: String,
+}
+
+/// What a page's `<head>` says about its icons and colour.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PageMeta {
+    pub icons: Vec<IconLink>,
+    pub theme_colors: Vec<ThemeColor>,
 }
 
 /// Where a page asked a new view to go.
@@ -74,6 +102,19 @@ pub enum EngineEvent {
     FaviconUrlsChanged {
         view: ViewId,
         urls: Vec<String>,
+    },
+    /// The page's icon links (with their `media` queries) and theme colours, reported when the
+    /// document is parsed and whenever they change (also after a colour scheme switch).
+    PageMetaChanged {
+        view: ViewId,
+        meta: PageMeta,
+    },
+    /// A message from one of Axion's own pages (`axion://<host>/`) through its privileged
+    /// channel (see [`internal`]); never from web content.
+    InternalMessage {
+        view: ViewId,
+        host: String,
+        message: String,
     },
     /// A favicon requested with [`Engine::fetch_favicon`] arrived (RGBA, straight alpha).
     /// A favicon requested with [`Engine::fetch_favicon`] couldn't be loaded or decoded.
@@ -177,9 +218,12 @@ pub trait Engine {
     fn resize(&mut self, view: ViewId, size: ViewSize);
     /// Hidden views stop rendering and get throttled (background tabs).
     fn set_hidden(&mut self, view: ViewId, hidden: bool);
-    /// JavaScript run in every frame of every view as it starts loading (`None`: nothing).
-    /// It can talk back with console messages starting with [`PAGE_MESSAGE_PREFIX`].
+    /// JavaScript run in every frame of every view as it starts loading (`None`: nothing);
+    /// not in Axion's own pages. It can talk back with console messages starting with
+    /// [`PAGE_MESSAGE_PREFIX`].
     fn set_page_script(&mut self, script: Option<String>);
+    /// Installs what serves Axion's own `axion://` pages (see [`internal`]).
+    fn set_internal_pages(&mut self, pages: Option<std::sync::Arc<dyn InternalPages>>);
     /// Runs JavaScript in the view's top frame; with `user_gesture` as if the user had just
     /// clicked (needed for fullscreen and unmuted playback).
     fn run_script(&mut self, view: ViewId, script: &str, user_gesture: bool);

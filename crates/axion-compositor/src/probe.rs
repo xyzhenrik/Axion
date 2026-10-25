@@ -1,5 +1,6 @@
-//! Measures the average colour of a page region without stalling the frame: the GPU averages
-//! the region into one pixel, which is read back asynchronously a frame or two later.
+//! Measures colours of a page without stalling the frame: the GPU averages a region into a
+//! small grid of pixels (one pixel for the luminance probe, 32×32 for the page palette), which
+//! is read back asynchronously a frame or two later.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -19,9 +20,15 @@ const READY: u8 = 2;
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ProbeUniform {
     region: [f32; 4],
+    /// x: cells per side of the output grid.
+    cells: [f32; 4],
 }
 
 pub(crate) struct LuminanceProbe {
+    /// Cells per side of the output grid.
+    cells: u32,
+    /// Bytes per row of the read-back buffer.
+    row_bytes: u32,
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     uniform: wgpu::Buffer,
@@ -33,7 +40,10 @@ pub(crate) struct LuminanceProbe {
 }
 
 impl LuminanceProbe {
-    pub fn new(device: &wgpu::Device) -> Self {
+    /// A probe that averages a region into `cells` × `cells` colours.
+    pub fn new(device: &wgpu::Device, cells: u32) -> Self {
+        let cells = cells.max(1);
+        let row_bytes = (4 * cells).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("probe.wgsl"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/probe.wgsl").into()),
@@ -108,7 +118,7 @@ impl LuminanceProbe {
         });
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("probe"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width: cells, height: cells, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -118,11 +128,22 @@ impl LuminanceProbe {
         });
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("probe readback"),
-            size: wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64,
+            size: u64::from(row_bytes * cells),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        Self { pipeline, layout, uniform, sampler, target, readback, state: Arc::default(), latest: None }
+        Self {
+            cells,
+            row_bytes,
+            pipeline,
+            layout,
+            uniform,
+            sampler,
+            target,
+            readback,
+            state: Arc::default(),
+            latest: None,
+        }
     }
 
     /// Collects a finished measurement, then starts a new one on `texture` if none is in flight.
@@ -133,21 +154,49 @@ impl LuminanceProbe {
         texture: &wgpu::TextureView,
         region: Rect,
     ) {
-        let _ = device.poll(wgpu::PollType::Poll);
-        match self.state.load(Ordering::Acquire) {
-            PENDING => return,
-            READY => {
-                if let Ok(data) = self.readback.slice(..).get_mapped_range() {
-                    self.latest = Some([data[0], data[1], data[2]].map(|c| c as f32 / 255.0));
-                }
-                self.readback.unmap();
-                self.state.store(IDLE, Ordering::Release);
-            }
-            _ => {}
+        if let Some(cells) = self.poll(device) {
+            self.latest = cells.first().map(|c| c.map(|c| c as f32 / 255.0));
         }
+        self.start(device, queue, texture, region);
+    }
 
-        let uniform =
-            ProbeUniform { region: [region.origin.x, region.origin.y, region.size.x, region.size.y] };
+    /// The finished measurement (row by row, sRGB), once; `None` while none is ready.
+    pub fn poll(&mut self, device: &wgpu::Device) -> Option<Vec<[u8; 3]>> {
+        let _ = device.poll(wgpu::PollType::Poll);
+        if self.state.load(Ordering::Acquire) != READY {
+            return None;
+        }
+        let cells = self.readback.slice(..).get_mapped_range().ok().map(|data| {
+            let mut out = Vec::with_capacity((self.cells * self.cells) as usize);
+            for y in 0..self.cells as usize {
+                let row = &data[y * self.row_bytes as usize..];
+                for x in 0..self.cells as usize {
+                    out.push([row[4 * x], row[4 * x + 1], row[4 * x + 2]]);
+                }
+            }
+            out
+        });
+        self.readback.unmap();
+        self.state.store(IDLE, Ordering::Release);
+        cells
+    }
+
+    /// Starts measuring `region` (0–1) of `texture`, unless a measurement is in flight.
+    /// Returns whether it started.
+    pub fn start(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::TextureView,
+        region: Rect,
+    ) -> bool {
+        if self.state.load(Ordering::Acquire) != IDLE {
+            return false;
+        }
+        let uniform = ProbeUniform {
+            region: [region.origin.x, region.origin.y, region.size.x, region.size.y],
+            cells: [self.cells as f32, 0.0, 0.0, 0.0],
+        };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("probe"),
@@ -187,11 +236,11 @@ impl LuminanceProbe {
                 buffer: &self.readback,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
-                    rows_per_image: Some(1),
+                    bytes_per_row: Some(self.row_bytes),
+                    rows_per_image: Some(self.cells),
                 },
             },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::Extent3d { width: self.cells, height: self.cells, depth_or_array_layers: 1 },
         );
         queue.submit([encoder.finish()]);
         self.state.store(PENDING, Ordering::Release);
@@ -199,6 +248,7 @@ impl LuminanceProbe {
         self.readback.slice(..).map_async(wgpu::MapMode::Read, move |result| {
             state.store(if result.is_ok() { READY } else { IDLE }, Ordering::Release);
         });
+        true
     }
 
     pub fn latest(&self) -> Option<[f32; 3]> {

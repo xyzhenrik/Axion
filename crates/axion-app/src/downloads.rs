@@ -349,7 +349,7 @@ impl Downloads {
     /// as [`Event::FolderChosen`].
     pub fn choose_folder(&self) {
         let jobs = Arc::clone(&self.jobs);
-        spawn("choose-folder", move || match choose_folder_portal("Download Folder") {
+        spawn("choose-folder", move || match choose_portal("Download Folder", Choose::Folder) {
             Ok(Some(folder)) => {
                 if let Ok(mut jobs) = jobs.lock() {
                     jobs.folder = Some(folder);
@@ -493,7 +493,7 @@ fn is_safe(path: &Path) -> bool {
         .is_some_and(|e| SAFE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
-fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
+pub fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
     if let Err(e) = std::thread::Builder::new().name(name.into()).spawn(work) {
         tracing::warn!("could not start {name}: {e}");
     }
@@ -568,11 +568,18 @@ fn uri_path(uri: &str) -> Option<PathBuf> {
     Some(PathBuf::from(String::from_utf8_lossy(&out).into_owned()))
 }
 
-/// The XDG desktop portal's folder chooser (`FileChooser.OpenFile` with `directory`). Blocks
-/// until the user picks a folder (`Some`) or cancels (`None`).
-fn choose_folder_portal(title: &str) -> zbus::Result<Option<PathBuf>> {
+/// What [`choose_portal`] asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Choose {
+    Folder,
+    Image,
+}
+
+/// The XDG desktop portal's file chooser (`FileChooser.OpenFile`, for a folder with
+/// `directory`). Blocks until the user picks one (`Some`) or cancels (`None`).
+pub fn choose_portal(title: &str, what: Choose) -> zbus::Result<Option<PathBuf>> {
     let connection = Connection::session()?;
-    let token = format!("axion_folder_{}", std::process::id());
+    let token = format!("axion_choose_{}", std::process::id());
     let sender =
         connection.unique_name().map(|n| n.trim_start_matches(':').replace('.', "_")).unwrap_or_default();
     let handle = format!("{PORTAL_PATH}/request/{sender}/{token}");
@@ -586,7 +593,16 @@ fn choose_folder_portal(title: &str) -> zbus::Result<Option<PathBuf>> {
     let mut responses = MessageIterator::for_match_rule(rule, &connection, Some(1))?;
     let mut options: HashMap<&str, Value<'_>> = HashMap::new();
     options.insert("handle_token", Value::from(token.as_str()));
-    options.insert("directory", Value::from(true));
+    match what {
+        Choose::Folder => {
+            options.insert("directory", Value::from(true));
+        }
+        Choose::Image => {
+            // (name, [(1 = MIME type, pattern)])
+            let filters = vec![("Images".to_owned(), vec![(1u32, "image/*".to_owned())])];
+            options.insert("filters", Value::from(filters));
+        }
+    }
     options.insert("modal", Value::from(true));
     connection.call_method(
         Some(PORTAL),

@@ -89,7 +89,57 @@ pub const INDEX: &[Entry] = &[
         "Delete account",
         &["remove account", "delete profile", "konto löschen", "profil löschen", "entfernen", "löschen"],
     ),
-    page(C::General, "Homepage", &["start page", "new tab", "startseite", "home"]),
+    page(C::General, "Homepage", &["start page", "new tab", "startseite", "home", "neuer tab"]),
+    control(C::General, S::HomeClock, &["start page", "time", "uhr", "uhrzeit", "startseite", "24", "12"]),
+    control(C::General, S::HomeGreeting, &["start page", "hello", "name", "begrüßung", "gruß", "startseite"]),
+    control(C::General, S::HomeSearch, &["start page", "search box", "suchfeld", "suche", "startseite"]),
+    control(
+        C::General,
+        S::HomeTopSites,
+        &[
+            "start page",
+            "most visited",
+            "favourites",
+            "favorites",
+            "tiles",
+            "meistbesucht",
+            "häufig besucht",
+            "top seiten",
+            "kacheln",
+            "startseite",
+        ],
+    ),
+    control(
+        C::General,
+        S::HomeStats,
+        &[
+            "start page",
+            "blocked",
+            "trackers",
+            "ads",
+            "bandwidth",
+            "time saved",
+            "statistik",
+            "blockiert",
+            "werbung",
+            "gespart",
+            "startseite",
+        ],
+    ),
+    control(
+        C::General,
+        S::HomeBackground,
+        &[
+            "start page",
+            "wallpaper",
+            "picture",
+            "photo",
+            "hintergrund",
+            "hintergrundbild",
+            "bild",
+            "startseite",
+        ],
+    ),
     page(C::General, "Search engine", &["google", "duckduckgo", "bing", "suchmaschine", "default search"]),
     page(
         C::Appearance,
@@ -331,6 +381,9 @@ mod tests {
         assert!(titles("konto löschen").contains(&"Delete account"));
         assert!(titles("lesezeichenleiste").contains(&"Bookmarks bar"));
         assert!(titles("favoriten").contains(&"Bookmarks bar"));
+        assert!(titles("hintergrundbild").contains(&"Background image"));
+        assert!(titles("meistbesucht").contains(&"Top sites"));
+        assert!(titles("uhrzeit").contains(&"Clock"));
     }
 
     #[test]

@@ -56,7 +56,38 @@ const MIGRATIONS: &[&str] = &[
         finished INTEGER NOT NULL
     );
     CREATE INDEX downloads_by_time ON downloads(finished);",
+    // 7: the start page's top sites: pinned (or edited) and removed sites, by host
+    "CREATE TABLE top_sites (
+        host TEXT PRIMARY KEY,
+        url TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        position INTEGER NOT NULL DEFAULT 0,
+        hidden INTEGER NOT NULL DEFAULT 0
+    );",
 ];
+
+/// A site the user pinned to (or removed from) the start page's top sites.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TopSiteOverride {
+    /// Lowercase, without `www.`.
+    pub host: String,
+    pub url: String,
+    pub title: String,
+    /// Order among the pinned sites.
+    pub position: i64,
+    /// Removed: never listed from history again (until restored).
+    pub hidden: bool,
+}
+
+/// A site among the most visited, ranked by frecency.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TopSite {
+    /// Lowercase, without `www.`.
+    pub host: String,
+    /// The site's most visited page.
+    pub url: String,
+    pub title: String,
+}
 
 /// A finished download in the download list.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,10 +149,10 @@ pub struct Store {
     conn: Connection,
 }
 
-/// URLs not worth remembering.
+/// URLs not worth remembering (Axion's own `axion:` pages included).
 fn is_recordable(url: &str) -> bool {
     !url.is_empty()
-        && !["about:", "data:", "blob:", "chrome:", "devtools:", "view-source:"]
+        && !["about:", "data:", "blob:", "chrome:", "devtools:", "view-source:", "axion:"]
             .iter()
             .any(|p| url.starts_with(p))
 }
@@ -406,6 +437,102 @@ impl Store {
         Ok((tabs, active))
     }
 
+    // ---- top sites ----
+
+    /// The most visited sites (one entry per host, its most visited page), best first by
+    /// frecency summed over the host's pages. Only http(s) pages count.
+    pub fn top_sites(&self, limit: usize, now: i64) -> Result<Vec<TopSite>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT url, title, visit_count * CASE
+                    WHEN ?1 - last_visit < 4 * ?2 THEN 100
+                    WHEN ?1 - last_visit < 14 * ?2 THEN 70
+                    WHEN ?1 - last_visit < 31 * ?2 THEN 50
+                    WHEN ?1 - last_visit < 90 * ?2 THEN 30
+                    ELSE 10 END AS score, visit_count
+             FROM urls WHERE url LIKE 'http%' ORDER BY score DESC LIMIT 2000",
+        )?;
+        let rows = stmt.query_map(params![now, DAY], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
+        })?;
+        // host → (summed score, best page's visits, url, title, first seen)
+        let mut sites: Vec<(String, i64, i64, String, String)> = Vec::new();
+        for row in rows {
+            let (url, title, score, visits) = row?;
+            let Some(host) = site_host(&url) else { continue };
+            match sites.iter_mut().find(|s| s.0 == host) {
+                Some(site) => {
+                    site.1 += score;
+                    if visits > site.2 {
+                        (site.2, site.3, site.4) = (visits, url, title);
+                    }
+                }
+                None => sites.push((host, score, visits, url, title)),
+            }
+        }
+        sites.sort_by_key(|s| std::cmp::Reverse(s.1));
+        Ok(sites
+            .into_iter()
+            .take(limit)
+            .map(|(host, _, _, url, title)| TopSite { host, url, title })
+            .collect())
+    }
+
+    /// The pinned and removed top sites, pinned ones in their order.
+    pub fn top_site_overrides(&self) -> Result<Vec<TopSiteOverride>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT host, url, title, position, hidden FROM top_sites ORDER BY position, host",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(TopSiteOverride {
+                host: r.get(0)?,
+                url: r.get(1)?,
+                title: r.get(2)?,
+                position: r.get(3)?,
+                hidden: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Pins a site (or updates a pinned one) with this address and title; new pins go last.
+    pub fn pin_top_site(&self, host: &str, url: &str, title: &str) -> Result<()> {
+        let position: i64 = self.conn.query_row(
+            "SELECT COALESCE((SELECT position FROM top_sites WHERE host = ?1 AND hidden = 0),
+                             (SELECT COALESCE(MAX(position) + 1, 0) FROM top_sites))",
+            [host],
+            |r| r.get(0),
+        )?;
+        self.conn.execute(
+            "INSERT INTO top_sites (host, url, title, position, hidden) VALUES (?1, ?2, ?3, ?4, 0)
+             ON CONFLICT(host) DO UPDATE SET url = excluded.url, title = excluded.title,
+                position = excluded.position, hidden = 0",
+            params![host, url, title, position],
+        )?;
+        Ok(())
+    }
+
+    /// Removes a site from the top sites (also unpins it).
+    pub fn hide_top_site(&self, host: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO top_sites (host, hidden) VALUES (?1, 1)
+             ON CONFLICT(host) DO UPDATE SET hidden = 1, url = '', title = ''",
+            [host],
+        )?;
+        Ok(())
+    }
+
+    /// Unpins a site (it may still show from history).
+    pub fn unpin_top_site(&self, host: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM top_sites WHERE host = ?1 AND hidden = 0", [host])?;
+        Ok(())
+    }
+
+    /// Brings back every removed site.
+    pub fn restore_hidden_top_sites(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM top_sites WHERE hidden = 1", [])?;
+        Ok(())
+    }
+
     // ---- per-site settings ----
 
     /// Every site's value for `key`, as (host, value).
@@ -490,6 +617,17 @@ impl Store {
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+}
+
+/// `https://www.Example.com:8080/x` → `example.com:8080` (http and https only).
+pub fn site_host(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    let host = rest.split(['/', '?', '#']).next()?.rsplit('@').next()?.to_ascii_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host).to_owned();
+    (!host.is_empty()).then_some(host)
 }
 
 /// `https://www.example.com/x` → `example.com/x`.
@@ -665,6 +803,43 @@ mod tests {
         assert_eq!(all, [("a.com".into(), "standard".into()), ("b.com".into(), "aggressive".into())]);
         s.set_site_setting("b.com", "shields", None).unwrap();
         assert_eq!(s.site_settings("shields").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn top_sites_by_host() {
+        let s = store();
+        for _ in 0..3 {
+            s.record_visit("https://www.rust-lang.org/learn", "Learn", NOW).unwrap();
+        }
+        s.record_visit("https://rust-lang.org/", "Rust", NOW).unwrap();
+        s.record_visit("https://docs.example/", "Docs", NOW - 100 * DAY).unwrap();
+        s.record_visit("file:///tmp/x.html", "", NOW).unwrap();
+        let top = s.top_sites(10, NOW).unwrap();
+        let hosts: Vec<&str> = top.iter().map(|t| t.host.as_str()).collect();
+        assert_eq!(hosts, ["rust-lang.org", "docs.example"]);
+        assert_eq!(top[0].url, "https://www.rust-lang.org/learn", "the most visited page");
+        assert_eq!(site_host("HTTP://user@WWW.A.example:80/x").as_deref(), Some("a.example:80"));
+        assert_eq!(site_host("axion://home/"), None);
+    }
+
+    #[test]
+    fn pinned_and_hidden_top_sites() {
+        let s = store();
+        s.pin_top_site("b.example", "https://b.example/", "B").unwrap();
+        s.pin_top_site("a.example", "https://a.example/", "A").unwrap();
+        s.pin_top_site("b.example", "https://b.example/x", "B2").unwrap();
+        s.hide_top_site("c.example").unwrap();
+        let all = s.top_site_overrides().unwrap();
+        let pinned: Vec<(&str, &str)> =
+            all.iter().filter(|o| !o.hidden).map(|o| (o.host.as_str(), o.title.as_str())).collect();
+        assert_eq!(pinned, [("b.example", "B2"), ("a.example", "A")], "editing keeps the place");
+        s.hide_top_site("a.example").unwrap();
+        assert_eq!(s.top_site_overrides().unwrap().iter().filter(|o| o.hidden).count(), 2);
+        s.unpin_top_site("b.example").unwrap();
+        s.restore_hidden_top_sites().unwrap();
+        assert!(s.top_site_overrides().unwrap().is_empty());
+        s.record_visit("axion://home/", "Start", NOW).unwrap();
+        assert!(s.recent_history(5).unwrap().is_empty(), "Axion's own pages stay out of history");
     }
 
     #[test]
