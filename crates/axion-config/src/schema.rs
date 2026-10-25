@@ -319,8 +319,9 @@ pub struct Layout {
     pub page_margin: f32,
     /// Tabs in their own row under the address bar, or in one compact row with it.
     pub tab_bar: TabBarStyle,
-    /// Scrolling down collapses the bars into a small pill with the site's name.
-    pub hide_bar_on_scroll: bool,
+    /// Removed (the bars no longer hide while scrolling); still accepted in old files.
+    #[serde(skip_serializing)]
+    hide_bar_on_scroll: Option<bool>,
 }
 
 /// Safari's two tab bar layouts.
@@ -348,7 +349,7 @@ impl Default for Layout {
             page_corner_radius: 10.0,
             page_margin: 8.0,
             tab_bar: TabBarStyle::Compact,
-            hide_bar_on_scroll: true,
+            hide_bar_on_scroll: None,
         }
     }
 }
@@ -674,6 +675,13 @@ mod tests {
     fn empty_file_is_default() {
         let c: Config = toml::from_str("").unwrap();
         assert_eq!(c, Config::default());
+    }
+
+    #[test]
+    fn removed_layout_keys_still_load() {
+        let c: Config = toml::from_str("[layout]\nhide_bar_on_scroll = true").unwrap();
+        assert_eq!(c.layout.tab_bar, TabBarStyle::Compact);
+        assert!(!toml::to_string(&c).unwrap().contains("hide_bar_on_scroll"));
     }
 
     #[test]

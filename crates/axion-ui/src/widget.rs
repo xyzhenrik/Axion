@@ -162,6 +162,9 @@ pub struct Widget {
     /// stretches, carrying all its content along, instead of the button becoming a lens of
     /// its own.
     pub press_whole: bool,
+    /// Lights up under the pointer. Off for glass buttons that are pure glass (the media
+    /// player's circles): their only feedback is their lens when pressed.
+    pub hover_fill: bool,
     /// Children are drawn only inside this widget's frame (scrolling lists).
     pub clip: bool,
     /// Absolute frame in logical pixels, updated by layout.
@@ -185,6 +188,7 @@ impl Widget {
             glass_merge: None,
             join_only: false,
             press_whole: false,
+            hover_fill: true,
             clip: false,
             frame: Rect::default(),
         }
@@ -290,6 +294,12 @@ impl Widget {
     /// See [`Widget::press_whole`].
     pub fn pressed_whole(mut self) -> Self {
         self.press_whole = true;
+        self
+    }
+
+    /// See [`Widget::hover_fill`].
+    pub fn without_hover_fill(mut self) -> Self {
+        self.hover_fill = false;
         self
     }
 

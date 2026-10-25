@@ -118,7 +118,6 @@ pub const INDEX: &[Entry] = &[
     ),
     page(C::Tabs, "Tab bar layout", &["compact", "separate", "tab strip", "tableiste", "kompakt"]),
     control(C::Tabs, S::TintFromPage, &["color", "page colour", "tint", "farbe"]),
-    control(C::Tabs, S::HideBarOnScroll, &["fullscreen", "autohide", "ausblenden", "scroll"]),
     control(C::Tabs, S::OpenInBackground, &["new tab", "links", "hintergrund", "middle click"]),
     page(C::Tabs, "Close tabs", &["auto close", "old tabs", "cleanup", "schließen", "aufräumen"]),
     control(C::Tabs, S::FreezeAfter, &["sleep", "suspend", "pause", "einfrieren", "battery", "cpu"]),

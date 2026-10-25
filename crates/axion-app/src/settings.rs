@@ -136,7 +136,6 @@ enum Setting {
     MemoryBudget,
     KeepMediaAwake,
     RestoreSession,
-    HideBarOnScroll,
     OpenInBackground,
     OwnFullscreenControls,
     HideControlsAfter,
@@ -180,7 +179,6 @@ impl Setting {
             Setting::MemoryBudget => "Memory budget",
             Setting::KeepMediaAwake => "Keep tabs playing audio awake",
             Setting::RestoreSession => "Reopen last session's tabs at start",
-            Setting::HideBarOnScroll => "Hide tab bar when scrolling",
             Setting::OpenInBackground => "Open new tabs in background",
             Setting::OwnFullscreenControls => "Axion's player in fullscreen",
             Setting::HideControlsAfter => "Hide controls while playing after",
@@ -215,7 +213,6 @@ impl Setting {
                 | Setting::LimitMemory
                 | Setting::KeepMediaAwake
                 | Setting::RestoreSession
-                | Setting::HideBarOnScroll
                 | Setting::OpenInBackground
                 | Setting::OwnFullscreenControls
                 | Setting::HardwareDecoding
@@ -308,7 +305,6 @@ impl Setting {
             Setting::LimitMemory => return c.tabs.limit_memory as u8 as f32,
             Setting::KeepMediaAwake => return c.tabs.keep_media_awake as u8 as f32,
             Setting::RestoreSession => return c.tabs.restore_session as u8 as f32,
-            Setting::HideBarOnScroll => return c.layout.hide_bar_on_scroll as u8 as f32,
             Setting::OpenInBackground => return c.tabs.open_links_in_background as u8 as f32,
             Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
@@ -358,7 +354,6 @@ impl Setting {
             Setting::LimitMemory => c.tabs.limit_memory = on,
             Setting::KeepMediaAwake => c.tabs.keep_media_awake = on,
             Setting::RestoreSession => c.tabs.restore_session = on,
-            Setting::HideBarOnScroll => c.layout.hide_bar_on_scroll = on,
             Setting::OpenInBackground => c.tabs.open_links_in_background = on,
             Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
@@ -1100,7 +1095,7 @@ impl SettingsSheet {
             }
             Category::Tabs => {
                 self.tab_bar_choice(ui, config);
-                for setting in [Setting::TintFromPage, Setting::HideBarOnScroll, Setting::OpenInBackground] {
+                for setting in [Setting::TintFromPage, Setting::OpenInBackground] {
                     self.control(ui, config, setting);
                 }
                 let row_node = self.row(ui, "Close tabs");

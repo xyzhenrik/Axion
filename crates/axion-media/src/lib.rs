@@ -163,10 +163,9 @@ pub enum Message {
     DoubleClick {
         id: String,
     },
-    /// The page scrolled to this vertical position (CSS px).
-    Scroll {
-        y: f32,
-    },
+    /// A player's loading state, asked for by [`Action::Probe`] (a debugging aid): its frame,
+    /// source, ready/network state, error, and the frame's codec support, as JSON.
+    Probe(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -182,7 +181,7 @@ pub enum ParseError {
 enum Wire {
     State(PageMedia),
     Event { event: WireEvent },
-    Scroll { y: f32 },
+    Probe(serde_json::Map<String, serde_json::Value>),
 }
 
 #[derive(Deserialize)]
@@ -199,7 +198,7 @@ pub fn parse(console_message: &str) -> Result<Option<Message>, ParseError> {
         Wire::State(state) => Some(Message::State(state)),
         Wire::Event { event } if event.e == "dblclick" => Some(Message::DoubleClick { id: event.id }),
         Wire::Event { .. } => None,
-        Wire::Scroll { y } => Some(Message::Scroll { y }),
+        Wire::Probe(fields) => Some(Message::Probe(serde_json::Value::Object(fields).to_string())),
     })
 }
 
@@ -303,6 +302,9 @@ mod tests {
         let dbl = format!("{MARKER}{}", r#"{"t":"event","event":{"e":"dblclick","id":"a:1"}}"#);
         assert_eq!(parse(&dbl).unwrap(), Some(Message::DoubleClick { id: "a:1".into() }));
         assert!(matches!(parse("hello"), Err(ParseError::NotBridge)));
+        let probe = format!("{MARKER}{}", r#"{"t":"probe","ready":0,"h264":false}"#);
+        let Ok(Some(Message::Probe(state))) = parse(&probe) else { panic!("{probe}") };
+        assert!(state.contains("\"h264\":false"));
     }
 
     #[test]

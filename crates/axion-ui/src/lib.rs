@@ -1575,7 +1575,7 @@ impl Ui {
                 0.0
             } else if self.pressed == Some(node) {
                 PRESS_ALPHA
-            } else if self.hover == Some(node) && self.pressed.is_none() {
+            } else if self.hover == Some(node) && self.pressed.is_none() && widget.hover_fill {
                 // While a button is held, others under the pointer don't light up.
                 HOVER_ALPHA
             } else {
