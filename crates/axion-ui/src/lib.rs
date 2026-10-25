@@ -1312,6 +1312,7 @@ impl Ui {
                 stretch: Vec2::new(1.0 + e, 1.0 / (1.0 + e)),
                 angle: offset.y.atan2(offset.x),
                 content_scale: press.scale.value * along * across,
+                carry: None,
             }
         });
         let mark = press_xf.as_ref().map(|_| marks(stacks));
@@ -1321,13 +1322,12 @@ impl Ui {
             Some(_) if px.size.min_element() > 0.0 => {
                 let ratio = bg_px.size / px.size;
                 let xf = PressXf {
-                    center: px.center(),
                     scale: 1.0,
                     offset: Vec2::ZERO,
                     stretch: Vec2::ONE,
                     angle: 0.0,
                     content_scale: ratio,
-                    content_offset: bg_px.center() - px.center(),
+                    carry: Some(Carry { from: px.center(), to: bg_px.center() }),
                 };
                 let t = ((ratio.min_element() - CONTENT_REVEAL_FROM)
                     / (CONTENT_REVEAL_TO - CONTENT_REVEAL_FROM))
@@ -1684,12 +1684,29 @@ struct PressXf {
     /// stretches about its own centre with the glass (per axis), so it looks distorted by
     /// the glass rather than moved.
     content_scale: Vec2,
+    /// Set for an animated frame (popover growing): the whole subtree is mapped from the
+    /// layout frame onto the visual one, so items move with it instead of staying put.
+    carry: Option<Carry>,
+}
+
+/// Maps the layout frame's centre onto the visual frame's.
+struct Carry {
+    from: Vec2,
+    to: Vec2,
 }
 
 impl PressXf {
+    /// Where an item centred at `c` ends up.
+    fn place(&self, c: Vec2) -> Vec2 {
+        match &self.carry {
+            Some(carry) => carry.to + (c - carry.from) * self.content_scale,
+            None => c,
+        }
+    }
+
     fn rect(&self, r: Rect) -> Rect {
         let size = r.size * self.content_scale;
-        Rect { origin: r.center() - size / 2.0, size }
+        Rect { origin: self.place(r.center()) - size / 2.0, size }
     }
 
     /// For text, which only scales uniformly.
@@ -1738,7 +1755,8 @@ fn transform_since(stacks: &mut [Stack<'_>], mark: &[Mark], xf: &PressXf, from_d
             let b = &mut t.bounds;
             let center = Vec2::new(b.left as f32 + b.right as f32, b.top as f32 + b.bottom as f32) / 2.0;
             let u = xf.uniform();
-            let about = |p: Vec2| center + (p - center) * u;
+            let placed = xf.place(center);
+            let about = |p: Vec2| placed + (p - center) * u;
             let p = about(Vec2::new(t.left, t.top));
             t.left = p.x;
             t.top = p.y;
