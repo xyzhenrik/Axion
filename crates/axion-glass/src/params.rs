@@ -65,9 +65,12 @@ pub(crate) struct ParamsUniform {
     pub shadow: f32,
     pub frost: f32,
     pub shape_count: u32,
-    /// 1 when some shape has its own tint strength (the shader blends them only then).
+    /// 1 when some shape has its own tint strength or glow (the shader blends them only then).
     pub own_tints: u32,
-    pub _pad: [u32; 3],
+    /// Shapes from this index on merge with `wide_k` instead of `merge_k` (see the renderer).
+    pub wide_from: u32,
+    pub wide_k: f32,
+    pub _pad: u32,
 }
 
 impl ParamsUniform {
@@ -85,7 +88,9 @@ impl ParamsUniform {
             frost: params.frost.clamp(0.0, 1.0),
             shape_count,
             own_tints: own_tints as u32,
-            _pad: [0; 3],
+            wide_from: shape_count,
+            wide_k: params.merge_smoothness.max(0.0),
+            _pad: 0,
         }
     }
 }

@@ -149,6 +149,14 @@ pub struct Widget {
     /// Glass drawn in its own level's pass (so it flows into that level's glass) but tinted
     /// as densely as this level: popovers that grow out of thin bar glass and carry text.
     pub glass_density: Option<GlassLevel>,
+    /// This glass's own smooth-union radius (logical px) where it flows into the glass drawn
+    /// before it, when wider than `glass.merge_distance` (a popover's bridge to its bar).
+    pub glass_merge: Option<f32>,
+    /// Glass that only joins other glass (a popover's bridge to its bar): it lies over their
+    /// buttons, so the pointer passes through it (its children are still hit); it is no
+    /// surface of its own (see `Ui::glass_at`); and it has no tint of its own, so across it
+    /// the tint blends from the glass it joins.
+    pub join_only: bool,
     /// Children are drawn only inside this widget's frame (scrolling lists).
     pub clip: bool,
     /// Absolute frame in logical pixels, updated by layout.
@@ -169,6 +177,8 @@ impl Widget {
             opacity: 1.0,
             visual_frame: None,
             glass_density: None,
+            glass_merge: None,
+            join_only: false,
             clip: false,
             frame: Rect::default(),
         }
@@ -256,6 +266,18 @@ impl Widget {
     /// See [`Widget::glass_density`].
     pub fn with_glass_density(mut self, level: GlassLevel) -> Self {
         self.glass_density = Some(level);
+        self
+    }
+
+    /// See [`Widget::glass_merge`].
+    pub fn with_glass_merge(mut self, merge: f32) -> Self {
+        self.glass_merge = Some(merge);
+        self
+    }
+
+    /// See [`Widget::join_only`].
+    pub fn as_join(mut self) -> Self {
+        self.join_only = true;
         self
     }
 

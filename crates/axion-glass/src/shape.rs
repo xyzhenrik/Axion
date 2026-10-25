@@ -16,11 +16,32 @@ pub struct GlassShape {
     /// flows into other shapes the strengths blend, so denser glass (a popover) can merge
     /// with thinner glass (the bar) in one pass.
     pub tint_opacity: Option<f32>,
+    /// This shape's own smooth-union radius in pixels, when larger than the pass's
+    /// (`GlassParams::merge_smoothness`): it flows into all other shapes of its pass with this
+    /// wider fillet (the broad bridge joining a popover to its bar). Such shapes are merged
+    /// last, all with the widest of their radii.
+    pub merge: Option<f32>,
+    /// Brightening inside this shape (0–1): a pressed button's lens is clearer (less tint) and
+    /// lighter than the glass it swells out of. Blended in over the shape's soft edge.
+    pub glow: f32,
+    /// The shape only joins others (a bridge between a popover and its bar): it takes no part
+    /// in the tint, which blends across it from the shapes it joins.
+    pub join_only: bool,
 }
 
 impl GlassShape {
     pub fn rounded_rect(center: Vec2, half_size: Vec2, corner_radius: f32) -> Self {
-        Self { center, half_size, corner_radius, stretch: Vec2::ONE, stretch_angle: 0.0, tint_opacity: None }
+        Self {
+            center,
+            half_size,
+            corner_radius,
+            stretch: Vec2::ONE,
+            stretch_angle: 0.0,
+            tint_opacity: None,
+            merge: None,
+            glow: 0.0,
+            join_only: false,
+        }
     }
 
     pub fn capsule(center: Vec2, half_size: Vec2) -> Self {
@@ -47,9 +68,13 @@ impl GlassShape {
             stretch: self.stretch.max(Vec2::splat(0.05)).to_array(),
             radius: self.corner_radius,
             angle: self.stretch_angle,
-            // Negative: the pass's own tint strength.
-            tint_opacity: self.tint_opacity.map_or(-1.0, |a| a.clamp(0.0, 1.0)),
-            _pad: 0.0,
+            // -1: the pass's own tint strength; -2: none of its own (see `join_only`).
+            tint_opacity: if self.join_only {
+                JOIN_ONLY_TINT
+            } else {
+                self.tint_opacity.map_or(-1.0, |a| a.clamp(0.0, 1.0))
+            },
+            glow: self.glow.clamp(0.0, 1.0),
         }
     }
 }
@@ -59,6 +84,9 @@ fn sd_round_box(p: Vec2, half: Vec2, radius: f32) -> f32 {
     let q = p.abs() - half + Vec2::splat(r);
     q.max(Vec2::ZERO).length() + q.max_element().min(0.0) - r
 }
+
+/// `ShapeGpu::tint_opacity` of a shape without a tint of its own (`JOIN_ONLY` in `glass.wgsl`).
+const JOIN_ONLY_TINT: f32 = -2.0;
 
 /// GPU layout of a shape; must match `Shape` in `glass.wgsl`.
 #[repr(C)]
@@ -70,7 +98,7 @@ pub(crate) struct ShapeGpu {
     pub radius: f32,
     pub angle: f32,
     pub tint_opacity: f32,
-    pub _pad: f32,
+    pub glow: f32,
 }
 
 #[cfg(test)]

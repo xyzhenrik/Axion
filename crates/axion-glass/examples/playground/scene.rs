@@ -71,6 +71,9 @@ impl Element {
             stretch: Vec2::new(s, 1.0 / s),
             stretch_angle: self.stretch_angle,
             tint_opacity: None,
+            merge: None,
+            glow: 0.0,
+            join_only: false,
         }
     }
 }

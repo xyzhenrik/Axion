@@ -1,9 +1,13 @@
 //! A glass popover that flows out of the bar or button it belongs to. Its glass drips out of
-//! the anchor on the liquid spring (see [`Drip`]) and stays joined to the anchor's glass by a
-//! narrow neck: popover, neck and anchor are glass of the same level in the same plane at the
-//! same nesting depth, so they are drawn in one glass pass and the smooth-min merges them into
-//! one liquid shape. The content sits directly on the glass (no plates); axion-ui maps it onto
-//! the animated glass and fades it with the glass's growth, so both come and go together.
+//! the anchor on the liquid spring (see [`Drip`]) and stays joined to the glass the anchor
+//! lies in by a broad liquid bridge: popover, bridge and that glass are glass of the same level
+//! in the same plane at the same nesting depth, so they are drawn in one glass pass and the
+//! smooth-min merges them into one liquid shape. The bridge spans the whole front the two
+//! shapes share (less their rounded corners) and has a wider smooth union of its own
+//! (`glass.popover_bridge_fillet`), so the junction is one smooth band with concave fillets
+//! only at its outer ends: no stalk, no pinch. The content sits directly on the glass (no
+//! plates); axion-ui maps it onto the animated glass and fades it with the glass's growth, so
+//! both come and go together.
 //!
 //! The page menu, account menu (and its submenus), Shields and downloads popovers, address
 //! suggestions and the password prompt are built on it.
@@ -21,16 +25,20 @@ pub const LEVEL: GlassLevel = GlassLevel::Thin;
 /// … but are tinted as densely as thick glass, so text directly on them stays legible on
 /// any page (light, dark or busy).
 pub const DENSITY: GlassLevel = GlassLevel::Thick;
-/// The neck needs at least this much length (logical px) before it is drawn.
-const MIN_NECK_LENGTH: f32 = 1.0;
+/// A bridge narrower than this (logical px) isn't drawn.
+const MIN_BRIDGE_WIDTH: f32 = 1.0;
 
 pub struct Popover {
     parent: NodeId,
     root: NodeId,
-    neck: NodeId,
+    bridge: NodeId,
     drip: Drip,
     radius: f32,
-    neck_width: f32,
+    /// The glass the popover flows out of (frame and corner radius, logical px): the glass
+    /// under the anchor's centre, or the anchor itself.
+    join: Option<(Frame, f32)>,
+    /// How deep the bridge reaches into the shapes it joins (logical px; see [`bridge_frame`]).
+    bridge_depth: f32,
     /// A button without glass of its own that becomes glass while the popover is open, so the
     /// popover can flow out of it (the account button), with its background from before.
     anchor_glass: Option<(NodeId, Background)>,
@@ -44,11 +52,6 @@ impl Popover {
     /// The popover's glass as an absolute child of `parent` (the plane the anchor's glass lies
     /// in: the toolbar, the sidebar). `style` lays out its content (it is made absolute).
     pub fn build(ui: &mut Ui, parent: NodeId, radius: f32, style: Style) -> Self {
-        let neck = ui.add(
-            parent,
-            Widget::container().with_background(Background::Glass(LEVEL)).with_radius(CAPSULE),
-            Style { position: Position::Absolute, ..Default::default() },
-        );
         let root = ui.add(
             parent,
             Widget::container()
@@ -57,15 +60,24 @@ impl Popover {
                 .with_radius(radius),
             Style { position: Position::Absolute, ..style },
         );
-        ui.set_visible(neck, false);
+        // After the popover, so its wider smooth union applies where it meets both the
+        // popover and the anchor's glass (it flows into the glass drawn before it). It only
+        // joins them: the pointer passes through it and the tint blends across it from theirs.
+        let bridge = ui.add(
+            parent,
+            Widget::container().with_background(Background::Glass(LEVEL)).as_join(),
+            Style { position: Position::Absolute, ..Default::default() },
+        );
+        ui.set_visible(bridge, false);
         ui.set_visible(root, false);
         Self {
             parent,
             root,
-            neck,
+            bridge,
             drip: Drip::new(),
             radius,
-            neck_width: 0.0,
+            join: None,
+            bridge_depth: 0.0,
             anchor_glass: None,
             covered: None,
         }
@@ -113,9 +125,10 @@ impl Popover {
         {
             w.background = Background::Glass(LEVEL);
         }
-        self.neck_width = config.glass.popover_neck.max(0.0);
-        if let Some(neck) = neck_frame(anchor, target, self.neck_width, self.radius) {
-            crate::menu::place(ui, self.neck, self.parent, neck);
+        self.find_join(ui, anchor);
+        self.bridge_depth = config.glass.bezel_width.max(0.0);
+        if let Some(w) = ui.widget_mut(self.bridge) {
+            w.glass_merge = Some(config.glass.popover_bridge_fillet.max(0.0));
         }
         self.drip.show(config, anchor, target);
         self.animate(ui, 0.0);
@@ -127,9 +140,6 @@ impl Popover {
             return;
         }
         crate::menu::place(ui, self.root, self.parent, target);
-        if let Some(neck) = neck_frame(self.drip.anchor(), target, self.neck_width, self.radius) {
-            crate::menu::place(ui, self.neck, self.parent, neck);
-        }
         self.drip.retarget(target);
     }
 
@@ -158,7 +168,7 @@ impl Popover {
         if phase == Phase::Closed {
             if ui.is_visible(self.root) {
                 ui.set_visible(self.root, false);
-                ui.set_visible(self.neck, false);
+                ui.set_visible(self.bridge, false);
                 self.restore_anchor(ui);
                 if let Some(node) = self.covered {
                     ui.set_opacity(node, 1.0);
@@ -166,11 +176,14 @@ impl Popover {
             }
             return phase;
         }
+        // The glass it flows out of may move or resize (the bar while the window changes).
+        self.find_join(ui, self.drip.anchor());
         let frame = self.drip.frame();
         ui.set_visual_frame(self.root, Some(frame));
-        let neck = neck_frame(self.drip.anchor(), frame, self.neck_width, self.radius);
-        ui.set_visible(self.neck, neck.is_some());
-        ui.set_visual_frame(self.neck, neck);
+        let bridge =
+            self.join.and_then(|(join, r)| bridge_frame(join, r, frame, self.radius, self.bridge_depth));
+        ui.set_visible(self.bridge, bridge.is_some());
+        ui.set_visual_frame(self.bridge, bridge);
         if let Some(node) = self.covered {
             ui.set_opacity(node, 1.0 - self.drip.growth());
         }
@@ -182,6 +195,12 @@ impl Popover {
         self.is_open() && ui.frame(self.root).contains(p)
     }
 
+    /// Finds the glass under `anchor`'s centre, else takes the anchor itself (as a capsule).
+    fn find_join(&mut self, ui: &Ui, anchor: Frame) {
+        let found = ui.glass_at(self.parent, anchor.center(), &[self.root, self.bridge]);
+        self.join = Some(found.map_or((anchor, CAPSULE), |(frame, radius, _)| (frame, radius)));
+    }
+
     fn restore_anchor(&mut self, ui: &mut Ui) {
         if let Some((node, background)) = self.anchor_glass
             && let Some(w) = ui.widget_mut(node)
@@ -191,76 +210,130 @@ impl Popover {
     }
 }
 
-/// The neck joining `glass` to its `anchor` (logical px): a capsule `width` wide from the
-/// anchor's centre to `radius` inside the glass's nearest edge, kept off the glass's rounded
-/// corners. `None` while they overlap (the drip is still inside the anchor) or without a neck.
-pub fn neck_frame(anchor: Frame, glass: Frame, width: f32, radius: f32) -> Option<Frame> {
-    if width <= 0.0 {
-        return None;
+/// How far in from its ends a rounded shape `len` long with corner `radius` keeps its full
+/// depth: the corner radius on a long edge, nothing on a circle's, smoothly in between.
+fn straight_inset(len: f32, radius: f32) -> f32 {
+    if radius <= 0.0 {
+        return 0.0;
     }
-    let a = anchor.center();
-    let (min, max) = (glass.origin, glass.origin + glass.size);
+    radius * ((len - 2.0 * radius) / (2.0 * radius)).clamp(0.0, 1.0)
+}
+
+/// The bridge joining `glass` to the glass it flows out of, `join` (logical px): across the
+/// front the two share on their facing sides (each less its rounded corners, or a round
+/// anchor's full width), reaching `depth` into each (at most to its middle, at least to where
+/// it spans the whole front), so in the gap the joined glass is as thick as inside them and
+/// shows no rim. `None` while they overlap (the drip is still inside) or share no front.
+pub fn bridge_frame(
+    join: Frame,
+    join_radius: f32,
+    glass: Frame,
+    glass_radius: f32,
+    depth: f32,
+) -> Option<Frame> {
+    let (jmin, jmax) = (join.origin, join.origin + join.size);
+    let (gmin, gmax) = (glass.origin, glass.origin + glass.size);
     let gaps = [
-        min.y - (anchor.origin.y + anchor.size.y), // below
-        anchor.origin.y - max.y,                   // above
-        min.x - (anchor.origin.x + anchor.size.x), // right
-        anchor.origin.x - max.x,                   // left
+        gmin.y - jmax.y, // below
+        jmin.y - gmax.y, // above
+        gmin.x - jmax.x, // right
+        jmin.x - gmax.x, // left
     ];
     let (side, gap) = gaps.iter().copied().enumerate().max_by(|a, b| a.1.total_cmp(&b.1))?;
     if gap <= 0.0 {
         return None;
     }
-    let inset = radius.min(glass.size.min_element() / 2.0);
-    // Along the edge, the neck stays on its straight part.
-    let across = |lo: f32, hi: f32, at: f32| {
-        let (lo, hi) = (lo + inset + width / 2.0, hi - inset - width / 2.0);
-        if lo <= hi { at.clamp(lo, hi) } else { (lo + hi) / 2.0 }
+    let jr = join_radius.min(join.size.min_element() / 2.0).max(0.0);
+    let gr = glass_radius.min(glass.size.min_element() / 2.0).max(0.0);
+    // Along the front (x for a popover above or below), then across it.
+    let vertical = side < 2;
+    let pick = |v: Vec2| if vertical { (v.x, v.y) } else { (v.y, v.x) };
+    let ((jlo, jnear_min), (jhi, jnear_max)) = (pick(jmin), pick(jmax));
+    let ((glo, gnear_min), (ghi, gnear_max)) = (pick(gmin), pick(gmax));
+    let (jlen, glen) = (jhi - jlo, ghi - glo);
+    let (ij, ig) = (straight_inset(jlen, jr), straight_inset(glen, gr));
+    let lo = (jlo + ij).max(glo + ig);
+    let hi = (jhi - ij).min(ghi - ig);
+    if hi - lo < MIN_BRIDGE_WIDTH {
+        return None;
+    }
+    // Into each shape at least until it is as wide as the bridge (down to the widest line of a
+    // round end), never past its middle.
+    let reach = |thickness: f32, r: f32, inset: f32| depth.max(r - inset).min(thickness / 2.0);
+    let (jt, gt) = (jnear_max - jnear_min, gnear_max - gnear_min);
+    let (dj, dg) = (reach(jt, jr, ij), reach(gt, gr, ig));
+    let (a, b) = if side % 2 == 0 {
+        // The glass lies after the join (below, right).
+        (jnear_max - dj, gnear_min + dg)
+    } else {
+        (gnear_max - dg, jnear_min + dj)
     };
-    let frame = match side {
-        0 | 1 => {
-            let x = across(min.x, max.x, a.x);
-            let (y0, y1) = if side == 0 { (a.y, min.y + inset) } else { (max.y - inset, a.y) };
-            Frame::new(x - width / 2.0, y0, width, y1 - y0)
-        }
-        _ => {
-            let y = across(min.y, max.y, a.y);
-            let (x0, x1) = if side == 2 { (a.x, min.x + inset) } else { (max.x - inset, a.x) };
-            Frame::new(x0, y - width / 2.0, x1 - x0, width)
-        }
-    };
-    (frame.size.min_element() >= MIN_NECK_LENGTH).then_some(frame)
+    Some(if vertical { Frame::new(lo, a, hi - lo, b - a) } else { Frame::new(a, lo, b - a, hi - lo) })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The bezel width: how deep bridges reach.
+    const DEPTH: f32 = 22.0;
+
     #[test]
-    fn neck_hangs_from_the_anchor() {
-        let anchor = Frame::new(300.0, 10.0, 34.0, 34.0);
-        let glass = Frame::new(60.0, 60.0, 280.0, 300.0);
-        let neck = neck_frame(anchor, glass, 16.0, 22.0).expect("a neck below");
-        assert_eq!(neck.size.x, 16.0);
-        assert_eq!(neck.origin.y, anchor.center().y);
-        assert_eq!(neck.origin.y + neck.size.y, glass.origin.y + 22.0);
-        // Kept off the rounded corner.
-        assert!(neck.origin.x + neck.size.x <= glass.origin.x + glass.size.x - 22.0);
+    fn bridge_spans_the_popover_under_a_wide_bar() {
+        // The address field (a capsule) and the page menu below it, reaching past its end.
+        let bar = Frame::new(100.0, 10.0, 500.0, 36.0);
+        let menu = Frame::new(338.0, 60.0, 280.0, 300.0);
+        let b = bridge_frame(bar, CAPSULE, menu, 22.0, DEPTH).expect("a bridge below");
+        assert_eq!(b.origin.x, menu.origin.x + 22.0);
+        // Stops where the bar's round end begins.
+        assert_eq!(b.origin.x + b.size.x, bar.origin.x + bar.size.x - 18.0);
+        // From the middle of the bar to a bezel's width into the menu.
+        assert_eq!(b.origin.y, bar.center().y);
+        assert_eq!(b.origin.y + b.size.y, menu.origin.y + DEPTH);
     }
 
     #[test]
-    fn neck_to_the_side_and_above() {
-        let anchor = Frame::new(100.0, 100.0, 40.0, 40.0);
-        let right = neck_frame(anchor, Frame::new(150.0, 80.0, 120.0, 100.0), 16.0, 20.0).expect("side");
-        assert_eq!(right.size.y, 16.0);
-        assert_eq!(right.origin.x, anchor.center().x);
-        let above = neck_frame(anchor, Frame::new(80.0, 0.0, 200.0, 80.0), 16.0, 20.0).expect("above");
-        assert_eq!(above.origin.y + above.size.y, anchor.center().y);
+    fn bridge_spans_a_round_button() {
+        // A circle button, the menu below: the bridge is as wide as the button and starts at
+        // its widest line.
+        let button = Frame::new(300.0, 10.0, 34.0, 34.0);
+        let menu = Frame::new(60.0, 60.0, 300.0, 300.0);
+        let b = bridge_frame(button, CAPSULE, menu, 22.0, DEPTH).expect("a bridge below");
+        assert_eq!((b.origin.x, b.size.x), (300.0, 34.0));
+        assert_eq!(b.origin.y, button.center().y);
     }
 
     #[test]
-    fn no_neck_while_overlapping() {
+    fn bridge_to_a_side_submenu_spans_the_shared_height() {
+        let menu = Frame::new(100.0, 100.0, 280.0, 400.0);
+        let sub = Frame::new(392.0, 200.0, 200.0, 100.0);
+        let b = bridge_frame(menu, 22.0, sub, 22.0, DEPTH).expect("a bridge to the right");
+        assert_eq!((b.origin.y, b.size.y), (222.0, 56.0));
+        assert_eq!(b.origin.x, 380.0 - DEPTH);
+        assert_eq!(b.origin.x + b.size.x, 392.0 + DEPTH);
+        // And above, as for the account menu over its button.
+        let button = Frame::new(20.0, 600.0, 240.0, 44.0);
+        let above = Frame::new(20.0, 400.0, 240.0, 186.0);
+        let b = bridge_frame(button, CAPSULE, above, 22.0, DEPTH).expect("a bridge above");
+        assert_eq!((b.origin.x, b.size.x), (42.0, 196.0));
+        assert_eq!(b.origin.y + b.size.y, button.center().y);
+    }
+
+    #[test]
+    fn no_bridge_while_overlapping_or_apart() {
         let anchor = Frame::new(100.0, 100.0, 40.0, 40.0);
-        assert!(neck_frame(anchor, anchor, 16.0, 20.0).is_none());
-        assert!(neck_frame(anchor, Frame::new(100.0, 150.0, 40.0, 40.0), 0.0, 20.0).is_none());
+        assert!(bridge_frame(anchor, CAPSULE, anchor, 20.0, DEPTH).is_none());
+        // Below, but shifted off to the side: no shared front.
+        assert!(bridge_frame(anchor, CAPSULE, Frame::new(300.0, 160.0, 100.0, 100.0), 20.0, DEPTH).is_none());
+    }
+
+    #[test]
+    fn bridge_grows_with_the_popover() {
+        let bar = Frame::new(100.0, 10.0, 500.0, 36.0);
+        let narrow =
+            bridge_frame(bar, CAPSULE, Frame::new(300.0, 50.0, 60.0, 40.0), 22.0, DEPTH).expect("narrow");
+        let wide =
+            bridge_frame(bar, CAPSULE, Frame::new(200.0, 60.0, 280.0, 300.0), 22.0, DEPTH).expect("wide");
+        assert!(narrow.size.x < wide.size.x);
     }
 }

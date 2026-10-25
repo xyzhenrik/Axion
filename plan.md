@@ -167,10 +167,14 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [x] Glass renderer in the compositor; all chrome uses the glass material (thin/regular/thick).
 - [x] Liquid motion in the real UI: page menu and suggestions drip out of the toolbar's glass
   and back (design's liquid spring), glass swells under a pressed button, floating sidebar
-  slides on a spring, overview zoom; all honour Reduce Motion.
+  slides on a spring, overview zoom; all honour Reduce Motion. A pressed button is glass: it
+  becomes its own lens (swells up to 1.4×, clearer and lighter, follows the pointer on a rubber
+  band, stretches) flowing out of its group's glass, its icon carried along centred in it.
 - [x] Popovers are one liquid shape with their bar (`popover.rs`): page menu, account menu,
   Shields, downloads, suggestions and the password prompt drip out of their anchor and stay
-  joined by a glass neck (`glass.popover_neck`), drawn in the bar's pass with thick-glass tint
+  joined to the glass under it by a broad liquid bridge across their shared front (wider smooth
+  union of its own, `glass.popover_bridge_fillet`; no tint of its own, so thin bar and dense
+  popover tint blend across it), drawn in the bar's pass with thick-glass tint
   (per-shape tint strength, blended across the merge); text sits directly on the glass and
   follows the glass's visual frame (axion-ui), so both come and go together. Menus have
   captions, hairlines and side submenus (Zoom › − 100% +).

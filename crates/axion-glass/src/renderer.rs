@@ -167,8 +167,15 @@ impl GlassRenderer {
         } else {
             frame.shapes
         };
-        let mut gpu_shapes: Vec<ShapeGpu> = shapes.iter().map(|s| s.to_gpu()).collect();
+        // Shapes with a wider smooth union of their own (bridges) go last and share the widest
+        // radius: they flow into everything before them, and the shader needs no per-shape
+        // radius (one less load per shape per pixel).
+        let wide = |s: &&GlassShape| s.merge.is_some_and(|m| m > frame.params.merge_smoothness);
+        let ordered = shapes.iter().filter(|s| !wide(s)).chain(shapes.iter().filter(wide));
+        let mut gpu_shapes: Vec<ShapeGpu> = ordered.map(|s| s.to_gpu()).collect();
         let count = gpu_shapes.len() as u32;
+        let wide_count = shapes.iter().filter(wide).count() as u32;
+        let wide_k = shapes.iter().filter_map(|s| s.merge).fold(frame.params.merge_smoothness, f32::max);
         if gpu_shapes.is_empty() {
             // Storage bindings can't be empty; the shader ignores it (count is 0).
             gpu_shapes.push(GlassShape::circle(glam::Vec2::ZERO, 0.0).to_gpu());
@@ -182,12 +189,14 @@ impl GlassRenderer {
         };
         let shapes_buffer =
             buffer("glass shapes", bytemuck::cast_slice(&gpu_shapes), wgpu::BufferUsages::STORAGE);
-        let uniform = ParamsUniform::new(
+        let mut uniform = ParamsUniform::new(
             frame.params,
             resolution,
             count,
-            shapes.iter().any(|s| s.tint_opacity.is_some()),
+            shapes.iter().any(|s| s.tint_opacity.is_some() || s.glow > 0.0 || s.join_only),
         );
+        uniform.wide_from = count - wide_count;
+        uniform.wide_k = wide_k;
         let params_buffer = buffer("glass params", bytemuck::bytes_of(&uniform), wgpu::BufferUsages::UNIFORM);
         let step = frame.params.blur_radius.max(0.0) / BLUR_TAPS;
         let blur_buffers = [

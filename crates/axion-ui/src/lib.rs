@@ -70,6 +70,19 @@ const PULL_LIMIT: f32 = 5.0;
 /// … and how much it stretches toward it (relative to the pull over the glass's size).
 const PULL_STRETCH: f32 = 1.4;
 const PRESS_SETTLED: f32 = 0.001;
+/// A pressed button on glass becomes a glass lens of its own: it swells by at most this
+/// factor (the round back button, like iPadOS 26) …
+const LENS_PRESS_SCALE: f32 = 1.4;
+/// … growing at most this many logical px at each edge (wide menu rows barely swell).
+const LENS_PRESS_GROW_PX: f32 = 8.0;
+/// Glass buttons up to this size (logical px) turn into a lens themselves when pressed;
+/// bigger glass (bars, the address field) swells as a group with its content held in place.
+const LENS_BUTTON_MAX: f32 = 64.0;
+/// A button at least this many times longer than wide is a row: its lens stays inside the
+/// glass along its length.
+const LENS_ROW_ASPECT: f32 = 2.5;
+/// How much lighter a fully pressed lens is than the glass around it (light, dark scheme).
+const LENS_PRESS_GLOW: [f32; 2] = [0.16, 0.09];
 /// Content on glass whose background is animated (`Widget::visual_frame`: popovers dripping
 /// out of a button, alerts scaling in) is mapped onto that background and shows only once it
 /// has grown to this share of its layout size …
@@ -152,8 +165,12 @@ pub struct Ui {
     pressed: Option<NodeId>,
     /// Glass that swells while a button on it is held, springing back on release.
     press_scale: HashMap<NodeId, Press>,
-    /// The glass being held and where the pointer went down (for the pull toward the pointer).
+    /// The glass (or lens) being held and where the pointer went down (for the pull toward
+    /// the pointer).
     press_anchor: Option<(NodeId, Vec2)>,
+    /// Set while painting a clipped subtree (its glass is drawn in passes of its own, so a
+    /// lens there could not flow out of the glass around it).
+    painting_clipped: Cell<u32>,
     /// Switch and slider knobs that are held or still animating.
     knobs: HashMap<NodeId, Knob>,
     focus: Option<NodeId>,
@@ -187,6 +204,7 @@ impl Ui {
             dragging: None,
             press_scale: HashMap::new(),
             press_anchor: None,
+            painting_clipped: Cell::new(0),
             knobs: HashMap::new(),
             caret_epoch: Instant::now(),
             needs_layout: true,
@@ -692,7 +710,7 @@ impl Ui {
                 return Some(hit);
             }
         }
-        let solid = widget.background != Background::None
+        let solid = !widget.join_only && widget.background != Background::None
             || widget.action.is_some()
             || matches!(
                 widget.kind,
@@ -790,9 +808,8 @@ impl Ui {
                     return (true, events);
                 }
                 let pressed = self.pressed.take();
-                self.press_anchor = None;
-                if let Some(glass) = pressed.and_then(|n| self.glass_of(n)) {
-                    self.press_glass(glass, false);
+                if let Some((held, _)) = self.press_anchor.take() {
+                    self.release_press(held);
                 }
                 if let (Some(node), Some(p)) = (pressed, self.pointer)
                     && self.hit(p).and_then(|n| self.actionable(n)) == Some(node)
@@ -870,9 +887,9 @@ impl Ui {
             events.extend(self.blur());
         }
         self.pressed = self.actionable(hit);
-        if let Some(glass) = self.pressed.and_then(|n| self.glass_of(n)) {
-            self.press_glass(glass, true);
-            self.press_anchor = Some((glass, p));
+        if let Some((held, lens)) = self.pressed.and_then(|n| self.press_target(n)) {
+            self.press_glass(held, lens);
+            self.press_anchor = Some((held, p));
         }
         true
     }
@@ -1120,32 +1137,124 @@ impl Ui {
         }
     }
 
-    fn press_glass(&mut self, glass: NodeId, pressed: bool) {
-        let size = self.frame(glass).size;
-        // Only surfaces big in both directions (sheets, the sidebar) stay still; bars swell.
-        if size.min_element() > PRESS_MAX_SIZE {
-            return;
+    /// What swells while `button` is held, and whether it is a lens: a button without a
+    /// background lying on glass, or a small glass button, becomes a lens (its content rides
+    /// along with it); anything else swells the glass it lies on as a group.
+    fn press_target(&self, button: NodeId) -> Option<(NodeId, bool)> {
+        let widget = self.widget(button)?;
+        match widget.background {
+            Background::None if widget.feedback => self.glass_of(button).map(|_| (button, true)),
+            Background::Glass(_) | Background::TintedGlass(..)
+                if widget.feedback && widget.frame.size.max_element() <= LENS_BUTTON_MAX =>
+            {
+                Some((button, true))
+            }
+            _ => self.glass_of(button).map(|glass| (glass, false)),
         }
-        let swell = (PRESS_GROW_PX / (size.max_element() / 2.0).max(1.0)).min(PRESS_SCALE - 1.0);
+    }
+
+    /// Starts the swell of held glass, or of a pressed button's lens.
+    fn press_glass(&mut self, node: NodeId, lens: bool) {
+        let frame = self.frame(node);
+        let size = frame.size;
+        let mut pull = Vec2::splat(PULL_LIMIT);
+        let swell = if lens {
+            let mut grow = LENS_PRESS_GROW_PX;
+            // A row nearly as long as the glass it lies on (a menu row) stays inside it along
+            // its length, where it neither swells past nor follows the pointer out of it.
+            let long = if size.x >= size.y { 0 } else { 1 };
+            if size[long] >= LENS_ROW_ASPECT * size[1 - long]
+                && let Some(glass) = self.tree.parent(node).and_then(|p| self.glass_of(p))
+            {
+                let g = self.frame(glass);
+                let (lo, hi) = (
+                    frame.origin[long] - g.origin[long],
+                    (g.origin + g.size)[long] - (frame.origin + frame.size)[long],
+                );
+                grow = grow.min(lo.min(hi).max(0.0));
+                pull[long] = 0.0;
+            }
+            (grow / (size.max_element() / 2.0).max(1.0)).min(LENS_PRESS_SCALE - 1.0)
+        } else {
+            // Only surfaces big in both directions (sheets, the sidebar) stay still; bars swell.
+            if size.min_element() > PRESS_MAX_SIZE {
+                return;
+            }
+            (PRESS_GROW_PX / (size.max_element() / 2.0).max(1.0)).min(PRESS_SCALE - 1.0)
+        };
         let spring = self.press_spring();
-        let press = self.press_scale.entry(glass).or_insert_with(|| Press {
+        let press = self.press_scale.entry(node).or_insert_with(|| Press {
             scale: Animated::new(1.0, spring),
             offset: Animated::new(Vec2::ZERO, spring),
+            lens,
+            held: Animated::new(0.0, spring),
+            pull,
         });
         press.scale.spring = spring;
         press.offset.spring = spring;
-        press.scale.target = if pressed { 1.0 + swell } else { 1.0 };
-        if !pressed {
+        press.lens = lens;
+        press.held.spring = spring;
+        press.held.target = 1.0;
+        press.pull = pull;
+        press.scale.target = 1.0 + swell;
+    }
+
+    /// Lets held glass (or a lens) spring back.
+    fn release_press(&mut self, node: NodeId) {
+        if let Some(press) = self.press_scale.get_mut(&node) {
+            press.scale.target = 1.0;
             press.offset.target = Vec2::ZERO;
+            press.held.target = 0.0;
         }
     }
 
     /// While glass is held, it follows the pointer a little (rubber band) when dragged away.
     fn pull_glass(&mut self, p: Vec2) {
         let Some((glass, anchor)) = self.press_anchor else { return };
+        // Reduce Motion: it swells in place.
+        let still = self.theme.config().glass.reduce_motion;
         if let Some(press) = self.press_scale.get_mut(&glass) {
-            press.offset.target = axion_physics::rubber_band_vec(p - anchor, PULL_LIMIT);
+            let d = p - anchor;
+            press.offset.target = if still {
+                Vec2::ZERO
+            } else if press.pull.x == press.pull.y {
+                axion_physics::rubber_band_vec(d, press.pull.x)
+            } else {
+                Vec2::new(
+                    axion_physics::rubber_band(d.x, press.pull.x),
+                    axion_physics::rubber_band(d.y, press.pull.y),
+                )
+            };
         }
+    }
+
+    /// The innermost visible glass under `p` in `within`'s subtree, leaving out `skip` (and
+    /// what lies inside them): its frame as drawn (logical px), corner radius (clamped to the
+    /// frame) and tint density. Popovers use it to find the glass they flow out of.
+    pub fn glass_at(
+        &self,
+        within: NodeId,
+        p: Vec2,
+        skip: &[NodeId],
+    ) -> Option<(Rect, f32, Option<GlassLevel>)> {
+        if skip.contains(&within) || !self.is_visible(within) {
+            return None;
+        }
+        let widget = self.widget(within)?;
+        for child in self.tree.children(within).unwrap_or_default().into_iter().rev() {
+            if let Some(found) = self.glass_at(child, p, skip) {
+                return Some(found);
+            }
+        }
+        // Glass that only joins other glass (a popover's bridge) is not a surface of its own.
+        if widget.join_only
+            || !matches!(widget.background, Background::Glass(_) | Background::TintedGlass(..))
+        {
+            return None;
+        }
+        let frame = widget.visual_frame.unwrap_or(widget.frame);
+        let radius = widget.radius.min(frame.size.min_element() / 2.0);
+        rounded_contains(frame, radius, p).then_some((frame, radius, widget.glass_density))
     }
 
     fn press_spring(&self) -> Spring {
@@ -1162,8 +1271,11 @@ impl Ui {
         self.press_scale.retain(|_, press| {
             press.scale.step(dt);
             press.offset.step(dt);
+            press.held.step(dt);
             !(press.scale.target == 1.0
                 && press.scale.is_settled(PRESS_SETTLED)
+                && press.held.target == 0.0
+                && press.held.is_settled(PRESS_SETTLED)
                 && press.offset.target == Vec2::ZERO
                 && press.offset.is_settled(0.05))
         });
@@ -1306,15 +1418,39 @@ impl Ui {
             // Along the pull it stretches, across it it narrows a little (like the glass).
             let along = Vec2::ONE + dir * e;
             let across = Vec2::ONE - Vec2::new(dir.y, dir.x) * e * 0.5;
+            // A lens carries its content: it stays centred in the lens, moving and stretching
+            // with it. Held group glass keeps its several items in place instead.
+            let carry = press.lens.then(|| Carry { from: px.center(), to: px.center() + offset });
             PressXf {
                 scale: press.scale.value,
                 offset,
                 stretch: Vec2::new(1.0 + e, 1.0 / (1.0 + e)),
                 angle: offset.y.atan2(offset.x),
                 content_scale: press.scale.value * along * across,
-                carry: None,
+                carry,
             }
         });
+        // How far a lens has formed (0 at rest, 1 held): it lightens with it.
+        // Reduce Transparency: opaque glass has no clearer lens to show, so a pressed button
+        // keeps its plain highlight (the lens still swells).
+        let opaque = self.theme.config().glass.reduce_transparency;
+        let lens_glow = self.press_scale.get(&node).filter(|p| p.lens).map(|press| {
+            let t = press.held.value.clamp(0.0, 1.0);
+            if opaque { 0.0 } else { LENS_PRESS_GLOW[usize::from(theme.dark)] * t }
+        });
+        // A lens of a button without glass of its own is drawn in the pass of the glass it
+        // lies on, so it flows out of it; inside a clipped list it would be a pass of its own,
+        // so there the button keeps its plain highlight.
+        let lens_on = match widget.background {
+            Background::None if lens_glow.is_some() && self.painting_clipped.get() == 0 => {
+                self.tree.parent(node).and_then(|p| self.glass_of(p)).and_then(|g| self.widget(g))
+            }
+            _ => None,
+        };
+        let lensed = lens_glow.is_some()
+            && (lens_on.is_some()
+                || matches!(widget.background, Background::Glass(_) | Background::TintedGlass(..)));
+        let press_xf = press_xf.filter(|_| lensed || lens_glow.is_none());
         let mark = press_xf.as_ref().map(|_| marks(stacks));
         // An animated background carries its content along (mapped from the layout frame onto
         // it), and the content fades with the background's growth: both share one value.
@@ -1349,6 +1485,8 @@ impl Ui {
                 };
                 let mut shape = GlassShape::rounded_rect(bg_px.center(), bg_px.size * 0.5, bg_radius);
                 shape.tint_opacity = widget.glass_density.map(|l| theme.glass_opacity(l));
+                shape.merge = widget.glass_merge.map(|m| m * s);
+                shape.join_only = widget.join_only;
                 if let Some(xf) = &press_xf {
                     shape.center += xf.offset;
                     shape.half_size *= xf.scale;
@@ -1356,6 +1494,7 @@ impl Ui {
                     shape.stretch = xf.stretch;
                     shape.stretch_angle = xf.angle;
                 }
+                shape.glow = lens_glow.unwrap_or(0.0);
                 stacks[depth + 1].glass.push(GlassItem { level, fade: quantize_fade(fade), tint, shape });
                 child_depth = depth + 1;
             }
@@ -1373,7 +1512,27 @@ impl Ui {
                 color[3] *= opacity * fade;
                 content.quads.push(Quad::fill(bg_px, bg_radius, color));
             }
-            Background::None => {}
+            Background::None => {
+                if let (Some(glass), Some(xf)) = (lens_on, &press_xf)
+                    && depth > 0
+                {
+                    let (level, tint) = match glass.background {
+                        Background::TintedGlass(level, paint) => (level, Some(theme.color(paint))),
+                        Background::Glass(level) => (level, None),
+                        _ => unreachable!("glass_of returns glass"),
+                    };
+                    let mut shape = GlassShape::rounded_rect(
+                        bg_px.center() + xf.offset,
+                        bg_px.size * 0.5 * xf.scale,
+                        bg_radius * xf.scale,
+                    );
+                    shape.stretch = xf.stretch;
+                    shape.stretch_angle = xf.angle;
+                    shape.tint_opacity = glass.glass_density.map(|l| theme.glass_opacity(l));
+                    shape.glow = lens_glow.unwrap_or(0.0);
+                    stacks[depth].glass.push(GlassItem { level, fade: quantize_fade(fade), tint, shape });
+                }
+            }
         }
 
         // Buttons: selected / hover / pressed feedback.
@@ -1386,6 +1545,9 @@ impl Ui {
                 content.quads.push(Quad::fill(px, radius, faded([surface[0], surface[1], surface[2], 0.7])));
             }
             let feedback = if !widget.feedback {
+                0.0
+            } else if lensed && !opaque {
+                // The button is glass: its lens is the feedback.
                 0.0
             } else if self.pressed == Some(node) {
                 PRESS_ALPHA
@@ -1514,9 +1676,11 @@ impl Ui {
         if widget.clip {
             // The subtree as its own layers, each cut to this widget's frame.
             let mut sub: Vec<Stack<'a>> = Vec::new();
+            self.painting_clipped.set(self.painting_clipped.get() + 1);
             for child in self.tree.children(node).unwrap_or_default() {
                 self.paint_node(child, child_depth, dim, child_fade, &mut sub);
             }
+            self.painting_clipped.set(self.painting_clipped.get() - 1);
             let mut layers = Vec::new();
             self.flush(sub, &mut layers);
             for layer in &mut layers {
@@ -1666,6 +1830,12 @@ struct Stack<'a> {
 struct Press {
     scale: Animated<f32>,
     offset: Animated<Vec2>,
+    /// A button's own lens (see `Ui::press_target`), not group glass.
+    lens: bool,
+    /// 1 while held, 0 at rest (on the same spring): how far a lens has formed.
+    held: Animated<f32>,
+    /// How far it follows the pointer along each axis (rubber band limits, logical px).
+    pull: Vec2,
 }
 
 struct GlassItem {
@@ -2005,5 +2175,84 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, vec!["glass", "content"]);
+    }
+
+    fn glass_and_icons(ui: &Ui) -> (Vec<GlassShape>, Vec<Rect>, usize) {
+        let mut layers = Vec::new();
+        ui.paint(&mut layers);
+        let mut shapes = Vec::new();
+        let mut icons = Vec::new();
+        let mut quads = 0;
+        for layer in &layers {
+            match layer {
+                Layer::Glass { shapes: s, .. } => shapes.extend(s.iter().copied()),
+                Layer::Content(c) => {
+                    icons.extend(c.icons.iter().map(|i| i.rect));
+                    quads += c.quads.len();
+                }
+                Layer::Image(_) => {}
+            }
+        }
+        (shapes, icons, quads)
+    }
+
+    #[test]
+    fn a_pressed_button_is_a_lens_carrying_its_icon() {
+        let mut ui = ui();
+        let (_, button, _) = row(&mut ui);
+        ui.add(button, Widget::icon(axion_compositor::Icon::Back, 20.0), Style::default());
+        let mut style = ui.style(button);
+        style.justify_content = JustifyContent::CENTER;
+        style.align_items = AlignItems::CENTER;
+        ui.set_style(button, style);
+        ui.layout();
+        let (rest_shapes, rest_icons, _) = glass_and_icons(&ui);
+        assert_eq!(rest_shapes.len(), 1);
+        ui.handle(UiInput::PointerMove(Vec2::new(28.0, 28.0)));
+        ui.handle(UiInput::PointerDown);
+        ui.handle(UiInput::PointerMove(Vec2::new(48.0, 28.0)));
+        for _ in 0..60 {
+            ui.animate(1.0 / 60.0);
+        }
+        let (shapes, icons, quads) = glass_and_icons(&ui);
+        // The bar's glass and the button's lens, in one pass, so they flow together.
+        assert_eq!(shapes.len(), 2);
+        let lens = shapes[1];
+        assert!(lens.half_size.x > 22.0 * 1.3, "it swells");
+        assert!(lens.center.x > 28.5, "it follows the pointer");
+        assert!(lens.glow > 0.0, "it is lighter");
+        // No plain highlight: the lens is the feedback.
+        assert_eq!(quads, 0);
+        // The icon rides along, centred in the lens, and grows with it.
+        let (rest, held) = (rest_icons[0], icons[0]);
+        assert!((rest.center() - Vec2::splat(28.0)).length() < 1.0);
+        assert!((held.center() - lens.center).length() < 1.0);
+        assert!(held.size.x > rest.size.x * 1.3);
+        // Released, it springs back into the bar.
+        ui.handle(UiInput::PointerUp);
+        for _ in 0..120 {
+            ui.animate(1.0 / 60.0);
+        }
+        assert_eq!(glass_and_icons(&ui).0.len(), 1);
+    }
+
+    #[test]
+    fn joining_glass_is_neither_hit_nor_a_surface() {
+        let mut ui = ui();
+        let (bar, _, _) = row(&mut ui);
+        let join = ui.add(
+            ui.root(),
+            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).as_join(),
+            Style {
+                position: Position::Absolute,
+                size: Size { width: length(100.0), height: length(100.0) },
+                ..Default::default()
+            },
+        );
+        ui.layout();
+        let p = Vec2::new(200.0, 28.0);
+        assert_ne!(ui.hit(Vec2::new(50.0, 80.0)), Some(join));
+        assert_eq!(ui.glass_at(ui.root(), p, &[]).map(|g| g.0), Some(ui.frame(bar)));
+        assert!(ui.glass_at(ui.root(), Vec2::new(50.0, 80.0), &[]).is_none());
     }
 }

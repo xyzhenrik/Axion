@@ -16,8 +16,11 @@ struct Params {
     shadow: f32,
     frost: f32,
     shape_count: u32,
-    // 1 when some shape has its own tint strength (see `scene_tinted`).
+    // 1 when some shape has its own tint strength or glow (see `scene_tinted`).
     own_tints: u32,
+    // Shapes from this index on merge with wide_k (bridges, sorted last by the renderer).
+    wide_from: u32,
+    wide_k: f32,
 }
 
 struct Shape {
@@ -26,9 +29,10 @@ struct Shape {
     stretch: vec2f,
     radius: f32,
     angle: f32,
-    // < 0: the pass's tint strength (params.tint.a).
+    // -1: the pass's tint strength (params.tint.a); JOIN_ONLY: none of its own.
     tint_opacity: f32,
-    _pad: f32,
+    // Brightening inside the shape (0–1, a pressed lens).
+    glow: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -93,34 +97,50 @@ fn scene(p: vec2f) -> f32 {
     var d = 1e5;
     for (var i = 0u; i < params.shape_count; i++) {
         let s = shapes[i];
+        let k = select(params.merge_k, params.wide_k, i >= params.wide_from);
         // smin(d, x) == d whenever x >= d + k, so far-away shapes can be skipped.
-        if (shape_bound(s, p) >= d + params.merge_k) {
+        if (shape_bound(s, p) >= d + k) {
             continue;
         }
-        d = smin(d, shape_sdf(s, p), params.merge_k);
+        d = smin(d, shape_sdf(s, p), k);
     }
     return d;
 }
 
-// `scene` plus the tint strength at `p`: each shape's own strength, blended across the
-// smooth union the same way the shapes flow together. Only evaluated once per pixel.
-fn scene_tinted(p: vec2f) -> vec2f {
+// `Shape::tint_opacity` of a shape without a tint of its own.
+const JOIN_ONLY: f32 = -2.0;
+
+// How far into its soft edge a glowing shape brightens (px, inside the edge) …
+const GLOW_EDGE: f32 = 6.0;
+// … and how much clearer it gets per unit of glow (less tint).
+const GLOW_CLEARING: f32 = 3.0;
+
+// `scene` plus the tint strength and glow at `p`: each shape's own strength, blended across
+// the smooth union the same way the shapes flow together; the glow of the brightest shape
+// `p` lies in. Only evaluated once per pixel.
+fn scene_tinted(p: vec2f) -> vec3f {
     var d = 1e5;
     var a = params.tint.a;
-    let inv_k = 1.0 / max(params.merge_k, 0.001);
+    var g = 0.0;
     for (var i = 0u; i < params.shape_count; i++) {
         let s = shapes[i];
-        if (shape_bound(s, p) >= d + params.merge_k) {
+        let k = select(params.merge_k, params.wide_k, i >= params.wide_from);
+        // A glowing shape lies inside others, so it is never skipped (its glow counts).
+        if (shape_bound(s, p) >= d + k && s.glow <= 0.0) {
             continue;
         }
         let x = shape_sdf(s, p);
-        let own = select(params.tint.a, s.tint_opacity, s.tint_opacity >= 0.0);
-        // Weight of what was there before: 1 where it is much nearer, 0 where this shape is.
-        let keep = clamp(0.5 + 0.5 * (x - d) * inv_k, 0.0, 1.0);
-        a = mix(own, a, keep);
-        d = smin(d, x, params.merge_k);
+        // A shape that only joins others leaves the tint to them.
+        if (s.tint_opacity > JOIN_ONLY + 0.5) {
+            let own = select(params.tint.a, s.tint_opacity, s.tint_opacity >= 0.0);
+            // Weight of what was there before: 1 where it is much nearer, 0 where this shape is.
+            let keep = clamp(0.5 + 0.5 * (x - d) / max(k, 0.001), 0.0, 1.0);
+            a = mix(own, a, keep);
+        }
+        g = max(g, s.glow * clamp(0.5 - x / GLOW_EDGE, 0.0, 1.0));
+        d = smin(d, x, k);
     }
-    return vec2f(d, a);
+    return vec3f(d, a, g);
 }
 
 fn sample3(tex: texture_2d<f32>, uv_r: vec2f, uv_g: vec2f, uv_b: vec2f) -> vec3f {
@@ -138,7 +158,7 @@ const SHADOW_REACH: f32 = 28.0;
 fn fs_main(in: VsOut) -> @location(0) vec4f {
     let p = in.pos.xy;
     let base = textureSampleLevel(backdrop, samp, in.uv, 0.0).rgb;
-    var field = vec2f(0.0, params.tint.a);
+    var field = vec3f(0.0, params.tint.a, 0.0);
     if (params.own_tints != 0u) {
         field = scene_tinted(p);
     } else {
@@ -191,7 +211,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     let sharp = sample3(backdrop, uv_r, uv_g, uv_b);
     let soft = sample3(blurred, uv_r, uv_g, uv_b);
     var glass = mix(sharp, soft, params.frost);
-    glass = mix(glass, params.tint.rgb, field.y);
+    // A pressed lens is clearer and lighter, like glass swelling into a lens that gathers
+    // light: less tint shows more of what is behind it.
+    glass = mix(glass, params.tint.rgb, field.y * max(1.0 - field.z * GLOW_CLEARING, 0.0));
+    if (field.z > 0.0) {
+        glass = mix(glass, vec3f(1.0), field.z);
+    }
 
     // Specular: a thin bright rim all around, strongest where the edge faces the light,
     // plus a weaker reflection on the opposite side and a broad glow across the bezel.

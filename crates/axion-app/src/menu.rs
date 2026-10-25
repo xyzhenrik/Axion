@@ -31,7 +31,7 @@ const ICON: f32 = 19.0;
 const GAP_TO_ANCHOR: f32 = 14.0;
 /// A menu below its button reaches this far past the button's right edge.
 const BEYOND_ANCHOR: f32 = 12.0;
-/// Between a menu and its submenu (the neck joins them across it).
+/// Between a menu and its submenu (the bridge joins them across it).
 const SUBMENU_GAP: f32 = 12.0;
 /// Kept free at the window's edges.
 const WINDOW_MARGIN: f32 = 8.0;
@@ -276,7 +276,7 @@ impl Menu {
         let max_left = (window.x - width - WINDOW_MARGIN).max(WINDOW_MARGIN);
         let target = match self.placement {
             Placement::Below => {
-                // A little past the button, so the neck can hang straight down from it.
+                // A little past the button, so the bridge reaches as far as the address field does.
                 let right = anchor.origin.x + anchor.size.x + BEYOND_ANCHOR;
                 let left = (right - width).clamp(WINDOW_MARGIN, max_left);
                 Frame::new(left, anchor.origin.y + anchor.size.y + GAP_TO_ANCHOR, width, height)

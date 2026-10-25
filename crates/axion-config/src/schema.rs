@@ -123,9 +123,10 @@ pub struct Glass {
     pub merge_distance: f32,
     /// Maximum squash along the direction of motion (0.08 = 8%).
     pub squash: f32,
-    /// Width in logical pixels of the glass neck that joins a popover or menu to the bar or
-    /// button it flows out of (0 leaves popovers detached).
-    pub popover_neck: f32,
+    /// Smooth-union radius in logical pixels of the broad glass bridge that joins a popover
+    /// or menu to the bar or button it flows out of: how wide the concave fillets at the
+    /// junction's ends are (at most `merge_distance` has no extra effect).
+    pub popover_bridge_fillet: f32,
     /// Extra tint opacity over busy or mid-grey backdrops, to keep labels legible.
     pub adaptive_opacity: f32,
     /// Replace glass with opaque surfaces.
@@ -159,7 +160,7 @@ impl Default for Glass {
             bezel_width: 22.0,
             merge_distance: 20.0,
             squash: 0.08,
-            popover_neck: 16.0,
+            popover_bridge_fillet: 30.0,
             adaptive_opacity: 0.12,
             reduce_transparency: false,
             reduce_motion: false,
