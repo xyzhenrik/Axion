@@ -135,6 +135,10 @@ pub struct Widget {
     /// Makes the widget clickable.
     pub action: Option<ActionId>,
     pub enabled: bool,
+    /// Shows the hover/press highlight over the widget. Off for backdrops (a modal sheet's
+    /// dimmed window): their highlight would cover the whole window and flash it whenever the
+    /// pointer crosses a gap between the sheet's rows.
+    pub feedback: bool,
     /// Draws the widget in its "on" state (e.g. the sidebar toggle while the sidebar is open).
     pub selected: bool,
     /// Fades the widget and everything inside it (0–1); glass loses blur, tint and light.
@@ -160,6 +164,7 @@ impl Widget {
             shadow: None,
             action: None,
             enabled: true,
+            feedback: true,
             selected: false,
             opacity: 1.0,
             visual_frame: None,
@@ -271,6 +276,12 @@ impl Widget {
 
     pub fn with_action(mut self, action: ActionId) -> Self {
         self.action = Some(action);
+        self
+    }
+
+    /// Clickable without a hover/press highlight (see [`Widget::feedback`]).
+    pub fn without_feedback(mut self) -> Self {
+        self.feedback = false;
         self
     }
 

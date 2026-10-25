@@ -675,6 +675,7 @@ impl SettingsSheet {
             ui.root(),
             Widget::container()
                 .with_background(Background::Fill(Paint::Fixed(Color::rgb(0x000000)), BACKDROP_DIM))
+                .without_feedback()
                 .with_action(SettingsAction::Close.id()),
             Style {
                 position: Position::Absolute,

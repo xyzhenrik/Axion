@@ -1385,7 +1385,9 @@ impl Ui {
                 content.quads.push(Quad::shadow(px, radius, 1.0 * s, 4.0 * s, [0.0, 0.0, 0.0, 0.08 * fade]));
                 content.quads.push(Quad::fill(px, radius, faded([surface[0], surface[1], surface[2], 0.7])));
             }
-            let feedback = if self.pressed == Some(node) {
+            let feedback = if !widget.feedback {
+                0.0
+            } else if self.pressed == Some(node) {
                 PRESS_ALPHA
             } else if self.hover == Some(node) {
                 HOVER_ALPHA
