@@ -125,7 +125,7 @@ impl PageTint {
     pub fn color(&self, view: ViewId) -> Option<[f32; 3]> {
         let page = self.pages.get(&view)?;
         let raw = theme_color(&page.theme, self.dark).or(page.measured)?;
-        Some(pleasant(raw))
+        Some(in_scheme(raw, self.dark))
     }
 
     /// Moves the window tint towards `target` on `spring` (`None`: no tint; it snaps when it
@@ -188,11 +188,12 @@ pub fn dominant_color(cells: &[[u8; 3]]) -> Option<[u8; 3]> {
     Some(sum.map(|s| (s / weight).round().clamp(0.0, 255.0) as u8))
 }
 
-/// `rgb` as a calm light or dark tone (whichever it is nearer to), sRGB 0–1.
-pub fn pleasant(rgb: [u8; 3]) -> [f32; 3] {
+/// `rgb` as a calm tone of the current scheme: the page's hue, light in light mode and dark
+/// in dark mode, so switching the mode switches the tint with it.
+pub fn in_scheme(rgb: [u8; 3], dark: bool) -> [f32; 3] {
     let color = rgb.map(|c| f32::from(c) / 255.0);
     let (h, s, l) = to_hsl(color);
-    let l = if lightness(color) >= 0.5 { l.max(LIGHT_MIN) } else { l.min(DARK_MAX) };
+    let l = if dark { l.min(DARK_MAX) } else { l.max(LIGHT_MIN) };
     from_hsl(h, s.min(MAX_SATURATION), l)
 }
 
@@ -253,16 +254,23 @@ mod tests {
     }
 
     #[test]
-    fn colours_become_calm_light_or_dark_tones() {
-        let white = pleasant([255, 255, 255]);
+    fn colours_become_calm_tones_of_the_scheme() {
+        let white = in_scheme([255, 255, 255], false);
         assert!(white.iter().all(|c| (c - 1.0).abs() < 1e-3));
-        let mid_blue = pleasant([60, 110, 200]);
+        let mid_blue = in_scheme([60, 110, 200], true);
         assert!(lightness(mid_blue) < 0.25, "{mid_blue:?}");
-        let pale = pleasant([200, 210, 230]);
+        let pale = in_scheme([200, 210, 230], false);
         assert!(lightness(pale) > 0.8, "{pale:?}");
-        let neon = pleasant([255, 0, 255]);
+        let neon = in_scheme([255, 0, 255], false);
         let (_, s, _) = to_hsl(neon);
         assert!(s <= MAX_SATURATION + 1e-3);
+    }
+
+    #[test]
+    fn the_tint_follows_the_mode() {
+        let blue = [99, 124, 249];
+        assert!(lightness(in_scheme(blue, true)) < 0.25);
+        assert!(lightness(in_scheme(blue, false)) > 0.8);
     }
 
     #[test]
@@ -287,10 +295,11 @@ mod tests {
         assert!(!tint.wants_measure(view), "no second measurement while one runs");
         tint.measured(&[[255, 255, 255]; 4]);
         assert!(!tint.wants_measure(view), "and none after it: scrolling changes nothing");
-        assert!(tint.color(view).is_some());
-        // A theme colour takes precedence.
-        tint.theme_colors(view, &[ThemeColor { rgb: [0, 0, 0], media: String::new() }], Duration::ZERO);
-        assert!(lightness(tint.color(view).unwrap()) < 0.1);
+        let measured = tint.color(view).unwrap();
+        // A theme colour takes precedence (its hue, in the light scheme's tone).
+        tint.theme_colors(view, &[ThemeColor { rgb: [200, 30, 30], media: String::new() }], Duration::ZERO);
+        let themed = tint.color(view).unwrap();
+        assert!(themed[0] > themed[2] && themed != measured, "{themed:?}");
         // The scheme switch measures again.
         tint.set_dark(true, Some(view), Duration::ZERO);
         assert!(tint.wants_measure(view));

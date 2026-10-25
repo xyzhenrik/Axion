@@ -39,6 +39,19 @@ pub struct General {
     pub search_url: String,
 }
 
+/// The homepage Axion used before it had its own start page; configs that still carry it (or
+/// none at all) get the start page.
+const OLD_DEFAULT_HOMEPAGE: &str = "https://duckduckgo.com/";
+
+impl General {
+    /// An empty homepage or the old default becomes Axion's start page.
+    pub fn upgrade_homepage(&mut self) {
+        if self.homepage.trim().is_empty() || self.homepage == OLD_DEFAULT_HOMEPAGE {
+            self.homepage = START_PAGE_URL.into();
+        }
+    }
+}
+
 impl Default for General {
     fn default() -> Self {
         Self { homepage: START_PAGE_URL.into(), search_url: "https://duckduckgo.com/?q={}".into() }
@@ -399,6 +412,8 @@ pub struct Layout {
     pub page_margin: f32,
     /// Tabs in their own row under the address bar, or in one compact row with it.
     pub tab_bar: TabBarStyle,
+    /// A home button (opens `general.homepage`) next to back and forward.
+    pub home_button: bool,
     /// Removed (the bars no longer hide while scrolling); still accepted in old files.
     #[serde(skip_serializing)]
     hide_bar_on_scroll: Option<bool>,
@@ -443,6 +458,7 @@ impl Default for Layout {
             page_corner_radius: 10.0,
             page_margin: 8.0,
             tab_bar: TabBarStyle::Compact,
+            home_button: true,
             hide_bar_on_scroll: None,
         }
     }

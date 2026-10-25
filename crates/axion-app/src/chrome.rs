@@ -94,6 +94,8 @@ pub enum ChromeAction {
     NowPlaying,
     /// The bookmarks bar's chevron: the bookmarks that don't fit, as a menu.
     BookmarksOverflow,
+    /// The toolbar's home button: opens the homepage.
+    Home,
     /// A bookmark of the bookmarks bar (index into the bar's list).
     OpenBookmark(usize),
     NowPlayingToggle,
@@ -177,7 +179,7 @@ const BOOKMARK_BASE: u32 = 18_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 29] = [
+    const SIMPLE: [ChromeAction; 30] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -207,6 +209,7 @@ impl ChromeAction {
         ChromeAction::CollapseTabs,
         ChromeAction::CollapsePrivate,
         ChromeAction::BookmarksOverflow,
+        ChromeAction::Home,
     ];
 
     pub fn id(self) -> ActionId {
@@ -371,6 +374,7 @@ pub struct Chrome {
     bar_sidebar_button: NodeId,
     back: NodeId,
     forward: NodeId,
+    home_button: NodeId,
     tab_capsule: NodeId,
     /// Where the address segment goes with the separate tab bar.
     address_slot: NodeId,
@@ -926,6 +930,8 @@ impl Chrome {
         let (back, _) = icon_button(ui, nav, ChromeAction::Back, Widget::icon(Icon::Back, 21.0), BUTTON);
         let (forward, _) =
             icon_button(ui, nav, ChromeAction::Forward, Widget::icon(Icon::Forward, 21.0), BUTTON);
+        let (home_button, _) =
+            icon_button(ui, nav, ChromeAction::Home, Widget::icon(Icon::Home, 20.0), BUTTON);
 
         // Separate tab bar: the address segment sits here, centred between the groups.
         let address_slot = ui.add(
@@ -1022,6 +1028,8 @@ impl Chrome {
                 position: Position::Absolute,
                 size: Size { width: auto(), height: length(TAB_STRIP_HEIGHT) },
                 padding: padding(TAB_STRIP_PADDING, TAB_STRIP_PADDING, 0.0, 0.0),
+                // Equal-width tabs sit in the middle of the strip until they fill it.
+                justify_content: JustifyContent::CENTER,
                 ..row(TAB_GAP)
             },
         );
@@ -1135,6 +1143,7 @@ impl Chrome {
             bar_sidebar_button,
             back,
             forward,
+            home_button,
             tab_capsule,
             address_slot,
             tab_strip,
@@ -1590,6 +1599,7 @@ impl Chrome {
             self.tab_widths.ready = false;
         }
         self.tab_bar = l.tab_bar;
+        ui.set_visible(self.home_button, l.home_button);
         let separate = l.tab_bar == TabBarStyle::Separate;
         ui.set_visible(self.tab_capsule, !separate);
         ui.set_visible(self.address_slot, separate);

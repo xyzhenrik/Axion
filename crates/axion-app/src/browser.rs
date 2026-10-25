@@ -2574,6 +2574,10 @@ impl Browser {
                     Some(ChromeAction::ToggleSidebar) => self.run(Action::ToggleSidebar),
                     Some(ChromeAction::Back) => self.run(Action::Back),
                     Some(ChromeAction::Forward) => self.run(Action::Forward),
+                    Some(ChromeAction::Home) => {
+                        let home = self.config.general.homepage.clone();
+                        self.navigate_to(home);
+                    }
                     Some(ChromeAction::ReloadOrStop) => {
                         if let Some(tab) = self.tabs.active() {
                             let (view, loading) = (tab.view, tab.loading);

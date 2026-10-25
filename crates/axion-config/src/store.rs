@@ -36,7 +36,9 @@ pub fn load_config(paths: &ConfigPaths) -> Result<Config, ConfigError> {
     let mut merged = toml::Table::try_from(Config::default())?;
     merge(&mut merged, user);
     // Round-trip through text so errors (wrong types, unknown keys) carry the file's name.
-    toml::from_str(&toml::to_string(&merged)?).map_err(parse_err)
+    let mut config: Config = toml::from_str(&toml::to_string(&merged)?).map_err(parse_err)?;
+    config.general.upgrade_homepage();
+    Ok(config)
 }
 
 /// Deep-merges `over` into `base`: tables merge key by key, everything else replaces.
@@ -103,6 +105,17 @@ mod tests {
         let paths = ConfigPaths::in_dir(temp_dir("missing"));
         assert_eq!(load_config(&paths).unwrap(), Config::default());
         assert_eq!(load_keymap(&paths).unwrap(), Keymap::default());
+    }
+
+    #[test]
+    fn empty_or_old_homepage_becomes_the_start_page() {
+        for old in ["", "https://duckduckgo.com/"] {
+            let paths = ConfigPaths::in_dir(temp_dir("homepage"));
+            std::fs::create_dir_all(&paths.dir).unwrap();
+            std::fs::write(&paths.config, format!("[general]\nhomepage = \"{old}\"\n")).unwrap();
+            assert_eq!(load_config(&paths).unwrap().general.homepage, crate::START_PAGE_URL);
+            std::fs::remove_dir_all(&paths.dir).unwrap();
+        }
     }
 
     #[test]

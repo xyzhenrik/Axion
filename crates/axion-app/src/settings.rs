@@ -143,6 +143,7 @@ enum Setting {
     KeepMediaAwake,
     RestoreSession,
     OpenInBackground,
+    HomeButton,
     OwnFullscreenControls,
     HideControlsAfter,
     HardwareDecoding,
@@ -192,6 +193,7 @@ impl Setting {
             Setting::KeepMediaAwake => "Keep tabs playing audio awake",
             Setting::RestoreSession => "Reopen last session's tabs at start",
             Setting::OpenInBackground => "Open new tabs in background",
+            Setting::HomeButton => "Show home button",
             Setting::OwnFullscreenControls => "Axion's player in fullscreen",
             Setting::HideControlsAfter => "Hide controls while playing after",
             Setting::HardwareDecoding => "Hardware video decoding (after restart)",
@@ -213,6 +215,7 @@ impl Setting {
         matches!(
             self,
             Setting::HomeClock
+                | Setting::HomeButton
                 | Setting::HomeGreeting
                 | Setting::HomeSearch
                 | Setting::HomeTopSites
@@ -330,6 +333,7 @@ impl Setting {
             Setting::KeepMediaAwake => return c.tabs.keep_media_awake as u8 as f32,
             Setting::RestoreSession => return c.tabs.restore_session as u8 as f32,
             Setting::OpenInBackground => return c.tabs.open_links_in_background as u8 as f32,
+            Setting::HomeButton => return c.layout.home_button as u8 as f32,
             Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
             Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
@@ -385,6 +389,7 @@ impl Setting {
             Setting::KeepMediaAwake => c.tabs.keep_media_awake = on,
             Setting::RestoreSession => c.tabs.restore_session = on,
             Setting::OpenInBackground => c.tabs.open_links_in_background = on,
+            Setting::HomeButton => c.layout.home_button = on,
             Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
             Setting::DesktopIntegration => c.media.desktop_integration = on,
@@ -1088,6 +1093,7 @@ impl SettingsSheet {
                     .map(|(i, (name, _))| (*name, SettingsAction::SearchEngine(i).id()))
                     .collect();
                 segmented(ui, row_node, &options, current);
+                self.control(ui, config, Setting::HomeButton);
                 self.section(ui, "Start page");
                 for setting in [
                     Setting::HomeClock,
