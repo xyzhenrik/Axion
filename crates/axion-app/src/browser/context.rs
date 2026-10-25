@@ -302,7 +302,9 @@ impl Browser {
                 self.bar_bookmarks.iter().map(|(_, url, title)| (url.clone(), title.clone())).collect();
             self.chrome.set_bookmarks(&mut self.ui, &items, &self.favicons);
         }
+        // Nothing to show: no bar (it appears with the first bookmark).
         let shown = !self.is_locked()
+            && !self.bar_bookmarks.is_empty()
             && match self.config.layout.bookmarks_bar {
                 BookmarksBar::Always => true,
                 BookmarksBar::Home => self.tabs.active().is_some_and(|t| is_home_url(&t.url, &self.config)),

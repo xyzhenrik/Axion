@@ -42,6 +42,8 @@ const TAB_STRIP_GAP: f32 = 8.0;
 const PRESENTATION_SETTLED: f32 = 0.001;
 /// The address field's widest size with the separate tab bar.
 const SEPARATE_ADDRESS_MAX: f32 = 680.0;
+/// The loading line's distance from the address field's ends.
+const PROGRESS_INSET: f32 = 16.0;
 const ADDRESS_FAVICON: f32 = 18.0;
 const NOW_PLAYING_RADIUS: f32 = 20.0;
 const DOWNLOAD_BAR_WIDTH: f32 = 18.0;
@@ -433,6 +435,11 @@ struct TabWidths {
     separators: Vec<(NodeId, Option<NodeId>, bool)>,
     /// The hovered node the hairlines were last shown for (`None`: not yet).
     separator_hover: Option<Option<NodeId>>,
+    /// Where the separate tab bar may lie (left edge, width; logical px): it is only as wide
+    /// as its tabs, centred in this span.
+    strip_area: (f32, f32),
+    /// The strip's applied left edge and width.
+    strip_applied: (f32, f32),
 }
 
 /// The bookmarks bar: favicons and titles on a glass capsule, what doesn't fit behind a
@@ -450,6 +457,11 @@ struct BookmarkRow {
     /// What the items were built from (url, title, has a favicon), to rebuild only on change.
     signature: Vec<(String, String, bool)>,
     shown: bool,
+    /// Where the bar may lie (left edge, width; logical px): it is only as wide as its items,
+    /// centred in this span, and grows with them.
+    area: (f32, f32),
+    /// The bar's applied left edge and width.
+    applied: (f32, f32),
 }
 
 /// The width each of `count` equally wide tabs gets in `available` px (gaps between them
@@ -1011,7 +1023,12 @@ impl Chrome {
             Widget::progress(Paint::Accent),
             Style {
                 position: Position::Absolute,
-                inset: Rect { left: length(16.0), right: length(16.0), top: auto(), bottom: length(0.0) },
+                inset: Rect {
+                    left: length(PROGRESS_INSET),
+                    right: length(PROGRESS_INSET),
+                    top: auto(),
+                    bottom: length(0.0),
+                },
                 size: Size { width: auto(), height: length(3.0) },
                 ..Default::default()
             },
@@ -1182,6 +1199,8 @@ impl Chrome {
                 reduce_motion: false,
                 separators: Vec::new(),
                 separator_hover: None,
+                strip_area: (0.0, 0.0),
+                strip_applied: (-1.0, -1.0),
             },
             bookmarks,
         };
@@ -1555,11 +1574,25 @@ impl Chrome {
         self.animate(ui, dt);
     }
 
+    /// Keeps the loading line inside the address field. Its insets alone resolved against the
+    /// field's unclamped width (the separate tab bar caps the field), so it ran past the end.
+    fn fit_progress(&self, ui: &mut Ui) {
+        let width = (ui.frame(self.address).size.x - 2.0 * PROGRESS_INSET).max(0.0);
+        let mut style = ui.style(self.progress);
+        let wanted = length(width);
+        if style.size.width != wanted {
+            style.size.width = wanted;
+            style.inset.right = auto();
+            ui.set_style(self.progress, style);
+        }
+    }
+
     /// Advances the sidebar's slide (and the tabs' widths, the bookmarks bar's fit). Call
     /// every frame.
     pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
         self.animate_tab_widths(ui, dt);
         self.fit_bookmarks(ui);
+        self.fit_progress(ui);
         if self.slide.is_settled(SLIDE_SETTLED) {
             if self.slide.target < 0.0 && ui.is_visible(self.sidebar) {
                 ui.set_visible(self.sidebar, false);
@@ -1605,14 +1638,17 @@ impl Chrome {
         ui.set_visible(self.address_slot, separate);
         ui.set_visible(self.tab_strip, separate && !self.page_fullscreen && !self.chrome_gone());
         let mut strip = ui.style(self.tab_strip);
-        strip.inset = Rect {
-            left: length(bar_left),
-            right: length(m),
-            top: length(m + l.bar_height + TAB_STRIP_GAP),
-            bottom: auto(),
-        };
+        // Left and width follow the tabs (see `animate_tab_widths`).
+        let area = (bar_left, (window.x - bar_left - m).max(0.0));
+        if area != self.tab_widths.strip_area {
+            self.tab_widths.strip_area = area;
+            self.tab_widths.strip_applied = (-1.0, -1.0);
+        }
+        strip.inset.top = length(m + l.bar_height + TAB_STRIP_GAP);
+        strip.inset.bottom = auto();
+        strip.inset.right = auto();
         ui.set_style(self.tab_strip, strip);
-        self.layout_bookmarks_bar(ui, config, bar_left);
+        self.layout_bookmarks_bar(ui, config, bar_left, window.x);
         let widths = &mut self.tab_widths;
         widths.preferred = l.tab_width;
         widths.min = l.tab_min_width;
@@ -2198,6 +2234,20 @@ fn sidebar_tab_row(
 }
 
 impl BookmarkRow {
+    /// Puts the bar at `width` (at most `span`), centred in the span starting at `left`.
+    fn place(&mut self, ui: &mut Ui, left: f32, span: f32, width: f32) {
+        let width = width.min(span);
+        let placed = (left + (span - width) / 2.0, width);
+        if (placed.0 - self.applied.0).abs() < 0.05 && (placed.1 - self.applied.1).abs() < 0.05 {
+            return;
+        }
+        self.applied = placed;
+        let mut style = ui.style(self.bar);
+        style.inset.left = length(placed.0);
+        style.size.width = length(placed.1);
+        ui.set_style(self.bar, style);
+    }
+
     fn build(ui: &mut Ui, root: NodeId) -> Self {
         let bar = ui.add(
             root,
@@ -2215,9 +2265,11 @@ impl BookmarkRow {
             bar,
             Widget::container().with_clip(),
             Style {
-                flex_grow: 1.0,
-                flex_shrink: 1.0,
-                flex_basis: length(0.0),
+                // Always its natural width, so its items measure true; the bar is sized to the
+                // ones that fit and hides the rest.
+                flex_grow: 0.0,
+                flex_shrink: 0.0,
+                flex_basis: auto(),
                 min_size: Size { width: length(0.0), height: auto() },
                 size: Size { width: auto(), height: length(BOOKMARK_ITEM_HEIGHT) },
                 overflow: axion_ui::taffy::Point {
@@ -2250,6 +2302,8 @@ impl BookmarkRow {
             fit: 0,
             signature: Vec::new(),
             shown: false,
+            area: (0.0, 0.0),
+            applied: (-1.0, -1.0),
         }
     }
 }
@@ -2265,15 +2319,15 @@ impl Chrome {
             // The address segment keeps at least its minimum.
             (self.tab_capsule, TAB_CAPSULE_PADDING, ACTIVE_SEGMENT_MIN + TAB_GAP)
         };
-        let frame = ui.frame(container);
-        if frame.size.x <= 1.0 || !ui.is_visible(container) {
+        // The separate strip shrinks to its tabs, so it measures its span, not itself.
+        let outer = if separate { self.tab_widths.strip_area.1 } else { ui.frame(container).size.x };
+        if outer <= 1.0 || !ui.is_visible(container) {
             return;
         }
         let widths = &mut self.tab_widths;
         let pinned = widths.pills.iter().filter(|(_, pinned)| *pinned).count();
         let flexible = widths.pills.len() - pinned;
-        let available =
-            frame.size.x - 2.0 * inner_padding - reserved - pinned as f32 * (widths.pinned + TAB_GAP);
+        let available = outer - 2.0 * inner_padding - reserved - pinned as f32 * (widths.pinned + TAB_GAP);
         let target = equal_tab_width(available, flexible, TAB_GAP, widths.preferred, widths.min);
         widths.width.target = target;
         if !widths.ready || widths.reduce_motion {
@@ -2283,6 +2337,24 @@ impl Chrome {
             widths.width.step(dt);
         }
         let width = widths.width.value.max(0.0);
+        if separate {
+            // As wide as its tabs (and their gaps), centred in its span.
+            let count = widths.pills.len();
+            let gaps = count.saturating_sub(1) as f32 * TAB_GAP;
+            let tabs = flexible as f32 * width + pinned as f32 * widths.pinned + gaps;
+            let (left, span) = widths.strip_area;
+            let strip_width = (tabs + 2.0 * inner_padding).min(span);
+            let placed = (left + (span - strip_width) / 2.0, strip_width);
+            if (placed.0 - widths.strip_applied.0).abs() > 0.05
+                || (placed.1 - widths.strip_applied.1).abs() > 0.05
+            {
+                widths.strip_applied = placed;
+                let mut style = ui.style(self.tab_strip);
+                style.inset.left = length(placed.0);
+                style.size.width = length(placed.1);
+                ui.set_style(self.tab_strip, style);
+            }
+        }
         if (width - widths.applied).abs() < 0.05 {
             return;
         }
@@ -2349,19 +2421,23 @@ impl Chrome {
 
     // ---- bookmarks bar ----
 
-    fn layout_bookmarks_bar(&mut self, ui: &mut Ui, config: &Config, left: f32) {
+    fn layout_bookmarks_bar(&mut self, ui: &mut Ui, config: &Config, left: f32, window_width: f32) {
         let l = &config.layout;
         let m = l.margin;
         let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 };
         let bar = self.bookmarks.bar;
         let mut style = ui.style(bar);
-        style.inset = Rect {
-            left: length(left),
-            right: length(m),
-            top: length(m + l.bar_height + strip + TAB_STRIP_GAP),
-            bottom: auto(),
-        };
+        // Left and width follow the items (see `fit_bookmarks`).
+        style.inset.top = length(m + l.bar_height + strip + TAB_STRIP_GAP);
+        style.inset.bottom = auto();
+        style.inset.right = auto();
         ui.set_style(bar, style);
+        let area = (left, (window_width - left - m).max(0.0));
+        if area != self.bookmarks.area {
+            self.bookmarks.area = area;
+            self.bookmarks.applied = (-1.0, -1.0);
+            self.bookmarks.fit = usize::MAX;
+        }
         ui.set_visible(bar, self.bookmarks.shown && !self.page_fullscreen);
     }
 
@@ -2427,7 +2503,16 @@ impl Chrome {
     /// the items once after they were laid out.
     fn fit_bookmarks(&mut self, ui: &mut Ui) {
         let b = &mut self.bookmarks;
-        if !b.shown || b.items.is_empty() || !ui.is_visible(b.bar) {
+        if !b.shown || !ui.is_visible(b.bar) {
+            return;
+        }
+        let (left, span) = b.area;
+        if b.items.is_empty() {
+            // Just the hint, centred.
+            let hint = ui.frame(b.hint).size.x;
+            if hint > 0.0 {
+                b.place(ui, left, span, hint + 2.0 * BOOKMARKS_BAR_PADDING);
+            }
             return;
         }
         if b.widths.is_none() {
@@ -2439,9 +2524,14 @@ impl Chrome {
             b.widths = Some(widths);
             b.fit = usize::MAX;
         }
-        let Some(widths) = &b.widths else { return };
-        let available = ui.frame(b.bar).size.x - 2.0 * BOOKMARKS_BAR_PADDING;
-        let fit = bookmarks_that_fit(widths, BOOKMARK_GAP, available, BOOKMARK_ITEM_HEIGHT);
+        let Some(widths) = b.widths.clone() else { return };
+        let available = span - 2.0 * BOOKMARKS_BAR_PADDING;
+        let fit = bookmarks_that_fit(&widths, BOOKMARK_GAP, available, BOOKMARK_ITEM_HEIGHT);
+        // As wide as the items shown (and the chevron, when some don't fit), centred.
+        let more = if fit < widths.len() { BOOKMARK_GAP + BOOKMARK_ITEM_HEIGHT } else { 0.0 };
+        let items: f32 =
+            widths[..fit.min(widths.len())].iter().sum::<f32>() + fit.saturating_sub(1) as f32 * BOOKMARK_GAP;
+        b.place(ui, left, span, items + more + 2.0 * BOOKMARKS_BAR_PADDING);
         if fit == b.fit {
             return;
         }
