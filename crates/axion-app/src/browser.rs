@@ -262,6 +262,8 @@ pub struct Browser {
     open_at: Option<(Instant, String)>,
     /// Where the next Settings or Passwords sheet comes out of (taken when it opens).
     sheet_origin: Option<Origin>,
+    /// The page menu row clicked last (where a sheet it opens comes out of).
+    menu_click_frame: Option<Rect>,
     /// Capture aid "sweep:X1:Y1:X2:Y2:N": the pointer moves from one point to the other in N
     /// steps, one per frame (start, end, steps, steps done).
     sweep: Option<(Vec2, Vec2, u32, u32)>,
@@ -486,6 +488,7 @@ impl Browser {
             slide_page_size: None,
             slide_view_size: None,
             sheet_origin: None,
+            menu_click_frame: None,
             open_at: options.open.clone().filter(|_| options.capture.is_some()).map(|what| {
                 (
                     Instant::now()
@@ -2002,10 +2005,12 @@ impl Browser {
             MenuAction::Zoom => {}
             MenuAction::HardReload => self.run(Action::HardReload),
             MenuAction::Settings => {
-                // Out of the glass the page menu came from (the address field).
-                let anchor = self.menu.anchor();
+                // Out of the menu's Settings row (the menu's glass lies in the bar's plane).
+                // The menu is gone by the time Settings closes, so it drains into the address
+                // field, the basin the menu came from.
+                let row = self.menu_click_frame.unwrap_or_else(|| self.menu.anchor());
                 self.sheet_origin =
-                    Some(Origin { plane: self.chrome.bar_node(), point: anchor.center(), control: anchor });
+                    Some(Origin { plane: self.chrome.bar_node(), point: row.center(), control: row });
                 self.run(Action::OpenSettings);
             }
             MenuAction::SwitchAccount(_)
@@ -2320,7 +2325,8 @@ impl Browser {
                         self.menu_action(click.action);
                     }
                 }
-                UiEvent::Clicked { action, .. } if self.menu.owns(action) => {
+                UiEvent::Clicked { action, node } if self.menu.owns(action) => {
+                    self.menu_click_frame = Some(self.ui.frame(node));
                     if let Some(MenuClick { action, keep_open }) =
                         self.menu.click(&mut self.ui, &self.config, action)
                     {
@@ -3430,6 +3436,15 @@ impl Browser {
                     }
                 }
                 "release" => self.mouse_button(ElementState::Released, winit::event::MouseButton::Left),
+                // Capture aid: a quick click at "tap:X:Y" (press and release in one step).
+                tap if tap.starts_with("tap:") => {
+                    let n: Vec<f32> = tap.split(':').skip(1).filter_map(|v| v.parse().ok()).collect();
+                    if let [x, y] = n[..] {
+                        self.pointer_moved(Vec2::new(x, y));
+                        self.mouse_button(ElementState::Pressed, winit::event::MouseButton::Left);
+                        self.mouse_button(ElementState::Released, winit::event::MouseButton::Left);
+                    }
+                }
                 // Capture aid: click a sidebar or toolbar control by its action ("chrome:N").
                 chrome if chrome.starts_with("chrome:") => {
                     if let Ok(id) = chrome["chrome:".len()..].parse::<u32>() {
