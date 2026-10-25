@@ -342,15 +342,18 @@ impl Default for Layout {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Privacy {
-    /// Lock private tabs behind the password (set in Settings › Privacy).
+    /// Lock private tabs behind the account password (set in Settings › Privacy). Entering
+    /// the password once unlocks them until Axion quits or the account menu's Lock is used.
     pub lock_private_tabs: bool,
-    /// Lock after the window has been in the background this long (seconds).
-    pub lock_after_seconds: f32,
+    /// Older setting (locking again after time in the background), no longer used: an unlock
+    /// lasts for the session. Accepted so old files load.
+    #[serde(skip_serializing)]
+    lock_after_seconds: Option<f32>,
 }
 
 impl Default for Privacy {
     fn default() -> Self {
-        Self { lock_private_tabs: true, lock_after_seconds: 60.0 }
+        Self { lock_private_tabs: true, lock_after_seconds: None }
     }
 }
 
@@ -437,8 +440,10 @@ pub struct Passwords {
     pub offer_to_save: bool,
     /// Offer to fill saved logins into sign-in forms.
     pub autofill: bool,
-    /// Lock the vault after this long without using it (0: only when Axion quits).
-    pub auto_lock_minutes: f32,
+    /// Older setting (locking after inactivity), no longer used: the account stays unlocked
+    /// for the session. Accepted so old files load.
+    #[serde(skip_serializing)]
+    auto_lock_minutes: Option<f32>,
     /// Empty the clipboard this long after copying a password or card number (0: never).
     pub clear_clipboard_seconds: f32,
     /// Length of generated passwords.
@@ -452,7 +457,7 @@ impl Default for Passwords {
         Self {
             offer_to_save: true,
             autofill: true,
-            auto_lock_minutes: 15.0,
+            auto_lock_minutes: None,
             clear_clipboard_seconds: 60.0,
             generator_length: 20,
             generator_symbols: true,
@@ -536,6 +541,9 @@ pub struct Tabs {
     pub close_after_days: u32,
     /// How often memory use is measured and the tab rules are applied.
     pub check_interval_seconds: f32,
+    /// A press on a tab turns into dragging it (to reorder, or to move it between normal and
+    /// private tabs) once the pointer moved this far (logical px); shorter moves are clicks.
+    pub drag_threshold: f32,
 }
 
 impl Default for Tabs {
@@ -550,6 +558,7 @@ impl Default for Tabs {
             open_links_in_background: true,
             close_after_days: 0,
             check_interval_seconds: 5.0,
+            drag_threshold: 6.0,
         }
     }
 }

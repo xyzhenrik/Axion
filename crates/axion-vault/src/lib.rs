@@ -172,6 +172,12 @@ impl Vault {
         }
     }
 
+    /// Checks the master password without changing anything (locked stays locked, unlocked
+    /// stays unlocked): for asking again before something sensitive.
+    pub fn verify(&self, password: &str) -> Result<()> {
+        self.key_for(password).map(|_| ())
+    }
+
     /// Unlocks with the master password and decrypts the items.
     pub fn unlock(&mut self, password: &str) -> Result<()> {
         let key = self.key_for(password)?;
@@ -403,6 +409,19 @@ mod tests {
         assert!(v.items().is_empty() && matches!(v.add(login("a", "b", "c")), Err(VaultError::Locked)));
         drop(v);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn verify_leaves_the_state_alone() {
+        let mut v = vault();
+        assert!(v.is_unlocked());
+        assert!(matches!(v.verify("wrong"), Err(VaultError::WrongPassword)));
+        v.verify("test-only-pass").unwrap();
+        assert!(v.is_unlocked());
+        v.lock();
+        v.verify("test-only-pass").unwrap();
+        assert!(!v.is_unlocked());
+        assert!(matches!(Vault::in_memory().unwrap().verify("x"), Err(VaultError::NotSetUp)));
     }
 
     #[test]

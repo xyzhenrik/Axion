@@ -152,7 +152,6 @@ pub const INDEX: &[Entry] = &[
         S::LockPrivateTabs,
         &["password", "passwort", "lock", "incognito", "privat", "sperren", "account", "konto"],
     ),
-    control(C::Privacy, S::LockAfter, &["timeout", "auto lock", "sperren", "time"]),
     page(C::Privacy, "Browsing history", &["clear", "delete", "verlauf", "löschen", "history", "data"]),
     page(
         C::Data,
@@ -220,11 +219,6 @@ pub const INDEX: &[Entry] = &[
         C::Passwords,
         S::AutofillPasswords,
         &["autofill", "auto fill", "ausfüllen", "automatisch ausfüllen", "fill", "login"],
-    ),
-    control(
-        C::Passwords,
-        S::PasswordsLockAfter,
-        &["auto lock", "timeout", "sperren", "master password", "passwörter sperren"],
     ),
     control(
         C::Passwords,

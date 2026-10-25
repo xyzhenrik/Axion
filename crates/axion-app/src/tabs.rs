@@ -140,6 +140,54 @@ impl Tabs {
         Some(tab)
     }
 
+    /// Inserts at `index` (clamped to the end) and optionally activates it; the active tab
+    /// stays the same tab otherwise.
+    pub fn insert_at(&mut self, index: usize, tab: Tab, activate: bool) -> usize {
+        let index = index.min(self.tabs.len());
+        let was_empty = self.tabs.is_empty();
+        self.tabs.insert(index, tab);
+        if activate || was_empty {
+            self.active = index;
+        } else if index <= self.active {
+            self.active += 1;
+        }
+        index
+    }
+
+    /// Takes a tab out without remembering it as closed (it moves to the other group).
+    pub fn take(&mut self, index: usize) -> Option<Tab> {
+        if index >= self.tabs.len() {
+            return None;
+        }
+        let tab = self.tabs.remove(index);
+        if index < self.active || self.active >= self.tabs.len() {
+            self.active = self.active.saturating_sub(1);
+        }
+        Some(tab)
+    }
+
+    /// Moves the tab at `from` to `to` (an index among the other tabs, clamped). The active
+    /// tab stays active. Returns whether the order changed.
+    pub fn move_tab(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.tabs.len() {
+            return false;
+        }
+        let to = to.min(self.tabs.len() - 1);
+        if from == to {
+            return false;
+        }
+        let active = self.tabs.get(self.active).map(|t| t.view);
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = active.and_then(|v| self.tabs.iter().position(|t| t.view == v)).unwrap_or(0);
+        true
+    }
+
+    /// The index of `view`'s tab.
+    pub fn index_of(&self, view: ViewId) -> Option<usize> {
+        self.tabs.iter().position(|t| t.view == view)
+    }
+
     pub fn pop_closed(&mut self) -> Option<String> {
         self.closed.pop()
     }
@@ -203,6 +251,39 @@ mod tests {
         t.select(2);
         t.remove(0);
         assert_eq!(t.active().map(|t| t.view), Some(ViewId(2)));
+    }
+
+    #[test]
+    fn moving_keeps_the_active_tab() {
+        let mut t = tabs(4);
+        t.select(1);
+        assert!(t.move_tab(1, 3));
+        assert_eq!(t.all().iter().map(|t| t.view.0).collect::<Vec<_>>(), [0, 2, 3, 1]);
+        assert_eq!(t.active().map(|t| t.view), Some(ViewId(1)));
+        // Another tab moving past the active one.
+        assert!(t.move_tab(0, usize::MAX));
+        assert_eq!(t.all().iter().map(|t| t.view.0).collect::<Vec<_>>(), [2, 3, 1, 0]);
+        assert_eq!(t.active().map(|t| t.view), Some(ViewId(1)));
+        assert!(!t.move_tab(2, 2));
+        assert!(!t.move_tab(9, 0));
+    }
+
+    #[test]
+    fn taking_and_inserting_between_groups() {
+        let mut normal = tabs(3);
+        let mut private = Tabs::default();
+        normal.select(2);
+        let tab = normal.take(0).unwrap();
+        // Not remembered as closed: it lives on in the other group.
+        assert_eq!(normal.pop_closed(), None);
+        assert_eq!(normal.active().map(|t| t.view), Some(ViewId(2)));
+        assert_eq!(private.insert_at(usize::MAX, tab, false), 0);
+        assert_eq!(private.active_index(), 0);
+        let i = private.insert_at(0, Tab::new(ViewId(9), "https://x.example"), false);
+        assert_eq!(i, 0);
+        // The active tab stays the same tab.
+        assert_eq!(private.active().map(|t| t.view), Some(ViewId(0)));
+        assert_eq!(private.index_of(ViewId(9)), Some(0));
     }
 
     #[test]

@@ -124,7 +124,6 @@ enum Setting {
     Squash,
     MergeDistance,
     LockPrivateTabs,
-    LockAfter,
     HideAdElements,
     BlockPopups,
     BlockRedirects,
@@ -151,7 +150,6 @@ enum Setting {
     ClearDownloadsItem,
     OfferToSavePasswords,
     AutofillPasswords,
-    PasswordsLockAfter,
     ClearClipboardAfter,
 }
 
@@ -170,7 +168,6 @@ impl Setting {
             Setting::Squash => "Squash when moving",
             Setting::MergeDistance => "Merge distance",
             Setting::LockPrivateTabs => "Lock private tabs with the account password",
-            Setting::LockAfter => "Lock after time in background",
             Setting::HideAdElements => "Hide empty ad spaces",
             Setting::BlockPopups => "Block popups opened without a click",
             Setting::BlockRedirects => "Block redirects to ad and tracker sites",
@@ -197,7 +194,6 @@ impl Setting {
             Setting::ClearDownloadsItem => "Downloads list",
             Setting::OfferToSavePasswords => "Offer to save passwords",
             Setting::AutofillPasswords => "Offer to fill saved passwords",
-            Setting::PasswordsLockAfter => "Lock Passwords after",
             Setting::ClearClipboardAfter => "Clear clipboard after copying",
         }
     }
@@ -246,12 +242,10 @@ impl Setting {
             Setting::Dispersion => (0.0, 0.4),
             Setting::Squash => (0.0, 0.2),
             Setting::MergeDistance => (0.0, 40.0),
-            Setting::LockAfter => (0.0, 600.0),
             Setting::FreezeAfter => (0.0, 60.0),
             Setting::HideControlsAfter => (1.0, 10.0),
             Setting::DiscardAfter => (0.0, 480.0),
             Setting::MemoryBudget => (0.0, memory_slider_max_mb()),
-            Setting::PasswordsLockAfter => (0.0, 120.0),
             Setting::ClearClipboardAfter => (0.0, 300.0),
             _ => (0.0, 1.0),
         }
@@ -276,11 +270,6 @@ impl Setting {
             Setting::Dispersion => percent(c.glass.light.dispersion),
             Setting::Squash => percent(c.glass.squash),
             Setting::MergeDistance => format!("{:.0} px", c.glass.merge_distance),
-            Setting::LockAfter => match c.privacy.lock_after_seconds {
-                s if s <= 0.0 => "Immediately".to_owned(),
-                s if s < 60.0 => format!("{s:.0} s"),
-                s => format!("{} min", trim_number(s / 60.0)),
-            },
             Setting::FreezeAfter => minutes(c.tabs.freeze_after_minutes),
             Setting::DiscardAfter => minutes(c.tabs.discard_after_minutes),
             Setting::MemoryBudget => match c.tabs.memory_budget_mb {
@@ -293,7 +282,6 @@ impl Setting {
                 mb => format_bytes(u64::from(mb) * 1024 * 1024),
             },
             Setting::HideControlsAfter => format!("{} s", trim_number(c.media.hide_controls_after_seconds)),
-            Setting::PasswordsLockAfter => minutes(c.passwords.auto_lock_minutes),
             Setting::ClearClipboardAfter => match c.passwords.clear_clipboard_seconds {
                 s if s <= 0.0 => "Never".to_owned(),
                 s if s < 60.0 => format!("{s:.0} s"),
@@ -333,13 +321,11 @@ impl Setting {
             Setting::ClearDownloadsItem => return c.data.clear_downloads as u8 as f32,
             Setting::OfferToSavePasswords => return c.passwords.offer_to_save as u8 as f32,
             Setting::AutofillPasswords => return c.passwords.autofill as u8 as f32,
-            Setting::PasswordsLockAfter => c.passwords.auto_lock_minutes,
             Setting::ClearClipboardAfter => c.passwords.clear_clipboard_seconds,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes,
             Setting::DiscardAfter => c.tabs.discard_after_minutes,
             Setting::MemoryBudget => c.tabs.memory_budget_mb as f32,
-            Setting::LockAfter => c.privacy.lock_after_seconds,
             Setting::TextScale => c.appearance.text_scale,
             Setting::PageCorner => c.layout.page_corner_radius,
             Setting::Refraction => c.glass.light.refraction,
@@ -385,13 +371,11 @@ impl Setting {
             Setting::ClearDownloadsItem => c.data.clear_downloads = on,
             Setting::OfferToSavePasswords => c.passwords.offer_to_save = on,
             Setting::AutofillPasswords => c.passwords.autofill = on,
-            Setting::PasswordsLockAfter => c.passwords.auto_lock_minutes = v.round(),
             Setting::ClearClipboardAfter => c.passwords.clear_clipboard_seconds = (v / 5.0).round() * 5.0,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds = (v * 2.0).round() / 2.0,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes = v.round(),
             Setting::DiscardAfter => c.tabs.discard_after_minutes = (v / 5.0).round() * 5.0,
             Setting::MemoryBudget => c.tabs.memory_budget_mb = ((v / 256.0).round() * 256.0) as u32,
-            Setting::LockAfter => c.privacy.lock_after_seconds = (v / 10.0).round() * 10.0,
             Setting::TextScale => c.appearance.text_scale = (v * 20.0).round() / 20.0,
             Setting::PageCorner => c.layout.page_corner_radius = v.round(),
             Setting::Refraction => {
@@ -1207,7 +1191,6 @@ impl SettingsSheet {
                     self.note(ui, &note);
                     self.section(ui, "");
                 }
-                self.control(ui, config, Setting::LockAfter);
                 let row_node = self.row(ui, "Browsing history");
                 let text = if self.confirm_clear { "Click again to clear" } else { "Clear History…" };
                 let button = ui.add(
@@ -1241,9 +1224,7 @@ impl SettingsSheet {
                     self.control(ui, config, setting);
                 }
                 self.section(ui, "Security");
-                for setting in [Setting::PasswordsLockAfter, Setting::ClearClipboardAfter] {
-                    self.control(ui, config, setting);
-                }
+                self.control(ui, config, Setting::ClearClipboardAfter);
                 self.note(ui, "Everything is encrypted with your master password, which Axion never stores.");
                 self.section(ui, "Import and export");
                 let row_node = self.row(ui, "File");

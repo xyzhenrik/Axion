@@ -45,7 +45,11 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
 ### 2.3b Private browsing
 - Private tabs (separate in-memory profile: no history, cookies or cache kept on disk).
 - The "Private" section can be **locked with the account password** (like Safari's locked
-  private browsing); unlocking asks for it after the browser was in the background.
+  private browsing). One unlock per session (user decision): entering the password anywhere
+  unlocks private tabs and password filling until Axion quits or Lock is used; no idle
+  re-lock. Opening the Passwords overview and card numbers/CVVs ask again every time.
+- Tabs move between normal and private by dragging them in the sidebar (the address reopens
+  in the other group; into locked private tabs only after unlocking).
 
 ### 2.3c Local accounts
 - Each account is a fully separate profile (like Chrome's): tabs, private tabs, history,
@@ -152,8 +156,11 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [x] Toolbar and sidebar rebuilt after iPadOS 26 Safari (see decisions log).
 - [x] Tab overview with snapshots and zoom transition.
 - [x] Page menu (≡) with bookmark/zoom/copy link; Bookmarks/History/Reading List panels.
-- [x] Private tabs (in-memory CEF context, dark chrome) with a lock after N s in the
-  background (`[privacy]`), lock screen; the lock uses the account password.
+- [x] Private tabs (in-memory CEF context, dark chrome) with a lock screen; the lock uses the
+  account password, one unlock per session (`[privacy]`).
+- [x] Tab drag and drop: sidebar lists, compact tab capsule and separate tab bar, spring
+  physics (lens follows the pointer, rows slide aside), between normal and private tabs
+  (`tabs.drag_threshold`).
 - [x] Local accounts (`axion-accounts`): separate profiles, account button + menu in the
   sidebar, Add Account sheet, Settings › Account (name, colour, password, delete), switching
   by relaunching, migration of the pre-accounts profile.

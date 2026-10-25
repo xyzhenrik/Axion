@@ -1,25 +1,27 @@
-//! The lock on private browsing. It uses the account password (the password vault's master
-//! password): unlocking either unlocks both, and locking either locks both — one unlock
-//! session per account. This keeps the rule for when the private tabs lock again (after the
-//! window was in the background for a while); the browser applies it to the vault too.
-
-use std::time::{Duration, Instant};
+//! The lock on private browsing, and the rules for moving between normal and private tabs.
+//!
+//! The lock uses the account password (the password vault's master password), and there is
+//! one unlock per session: entering the password anywhere (the private tabs' lock screen, the
+//! unlock-to-fill prompt, Passwords, Settings) unlocks private tabs and password filling until
+//! Axion quits or the account menu's Lock is used. Nothing locks again by itself.
+//!
+//! The decisions here are kept free of the engine and the UI so they can be tested.
 
 use axion_store::Store;
 
 /// Where versions before accounts kept a separate private browsing password's hash.
 const OLD_HASH_KEY: &str = "private_password_hash";
 
+/// The session's unlock state.
 pub struct PrivateLock {
-    locked: bool,
-    /// When the window lost focus (the lock timer runs from here).
-    away_since: Option<Instant>,
+    unlocked: bool,
 }
 
 impl PrivateLock {
-    /// Private tabs never survive a restart, so there is nothing to unlock at start.
+    /// A session starts locked: private tabs (and filling passwords) need the account
+    /// password once.
     pub fn new() -> Self {
-        Self { locked: false, away_since: None }
+        Self { unlocked: false }
     }
 
     /// Drops the separate private browsing password of older versions: the account password
@@ -37,42 +39,63 @@ impl PrivateLock {
         }
     }
 
-    /// Locked (only matters while the account has a password).
+    /// Locked (only matters while the lock is on and the account has a password).
     pub fn is_locked(&self) -> bool {
-        self.locked
+        !self.unlocked
     }
 
     pub fn unlock(&mut self) {
-        self.locked = false;
+        self.unlocked = true;
     }
 
+    /// The account menu's Lock (or the Passwords sheet's lock button).
     pub fn lock_now(&mut self) {
-        self.locked = true;
+        self.unlocked = false;
     }
 
-    /// Locks once the window has been in the background for `after`, while it still is —
-    /// so private tabs are never visible in an unfocused window past the limit. Returns
-    /// whether it just locked.
-    pub fn tick(&mut self, after: Duration) -> bool {
-        if !self.locked && self.away_since.is_some_and(|t| t.elapsed() >= after) {
-            self.locked = true;
-            return true;
-        }
-        false
+    /// Follows the vault: unlocked somewhere else (a fill prompt, Passwords), or locked.
+    /// Returns whether the session's state changed.
+    pub fn follow_vault(&mut self, vault_unlocked: bool) -> bool {
+        let changed = vault_unlocked != self.unlocked;
+        self.unlocked = vault_unlocked;
+        changed
     }
 
-    /// Window focus changes: locks if the window was away longer than `after`. Returns
-    /// whether it just locked.
-    pub fn window_focused(&mut self, focused: bool, after: Duration) -> bool {
-        if focused {
-            if self.away_since.take().is_some_and(|t| t.elapsed() >= after) && !self.locked {
-                self.locked = true;
-                return true;
-            }
-        } else {
-            self.away_since.get_or_insert(Instant::now());
-        }
-        false
+    /// Whether private tabs are kept out of sight: the lock is on (`enabled`: the setting is
+    /// on and the account has a password) and the session isn't unlocked.
+    pub fn hides_private(&self, enabled: bool) -> bool {
+        enabled && self.is_locked()
+    }
+}
+
+/// The group (`true`: private) a tab opened by a page goes to: the opener's own group, never
+/// the one that happens to be shown (a background normal tab's popup must not land among
+/// private tabs, nor a private one's among normal tabs). Without an opener, the shown group.
+pub fn group_for_new_view(opener_private: Option<bool>, shown_private: bool) -> bool {
+    opener_private.unwrap_or(shown_private)
+}
+
+/// What dropping a dragged tab means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabDrop {
+    /// Within its own group: it just moves to its new place.
+    Reorder,
+    /// Into the other group: the same address opens there (its own cookies and logins) and
+    /// the original tab closes.
+    Reopen,
+    /// Into locked private tabs: the account password comes first.
+    NeedsUnlock,
+}
+
+/// Decides a drop of a tab from one group into another; `hidden` is
+/// [`PrivateLock::hides_private`].
+pub fn drop_into(from_private: bool, to_private: bool, hidden: bool) -> TabDrop {
+    if from_private == to_private {
+        TabDrop::Reorder
+    } else if to_private && hidden {
+        TabDrop::NeedsUnlock
+    } else {
+        TabDrop::Reopen
     }
 }
 
@@ -81,22 +104,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn locks_after_being_away() {
+    fn a_session_starts_locked_and_one_unlock_lasts() {
         let mut lock = PrivateLock::new();
-        assert!(!lock.is_locked());
-        assert!(!lock.window_focused(false, Duration::ZERO));
-        assert!(lock.window_focused(true, Duration::ZERO));
         assert!(lock.is_locked());
+        assert!(lock.hides_private(true));
+        // Without a lock (no password, or the setting off) nothing is hidden.
+        assert!(!lock.hides_private(false));
         lock.unlock();
-        // Short absences don't lock.
-        lock.window_focused(false, Duration::from_secs(3600));
-        assert!(!lock.tick(Duration::from_secs(3600)));
-        assert!(!lock.window_focused(true, Duration::from_secs(3600)));
+        assert!(!lock.hides_private(true));
+        // Only Lock locks again.
+        lock.lock_now();
+        assert!(lock.hides_private(true));
+    }
+
+    #[test]
+    fn unlocking_the_vault_elsewhere_unlocks_private_tabs() {
+        let mut lock = PrivateLock::new();
+        assert!(!lock.follow_vault(false));
+        assert!(lock.follow_vault(true));
         assert!(!lock.is_locked());
-        // While away, the timer locks.
-        lock.window_focused(false, Duration::ZERO);
-        assert!(lock.tick(Duration::ZERO));
-        assert!(!lock.tick(Duration::ZERO));
+        assert!(!lock.follow_vault(true));
+        assert!(lock.follow_vault(false));
+        assert!(lock.is_locked());
+    }
+
+    #[test]
+    fn pages_open_tabs_in_their_own_group() {
+        // A normal tab in the background opens a popup while private tabs are shown.
+        assert!(!group_for_new_view(Some(false), true));
+        assert!(group_for_new_view(Some(true), false));
+        assert!(group_for_new_view(None, true));
+        assert!(!group_for_new_view(None, false));
+    }
+
+    #[test]
+    fn drops_between_groups() {
+        assert_eq!(drop_into(false, false, true), TabDrop::Reorder);
+        assert_eq!(drop_into(true, true, false), TabDrop::Reorder);
+        assert_eq!(drop_into(false, true, false), TabDrop::Reopen);
+        assert_eq!(drop_into(false, true, true), TabDrop::NeedsUnlock);
+        // Out of private tabs never needs the password.
+        assert_eq!(drop_into(true, false, true), TabDrop::Reopen);
     }
 
     #[test]
