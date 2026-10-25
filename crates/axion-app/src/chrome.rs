@@ -72,14 +72,19 @@ pub enum ChromeAction {
     CloseTab(usize),
     /// An entry in the open bookmarks/history panel.
     OpenPanelItem(usize),
+    /// The × of a panel entry (deletes it from history).
+    DeletePanelItem(usize),
+    /// The panel header's clear button ("Clear History…").
+    ClearPanel,
 }
 
 const SELECT_TAB_BASE: u32 = 1000;
 const CLOSE_TAB_BASE: u32 = 2000;
 const PANEL_ITEM_BASE: u32 = 7000;
+const DELETE_PANEL_ITEM_BASE: u32 = 10_000;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 22] = [
+    const SIMPLE: [ChromeAction; 23] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -102,6 +107,7 @@ impl ChromeAction {
         ChromeAction::NowPlayingToggle,
         ChromeAction::MuteTab,
         ChromeAction::ExpandBars,
+        ChromeAction::ClearPanel,
     ];
 
     fn id(self) -> ActionId {
@@ -109,13 +115,17 @@ impl ChromeAction {
             ChromeAction::SelectTab(i) => SELECT_TAB_BASE + i as u32,
             ChromeAction::CloseTab(i) => CLOSE_TAB_BASE + i as u32,
             ChromeAction::OpenPanelItem(i) => PANEL_ITEM_BASE + i as u32,
+            ChromeAction::DeletePanelItem(i) => DELETE_PANEL_ITEM_BASE + i as u32,
             simple => 1 + Self::SIMPLE.iter().position(|&a| a == simple).unwrap_or(0) as u32,
         })
     }
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=22 => Some(Self::SIMPLE[n as usize - 1]),
+            n @ 1..=23 => Some(Self::SIMPLE[n as usize - 1]),
+            n if (DELETE_PANEL_ITEM_BASE..DELETE_PANEL_ITEM_BASE + 1000).contains(&n) => {
+                Some(ChromeAction::DeletePanelItem((n - DELETE_PANEL_ITEM_BASE) as usize))
+            }
             n if (PANEL_ITEM_BASE..PANEL_ITEM_BASE + 1000).contains(&n) => {
                 Some(ChromeAction::OpenPanelItem((n - PANEL_ITEM_BASE) as usize))
             }
@@ -136,6 +146,10 @@ pub struct PanelItem {
     pub url: String,
     /// Second line (host, or when it was visited).
     pub detail: String,
+    /// A heading shown above this row (e.g. the day in history).
+    pub section: Option<String>,
+    /// The row has a × that sends [`ChromeAction::DeletePanelItem`].
+    pub deletable: bool,
 }
 
 /// The three layouts from the design's responsive boards.
@@ -196,6 +210,11 @@ pub struct Chrome {
     sections: NodeId,
     panel: NodeId,
     panel_title: NodeId,
+    /// The panel header's clear button and its label ("Clear History…").
+    panel_clear: NodeId,
+    panel_clear_label: NodeId,
+    panel_viewport: NodeId,
+    panel_scroll: f32,
     panel_list: NodeId,
     tab_group_label: NodeId,
     tab_group_chevron: NodeId,
@@ -461,7 +480,17 @@ impl Chrome {
         sidebar_row(ui, saved_list, ChromeAction::ReadingList, Icon::Glasses, "Reading List", None);
         sidebar_row(ui, saved_list, ChromeAction::History, Icon::History, "History", None);
 
-        let panel = ui.add(sidebar, Widget::container(), column(2.0));
+        // Fills the sidebar below its header, so the list scrolls inside it.
+        let panel = ui.add(
+            sidebar,
+            Widget::container(),
+            Style {
+                flex_grow: 1.0,
+                flex_basis: length(0.0),
+                min_size: Size { width: auto(), height: length(0.0) },
+                ..column(2.0)
+            },
+        );
         let panel_header = ui.add(
             panel,
             Widget::container(),
@@ -475,7 +504,40 @@ impl Chrome {
             36.0,
         );
         let panel_title = ui.add_label(panel_header, "", TextStyle::Title2, shrinking_label());
-        let panel_list = ui.add(panel, Widget::container(), column(2.0));
+        let panel_clear = ui.add(
+            panel_header,
+            Widget::container().with_action(ChromeAction::ClearPanel.id()).with_radius(CAPSULE),
+            Style {
+                size: Size { width: auto(), height: length(32.0) },
+                padding: padding(12.0, 12.0, 0.0, 0.0),
+                flex_shrink: 0.0,
+                ..row(0.0)
+            },
+        );
+        let panel_clear_label = ui.add_label(panel_clear, "", TextStyle::Callout, Style::default());
+        if let Some(w) = ui.widget_mut(panel_clear_label) {
+            w.set_paint(Paint::Accent);
+        }
+        // Long lists (history) scroll inside a clipped viewport.
+        let panel_viewport = ui.add(
+            panel,
+            Widget::container().with_clip(),
+            Style {
+                flex_grow: 1.0,
+                flex_basis: length(0.0),
+                flex_direction: FlexDirection::Column,
+                overflow: axion_ui::taffy::Point {
+                    x: axion_ui::taffy::Overflow::Hidden,
+                    y: axion_ui::taffy::Overflow::Hidden,
+                },
+                ..Default::default()
+            },
+        );
+        let panel_list = ui.add(
+            panel_viewport,
+            Widget::container(),
+            Style { flex_shrink: 0.0, size: Size { width: percent(1.0), height: auto() }, ..column(2.0) },
+        );
         ui.set_visible(panel, false);
 
         // Now Playing: at the bottom of the sidebar while a tab plays media.
@@ -696,6 +758,10 @@ impl Chrome {
             sections,
             panel,
             panel_title,
+            panel_clear,
+            panel_clear_label,
+            panel_viewport,
+            panel_scroll: 0.0,
             panel_list,
             tab_group_label,
             tab_group_chevron: tab_group_chevron.unwrap_or(sidebar),
@@ -794,8 +860,23 @@ impl Chrome {
 
     /// Shows a list (bookmarks, history) in place of the sidebar's sections. Rows send
     /// [`ChromeAction::OpenPanelItem`] with their index.
-    pub fn show_panel(&mut self, ui: &mut Ui, title: &str, items: &[PanelItem], favicons: &Favicons) {
+    /// `clear` is the label of the header's clear button (`None`: no button). `keep_scroll`
+    /// keeps the list where it was (after deleting an entry).
+    pub fn show_panel(
+        &mut self,
+        ui: &mut Ui,
+        title: &str,
+        items: &[PanelItem],
+        favicons: &Favicons,
+        clear: Option<&str>,
+        keep_scroll: bool,
+    ) {
         ui.set_text(self.panel_title, title);
+        ui.set_visible(self.panel_clear, clear.is_some());
+        self.set_panel_clear_label(ui, clear.unwrap_or_default());
+        if !keep_scroll {
+            self.set_panel_scroll(ui, 0.0);
+        }
         ui.clear_children(self.panel_list);
         if items.is_empty() {
             let empty = ui.add_label(
@@ -809,6 +890,21 @@ impl Chrome {
             }
         }
         for (i, item) in items.iter().enumerate() {
+            if let Some(section) = &item.section {
+                let heading = ui.add_label(
+                    self.panel_list,
+                    section,
+                    TextStyle::BodyEmphasis,
+                    Style {
+                        padding: padding(10.0, 10.0, if i == 0 { 4.0 } else { 14.0 }, 4.0),
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    },
+                );
+                if let Some(w) = ui.widget_mut(heading) {
+                    w.set_paint(Paint::Secondary);
+                }
+            }
             let row_node = ui.add(
                 self.panel_list,
                 Widget::container().with_action(ChromeAction::OpenPanelItem(i).id()).with_radius(14.0),
@@ -836,9 +932,41 @@ impl Chrome {
             if let Some(w) = ui.widget_mut(detail) {
                 w.set_paint(Paint::Secondary);
             }
+            if item.deletable {
+                let glyph = Widget::icon(Icon::Close, 14.0).with_paint(Paint::Secondary);
+                icon_button(ui, row_node, ChromeAction::DeletePanelItem(i), glyph, 30.0);
+            }
         }
         ui.set_visible(self.sections, false);
         ui.set_visible(self.panel, true);
+    }
+
+    pub fn set_panel_clear_label(&self, ui: &mut Ui, text: &str) {
+        ui.set_text(self.panel_clear_label, text);
+    }
+
+    pub fn is_panel_open(&self, ui: &Ui) -> bool {
+        ui.is_visible(self.panel) && ui.is_visible(self.sidebar)
+    }
+
+    /// Whether `p` (logical px) is over the panel's list.
+    pub fn panel_contains(&self, ui: &Ui, p: Vec2) -> bool {
+        self.is_panel_open(ui) && ui.frame(self.panel_viewport).contains(p)
+    }
+
+    /// Scrolls the panel's list by `dy` logical px (wheel: positive scrolls up).
+    pub fn scroll_panel(&mut self, ui: &mut Ui, dy: f32) {
+        let max = (ui.frame(self.panel_list).size.y - ui.frame(self.panel_viewport).size.y).max(0.0);
+        let scroll = (self.panel_scroll - dy).clamp(0.0, max);
+        self.set_panel_scroll(ui, scroll);
+    }
+
+    fn set_panel_scroll(&mut self, ui: &mut Ui, scroll: f32) {
+        self.panel_scroll = scroll;
+        let mut style = ui.style(self.panel_list);
+        style.margin =
+            Rect { left: length(0.0), right: length(0.0), top: length(-scroll), bottom: length(0.0) };
+        ui.set_style(self.panel_list, style);
     }
 
     pub fn close_panel(&mut self, ui: &mut Ui) {

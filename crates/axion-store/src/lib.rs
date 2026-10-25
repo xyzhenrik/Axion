@@ -198,6 +198,38 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// The inline completion for what was typed in the address bar: the most visited history
+    /// page whose address (without scheme and `www.`) starts with `typed`, case-insensitively.
+    /// Without a `/` in `typed` it completes to the host only (as Safari does), otherwise to
+    /// the whole address. The result starts with `typed` as typed.
+    pub fn autocomplete(&self, typed: &str) -> Result<Option<String>> {
+        let typed = typed.trim();
+        if typed.is_empty() || typed.contains(char::is_whitespace) {
+            return Ok(None);
+        }
+        let pattern = format!("{}%", like_escape(&typed.to_lowercase()));
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT url FROM urls
+             WHERE lower(url) LIKE 'http://' || ?1 ESCAPE '\\' OR lower(url) LIKE 'https://' || ?1 ESCAPE '\\'
+                OR lower(url) LIKE 'http://www.' || ?1 ESCAPE '\\' OR lower(url) LIKE 'https://www.' || ?1 ESCAPE '\\'
+             ORDER BY visit_count DESC, last_visit DESC LIMIT 20",
+        )?;
+        let urls: Vec<String> = stmt.query_map([&pattern], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let host_only = !typed.contains('/');
+        for url in urls {
+            let bare = strip_scheme(&url);
+            let candidate = if host_only { bare.split('/').next().unwrap_or(bare) } else { bare };
+            let candidate = candidate.trim_end_matches('/');
+            if candidate.len() > typed.len()
+                && candidate.is_char_boundary(typed.len())
+                && candidate[..typed.len()].eq_ignore_ascii_case(typed)
+            {
+                return Ok(Some(format!("{typed}{}", &candidate[typed.len()..])));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn recent_history(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT url, title, visit_count, last_visit FROM urls ORDER BY last_visit DESC LIMIT ?1",
@@ -363,6 +395,12 @@ impl Store {
     }
 }
 
+/// `https://www.example.com/x` → `example.com/x`.
+fn strip_scheme(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.strip_prefix("www.").unwrap_or(rest)
+}
+
 fn entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
     Ok(HistoryEntry { url: r.get(0)?, title: r.get(1)?, visit_count: r.get(2)?, last_visit: r.get(3)? })
 }
@@ -413,6 +451,30 @@ mod tests {
         assert_eq!(s.search_history("rust notes", 10, NOW).unwrap().len(), 1);
         // LIKE wildcards in the query are literal.
         assert!(s.search_history("%", 10, NOW).unwrap().is_empty());
+    }
+
+    #[test]
+    fn autocompletes_hosts_then_paths() {
+        let s = store();
+        s.record_visit("https://www.example.com/rust-lang/rust", "Rust", NOW).unwrap();
+        s.record_visit("https://www.example.com/rust-lang/rust", "Rust", NOW).unwrap();
+        s.record_visit("https://exhibit.org/", "Exhibit", NOW).unwrap();
+        assert_eq!(s.autocomplete("ex").unwrap().as_deref(), Some("example.com"));
+        assert_eq!(s.autocomplete("ExH").unwrap().as_deref(), Some("ExHibit.org"));
+        assert_eq!(s.autocomplete("example.com/r").unwrap().as_deref(), Some("example.com/rust-lang/rust"));
+        assert_eq!(s.autocomplete("example.com").unwrap(), None, "nothing left to complete");
+        assert_eq!(s.autocomplete("nothing").unwrap(), None);
+        assert_eq!(s.autocomplete("two words").unwrap(), None);
+    }
+
+    #[test]
+    fn deleting_one_page_keeps_the_rest() {
+        let s = store();
+        s.record_visit("https://a.example/", "A", NOW).unwrap();
+        s.record_visit("https://b.example/", "B", NOW).unwrap();
+        s.delete_history_url("https://a.example/").unwrap();
+        let left: Vec<String> = s.recent_history(10).unwrap().into_iter().map(|h| h.url).collect();
+        assert_eq!(left, ["https://b.example/"]);
     }
 
     #[test]
