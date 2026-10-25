@@ -29,6 +29,7 @@ mod overview;
 mod passwords;
 mod pip;
 mod player;
+mod popover;
 mod private;
 mod settings;
 mod shields;

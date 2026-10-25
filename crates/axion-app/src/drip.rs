@@ -1,14 +1,13 @@
 //! The "drip" from the design ("Drip — button to popover"): a glass shape flows out of the
 //! button that opened it to its final rectangle on the liquid spring, and back when it closes.
-//! Its content fades in once the glass has nearly arrived.
+//! Its content follows the glass (axion-ui maps it onto the glass's visual frame and fades it
+//! with the glass's growth), so there is no separate content animation to fall out of step.
 
 use axion_compositor::Rect as Frame;
 use axion_config::Config;
 use axion_physics::{Animated, Spring};
 use glam::Vec2;
 
-/// Content starts to appear when the glass is this close (fraction of the travel) to its target.
-const CONTENT_FROM: f32 = 0.35;
 const SETTLED_PX: f32 = 0.4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +91,12 @@ impl Drip {
         }
     }
 
+    /// Flows back into `anchor` instead of where it came from.
+    pub fn close_into(&mut self, config: &Config, anchor: Frame) {
+        self.anchor = anchor;
+        self.close(config);
+    }
+
     /// Flows back into the anchor.
     pub fn close(&mut self, config: &Config) {
         if self.phase == Phase::Closed {
@@ -127,15 +132,19 @@ impl Drip {
         Frame { origin: self.origin.value, size: self.size.value.max(Vec2::ONE) }
     }
 
-    /// Opacity of the content: 0 while the glass travels, 1 once it is (nearly) there.
-    pub fn content_opacity(&self) -> f32 {
-        let travel = (self.target.size - self.anchor.size).length().max(1.0);
-        let remaining = (self.target.size - self.size.value).length() / travel;
+    /// How far it has grown towards its target (0 at the anchor, 1 there; by the smaller axis).
+    pub fn growth(&self) -> f32 {
+        let travel = (self.target.size - self.anchor.size).abs().max(Vec2::ONE);
+        let grown = ((self.size.value - self.anchor.size).abs() / travel).min_element();
         match self.phase {
             Phase::Closed => 0.0,
-            Phase::Closing => (1.0 - (1.0 - remaining) * 3.0).clamp(0.0, 1.0).min(remaining),
-            _ => ((CONTENT_FROM - remaining) / CONTENT_FROM).clamp(0.0, 1.0),
+            _ => grown.clamp(0.0, 1.0),
         }
+    }
+
+    /// Where it flows out of (and back into).
+    pub fn anchor(&self) -> Frame {
+        self.anchor
     }
 }
 
@@ -151,13 +160,11 @@ mod tests {
         let target = Frame::new(60.0, 70.0, 280.0, 300.0);
         drip.open(&config, anchor, target);
         assert_eq!(drip.frame().size, anchor.size);
-        assert_eq!(drip.content_opacity(), 0.0);
         for _ in 0..240 {
             drip.step(1.0 / 120.0);
         }
         assert_eq!(drip.phase(), Phase::Open);
         assert!((drip.frame().size - target.size).length() < 1.0);
-        assert!(drip.content_opacity() > 0.99);
         drip.close(&config);
         for _ in 0..240 {
             drip.step(1.0 / 120.0);

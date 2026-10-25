@@ -168,6 +168,12 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [x] Liquid motion in the real UI: page menu and suggestions drip out of the toolbar's glass
   and back (design's liquid spring), glass swells under a pressed button, floating sidebar
   slides on a spring, overview zoom; all honour Reduce Motion.
+- [x] Popovers are one liquid shape with their bar (`popover.rs`): page menu, account menu,
+  Shields, downloads, suggestions and the password prompt drip out of their anchor and stay
+  joined by a glass neck (`glass.popover_neck`), drawn in the bar's pass with thick-glass tint
+  (per-shape tint strength, blended across the merge); text sits directly on the glass and
+  follows the glass's visual frame (axion-ui), so both come and go together. Menus have
+  captions, hairlines and side submenus (Zoom › − 100% +).
 - [x] Adaptive legibility (light/dark chrome from the page's top colour); Reduce Transparency.
 - [ ] Drag a tab pill: stretch, reorder, pull out into its own glass droplet; fling.
 - [ ] Performance mode for weak GPUs, and measuring the full app (not just the playground)

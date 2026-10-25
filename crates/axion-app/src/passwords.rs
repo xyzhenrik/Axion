@@ -20,6 +20,9 @@ use axion_vault::{ItemData, Kind, Login, Vault, VaultError, site};
 use glam::Vec2;
 use zeroize::Zeroizing;
 
+use crate::drip::Phase;
+use crate::popover::Popover;
+
 const BASE: u32 = 12_000;
 const CLOSE: ActionId = ActionId(BASE);
 const LOCK: ActionId = ActionId(BASE + 1);
@@ -61,6 +64,14 @@ const ALERT_START_SCALE: f32 = 0.88;
 const PROMPT_WIDTH: f32 = 320.0;
 const PROMPT_RADIUS: f32 = 22.0;
 const PROMPT_GAP: f32 = 10.0;
+const PROMPT_PADDING: f32 = 10.0;
+const PROMPT_GAP_ROWS: f32 = 8.0;
+const PROMPT_MARGIN: f32 = 8.0;
+/// Fixed row heights, so the drip knows the prompt's size before layout.
+const PROMPT_HEADER: f32 = 44.0;
+const PROMPT_ROW: f32 = 46.0;
+const PROMPT_LINE: f32 = 44.0;
+const PROMPT_ERROR: f32 = 18.0;
 /// Most logins the fill prompt lists.
 const PROMPT_LOGINS: usize = 3;
 /// The account password (the vault's master password) is at least this long.
@@ -188,14 +199,18 @@ enum PromptState {
     Save(PendingSave),
 }
 
-/// The glass prompt under the address bar.
+/// The glass prompt that drips out of the address field (see [`Popover`]).
 struct Prompt {
+    popover: Popover,
     root: NodeId,
     state: Option<PromptState>,
     /// The master password field and its error line (unlock prompt only).
     field: Option<NodeId>,
     error: Option<NodeId>,
-    appear: Animated<f32>,
+    /// The content's height (fixed rows, so the drip knows its target before layout).
+    height: f32,
+    /// The address field it flows out of (logical px), as of the last frame.
+    address: Frame,
 }
 
 /// The vault, its sheet and the autofill prompt.
@@ -265,6 +280,11 @@ fn column(gap: f32) -> Style {
         gap: Size { width: length(0.0), height: length(gap) },
         ..Default::default()
     }
+}
+
+/// A row of fixed height.
+fn fixed(height: f32, padding: Rect<LengthPercentage>, gap: f32) -> Style {
+    Style { size: Size { width: auto(), height: length(height) }, flex_shrink: 0.0, padding, ..row(gap) }
 }
 
 fn grow() -> Style {
@@ -397,9 +417,10 @@ fn scale_in(ui: &mut Ui, node: NodeId, k: f32) {
 impl Passwords {
     /// Builds the sheet and prompt and opens the vault at `path` (locked). The vault's master
     /// password is the password of the account named `account`.
-    pub fn build(ui: &mut Ui, path: &Path, account: &str) -> Self {
+    /// The prompt's glass lives in `bar` (the toolbar), so it flows out of the address field.
+    pub fn build(ui: &mut Ui, bar: NodeId, path: &Path, account: &str) -> Self {
         let vault = Vault::open(path).inspect_err(|e| tracing::error!("passwords unavailable: {e}")).ok();
-        let prompt = Prompt::build(ui);
+        let prompt = Prompt::build(ui, bar);
         let root = ui.add(
             ui.root(),
             Widget::container()
@@ -1578,15 +1599,12 @@ impl Passwords {
                 if !matches!(e, VaultError::WrongPassword) {
                     tracing::error!("unlocking passwords failed: {e}");
                 }
-                if let Some(error) = self.prompt.error {
-                    let text = if matches!(e, VaultError::WrongPassword) {
-                        "Wrong password".to_owned()
-                    } else {
-                        e.to_string()
-                    };
-                    ui.set_text(error, &text);
-                    ui.set_visible(error, true);
-                }
+                let text = if matches!(e, VaultError::WrongPassword) {
+                    "Wrong password".to_owned()
+                } else {
+                    e.to_string()
+                };
+                self.prompt.set_error(ui, config, Some(&text));
                 Outcome::Events(ui.focus(field))
             }
         }
@@ -1597,7 +1615,8 @@ impl Passwords {
         ui.clear_children(root);
         self.prompt.field = None;
         self.prompt.error = None;
-        let header = ui.add(root, Widget::container(), Style { padding: padding(6.0, 2.0), ..row(10.0) });
+        let header = ui.add(root, Widget::container(), fixed(PROMPT_HEADER, padding(6.0, 0.0), 10.0));
+        let mut height = PROMPT_HEADER;
         ui.add(header, Widget::icon(Icon::Key, 20.0).with_paint(Paint::Accent), Style::default());
         let titles = ui.add(header, Widget::container(), Style { ..column(0.0) });
         let mut style = ui.style(titles);
@@ -1615,18 +1634,15 @@ impl Passwords {
                     else {
                         continue;
                     };
+                    // Rows directly on the glass; the hovered one gets a capsule highlight.
                     let row_node = ui.add(
                         root,
                         Widget::container()
                             .with_action(ActionId(PROMPT_FILL_BASE + i as u32))
-                            .with_radius(14.0)
-                            .with_background(Background::Fill(Paint::Surface, 0.6)),
-                        Style {
-                            size: Size { width: auto(), height: length(46.0) },
-                            padding: padding(12.0, 0.0),
-                            ..row(10.0)
-                        },
+                            .with_radius(CAPSULE),
+                        fixed(PROMPT_ROW, padding(12.0, 0.0), 10.0),
                     );
+                    height += PROMPT_GAP_ROWS + PROMPT_ROW;
                     ui.add(
                         row_node,
                         Widget::icon(Icon::Key, 16.0).with_paint(Paint::Secondary),
@@ -1642,8 +1658,8 @@ impl Passwords {
                 ui.add_label(titles, "Unlock to fill", TextStyle::BodyEmphasis, Style::default());
                 secondary(ui, titles, &site::display_host(url), TextStyle::Footnote);
                 icon_button(ui, header, PROMPT_CLOSE, Icon::Close, 28.0);
-                let line =
-                    ui.add(root, Widget::container(), Style { padding: padding(2.0, 0.0), ..row(8.0) });
+                let line = ui.add(root, Widget::container(), fixed(PROMPT_LINE, padding(2.0, 0.0), 8.0));
+                height += PROMPT_GAP_ROWS + PROMPT_LINE;
                 let field = field_box(ui, line, "Account password", Style { flex_grow: 1.0, ..row(0.0) });
                 ui.set_secure(field, true);
                 // The field takes the room; the button keeps its natural width.
@@ -1654,6 +1670,7 @@ impl Passwords {
                     ui.set_style(button, style);
                 }
                 let error = painted(ui, root, "", TextStyle::Footnote, Paint::Fixed(ERROR));
+                ui.set_style(error, fixed(PROMPT_ERROR, padding(6.0, 0.0), 0.0));
                 ui.set_visible(error, false);
                 self.prompt.field = Some(field);
                 self.prompt.error = Some(error);
@@ -1673,8 +1690,8 @@ impl Passwords {
                     format!("{} · {host}", pending.username)
                 };
                 secondary(ui, titles, &who, TextStyle::Footnote);
-                let buttons =
-                    ui.add(root, Widget::container(), Style { padding: padding(2.0, 2.0), ..row(8.0) });
+                let buttons = ui.add(root, Widget::container(), fixed(PROMPT_LINE, padding(2.0, 0.0), 8.0));
+                height += PROMPT_GAP_ROWS + PROMPT_LINE;
                 capsule_button(ui, buttons, PROMPT_CLOSE, "Not Now", false);
                 let save =
                     if self.is_unlocked() { if update { "Update" } else { "Save" } } else { "Save…" };
@@ -1682,10 +1699,8 @@ impl Passwords {
             }
             None => return,
         }
-        ui.set_visible(root, true);
-        self.prompt.appear.spring = spring(config);
-        self.prompt.appear.snap(0.0);
-        self.prompt.appear.target = 1.0;
+        self.prompt.height = height;
+        self.prompt.show(ui, config);
     }
 
     /// Hides the prompt (another tab was selected, or the page navigated away).
@@ -1703,7 +1718,7 @@ impl Passwords {
     }
 
     /// Per frame: the search, the prompt's place under the address bar, animations.
-    pub fn animate(&mut self, ui: &mut Ui, dt: f32, address: Frame) {
+    pub fn animate(&mut self, ui: &mut Ui, config: &Config, dt: f32, address: Frame) {
         if self.open && ui.is_visible(self.sheet) {
             let query = ui.field_text(self.search).unwrap_or_default().to_owned();
             if query != self.query {
@@ -1717,7 +1732,7 @@ impl Passwords {
             ui.set_opacity(self.alert_layer, k.min(1.0));
             scale_in(ui, self.alert, k);
         }
-        self.prompt.animate(ui, dt, address);
+        self.prompt.animate(ui, config, dt, address);
     }
 
     /// Every loop iteration: auto-lock and clipboard clearing.
@@ -1873,49 +1888,66 @@ impl Passwords {
 }
 
 impl Prompt {
-    fn build(ui: &mut Ui) -> Self {
-        let root = ui.add(
-            ui.root(),
-            Widget::container()
-                .with_background(Background::Glass(GlassLevel::Regular))
-                .with_radius(PROMPT_RADIUS),
+    fn build(ui: &mut Ui, bar: NodeId) -> Self {
+        let popover = Popover::build(
+            ui,
+            bar,
+            PROMPT_RADIUS,
             Style {
-                position: Position::Absolute,
                 size: Size { width: length(PROMPT_WIDTH), height: auto() },
-                padding: padding(10.0, 10.0),
-                ..column(8.0)
+                padding: padding(PROMPT_PADDING, PROMPT_PADDING),
+                ..column(PROMPT_GAP_ROWS)
             },
         );
-        ui.set_visible(root, false);
-        Self { root, state: None, field: None, error: None, appear: Animated::new(0.0, Spring::SNAPPY) }
+        let root = popover.root();
+        Self { popover, root, state: None, field: None, error: None, height: 0.0, address: Frame::default() }
     }
 
     fn hide(&mut self) {
         self.state = None;
-        self.appear.target = 0.0;
     }
 
-    fn animate(&mut self, ui: &mut Ui, dt: f32, address: Frame) {
-        if !ui.is_visible(self.root) {
+    /// Centred under the address field, flowing out of it (or gliding to a new size).
+    fn show(&mut self, ui: &mut Ui, config: &Config) {
+        let a = self.address;
+        if a.size.x <= 0.0 {
             return;
         }
-        // Centred under the address field.
-        let left = address.origin.x + (address.size.x - PROMPT_WIDTH) / 2.0;
-        let top = address.origin.y + address.size.y + PROMPT_GAP;
-        let mut style = ui.style(self.root);
-        let inset = Rect { left: length(left.max(8.0)), right: auto(), top: length(top), bottom: auto() };
-        if style.inset != inset {
-            style.inset = inset;
-            ui.set_style(self.root, style);
+        let height = self.height + 2.0 * PROMPT_PADDING;
+        let left = (a.origin.x + (a.size.x - PROMPT_WIDTH) / 2.0).max(PROMPT_MARGIN);
+        let target = Frame::new(left, a.origin.y + a.size.y + PROMPT_GAP, PROMPT_WIDTH, height);
+        self.popover.open(ui, config, a, target);
+    }
+
+    /// Shows or hides the error line under the password field (the prompt grows or shrinks).
+    fn set_error(&mut self, ui: &mut Ui, config: &Config, text: Option<&str>) {
+        let Some(error) = self.error else { return };
+        let shown = ui.is_visible(error);
+        if let Some(text) = text {
+            ui.set_text(error, text);
         }
-        self.appear.step(dt);
-        let k = self.appear.value.clamp(0.0, 1.2);
-        if self.state.is_none() && k < 0.01 {
-            ui.set_visible(self.root, false);
+        if shown != text.is_some() {
+            ui.set_visible(error, text.is_some());
+            let delta = PROMPT_GAP_ROWS + PROMPT_ERROR;
+            self.height += if text.is_some() { delta } else { -delta };
+            self.show(ui, config);
+        }
+    }
+
+    fn animate(&mut self, ui: &mut Ui, config: &Config, dt: f32, address: Frame) {
+        let moved = address != self.address;
+        self.address = address;
+        if self.state.is_none() {
+            if self.popover.is_open() {
+                self.popover.close(ui, config);
+            }
+        } else if moved && self.popover.is_open() {
+            self.show(ui, config);
+        }
+        if self.popover.animate(ui, dt) == Phase::Closed && self.state.is_none() {
             ui.clear_children(self.root);
-            return;
+            self.field = None;
+            self.error = None;
         }
-        ui.set_opacity(self.root, k.min(1.0));
-        scale_in(ui, self.root, k);
     }
 }

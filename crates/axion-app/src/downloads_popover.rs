@@ -6,12 +6,11 @@
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
 
 use crate::chrome::PanelItem;
-use crate::drip::{Drip, Phase};
-use crate::menu::place;
+use crate::popover::Popover;
 
 const ACTION_BASE: u32 = 6200;
 const SHOW_ALL: ActionId = ActionId(ACTION_BASE);
@@ -27,7 +26,6 @@ const INSET: f32 = 12.0;
 const GAP: f32 = 4.0;
 const GAP_BELOW_ANCHOR: f32 = 14.0;
 const RADIUS: f32 = 24.0;
-const PLATE_OPACITY: f32 = 0.55;
 /// Fixed row heights, so the drip knows its target size before layout.
 const HEADER: f32 = 30.0;
 const ROW: f32 = 54.0;
@@ -46,44 +44,32 @@ pub enum DownloadsAction {
 }
 
 pub struct DownloadsPopover {
-    parent: NodeId,
-    root: NodeId,
+    popover: Popover,
+    /// The glass panel the content sits on.
     plate: NodeId,
-    drip: Drip,
 }
 
 impl DownloadsPopover {
     /// `parent` is the toolbar, so the popover's glass merges with it.
     pub fn build(ui: &mut Ui, parent: NodeId) -> Self {
-        let root = ui.add(
+        let popover = Popover::build(
+            ui,
             parent,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(RADIUS),
+            RADIUS,
             Style {
-                position: Position::Absolute,
                 size: Size { width: length(WIDTH), height: auto() },
-                padding: uniform(PADDING),
-                ..Default::default()
-            },
-        );
-        let plate = ui.add(
-            root,
-            Widget::container()
-                .with_background(Background::Fill(Paint::Surface, PLATE_OPACITY))
-                .with_radius(RADIUS - PADDING),
-            Style {
-                flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
                 gap: Size { width: length(0.0), height: length(GAP) },
-                padding: uniform(INSET),
+                padding: uniform(PADDING + INSET),
                 ..Default::default()
             },
         );
-        ui.set_visible(root, false);
-        Self { parent, root, plate, drip: Drip::new() }
+        let plate = popover.root();
+        Self { popover, plate }
     }
 
     pub fn is_open(&self) -> bool {
-        matches!(self.drip.phase(), Phase::Opening | Phase::Open)
+        self.popover.is_open()
     }
 
     /// Opens below `anchor` (the download button), right-aligned with it, or refreshes the
@@ -103,14 +89,7 @@ impl DownloadsPopover {
         let right = anchor.origin.x + anchor.size.x + PADDING + 8.0;
         let left = (right - WIDTH).clamp(8.0, (window_width - WIDTH - 8.0).max(8.0));
         let target = Frame::new(left, anchor.origin.y + anchor.size.y + GAP_BELOW_ANCHOR, WIDTH, height);
-        place(ui, self.root, self.parent, target);
-        ui.set_visible(self.root, true);
-        if self.is_open() {
-            self.drip.retarget(target);
-        } else {
-            self.drip.open(config, anchor, target);
-        }
-        self.animate(ui, 0.0);
+        self.popover.open(ui, config, anchor, target);
     }
 
     fn fill(&mut self, ui: &mut Ui, items: &[PanelItem]) {
@@ -200,18 +179,12 @@ impl DownloadsPopover {
     }
 
     pub fn close(&mut self, ui: &mut Ui, config: &Config) {
-        self.drip.close(config);
-        self.animate(ui, 0.0);
+        self.popover.close(ui, config);
     }
 
     /// Advances the drip; call every frame.
     pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
-        if self.drip.step(dt) == Phase::Closed {
-            ui.set_visible(self.root, false);
-            return;
-        }
-        ui.set_visual_frame(self.root, Some(self.drip.frame()));
-        ui.set_opacity(self.plate, self.drip.content_opacity());
+        self.popover.animate(ui, dt);
     }
 
     pub fn action(&self, id: ActionId) -> Option<DownloadsAction> {
@@ -219,7 +192,7 @@ impl DownloadsPopover {
     }
 
     pub fn contains(&self, ui: &Ui, p: Vec2) -> bool {
-        self.is_open() && ui.frame(self.root).contains(p)
+        self.popover.contains(ui, p)
     }
 }
 

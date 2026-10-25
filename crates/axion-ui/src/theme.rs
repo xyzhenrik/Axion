@@ -70,6 +70,17 @@ const LENS_TINT: f32 = 0.03;
 const LENS_RIM: f32 = 1.5;
 const LENS_SHADOW: f32 = 0.45;
 
+/// Tint strength of every glass level under Reduce Transparency (nearly opaque).
+const REDUCED_TRANSPARENCY_OPACITY: f32 = 0.94;
+
+fn pick_level(l: axion_config::Levels, level: GlassLevel) -> f32 {
+    match level {
+        GlassLevel::Thin | GlassLevel::Lens => l.thin,
+        GlassLevel::Regular => l.regular,
+        GlassLevel::Thick => l.thick,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Theme {
     pub dark: bool,
@@ -136,6 +147,15 @@ impl Theme {
         }
     }
 
+    /// The tint strength of `level` (see [`Theme::glass`]).
+    pub fn glass_opacity(&self, level: GlassLevel) -> f32 {
+        if self.config.glass.reduce_transparency {
+            REDUCED_TRANSPARENCY_OPACITY
+        } else {
+            pick_level(self.material().opacity, level)
+        }
+    }
+
     /// Glass parameters for `level`, in physical pixels at `scale`.
     pub fn glass(&self, level: GlassLevel, scale: f32) -> GlassParams {
         let glass = &self.config.glass;
@@ -143,17 +163,13 @@ impl Theme {
         if level == GlassLevel::Lens {
             return self.lens(scale);
         }
-        let pick = |l: axion_config::Levels| match level {
-            GlassLevel::Thin | GlassLevel::Lens => l.thin,
-            GlassLevel::Regular => l.regular,
-            GlassLevel::Thick => l.thick,
-        };
+        let pick = |l: axion_config::Levels| pick_level(l, level);
         // Tint towards the accent a little, as the design asks.
         let base = m.tint.to_f32();
         let accent = self.config.appearance.accent.to_f32();
         let k = self.config.appearance.accent_tint.clamp(0.0, 1.0);
         let tint = [0, 1, 2].map(|i| base[i] * (1.0 - k) + accent[i] * k);
-        let opacity = if glass.reduce_transparency { 0.94 } else { pick(m.opacity) };
+        let opacity = self.glass_opacity(level);
         let bezel = glass.bezel_width * scale;
         GlassParams {
             refraction: if glass.reduce_transparency { 0.0 } else { m.refraction * bezel },
