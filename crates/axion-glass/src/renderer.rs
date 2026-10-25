@@ -182,7 +182,12 @@ impl GlassRenderer {
         };
         let shapes_buffer =
             buffer("glass shapes", bytemuck::cast_slice(&gpu_shapes), wgpu::BufferUsages::STORAGE);
-        let uniform = ParamsUniform::new(frame.params, resolution, count);
+        let uniform = ParamsUniform::new(
+            frame.params,
+            resolution,
+            count,
+            shapes.iter().any(|s| s.tint_opacity.is_some()),
+        );
         let params_buffer = buffer("glass params", bytemuck::bytes_of(&uniform), wgpu::BufferUsages::UNIFORM);
         let step = frame.params.blur_radius.max(0.0) / BLUR_TAPS;
         let blur_buffers = [

@@ -29,7 +29,10 @@ use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
 use crate::lockscreen::LockScreen;
-use crate::menu::{ACCOUNT_MENU_BASE, MAX_ITEMS, Menu, MenuAction, MenuItem, PAGE_MENU_BASE, Placement};
+use crate::menu::{
+    ACCOUNT_MENU_BASE, MAX_ITEMS, Menu, MenuAction, MenuClick, MenuControl, MenuItem, PAGE_MENU_BASE,
+    Placement,
+};
 use crate::mpris::{Mpris, MprisCommand, Track};
 use crate::overview::{Overview, OverviewAction};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
@@ -360,7 +363,7 @@ impl Browser {
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
         let settings = SettingsSheet::build(&mut ui);
-        let passwords = Passwords::build(&mut ui, &vault_path, &account_name);
+        let passwords = Passwords::build(&mut ui, chrome.bar_node(), &vault_path, &account_name);
         let lock = PrivateLock::new();
         let favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         // Built after the chrome so it draws above it.
@@ -766,6 +769,10 @@ impl Browser {
         }
         let anchor = self.chrome.account_frame(&self.ui);
         let window = self.logical_size();
+        // It flows out of the account button (glass while the menu is open) and covers the
+        // Now Playing card above it.
+        self.account_menu.set_anchor_glass(&mut self.ui, self.chrome.account_node());
+        self.account_menu.set_covered(&mut self.ui, Some(self.chrome.now_playing_node()));
         self.account_menu.open(&mut self.ui, &self.config, anchor, window, items);
     }
 
@@ -1727,7 +1734,7 @@ impl Browser {
         }
         let Some(tab) = self.tabs.active() else { return };
         let bookmarked = self.store.as_ref().and_then(|s| s.bookmark_for(&tab.url).ok().flatten()).is_some();
-        let zoom = format!("{:.0}%", ZOOM_BASE.powf(tab.zoom) * 100.0);
+        let zoom = zoom_label(tab.zoom);
         let items = vec![
             if bookmarked {
                 MenuItem::new(Icon::Bookmark, "Remove Bookmark", MenuAction::RemoveBookmark)
@@ -1735,9 +1742,16 @@ impl Browser {
                 MenuItem::new(Icon::Bookmark, "Add Bookmark", MenuAction::AddBookmark)
             },
             MenuItem::new(Icon::Share, "Copy Link", MenuAction::CopyLink),
-            MenuItem::new(Icon::ZoomIn, "Zoom In", MenuAction::ZoomIn),
-            MenuItem::new(Icon::Search, "Actual Size", MenuAction::ZoomReset).with_detail(zoom),
-            MenuItem::new(Icon::ZoomOut, "Zoom Out", MenuAction::ZoomOut),
+            MenuItem::new(Icon::ZoomIn, "Zoom", MenuAction::Zoom).with_detail(zoom.clone()).with_submenu(
+                vec![
+                    MenuItem::controls(vec![
+                        MenuControl::icon(Icon::Minus, MenuAction::ZoomOut),
+                        MenuControl::text(zoom, MenuAction::ZoomReset),
+                        MenuControl::icon(Icon::Plus, MenuAction::ZoomIn),
+                    ])
+                    .with_caption("Zoom"),
+                ],
+            ),
             MenuItem::new(Icon::Reload, "Reload Without Cache", MenuAction::HardReload),
             MenuItem::new(Icon::Settings, "Settings", MenuAction::Settings),
         ];
@@ -1783,9 +1797,19 @@ impl Browser {
                     let _ = clipboard.set_text(url);
                 }
             }
-            MenuAction::ZoomIn => self.run(Action::ZoomIn),
-            MenuAction::ZoomOut => self.run(Action::ZoomOut),
-            MenuAction::ZoomReset => self.run(Action::ZoomReset),
+            MenuAction::ZoomIn | MenuAction::ZoomOut | MenuAction::ZoomReset => {
+                self.run(match action {
+                    MenuAction::ZoomIn => Action::ZoomIn,
+                    MenuAction::ZoomOut => Action::ZoomOut,
+                    _ => Action::ZoomReset,
+                });
+                // The menu stays open: show the new level.
+                if let Some(zoom) = self.tabs.active().map(|t| zoom_label(t.zoom)) {
+                    self.menu.set_text(&mut self.ui, MenuAction::Zoom, &zoom);
+                    self.menu.set_text(&mut self.ui, MenuAction::ZoomReset, &zoom);
+                }
+            }
+            MenuAction::Zoom => {}
             MenuAction::HardReload => self.run(Action::HardReload),
             MenuAction::Settings => self.run(Action::OpenSettings),
             MenuAction::SwitchAccount(_)
@@ -1806,6 +1830,17 @@ impl Browser {
             blocked_total: self.shields.total(),
             lists_loading: !self.shields.is_ready(),
         })
+    }
+
+    /// Capture aid: closes every menu and popover at once (with `--lead` or
+    /// `AXION_CAPTURE_FRAMES` it shows them on their way out).
+    fn close_popups(&mut self) {
+        self.menu.close(&mut self.ui, &self.config);
+        self.account_menu.close(&mut self.ui, &self.config);
+        self.shields_popover.close(&mut self.ui, &self.config);
+        self.downloads_popover.close(&mut self.ui, &self.config);
+        self.suggestions.hide(&mut self.ui, &self.config);
+        self.passwords.hide_prompt(None, false);
     }
 
     fn toggle_shields_popover(&mut self) {
@@ -1991,17 +2026,21 @@ impl Browser {
                     }
                     self.add_account_action(action);
                 }
-                UiEvent::Clicked { action, .. } if self.account_menu.action(action).is_some() => {
-                    let action = self.account_menu.action(action);
-                    self.account_menu.close(&mut self.ui, &self.config);
-                    if let Some(action) = action {
-                        self.menu_action(action);
+                UiEvent::Clicked { action, .. } if self.account_menu.owns(action) => {
+                    if let Some(click) = self.account_menu.click(&mut self.ui, &self.config, action) {
+                        if !click.keep_open {
+                            self.account_menu.close(&mut self.ui, &self.config);
+                        }
+                        self.menu_action(click.action);
                     }
                 }
-                UiEvent::Clicked { action, .. } if self.menu.action(action).is_some() => {
-                    let action = self.menu.action(action);
-                    self.menu.close(&mut self.ui, &self.config);
-                    if let Some(action) = action {
+                UiEvent::Clicked { action, .. } if self.menu.owns(action) => {
+                    if let Some(MenuClick { action, keep_open }) =
+                        self.menu.click(&mut self.ui, &self.config, action)
+                    {
+                        if !keep_open {
+                            self.menu.close(&mut self.ui, &self.config);
+                        }
                         self.menu_action(action);
                     }
                 }
@@ -2960,6 +2999,11 @@ impl Browser {
             }
             match what {
                 "menu" => self.open_page_menu(),
+                // Capture aids: the page menu with its zoom submenu open, a zoom step in it,
+                // and closing every popup at once (mid-animation with --lead / frame sequences).
+                "zoom-menu" => self.menu.open_first_submenu(&mut self.ui, &self.config),
+                "zoom-in" => self.menu_action(MenuAction::ZoomIn),
+                "close-popups" => self.close_popups(),
                 "shields" => self.toggle_shields_popover(),
                 "history" => self.show_panel(Panel::History),
                 "downloads" => self.show_panel(Panel::Downloads),
@@ -3210,6 +3254,8 @@ impl Browser {
                 self.update_layout();
             }
         }
+        self.menu.track_hover(&mut self.ui, &self.config);
+        self.account_menu.track_hover(&mut self.ui, &self.config);
         self.menu.animate(&mut self.ui, dt);
         self.account_menu.animate(&mut self.ui, dt);
         self.add_account.animate(&mut self.ui, dt);
@@ -3217,7 +3263,7 @@ impl Browser {
         self.downloads_popover.animate(&mut self.ui, dt);
         self.lock_screen.animate(&mut self.ui, dt);
         let address = self.chrome.address_frame(&self.ui);
-        self.passwords.animate(&mut self.ui, dt, address);
+        self.passwords.animate(&mut self.ui, &self.config, dt, address);
         self.update_player(dt);
         self.suggestions.animate(&mut self.ui, dt);
         if self.overview.is_open() {
@@ -3524,6 +3570,11 @@ fn bridge_secret() -> String {
     let nanos =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     format!("{nanos:x}{:x}", std::process::id())
+}
+
+/// The page zoom as shown in the page menu ("100%").
+fn zoom_label(zoom: f64) -> String {
+    format!("{:.0}%", ZOOM_BASE.powf(zoom) * 100.0)
 }
 
 fn unix_now() -> i64 {

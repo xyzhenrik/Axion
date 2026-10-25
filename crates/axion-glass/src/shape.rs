@@ -12,11 +12,15 @@ pub struct GlassShape {
     pub stretch: Vec2,
     /// Direction of the stretch in radians (screen space).
     pub stretch_angle: f32,
+    /// This shape's tint strength instead of the pass's (`GlassParams::tint` alpha). Where it
+    /// flows into other shapes the strengths blend, so denser glass (a popover) can merge
+    /// with thinner glass (the bar) in one pass.
+    pub tint_opacity: Option<f32>,
 }
 
 impl GlassShape {
     pub fn rounded_rect(center: Vec2, half_size: Vec2, corner_radius: f32) -> Self {
-        Self { center, half_size, corner_radius, stretch: Vec2::ONE, stretch_angle: 0.0 }
+        Self { center, half_size, corner_radius, stretch: Vec2::ONE, stretch_angle: 0.0, tint_opacity: None }
     }
 
     pub fn capsule(center: Vec2, half_size: Vec2) -> Self {
@@ -43,6 +47,9 @@ impl GlassShape {
             stretch: self.stretch.max(Vec2::splat(0.05)).to_array(),
             radius: self.corner_radius,
             angle: self.stretch_angle,
+            // Negative: the pass's own tint strength.
+            tint_opacity: self.tint_opacity.map_or(-1.0, |a| a.clamp(0.0, 1.0)),
+            _pad: 0.0,
         }
     }
 }
@@ -62,6 +69,8 @@ pub(crate) struct ShapeGpu {
     pub stretch: [f32; 2],
     pub radius: f32,
     pub angle: f32,
+    pub tint_opacity: f32,
+    pub _pad: f32,
 }
 
 #[cfg(test)]
@@ -77,8 +86,8 @@ mod tests {
     }
 
     #[test]
-    fn gpu_layout_is_32_bytes() {
-        assert_eq!(std::mem::size_of::<ShapeGpu>(), 32);
-        assert_eq!(std::mem::size_of::<crate::params::ParamsUniform>(), 64);
+    fn gpu_layout_is_40_bytes() {
+        assert_eq!(std::mem::size_of::<ShapeGpu>(), 40);
+        assert_eq!(std::mem::size_of::<crate::params::ParamsUniform>(), 80);
     }
 }

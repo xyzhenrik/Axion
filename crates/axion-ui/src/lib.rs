@@ -70,6 +70,12 @@ const PULL_LIMIT: f32 = 5.0;
 /// … and how much it stretches toward it (relative to the pull over the glass's size).
 const PULL_STRETCH: f32 = 1.4;
 const PRESS_SETTLED: f32 = 0.001;
+/// Content on glass whose background is animated (`Widget::visual_frame`: popovers dripping
+/// out of a button, alerts scaling in) is mapped onto that background and shows only once it
+/// has grown to this share of its layout size …
+const CONTENT_REVEAL_FROM: f32 = 0.55;
+/// … and fully from this share on, so glass and content appear and vanish together.
+const CONTENT_REVEAL_TO: f32 = 0.9;
 /// Fading glass is grouped into this many opacity steps (each step is one glass pass).
 const GLASS_FADE_STEPS: f32 = 24.0;
 /// How strongly tinted glass takes its colour (it still refracts, blurs and catches light).
@@ -714,6 +720,11 @@ impl Ui {
         self.pressed
     }
 
+    /// The button under the pointer, if any.
+    pub fn hovered(&self) -> Option<NodeId> {
+        self.hover
+    }
+
     /// The clickable node at `p`, if any.
     pub fn hit_action(&self, p: Vec2) -> Option<NodeId> {
         self.hit(p).and_then(|n| self.actionable(n))
@@ -1213,7 +1224,13 @@ impl Ui {
                     .glass
                     .iter()
                     .filter(|g| g.level == level && g.fade == fade && g.tint == tint)
-                    .map(|g| g.shape)
+                    .map(|g| {
+                        let mut shape = g.shape;
+                        if let Some(opacity) = &mut shape.tint_opacity {
+                            *opacity *= fade;
+                        }
+                        shape
+                    })
                     .collect();
                 let mut params = self.paint_theme().glass(level, s);
                 if let Some(tint) = tint {
@@ -1298,6 +1315,29 @@ impl Ui {
             }
         });
         let mark = press_xf.as_ref().map(|_| marks(stacks));
+        // An animated background carries its content along (mapped from the layout frame onto
+        // it), and the content fades with the background's growth: both share one value.
+        let (frame_xf, reveal) = match widget.visual_frame {
+            Some(_) if px.size.min_element() > 0.0 => {
+                let ratio = bg_px.size / px.size;
+                let xf = PressXf {
+                    center: px.center(),
+                    scale: 1.0,
+                    offset: Vec2::ZERO,
+                    stretch: Vec2::ONE,
+                    angle: 0.0,
+                    content_scale: ratio,
+                    content_offset: bg_px.center() - px.center(),
+                };
+                let t = ((ratio.min_element() - CONTENT_REVEAL_FROM)
+                    / (CONTENT_REVEAL_TO - CONTENT_REVEAL_FROM))
+                    .clamp(0.0, 1.0);
+                (Some(xf), t * t * (3.0 - 2.0 * t))
+            }
+            _ => (None, 1.0),
+        };
+        let frame_mark = frame_xf.as_ref().map(|_| marks(stacks));
+        let child_fade = fade * reveal;
         let mut child_depth = depth;
         let content = &mut stacks[depth].content;
         match widget.background {
@@ -1308,6 +1348,7 @@ impl Ui {
                     _ => unreachable!("matched above"),
                 };
                 let mut shape = GlassShape::rounded_rect(bg_px.center(), bg_px.size * 0.5, bg_radius);
+                shape.tint_opacity = widget.glass_density.map(|l| theme.glass_opacity(l));
                 if let Some(xf) = &press_xf {
                     shape.center += xf.offset;
                     shape.half_size *= xf.scale;
@@ -1472,7 +1513,7 @@ impl Ui {
             // The subtree as its own layers, each cut to this widget's frame.
             let mut sub: Vec<Stack<'a>> = Vec::new();
             for child in self.tree.children(node).unwrap_or_default() {
-                self.paint_node(child, child_depth, dim, fade, &mut sub);
+                self.paint_node(child, child_depth, dim, child_fade, &mut sub);
             }
             let mut layers = Vec::new();
             self.flush(sub, &mut layers);
@@ -1485,7 +1526,10 @@ impl Ui {
             return;
         }
         for child in self.tree.children(node).unwrap_or_default() {
-            self.paint_node(child, child_depth, dim, fade, stacks);
+            self.paint_node(child, child_depth, dim, child_fade, stacks);
+        }
+        if let (Some(xf), Some(mark)) = (frame_xf, frame_mark) {
+            transform_since(stacks, &mark, &xf, child_depth);
         }
         if let (Some(xf), Some(mark)) = (press_xf, mark) {
             transform_since(stacks, &mark, &xf, child_depth);

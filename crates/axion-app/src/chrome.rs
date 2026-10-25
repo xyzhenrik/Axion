@@ -1451,6 +1451,16 @@ impl Chrome {
         ui.frame(self.account)
     }
 
+    /// The account button itself (glass while the account menu flows out of it).
+    pub fn account_node(&self) -> NodeId {
+        self.account
+    }
+
+    /// The Now Playing card (the account menu covers it).
+    pub fn now_playing_node(&self) -> NodeId {
+        self.now_playing
+    }
+
     /// The sidebar, the plane the account menu's glass belongs to.
     pub fn sidebar_node(&self) -> NodeId {
         self.sidebar

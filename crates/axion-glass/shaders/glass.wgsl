@@ -16,6 +16,8 @@ struct Params {
     shadow: f32,
     frost: f32,
     shape_count: u32,
+    // 1 when some shape has its own tint strength (see `scene_tinted`).
+    own_tints: u32,
 }
 
 struct Shape {
@@ -24,6 +26,9 @@ struct Shape {
     stretch: vec2f,
     radius: f32,
     angle: f32,
+    // < 0: the pass's tint strength (params.tint.a).
+    tint_opacity: f32,
+    _pad: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -97,6 +102,27 @@ fn scene(p: vec2f) -> f32 {
     return d;
 }
 
+// `scene` plus the tint strength at `p`: each shape's own strength, blended across the
+// smooth union the same way the shapes flow together. Only evaluated once per pixel.
+fn scene_tinted(p: vec2f) -> vec2f {
+    var d = 1e5;
+    var a = params.tint.a;
+    let inv_k = 1.0 / max(params.merge_k, 0.001);
+    for (var i = 0u; i < params.shape_count; i++) {
+        let s = shapes[i];
+        if (shape_bound(s, p) >= d + params.merge_k) {
+            continue;
+        }
+        let x = shape_sdf(s, p);
+        let own = select(params.tint.a, s.tint_opacity, s.tint_opacity >= 0.0);
+        // Weight of what was there before: 1 where it is much nearer, 0 where this shape is.
+        let keep = clamp(0.5 + 0.5 * (x - d) * inv_k, 0.0, 1.0);
+        a = mix(own, a, keep);
+        d = smin(d, x, params.merge_k);
+    }
+    return vec2f(d, a);
+}
+
 fn sample3(tex: texture_2d<f32>, uv_r: vec2f, uv_g: vec2f, uv_b: vec2f) -> vec3f {
     return vec3f(
         textureSampleLevel(tex, samp, uv_r, 0.0).r,
@@ -112,7 +138,13 @@ const SHADOW_REACH: f32 = 28.0;
 fn fs_main(in: VsOut) -> @location(0) vec4f {
     let p = in.pos.xy;
     let base = textureSampleLevel(backdrop, samp, in.uv, 0.0).rgb;
-    let d = scene(p);
+    var field = vec2f(0.0, params.tint.a);
+    if (params.own_tints != 0u) {
+        field = scene_tinted(p);
+    } else {
+        field.x = scene(p);
+    }
+    let d = field.x;
 
     // Far from any glass: plain backdrop.
     if (d > SHADOW_REACH + SHADOW_OFFSET.y) {
@@ -159,7 +191,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     let sharp = sample3(backdrop, uv_r, uv_g, uv_b);
     let soft = sample3(blurred, uv_r, uv_g, uv_b);
     var glass = mix(sharp, soft, params.frost);
-    glass = mix(glass, params.tint.rgb, params.tint.a);
+    glass = mix(glass, params.tint.rgb, field.y);
 
     // Specular: a thin bright rim all around, strongest where the edge faces the light,
     // plus a weaker reflection on the opposite side and a broad glow across the bezel.

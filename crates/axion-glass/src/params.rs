@@ -65,10 +65,13 @@ pub(crate) struct ParamsUniform {
     pub shadow: f32,
     pub frost: f32,
     pub shape_count: u32,
+    /// 1 when some shape has its own tint strength (the shader blends them only then).
+    pub own_tints: u32,
+    pub _pad: [u32; 3],
 }
 
 impl ParamsUniform {
-    pub fn new(params: &GlassParams, resolution: [f32; 2], shape_count: u32) -> Self {
+    pub fn new(params: &GlassParams, resolution: [f32; 2], shape_count: u32, own_tints: bool) -> Self {
         Self {
             tint: params.tint,
             resolution,
@@ -81,6 +84,8 @@ impl ParamsUniform {
             shadow: params.shadow,
             frost: params.frost.clamp(0.0, 1.0),
             shape_count,
+            own_tints: own_tints as u32,
+            _pad: [0; 3],
         }
     }
 }

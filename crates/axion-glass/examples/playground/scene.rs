@@ -70,6 +70,7 @@ impl Element {
             corner_radius: self.radius * scale * lift,
             stretch: Vec2::new(s, 1.0 / s),
             stretch_angle: self.stretch_angle,
+            tint_opacity: None,
         }
     }
 }

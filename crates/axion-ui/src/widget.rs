@@ -142,6 +142,9 @@ pub struct Widget {
     /// Draws the widget's own background (glass, fill, shadow) in this rectangle (absolute,
     /// logical px) instead of its layout frame — for animating glass without relayout.
     pub visual_frame: Option<Rect>,
+    /// Glass drawn in its own level's pass (so it flows into that level's glass) but tinted
+    /// as densely as this level: popovers that grow out of thin bar glass and carry text.
+    pub glass_density: Option<GlassLevel>,
     /// Children are drawn only inside this widget's frame (scrolling lists).
     pub clip: bool,
     /// Absolute frame in logical pixels, updated by layout.
@@ -160,6 +163,7 @@ impl Widget {
             selected: false,
             opacity: 1.0,
             visual_frame: None,
+            glass_density: None,
             clip: false,
             frame: Rect::default(),
         }
@@ -241,6 +245,12 @@ impl Widget {
 
     pub fn with_background(mut self, background: Background) -> Self {
         self.background = background;
+        self
+    }
+
+    /// See [`Widget::glass_density`].
+    pub fn with_glass_density(mut self, level: GlassLevel) -> Self {
+        self.glass_density = Some(level);
         self
     }
 

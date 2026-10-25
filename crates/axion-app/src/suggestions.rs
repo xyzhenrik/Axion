@@ -5,10 +5,9 @@ use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
 use axion_store::Store;
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Background, GlassLevel, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
 
-use crate::drip::{Drip, Phase};
-use crate::menu::place;
+use crate::popover::Popover;
 
 use crate::url::{is_address, resolve_input};
 
@@ -19,8 +18,6 @@ const ROW_HEIGHT: f32 = 48.0;
 const GAP_BELOW_BAR: f32 = 14.0;
 const RADIUS: f32 = 22.0;
 const PADDING: f32 = 6.0;
-/// The frosted plate under the rows keeps text legible over any page.
-const PLATE_OPACITY: f32 = 0.55;
 /// Highlight of the selected row (accent at this opacity).
 const SELECTED_OPACITY: f32 = 0.16;
 
@@ -75,51 +72,35 @@ pub fn suggest(input: &str, store: Option<&Store>, search_url: &str, now: i64) -
 }
 
 pub struct SuggestionList {
-    parent: NodeId,
-    root: NodeId,
+    popover: Popover,
+    /// The glass panel the rows sit on.
     plate: NodeId,
     rows: Vec<NodeId>,
     items: Vec<Suggestion>,
     selected: Option<usize>,
     query: String,
-    drip: Drip,
 }
 
 impl SuggestionList {
     /// `parent` is the toolbar, so the card's glass flows out of the bar.
     pub fn build(ui: &mut Ui, parent: NodeId) -> Self {
-        let root = ui.add(
+        let popover = Popover::build(
+            ui,
             parent,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(RADIUS),
+            RADIUS,
             Style {
-                position: Position::Absolute,
                 padding: Rect {
                     left: length(PADDING),
                     right: length(PADDING),
                     top: length(PADDING),
                     bottom: length(PADDING),
                 },
+                flex_direction: FlexDirection::Column,
                 ..Default::default()
             },
         );
-        let plate = ui.add(
-            root,
-            Widget::container()
-                .with_background(Background::Fill(Paint::Surface, PLATE_OPACITY))
-                .with_radius(RADIUS - PADDING),
-            Style { flex_grow: 1.0, flex_direction: FlexDirection::Column, ..Default::default() },
-        );
-        ui.set_visible(root, false);
-        Self {
-            parent,
-            root,
-            plate,
-            rows: Vec::new(),
-            items: Vec::new(),
-            selected: None,
-            query: String::new(),
-            drip: Drip::new(),
-        }
+        let plate = popover.root();
+        Self { popover, plate, rows: Vec::new(), items: Vec::new(), selected: None, query: String::new() }
     }
 
     pub fn row_action(id: ActionId) -> Option<usize> {
@@ -127,7 +108,7 @@ impl SuggestionList {
     }
 
     pub fn is_visible(&self) -> bool {
-        matches!(self.drip.phase(), Phase::Opening | Phase::Open)
+        self.popover.is_open()
     }
 
     /// Updates the list for `query`, placed under `anchor` (the address field, logical px).
@@ -153,18 +134,12 @@ impl SuggestionList {
         self.items.clear();
         self.query.clear();
         self.selected = None;
-        self.drip.close(config);
-        self.animate(ui, 0.0);
+        self.popover.close(ui, config);
     }
 
     /// Advances the drip; call every frame.
     pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
-        if self.drip.step(dt) == Phase::Closed {
-            ui.set_visible(self.root, false);
-            return;
-        }
-        ui.set_visual_frame(self.root, Some(self.drip.frame()));
-        ui.set_opacity(self.plate, self.drip.content_opacity());
+        self.popover.animate(ui, dt);
     }
 
     fn target(&self, anchor: Frame) -> Frame {
@@ -181,18 +156,16 @@ impl SuggestionList {
         ui.clear_children(self.plate);
         self.rows.clear();
         if self.items.is_empty() {
-            self.drip.close(config);
+            self.popover.close(ui, config);
             return;
         }
         let target = self.target(anchor);
-        place(ui, self.root, self.parent, target);
-        ui.set_visible(self.root, true);
-        self.drip.show(config, anchor, target);
+        self.popover.open(ui, config, anchor, target);
 
         for (i, item) in self.items.iter().enumerate() {
             let row = ui.add(
                 self.plate,
-                Widget::container().with_action(ActionId(ROW_BASE + i as u32)).with_radius(14.0),
+                Widget::container().with_action(ActionId(ROW_BASE + i as u32)).with_radius(CAPSULE),
                 Style {
                     size: Size { width: auto(), height: length(ROW_HEIGHT) },
                     flex_direction: FlexDirection::Row,
@@ -289,9 +262,8 @@ impl SuggestionList {
     pub fn reposition(&mut self, ui: &mut Ui, anchor: Frame) {
         if self.is_visible() {
             let target = self.target(anchor);
-            if ui.frame(self.root) != target {
-                place(ui, self.root, self.parent, target);
-                self.drip.retarget(target);
+            if ui.frame(self.plate) != target {
+                self.popover.retarget(ui, target);
             }
         }
     }
