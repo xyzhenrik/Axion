@@ -57,6 +57,10 @@ wrap_app! {
             let Some(command_line) = command_line else { return };
             command_line.append_switch(Some(&"noerrdialogs".into()));
             command_line.append_switch(Some(&"hide-crash-restore-bubble".into()));
+            // Chromium would keep its cookie encryption key in the desktop keyring (KWallet,
+            // GNOME Keyring) and pop up the wallet's unlock dialog. Axion has its own vault for
+            // passwords, so the key stays in the profile instead.
+            command_line.append_switch_with_value(Some(&"password-store".into()), Some(&"basic".into()));
             if self.flags.no_sandbox {
                 command_line.append_switch(Some(&"no-sandbox".into()));
             }
