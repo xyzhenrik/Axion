@@ -83,8 +83,10 @@ pub enum ChromeAction {
     DeletePanelItem(usize),
     /// The panel header's clear button ("Clear History…").
     ClearPanel,
-    /// The sidebar's Downloads row and the toolbar's download button.
+    /// The sidebar's Downloads row.
     Downloads,
+    /// The toolbar's download button (opens the downloads popover).
+    DownloadsButton,
     /// The `k`th trailing button of panel entry `i` (a download's pause, open …).
     PanelButton(usize, usize),
 }
@@ -99,7 +101,7 @@ const PANEL_BUTTON_BASE: u32 = 13_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 24] = [
+    const SIMPLE: [ChromeAction; 25] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -124,6 +126,7 @@ impl ChromeAction {
         ChromeAction::ExpandBars,
         ChromeAction::ClearPanel,
         ChromeAction::Downloads,
+        ChromeAction::DownloadsButton,
     ];
 
     fn id(self) -> ActionId {
@@ -140,7 +143,7 @@ impl ChromeAction {
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=24 => Some(Self::SIMPLE[n as usize - 1]),
+            n @ 1..=25 => Some(Self::SIMPLE[n as usize - 1]),
             n if (PANEL_BUTTON_BASE..PANEL_BUTTON_BASE + 1000 * PANEL_BUTTONS as u32).contains(&n) => {
                 let k = (n - PANEL_BUTTON_BASE) as usize;
                 Some(ChromeAction::PanelButton(k / PANEL_BUTTONS, k % PANEL_BUTTONS))
@@ -748,7 +751,7 @@ impl Chrome {
         // While downloads run (Safari): an arrow over a thin progress bar; opens the list.
         let downloads = ui.add(
             actions,
-            Widget::container().with_action(ChromeAction::Downloads.id()).with_radius(CAPSULE),
+            Widget::container().with_action(ChromeAction::DownloadsButton.id()).with_radius(CAPSULE),
             Style {
                 size: square(BUTTON),
                 justify_content: JustifyContent::CENTER,
@@ -1331,6 +1334,11 @@ impl Chrome {
         ui.set_text(self.now_playing_title, &now.title);
         ui.set_text(self.now_playing_subtitle, &now.subtitle);
         ui.set_icon(self.now_playing_icon, if now.playing { Icon::Pause } else { Icon::Play });
+    }
+
+    /// The toolbar's download button (logical px), for anchoring the downloads popover.
+    pub fn downloads_frame(&self, ui: &Ui) -> Frame {
+        ui.frame(self.downloads)
     }
 
     pub fn shield_frame(&self, ui: &Ui) -> Frame {

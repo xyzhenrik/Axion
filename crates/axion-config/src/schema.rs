@@ -370,8 +370,6 @@ pub struct Downloads {
     /// Open "safe" files (images, PDFs, text, audio, video) once they finished downloading.
     pub open_safe_files: bool,
     pub remove_list_items: RemoveDownloads,
-    /// The toolbar's download button stays this long after the last download finished (seconds).
-    pub indicator_linger_seconds: f32,
     /// How many finished downloads the list keeps at most.
     pub list_limit: u32,
 }
@@ -383,7 +381,6 @@ impl Default for Downloads {
             ask_where_to_save: true,
             open_safe_files: false,
             remove_list_items: RemoveDownloads::Manually,
-            indicator_linger_seconds: 60.0,
             list_limit: 500,
         }
     }

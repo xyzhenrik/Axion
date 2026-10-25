@@ -21,7 +21,8 @@ use winit::window::{Fullscreen, Window};
 
 use crate::chrome::{Chrome, ChromeAction, NowPlaying, PanelItem};
 use crate::desktop::DesktopTheme;
-use crate::downloads::{self, Downloads};
+use crate::downloads::{self, Downloads, List};
+use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
 use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
@@ -154,6 +155,7 @@ pub struct Browser {
     menu: Menu,
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
+    downloads_popover: DownloadsPopover,
     player: PlayerOverlay,
     /// The active page's last reported scroll position (CSS px).
     last_scroll_y: f32,
@@ -324,6 +326,7 @@ impl Browser {
         let suggestions = SuggestionList::build(&mut ui, chrome.bar_node());
         let menu = Menu::build(&mut ui, chrome.bar_node());
         let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
+        let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
         let settings = SettingsSheet::build(&mut ui);
         let lock = PrivateLock::load(store.as_ref());
@@ -346,6 +349,7 @@ impl Browser {
             menu,
             shields,
             shields_popover,
+            downloads_popover,
             player,
             last_scroll_y: 0.0,
             capture_frame: 0,
@@ -1394,7 +1398,9 @@ impl Browser {
             ),
             // Reading list entries arrive with Phase 6.
             Panel::ReadingList => Vec::new(),
-            Panel::Downloads => self.downloads.panel_items(Some(store), &self.config, unix_now()),
+            Panel::Downloads => {
+                self.downloads.items(List::Panel, Some(store), &self.config, unix_now(), usize::MAX)
+            }
         };
         let title = match panel {
             Panel::Bookmarks => "Bookmarks",
@@ -1679,6 +1685,19 @@ impl Browser {
                         self.menu_action(action);
                     }
                 }
+                UiEvent::Clicked { action, .. } if self.downloads_popover.action(action).is_some() => {
+                    match self.downloads_popover.action(action) {
+                        Some(DownloadsAction::Open(i)) => self.downloads.open_row(List::Popover, i),
+                        Some(DownloadsAction::Button(i, k)) => {
+                            self.downloads.row_button(List::Popover, i, k, &mut self.engine);
+                        }
+                        Some(DownloadsAction::ShowAll) => {
+                            self.downloads_popover.close(&mut self.ui, &self.config);
+                            self.show_all_downloads();
+                        }
+                        None => {}
+                    }
+                }
                 UiEvent::Clicked { action, .. } if self.shields_popover.action(action).is_some() => {
                     match self.shields_popover.action(action) {
                         Some(PopoverAction::SetLevel(level)) => self.set_shields_level(level),
@@ -1737,20 +1756,16 @@ impl Browser {
                     }
                     Some(ChromeAction::ClearPanel) => self.clear_panel(),
                     Some(ChromeAction::DeletePanelItem(i)) => self.delete_panel_item(i),
-                    Some(ChromeAction::Downloads) => {
-                        if !self.chrome.sidebar_open() {
-                            self.run(Action::ToggleSidebar);
-                        }
-                        self.show_panel(Panel::Downloads);
-                    }
+                    Some(ChromeAction::Downloads) => self.show_panel(Panel::Downloads),
+                    Some(ChromeAction::DownloadsButton) => self.toggle_downloads_popover(),
                     Some(ChromeAction::PanelButton(i, k)) => {
-                        self.downloads.row_button(i, k, &mut self.engine);
+                        self.downloads.row_button(List::Panel, i, k, &mut self.engine);
                         self.show_panel_with(Panel::Downloads, true);
                     }
                     Some(ChromeAction::OpenPanelItem(i))
                         if self.panel.is_some_and(|(p, _)| p == Panel::Downloads) =>
                     {
-                        self.downloads.open_row(i);
+                        self.downloads.open_row(List::Panel, i);
                     }
                     Some(ChromeAction::OpenPanelItem(i)) => {
                         if let Some(url) = self.panel_urls.get(i).cloned() {
@@ -2045,10 +2060,13 @@ impl Browser {
     /// Downloads: the toolbar indicator, the open list, and background results (cache size,
     /// chosen folder).
     fn downloads_pump(&mut self, changed: bool) {
-        let (shown, progress) = self.downloads.indicator(&self.config);
+        let (shown, progress) = self.downloads.indicator();
         self.chrome.set_download_indicator(&mut self.ui, shown, progress);
         if changed && self.panel.is_some_and(|(p, _)| p == Panel::Downloads) {
             self.show_panel_with(Panel::Downloads, true);
+        }
+        if changed && self.downloads_popover.is_open() {
+            self.open_downloads_popover();
         }
         for event in self.downloads.poll() {
             match event {
@@ -2060,6 +2078,33 @@ impl Browser {
             }
             self.refresh_settings();
         }
+    }
+
+    fn toggle_downloads_popover(&mut self) {
+        if self.downloads_popover.is_open() {
+            self.downloads_popover.close(&mut self.ui, &self.config);
+        } else {
+            self.shields_popover.close(&mut self.ui, &self.config);
+            self.menu.close(&mut self.ui, &self.config);
+            self.open_downloads_popover();
+        }
+    }
+
+    /// Opens the downloads popover, or refreshes it.
+    fn open_downloads_popover(&mut self) {
+        let limit = crate::downloads_popover::ROWS;
+        let items = self.downloads.items(List::Popover, self.store.as_ref(), &self.config, unix_now(), limit);
+        let anchor = self.chrome.downloads_frame(&self.ui);
+        let width = self.logical_size().x;
+        self.downloads_popover.open(&mut self.ui, &self.config, anchor, width, &items);
+    }
+
+    /// The full Downloads list in the sidebar (opening the sidebar if needed).
+    fn show_all_downloads(&mut self) {
+        if !self.chrome.sidebar_open() {
+            self.run(Action::ToggleSidebar);
+        }
+        self.show_panel(Panel::Downloads);
     }
 
     /// Rebuilds the open settings page (after data it shows arrived).
@@ -2283,6 +2328,14 @@ impl Browser {
             self.menu.close(&mut self.ui, &self.config);
             return;
         }
+        if pressed
+            && self.downloads_popover.is_open()
+            && !self.downloads_popover.contains(&self.ui, p)
+            && !self.chrome.downloads_frame(&self.ui).contains(p)
+        {
+            self.downloads_popover.close(&mut self.ui, &self.config);
+            return;
+        }
         if pressed && self.shields_popover.is_open() && !self.shields_popover.contains(&self.ui, p) {
             self.shields_popover.close(&mut self.ui, &self.config);
             return;
@@ -2357,6 +2410,13 @@ impl Browser {
         }
         if pressed && self.menu.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.menu.close(&mut self.ui, &self.config);
+            return false;
+        }
+        if pressed
+            && self.downloads_popover.is_open()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            self.downloads_popover.close(&mut self.ui, &self.config);
             return false;
         }
         if pressed && self.shields_popover.is_open() && input::key(event) == Some(Key::Named("Escape".into()))
@@ -2484,6 +2544,7 @@ impl Browser {
                 "shields" => self.toggle_shields_popover(),
                 "history" => self.show_panel(Panel::History),
                 "downloads" => self.show_panel(Panel::Downloads),
+                "downloads-popover" => self.toggle_downloads_popover(),
                 // Capture aid: "Clear Browsing Data" with the configured choices.
                 "clear-data" => self.settings_outcome(Outcome::ClearBrowsingData),
                 "data-settings" => {
@@ -2653,6 +2714,7 @@ impl Browser {
         }
         self.menu.animate(&mut self.ui, dt);
         self.shields_popover.animate(&mut self.ui, dt);
+        self.downloads_popover.animate(&mut self.ui, dt);
         self.lock_screen.animate(&mut self.ui, dt);
         self.update_player(dt);
         self.suggestions.animate(&mut self.ui, dt);

@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use axion_compositor::Icon;
 use axion_config::{ClearRange, Config, RemoveDownloads};
@@ -77,14 +76,23 @@ pub enum Event {
     FolderChosen(PathBuf),
 }
 
+/// Where download rows are shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum List {
+    /// The sidebar's Downloads panel (everything, by day).
+    Panel,
+    /// The toolbar button's popover (the latest few).
+    Popover,
+}
+
 pub struct Downloads {
     /// Downloads that haven't finished, in start order.
     running: Vec<DownloadInfo>,
-    /// When the last download finished (the indicator stays a while).
-    last_finished: Option<Instant>,
-    /// The open panel's rows and their buttons, by row index.
-    rows: Vec<(Row, Vec<RowButton>)>,
-    /// Finished downloads of the open panel, by store id.
+    /// A download started in this session (the toolbar button shows from then on).
+    any_this_session: bool,
+    /// Each list's rows and their buttons, by row index.
+    rows: [Vec<(Row, Vec<RowButton>)>; 2],
+    /// Finished downloads of the shown lists, by store id.
     stored: HashMap<i64, StoredDownload>,
     jobs: Arc<Mutex<Jobs>>,
     profile: PathBuf,
@@ -94,8 +102,8 @@ impl Downloads {
     pub fn new(profile: PathBuf) -> Self {
         Self {
             running: Vec::new(),
-            last_finished: None,
-            rows: Vec::new(),
+            any_this_session: false,
+            rows: [Vec::new(), Vec::new()],
             stored: HashMap::new(),
             jobs: Arc::default(),
             profile,
@@ -121,6 +129,7 @@ impl Downloads {
                 Some(i) => self.running[i] = info,
                 None => {
                     tracing::info!(file = %info.file_name, "download started");
+                    self.any_this_session = true;
                     self.running.push(info);
                 }
             }
@@ -130,7 +139,6 @@ impl Downloads {
         if let Some(i) = known {
             self.running.remove(i);
         }
-        self.last_finished = Some(Instant::now());
         tracing::info!(file = %info.file_name, state = ?info.state, "download finished");
         let state = match info.state {
             DownloadState::Complete => "complete",
@@ -161,13 +169,12 @@ impl Downloads {
         }
     }
 
-    /// The toolbar button: shown while downloads run and a while after; the bar shows the
-    /// running downloads' combined progress (`None` while their sizes are unknown).
-    pub fn indicator(&self, config: &Config) -> (bool, Option<f32>) {
-        let linger = Duration::from_secs_f32(config.downloads.indicator_linger_seconds.max(0.0));
+    /// The toolbar button: shown once something was downloaded in this session; its bar
+    /// shows the running downloads' combined progress (`None`: nothing running, or sizes
+    /// unknown).
+    pub fn indicator(&self) -> (bool, Option<f32>) {
         if self.running.is_empty() {
-            let recent = self.last_finished.is_some_and(|t| t.elapsed() < linger);
-            return (recent, recent.then_some(1.0));
+            return (self.any_this_session, None);
         }
         let known: Vec<&DownloadInfo> = self.running.iter().filter(|d| d.total_bytes > 0).collect();
         if known.is_empty() {
@@ -178,15 +185,26 @@ impl Downloads {
         (true, Some(received as f32 / total.max(1) as f32))
     }
 
-    /// The panel's rows: running downloads first, then finished ones, newest first, each day
-    /// under its heading.
-    pub fn panel_items(&mut self, store: Option<&Store>, config: &Config, now: i64) -> Vec<PanelItem> {
+    /// The rows of `list`: running downloads first, then finished ones, newest first, each
+    /// day under its heading; at most `limit`.
+    pub fn items(
+        &mut self,
+        list: List,
+        store: Option<&Store>,
+        config: &Config,
+        now: i64,
+        limit: usize,
+    ) -> Vec<PanelItem> {
         let tz = TimeZone::system();
         let today = local_date(now, &tz);
-        let stored =
-            store.and_then(|s| s.downloads(config.downloads.list_limit as usize).ok()).unwrap_or_default();
-        self.rows.clear();
-        self.stored.clear();
+        let stored_limit =
+            (config.downloads.list_limit as usize).min(limit.saturating_sub(self.running.len()));
+        let stored = store.and_then(|s| s.downloads(stored_limit).ok()).unwrap_or_default();
+        let rows = &mut self.rows[list as usize];
+        rows.clear();
+        if list == List::Panel {
+            self.stored.clear();
+        }
         let mut items = Vec::new();
         let mut current: Option<Option<Date>> = None;
         let mut section = |day: Option<Date>| {
@@ -195,7 +213,7 @@ impl Downloads {
             current = Some(day);
             heading
         };
-        for d in self.running.iter().rev() {
+        for d in self.running.iter().rev().take(limit) {
             let buttons = if d.state == DownloadState::Paused {
                 vec![RowButton::Resume, RowButton::Cancel]
             } else {
@@ -211,7 +229,7 @@ impl Downloads {
                 progress: (d.total_bytes > 0).then(|| d.received_bytes as f32 / d.total_bytes as f32),
                 buttons: buttons.iter().map(|b| b.icon()).collect(),
             });
-            self.rows.push((Row::Running(d.id), buttons));
+            rows.push((Row::Running(d.id), buttons));
         }
         for d in stored {
             let path = Path::new(&d.path);
@@ -235,7 +253,7 @@ impl Downloads {
                 progress: None,
                 buttons: buttons.iter().map(|b| b.icon()).collect(),
             });
-            self.rows.push((Row::Stored(d.id), buttons));
+            rows.push((Row::Stored(d.id), buttons));
             self.stored.insert(d.id, d);
         }
         items
@@ -243,12 +261,12 @@ impl Downloads {
 
     /// Whether the list has finished entries ("Clear List" only shows then).
     pub fn has_finished(&self) -> bool {
-        !self.stored.is_empty()
+        self.rows[List::Panel as usize].iter().any(|(row, _)| matches!(row, Row::Stored(_)))
     }
 
     /// A click on a row: opens a finished file.
-    pub fn open_row(&self, index: usize) {
-        if let Some((Row::Stored(id), _)) = self.rows.get(index)
+    pub fn open_row(&self, list: List, index: usize) {
+        if let Some((Row::Stored(id), _)) = self.rows[list as usize].get(index)
             && let Some(d) = self.stored.get(id)
             && d.state == "complete"
         {
@@ -260,8 +278,8 @@ impl Downloads {
     }
 
     /// A row's `k`th button.
-    pub fn row_button(&self, index: usize, k: usize, engine: &mut impl Engine) {
-        let Some((row, buttons)) = self.rows.get(index) else { return };
+    pub fn row_button(&self, list: List, index: usize, k: usize, engine: &mut impl Engine) {
+        let Some((row, buttons)) = self.rows[list as usize].get(index) else { return };
         let Some(&button) = buttons.get(k) else { return };
         match (*row, button) {
             (Row::Running(id), RowButton::Pause) => engine.download_action(id, DownloadAction::Pause),
@@ -278,7 +296,7 @@ impl Downloads {
 
     /// A row's ×: removes a finished download from the list (the file stays).
     pub fn remove_row(&self, index: usize, store: Option<&Store>) {
-        if let (Some((Row::Stored(id), _)), Some(store)) = (self.rows.get(index), store)
+        if let (Some((Row::Stored(id), _)), Some(store)) = (self.rows[List::Panel as usize].get(index), store)
             && let Err(e) = store.remove_download(*id)
         {
             tracing::error!("removing a download from the list failed: {e}");
@@ -659,7 +677,7 @@ mod tests {
             store.add_download(&d).unwrap();
         }
         let mut downloads = Downloads::new(PathBuf::new());
-        let items = downloads.panel_items(Some(&store), &Config::default(), now);
+        let items = downloads.items(List::Panel, Some(&store), &Config::default(), now, usize::MAX);
         let titles: Vec<&str> = items.iter().map(|i| i.title.as_str()).collect();
         assert_eq!(titles, ["a.zip", "b.zip", "c.zip"]);
         assert!(items[0].section.is_some() && items[1].section.is_none() && items[2].section.is_some());

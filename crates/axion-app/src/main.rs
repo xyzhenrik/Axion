@@ -13,6 +13,7 @@ mod browser;
 mod chrome;
 mod desktop;
 mod downloads;
+mod downloads_popover;
 mod drip;
 mod favicons;
 mod gpu;
