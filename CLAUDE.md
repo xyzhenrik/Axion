@@ -69,7 +69,8 @@ UI/rendering crates (`engine` uses wgpu only to hand out frame textures).
    page content and other UI; glass inside glass (sidebar cards) is just a later layer.
    `axion-ui` groups glass by nesting depth and level (thin/regular/thick) into layers.
 3. The page starts below the bar and beside a docked sidebar, and ends there: the page never
-   shows behind the bar (user decision). Floating panels (overlay sidebar) do refract it.
+   shows behind the bar (user decision). The page area is a rounded card
+   (`layout.page_corner_radius`, `layout.page_margin`); the OS window keeps its normal frame. Floating panels (overlay sidebar) do refract it.
    A GPU luminance probe of the page's top edge flips the chrome light/dark
    (`appearance.adapt_to_page`).
 4. Glass shapes are described as **signed distance fields**. Neighbouring shapes are merged

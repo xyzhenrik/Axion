@@ -194,6 +194,10 @@ Windows/macOS, touchscreen-first mode.
 - 2026-10-25: The page starts **below** the floating bar and **ends there**, like in any
   browser: nothing of the page shows or refracts behind the bar (user decision; an earlier
   "edge extension" that stretched the page's top row behind the bar was removed).
+- 2026-10-25: The page area has **rounded corners** (`layout.page_corner_radius`, default 20 =
+  the design's card radius) and a small gap to the window edges (`layout.page_margin`, 8).
+  The window itself keeps the system title bar and square corners (a frameless rounded window
+  with own window buttons was tried and dropped — not wanted).
 - 2026-10-25: Default search engine DuckDuckGo (configurable `general.search_url`).
 
 ## 8. Open questions

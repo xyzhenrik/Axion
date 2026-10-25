@@ -763,9 +763,14 @@ impl Browser {
 
         let theme = self.ui.theme();
         let mut layers = Vec::new();
-        // The page ends where its rectangle ends: below the bar, beside a docked sidebar.
+        // The page ends where its rectangle ends (below the bar, beside a docked sidebar), with
+        // rounded corners; square in page fullscreen (video).
         if let Some(view) = &page_view {
-            layers.push(Layer::Image(ImageDraw::new(view, page_px)));
+            let mut page = ImageDraw::new(view, page_px);
+            if !self.chrome.page_fullscreen() {
+                page.radius = self.config.layout.page_corner_radius * s;
+            }
+            layers.push(Layer::Image(page));
         }
         self.ui.paint(&mut layers);
         let scene = Scene { clear: theme.color(Paint::Ground), layers };

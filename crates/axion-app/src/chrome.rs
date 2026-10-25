@@ -417,7 +417,8 @@ impl Chrome {
         }
     }
 
-    /// The page's rectangle (logical px): below the bar, beside a docked sidebar.
+    /// The page's rectangle (logical px): below the bar, beside a docked sidebar, with a small
+    /// margin to the window edges so its rounded corners read as a card.
     pub fn page_rect(&self, config: &Config, window: Vec2) -> Frame {
         if self.page_fullscreen {
             return Frame { origin: Vec2::ZERO, size: window };
@@ -426,10 +427,16 @@ impl Chrome {
         let left = if self.sidebar_docked(config) && self.docked_open {
             l.margin + l.sidebar_width + l.margin / 2.0
         } else {
-            0.0
+            l.page_margin
         };
         let top = l.margin + l.bar_height + l.margin / 2.0;
-        Frame { origin: Vec2::new(left, top), size: (window - Vec2::new(left, top)).max(Vec2::ONE) }
+        let origin = Vec2::new(left, top);
+        let size = window - origin - Vec2::splat(l.page_margin);
+        Frame { origin, size: size.max(Vec2::ONE) }
+    }
+
+    pub fn page_fullscreen(&self) -> bool {
+        self.page_fullscreen
     }
 
     pub fn set_page_fullscreen(&mut self, fullscreen: bool) {

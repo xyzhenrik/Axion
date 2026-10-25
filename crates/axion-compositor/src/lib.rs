@@ -644,3 +644,26 @@ fn begin_pass<'e>(
         multiview_mask: None,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use wgpu::naga;
+
+    #[test]
+    fn shaders_are_valid() {
+        for (name, source) in [
+            ("quad.wgsl", include_str!("../shaders/quad.wgsl")),
+            ("image.wgsl", include_str!("../shaders/image.wgsl")),
+            ("probe.wgsl", include_str!("../shaders/probe.wgsl")),
+        ] {
+            let module = naga::front::wgsl::parse_str(source)
+                .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(source)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        }
+    }
+}

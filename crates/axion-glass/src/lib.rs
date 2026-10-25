@@ -18,3 +18,25 @@ mod shape;
 pub use params::GlassParams;
 pub use renderer::{GlassFrame, GlassRenderer, MAX_SHAPES};
 pub use shape::GlassShape;
+
+#[cfg(test)]
+mod tests {
+    use wgpu::naga;
+
+    #[test]
+    fn shaders_are_valid() {
+        for (name, source) in [
+            ("glass.wgsl", include_str!("../shaders/glass.wgsl")),
+            ("blur.wgsl", include_str!("../shaders/blur.wgsl")),
+        ] {
+            let module = naga::front::wgsl::parse_str(source)
+                .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(source)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        }
+    }
+}

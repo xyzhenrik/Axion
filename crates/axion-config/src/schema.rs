@@ -283,6 +283,10 @@ pub struct Layout {
     pub narrow_below: f32,
     /// Width of an inactive tab pill.
     pub tab_width: f32,
+    /// Corner radius of the web page area.
+    pub page_corner_radius: f32,
+    /// Gap between the page and the window's edges (and a floating sidebar's side).
+    pub page_margin: f32,
 }
 
 impl Default for Layout {
@@ -296,6 +300,8 @@ impl Default for Layout {
             wide_from: 1280.0,
             narrow_below: 800.0,
             tab_width: 150.0,
+            page_corner_radius: 20.0,
+            page_margin: 8.0,
         }
     }
 }
