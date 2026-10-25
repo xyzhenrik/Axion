@@ -21,7 +21,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Fullscreen, Window};
 
 use crate::accounts::{AddAccountSheet, Relaunch, SheetAction};
-use crate::chrome::{Chrome, ChromeAction, NowPlaying, PanelItem};
+use crate::chrome::{Chrome, ChromeAction, MoveKey, NowPlaying, PanelItem, Section, Surface, TabItem};
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
 use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
@@ -41,11 +41,12 @@ use crate::player::{
     Context as PlayerContext, Control as PlayerControl, Mode as PlayerMode, Outcome as PlayerOutcome,
     PlayerOverlay,
 };
-use crate::private::PrivateLock;
+use crate::private::{PrivateLock, TabDrop};
 use crate::settings::{AccountInfo, Category, Outcome, SettingsAction, SettingsSheet};
 use crate::shields::ShieldsState;
 use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
 use crate::suggestions::{SuggestionList, suggest};
+use crate::tabdrag::{TabDrag, Target};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
 use crate::url::display_host;
 use crate::url::resolve_input;
@@ -224,6 +225,12 @@ pub struct Browser {
     lock_screen: LockScreen,
     /// Whether the lock screen is up, and where (to only relayout on change).
     lock_shown: Option<Rect>,
+    /// A normal tab dropped into the locked private tabs: it moves there (to this index) once
+    /// the account password is entered.
+    pending_move: Option<(ViewId, usize)>,
+    tab_drag: TabDrag,
+    /// What the overview lists while private tabs are locked: nothing.
+    no_tabs: Tabs,
     config: Config,
     keymap: Keymap,
     paths: ConfigPaths,
@@ -379,6 +386,14 @@ impl Browser {
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
         let add_account = AddAccountSheet::build(&mut ui);
+        // The dragged tab's lens above the chrome, and the lock screen's alert above all.
+        let tab_drag = TabDrag::build(&mut ui);
+        let (_, alert_plane) = lock_screen.planes();
+        let root = ui.root();
+        let mut planes = ui.children(root);
+        planes.retain(|&n| n != alert_plane);
+        planes.push(alert_plane);
+        ui.set_children(root, &planes);
 
         let mut browser = Self {
             window,
@@ -438,6 +453,9 @@ impl Browser {
             lock,
             lock_screen,
             lock_shown: None,
+            pending_move: None,
+            tab_drag,
+            no_tabs: Tabs::default(),
             config,
             keymap,
             paths,
@@ -516,7 +534,8 @@ impl Browser {
         let size = self.logical_size();
         self.ui.set_viewport(size, self.scale());
         self.chrome.apply_layout(&mut self.ui, &self.config, size);
-        self.overview.resize(&mut self.ui, &self.tabs, &self.favicons, size);
+        let tabs = if self.is_locked() { &self.no_tabs } else { &self.tabs };
+        self.overview.resize(&mut self.ui, tabs, &self.favicons, size);
         self.update_lock();
         if self.settings.is_open() {
             self.settings.resize(&mut self.ui, size);
@@ -534,6 +553,23 @@ impl Browser {
     }
 
     // ---- tabs ----
+
+    /// Opens a tab for a page's link or popup in its opener's group: a background tab of the
+    /// other group never puts its tabs among the shown ones (they open in the background).
+    fn open_tab_from(&mut self, opener: ViewId, url: &str, activate: bool) -> Result<()> {
+        let opener_private = find_tab(&self.tabs, &self.parked, opener).map(|t| t.private);
+        let private = crate::private::group_for_new_view(opener_private, self.private_mode);
+        if private == self.private_mode {
+            return self.open_tab(url, activate);
+        }
+        let view = self.engine.create_view(url, self.view_size(), private)?;
+        let mut tab = Tab::new(view, url);
+        tab.private = private;
+        tab.needs_snapshot = true;
+        self.parked.insert(tab, false);
+        self.tabs_changed = true;
+        Ok(())
+    }
 
     fn open_tab(&mut self, url: &str, activate: bool) -> Result<()> {
         let view = self.engine.create_view(url, self.view_size(), self.private_mode)?;
@@ -623,6 +659,13 @@ impl Browser {
 
     fn run(&mut self, action: Action) {
         let view = self.active_view();
+        if self.is_locked() && !allowed_while_locked(action) {
+            // A new tab in locked private browsing asks for the password first.
+            if action == Action::NewTab {
+                self.show_unlock_alert();
+            }
+            return;
+        }
         match action {
             Action::FocusAddressBar => self.edit_address(),
             Action::NewTab => {
@@ -682,8 +725,6 @@ impl Browser {
                 let fullscreen = self.window.fullscreen().is_none().then_some(Fullscreen::Borderless(None));
                 self.window.set_fullscreen(fullscreen);
             }
-            // The overview would show locked private tabs.
-            Action::TabOverview if self.is_locked() => {}
             Action::TabOverview => {
                 if self.overview.is_open() {
                     self.close_overview(self.tabs.active_index());
@@ -729,9 +770,21 @@ impl Browser {
     }
 
     /// Private tabs are locked (shown or not): the lock is on, the account has a password and
-    /// isn't unlocked.
+    /// the session isn't unlocked.
     fn private_locked(&self) -> bool {
-        self.config.privacy.lock_private_tabs && self.passwords.has_password() && self.lock.is_locked()
+        self.lock.hides_private(self.lock_enabled())
+    }
+
+    /// Private tabs have a lock: the setting is on and the account has a password.
+    fn lock_enabled(&self) -> bool {
+        self.config.privacy.lock_private_tabs && self.passwords.has_password()
+    }
+
+    /// The unlock alert, over the locked view or (from the normal tabs) on its own.
+    fn show_unlock_alert(&mut self) {
+        let page = self.page_rect();
+        let events = self.lock_screen.show_alert_over(&mut self.ui, &self.config, page);
+        self.handle_ui_events(events);
     }
 
     // ---- accounts ----
@@ -873,36 +926,58 @@ impl Browser {
         self.relaunch.take()
     }
 
-    /// Locks private tabs and Passwords now (the account menu's Lock, or a private tabs'
-    /// auto-lock).
+    /// Locks private tabs and Passwords now: the account menu's Lock, or the Passwords
+    /// sheet's lock button. Nothing else locks during a session.
     fn lock_account(&mut self) {
+        if self.passwords.is_open() {
+            self.passwords.close(&mut self.ui);
+        }
         let outcome = self.passwords.lock(&mut self.ui, &self.config);
         self.passwords_outcome(outcome);
         self.lock.lock_now();
         self.account_unlocked = false;
+        self.pending_move = None;
         tracing::info!("account locked");
+        self.private_tabs_locked();
         self.update_lock();
     }
 
-    /// Private tabs follow the vault: it was unlocked (Passwords, a fill prompt) or locked
-    /// (its auto-lock) elsewhere.
+    /// Private tabs just locked: nothing of them may stay in sight.
+    fn private_tabs_locked(&mut self) {
+        if !self.lock_enabled() {
+            return;
+        }
+        if self.private_mode {
+            if self.overview.is_open() {
+                let events = self.overview.close_instantly(&mut self.ui);
+                self.handle_ui_events(events);
+            }
+            self.close_popups();
+            self.tab_drag.cancel(&mut self.ui);
+        }
+        // A private tab's Picture in Picture shows its page: it ends (the video keeps playing).
+        if let Some(view) = self.pip_view()
+            && find_tab(&self.tabs, &self.parked, view).is_some_and(|t| t.private)
+        {
+            self.end_pip(view, None, false);
+        }
+        self.tabs_changed = true;
+    }
+
+    /// Private tabs follow the vault: it was unlocked elsewhere (Passwords, a fill prompt).
     fn sync_account_lock(&mut self) {
         let unlocked = self.passwords.is_unlocked();
         if unlocked == self.account_unlocked {
             return;
         }
         self.account_unlocked = unlocked;
-        if unlocked {
-            self.lock.unlock();
-        } else {
-            self.lock.lock_now();
+        if self.lock.follow_vault(unlocked) {
+            if !unlocked {
+                self.private_tabs_locked();
+            }
+            self.tabs_changed = true;
+            self.update_lock();
         }
-        self.update_lock();
-    }
-
-    /// Whether any private tabs are open (shown or not).
-    fn has_private_tabs(&self) -> bool {
-        if self.private_mode { !self.tabs.is_empty() } else { !self.parked.is_empty() }
     }
 
     // ---- media ----
@@ -1061,6 +1136,7 @@ impl Browser {
             }
             PasswordsOutcome::Events(events) => self.handle_ui_events(events),
             PasswordsOutcome::Fill { view, script } => self.engine.run_script(view, &script, false),
+            PasswordsOutcome::LockSession => self.lock_account(),
         }
     }
 
@@ -1118,8 +1194,9 @@ impl Browser {
                 display_host(&t.url),
             ))
         });
+        let private_shown = self.private_mode && !self.private_locked();
         let card =
-            info.as_ref().filter(|i| !i.0 || self.private_mode).map(|(_, p, title, artist, ..)| NowPlaying {
+            info.as_ref().filter(|i| !i.0 || private_shown).map(|(_, p, title, artist, ..)| NowPlaying {
                 title: title.clone(),
                 subtitle: if artist.is_empty() {
                     info.as_ref().map(|i| i.6.clone()).unwrap_or_default()
@@ -1327,7 +1404,8 @@ impl Browser {
     fn update_player(&mut self, dt: f32) {
         self.retry_site_click();
         self.update_pip();
-        let tab = self.tabs.active().filter(|_| !self.overview.is_open() && !self.is_locked());
+        let locked = self.is_locked();
+        let tab = self.tabs.active().filter(|_| !self.overview.is_open() && !locked);
         let cx = PlayerContext {
             view: tab.map(|t| t.view),
             media: tab.and_then(|t| t.media.as_ref()),
@@ -1547,7 +1625,7 @@ impl Browser {
 
     /// Shows or hides the lock screen and hides private tab titles while locked.
     fn update_lock(&mut self) {
-        let has_lock = self.config.privacy.lock_private_tabs && self.passwords.has_password();
+        let has_lock = self.lock_enabled();
         let hidden = self.private_locked();
         self.chrome.set_private(&mut self.ui, self.private_mode, has_lock, hidden);
         let locked = self.is_locked();
@@ -1555,6 +1633,7 @@ impl Browser {
         if page == self.lock_shown {
             return;
         }
+        let was_locked = self.lock_shown.is_some();
         self.lock_shown = page;
         self.chrome.set_locked(&mut self.ui, locked);
         if locked {
@@ -1562,6 +1641,10 @@ impl Browser {
                 self.engine.set_focus(view, false);
             }
             self.chrome.set_editing(&mut self.ui, false);
+            if !was_locked {
+                // Popovers about the page (Shields, the page menu, a fill offer) go with it.
+                self.close_popups();
+            }
         }
         let radius = self.config.layout.page_corner_radius;
         self.lock_screen.show(&mut self.ui, page, radius);
@@ -1575,7 +1658,15 @@ impl Browser {
             Ok(()) => {
                 self.lock.unlock();
                 self.account_unlocked = true;
+                // The alert may be up on its own (a tab dropped into the private ones).
+                self.lock_screen.close_alert(&mut self.ui);
+                self.tabs_changed = true;
                 self.update_lock();
+                if let Some((view, index)) = self.pending_move.take()
+                    && let Some(from) = self.group(false).index_of(view)
+                {
+                    self.move_to_other_group(false, from, index);
+                }
                 if let Some(view) = self.active_view() {
                     self.engine.set_focus(view, true);
                 }
@@ -1588,6 +1679,13 @@ impl Browser {
         }
     }
 
+    /// Rebuilds the overview's cards. It lists none while private tabs are shown and locked
+    /// (it still switches to the normal tabs).
+    fn rebuild_overview(&mut self) {
+        let tabs = if self.is_locked() { &self.no_tabs } else { &self.tabs };
+        self.overview.rebuild(&mut self.ui, tabs, &self.favicons);
+    }
+
     fn open_overview(&mut self) {
         if let Some(view) = self.active_view() {
             self.engine.set_focus(view, false);
@@ -1595,7 +1693,8 @@ impl Browser {
         self.chrome.set_editing(&mut self.ui, false);
         let window = self.logical_size();
         let page = self.page_rect();
-        let events = self.overview.open(&mut self.ui, &self.tabs, &self.favicons, &self.config, window, page);
+        let tabs = if self.is_locked() { &self.no_tabs } else { &self.tabs };
+        let events = self.overview.open(&mut self.ui, tabs, &self.favicons, &self.config, window, page);
         self.overview_query.clear();
         self.handle_ui_events(events);
         self.sync_overview_mode();
@@ -1603,6 +1702,12 @@ impl Browser {
 
     /// Closes the overview into tab `index`, which becomes the active tab.
     fn close_overview(&mut self, index: usize) {
+        if self.is_locked() {
+            // No page zooms out of it: the lock screen is there.
+            let events = self.overview.close_instantly(&mut self.ui);
+            self.handle_ui_events(events);
+            return;
+        }
         self.select_tab(index);
         let page = self.page_rect();
         let events =
@@ -1617,16 +1722,24 @@ impl Browser {
         match action {
             OverviewAction::Select(i) => self.close_overview(i),
             OverviewAction::Done => self.close_overview(self.tabs.active_index()),
-            OverviewAction::Close(i) => {
+            OverviewAction::Close(i) if !self.is_locked() => {
                 self.close_tab(i);
-                self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
+                // Closing the last private tab went back to the normal ones.
+                self.sync_overview_mode();
+                self.rebuild_overview();
+            }
+            OverviewAction::Close(_) => {}
+            OverviewAction::NewTab if self.is_locked() => {
+                let events = self.overview.close_instantly(&mut self.ui);
+                self.handle_ui_events(events);
+                self.show_unlock_alert();
             }
             OverviewAction::NewTab => {
                 let home = self.config.general.homepage.clone();
                 if let Err(e) = self.open_tab(&home, true) {
                     tracing::error!("opening a new tab failed: {e:#}");
                 }
-                self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
+                self.rebuild_overview();
                 self.close_overview(self.tabs.active_index());
             }
             OverviewAction::ShowPrivate | OverviewAction::ShowNormal => {
@@ -1649,12 +1762,12 @@ impl Browser {
                     self.engine.set_focus(view, false);
                 }
                 self.sync_overview_mode();
-                self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
+                self.rebuild_overview();
             }
             OverviewAction::ToggleSearch => {
                 let events = self.overview.toggle_search(&mut self.ui);
                 self.handle_ui_events(events);
-                self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
+                self.rebuild_overview();
             }
         }
     }
@@ -1862,6 +1975,86 @@ impl Browser {
         self.passwords.hide_prompt(None, false);
     }
 
+    // ---- moving tabs ----
+
+    /// The normal (`false`) or private tab group.
+    fn group(&self, private: bool) -> &Tabs {
+        if private == self.private_mode { &self.tabs } else { &self.parked }
+    }
+
+    fn group_mut(&mut self, private: bool) -> &mut Tabs {
+        if private == self.private_mode { &mut self.tabs } else { &mut self.parked }
+    }
+
+    /// A dragged tab was let go.
+    fn tab_dropped(&mut self, item: TabItem, target: Option<Target>, lens: Option<Vec2>) {
+        // Rows are rebuilt from the tabs either way (the drag only moved them for show).
+        self.tabs_changed = true;
+        let Some(target) = target else { return };
+        let Some(from) = self.group(item.private).index_of(item.view) else { return };
+        match crate::private::drop_into(item.private, target.private, self.private_locked()) {
+            TabDrop::Reorder => {
+                if self.group_mut(item.private).move_tab(from, target.index) {
+                    tracing::info!(from, to = target.index, private = item.private, "tab moved");
+                }
+            }
+            TabDrop::Reopen => {
+                if let Some(view) = self.move_to_other_group(item.private, from, target.index)
+                    && let Some(at) = lens
+                {
+                    self.tab_drag.land(MoveKey::Tab(view, Surface::Sidebar), at);
+                }
+            }
+            TabDrop::NeedsUnlock => {
+                // Into locked private tabs: once the password is entered.
+                self.pending_move = Some((item.view, target.index));
+                self.show_unlock_alert();
+            }
+        }
+    }
+
+    /// Moves tab `from` of one group to `index` of the other: the same address opens there
+    /// (the private tabs' own cookies and logins, or the normal ones) and the original closes.
+    /// A tab moved into private tabs leaves nothing behind (no closed-tab entry, and private
+    /// tabs keep no history). The moved tab is shown. Returns its new view.
+    fn move_to_other_group(&mut self, from_private: bool, from: usize, index: usize) -> Option<ViewId> {
+        let to_private = !from_private;
+        let tab = self.group_mut(from_private).take(from)?;
+        if self.pip_view() == Some(tab.view) {
+            self.end_pip(tab.view, None, false);
+        }
+        if self.now_playing == Some(tab.view) {
+            self.now_playing = None;
+        }
+        self.engine.close_view(tab.view);
+        let view = match self.engine.create_view(&tab.url, self.view_size(), to_private) {
+            Ok(view) => view,
+            Err(e) => {
+                tracing::error!("reopening the tab in the other group failed: {e:#}");
+                self.tabs_changed = true;
+                return None;
+            }
+        };
+        let mut moved = Tab::new(view, &tab.url);
+        moved.title.clone_from(&tab.title);
+        moved.private = to_private;
+        let previous = self.active_view();
+        let index = self.group_mut(to_private).insert_at(index, moved, true);
+        tracing::info!(to_private, index, "tab moved to the other group");
+        if to_private == self.private_mode {
+            self.on_active_changed(previous);
+        } else {
+            self.toggle_private_mode();
+        }
+        self.tabs_changed = true;
+        Some(view)
+    }
+
+    /// The drag's per-frame step before layout (the slot follows the pointer).
+    fn update_tab_drag(&mut self, dt: f32) {
+        self.tab_drag.update(&mut self.ui, &mut self.chrome, &self.config, dt);
+    }
+
     fn toggle_shields_popover(&mut self) {
         if self.shields_popover.is_open() {
             self.shields_popover.close(&mut self.ui, &self.config);
@@ -2025,6 +2218,10 @@ impl Browser {
                 }
                 UiEvent::Clicked { action, .. } if LockScreen::is_unlock(action) => self.try_unlock(),
                 UiEvent::Clicked { action, .. } if LockScreen::is_lock_action(action) => {
+                    if LockScreen::is_cancel(action) {
+                        // A tab waiting to move into the private ones stays where it is.
+                        self.pending_move = None;
+                    }
                     let events = self.lock_screen.action(&mut self.ui, &self.config, action);
                     self.handle_ui_events(events);
                 }
@@ -2107,6 +2304,9 @@ impl Browser {
                             if loading { self.engine.stop(view) } else { self.engine.reload(view, false) }
                         }
                     }
+                    // Locked private browsing: nothing about the page, nothing new in it.
+                    Some(ChromeAction::NewTab) if self.is_locked() => self.show_unlock_alert(),
+                    Some(action) if self.is_locked() && !chrome_allowed_while_locked(action) => {}
                     Some(ChromeAction::EditAddress) => self.edit_address(),
                     Some(ChromeAction::NewTab) => self.run(Action::NewTab),
                     Some(ChromeAction::Overview) => self.run(Action::TabOverview),
@@ -2121,8 +2321,15 @@ impl Browser {
                     }
                     // In private browsing, the normal tabs' row switches back to them.
                     Some(ChromeAction::ToggleTabsSection) if self.private_mode => self.toggle_private_mode(),
-                    Some(ChromeAction::ToggleTabsSection) => self.chrome.toggle_section(&mut self.ui, true),
-                    Some(ChromeAction::ToggleSavedSection) => self.chrome.toggle_section(&mut self.ui, false),
+                    Some(ChromeAction::ToggleTabsSection) | Some(ChromeAction::CollapseTabs) => {
+                        self.chrome.toggle_section(&mut self.ui, Section::Tabs)
+                    }
+                    Some(ChromeAction::CollapsePrivate) => {
+                        self.chrome.toggle_section(&mut self.ui, Section::Private)
+                    }
+                    Some(ChromeAction::ToggleSavedSection) => {
+                        self.chrome.toggle_section(&mut self.ui, Section::Saved)
+                    }
                     Some(ChromeAction::PageMenu) => self.open_page_menu(),
                     Some(ChromeAction::Bookmarks) => self.show_panel(Panel::Bookmarks),
                     Some(ChromeAction::History) => self.show_panel(Panel::History),
@@ -2152,7 +2359,11 @@ impl Browser {
                             self.navigate_to(url);
                         }
                     }
-                    Some(ChromeAction::Private) => self.toggle_private_mode(),
+                    // "Private" switches to the private tabs; there, it folds their list (or,
+                    // locked, asks for the password).
+                    Some(ChromeAction::Private) if !self.private_mode => self.toggle_private_mode(),
+                    Some(ChromeAction::Private) if self.is_locked() => self.show_unlock_alert(),
+                    Some(ChromeAction::Private) => self.chrome.toggle_section(&mut self.ui, Section::Private),
                     Some(ChromeAction::NewTabGroup) => tracing::info!("tab groups arrive in a later phase"),
                     Some(ChromeAction::MuteTab) => {
                         if let Some(tab) = self.tabs.active_mut() {
@@ -2291,7 +2502,7 @@ impl Browser {
                 EngineEvent::LoadProgress { view, progress } => {
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
                         tab.progress = progress;
-                        if Some(view) == self.active_view() {
+                        if Some(view) == self.active_view() && !self.is_locked() {
                             self.chrome.sync_active(&mut self.ui, &self.tabs);
                         }
                     }
@@ -2323,7 +2534,7 @@ impl Browser {
                     // Ctrl/middle-click opens in the background unless the setting says otherwise.
                     let activate =
                         kind != NewViewKind::BackgroundTab || !self.config.tabs.open_links_in_background;
-                    if let Err(e) = self.open_tab(&url, activate) {
+                    if let Err(e) = self.open_tab_from(opener, &url, activate) {
                         tracing::error!("opening {url} failed: {e:#}");
                     }
                 }
@@ -2352,7 +2563,7 @@ impl Browser {
                         self.favicons.insert(&page, width, height, &rgba, !private);
                         self.tabs_changed = true;
                         if self.overview.is_open() {
-                            self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
+                            self.rebuild_overview();
                         }
                     }
                 }
@@ -2376,14 +2587,8 @@ impl Browser {
         self.passwords_outcome(outcome);
         self.reload_config_if_changed();
         self.apply_lifecycle();
+        // An unlock lasts for the session; only Lock locks again.
         self.sync_account_lock();
-        // Private tabs lock after the window was away; that locks the whole account.
-        if self.config.privacy.lock_private_tabs && self.has_private_tabs() && self.passwords.has_password() {
-            let after = Duration::from_secs_f32(self.config.privacy.lock_after_seconds.max(0.0));
-            if self.lock.tick(after) {
-                self.lock_account();
-            }
-        }
         self.save_session_if_due(false);
         self.handle_mpris();
     }
@@ -2699,17 +2904,9 @@ impl Browser {
                 }
             }
             WindowEvent::Focused(focused) => {
-                if self.config.privacy.lock_private_tabs {
-                    let after = Duration::from_secs_f32(self.config.privacy.lock_after_seconds.max(0.0));
-                    if self.lock.window_focused(focused, after)
-                        && self.has_private_tabs()
-                        && self.passwords.has_password()
-                    {
-                        self.lock_account();
-                    }
-                }
                 if let Some(view) = self.active_view()
                     && self.ui.focused().is_none()
+                    && !self.is_locked()
                 {
                     self.engine.set_focus(view, focused);
                 }
@@ -2722,9 +2919,24 @@ impl Browser {
 
     fn pointer_moved(&mut self, p: Vec2) {
         self.pointer = Some(p);
+        if self.tab_drag.is_dragging() {
+            // The dragged tab follows (see `update_tab_drag`); nothing else reacts meanwhile.
+            let (chrome, favicons) = (&self.chrome, &self.favicons);
+            self.tab_drag.pointer_moved(&mut self.ui, chrome, &self.config, None, favicons, p);
+            return;
+        }
+        let pressed_tab = self.tab_drag_tab();
+        let tab = pressed_tab.and_then(|view| find_tab(&self.tabs, &self.parked, view).cloned());
+        let (chrome, favicons) = (&self.chrome, &self.favicons);
+        if self.tab_drag.pointer_moved(&mut self.ui, chrome, &self.config, tab.as_ref(), favicons, p) {
+            // The press became a drag: no click when it ends.
+            self.ui.cancel_press();
+            self.leave_page();
+            return;
+        }
         let (over_ui, events) = self.ui.handle(UiInput::PointerMove(p));
         self.handle_ui_events(events);
-        if over_ui || self.pointer_captured_by_ui {
+        if over_ui || self.pointer_captured_by_ui || self.is_locked() {
             self.leave_page();
         } else if let Some(view) = self.active_view() {
             let pos = p - self.page_rect().origin;
@@ -2776,10 +2988,6 @@ impl Browser {
             _ => return,
         };
 
-        if pressed && self.private_mode && !self.is_locked() {
-            // Using private tabs counts as using the account (its auto-lock waits).
-            self.passwords.touch();
-        }
         if pressed && self.menu.is_open() && !self.menu.contains(&self.ui, p) {
             // A click outside only dismisses the menu.
             self.menu.close(&mut self.ui, &self.config);
@@ -2815,10 +3023,29 @@ impl Browser {
                 let (consumed, events) = self.ui.handle(UiInput::PointerDown);
                 self.pointer_captured_by_ui = consumed;
                 self.handle_ui_events(events);
+                // A press on a tab may become a drag of it (not while editing the address).
+                let item = self.ui.pressed_action().and_then(|n| self.chrome.tab_item(n));
+                if let Some(item) = item
+                    && self.ui.focused() != Some(self.chrome.address_field)
+                    && !self.is_locked()
+                {
+                    self.tab_drag.press(item, p);
+                }
                 if consumed {
                     return;
                 }
+            } else if self.tab_drag.is_dragging() {
+                self.pointer_captured_by_ui = false;
+                let lens = self.tab_drag.lens_origin();
+                let dropped = self.tab_drag.finish(&mut self.ui);
+                // The UI's press was cancelled when the drag began: no click comes of this.
+                let _ = self.ui.handle(UiInput::PointerUp);
+                if let Some(dropped) = dropped {
+                    self.tab_dropped(dropped.item, dropped.target, lens);
+                }
+                return;
             } else {
+                self.tab_drag.release_press();
                 let captured = std::mem::take(&mut self.pointer_captured_by_ui);
                 let (_, events) = self.ui.handle(UiInput::PointerUp);
                 self.handle_ui_events(events);
@@ -2831,7 +3058,7 @@ impl Browser {
         }
 
         let Some(view) = view else { return };
-        if !self.page_rect().contains(p) && pressed {
+        if !self.page_rect().contains(p) && pressed || self.is_locked() {
             return;
         }
         if pressed && self.chrome.dismiss_overlay() {
@@ -2867,15 +3094,18 @@ impl Browser {
             self.settings.close(&mut self.ui);
             return false;
         }
+        if pressed && self.tab_drag.is_dragging() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.tab_drag.cancel(&mut self.ui);
+            self.tabs_changed = true;
+            return false;
+        }
         if pressed
             && self.lock_screen.is_alert_open()
             && input::key(event) == Some(Key::Named("Escape".into()))
         {
             self.lock_screen.close_alert(&mut self.ui);
+            self.pending_move = None;
             return false;
-        }
-        if pressed && self.private_mode && !self.is_locked() {
-            self.passwords.touch();
         }
         if pressed && self.menu.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.menu.close(&mut self.ui, &self.config);
@@ -2964,7 +3194,8 @@ impl Browser {
             return false;
         }
 
-        if let Some(view) = self.active_view() {
+        // A locked page gets no keys.
+        if let Some(view) = self.active_view().filter(|_| !self.is_locked()) {
             if let Some(key) = input::page_key(event, self.modifiers) {
                 self.engine.send_input(view, &key);
             }
@@ -2973,6 +3204,11 @@ impl Browser {
             }
         }
         false
+    }
+
+    /// The tab whose row or segment is pressed (a drag candidate).
+    fn tab_drag_tab(&self) -> Option<ViewId> {
+        self.ui.pressed_action().and_then(|n| self.chrome.tab_item(n)).map(|i| i.view)
     }
 
     // ---- drawing ----
@@ -3000,7 +3236,9 @@ impl Browser {
             self.chrome.set_audio(&mut self.ui, audio.0, audio.1);
             let level = self.tabs.active().map(|t| self.shields.level(&t.url));
             self.chrome.set_shield_active(&mut self.ui, level.is_some_and(|l| l != Level::Off));
-            let title = self.tabs.active().map(|t| t.label()).unwrap_or_default();
+            // A locked private tab's title stays out of the window title too.
+            let title =
+                self.tabs.active().filter(|_| !self.is_locked()).map(|t| t.label()).unwrap_or_default();
             self.window.set_title(
                 if title.is_empty() { "Axion".to_owned() } else { format!("Axion - {title}") }.as_str(),
             );
@@ -3091,8 +3329,30 @@ impl Browser {
                 // Capture aid: pick tab N of the other group in the sidebar.
                 other if other.starts_with("other-tab:") => {
                     if let Some(i) = other.split(':').nth(1).and_then(|n| n.parse::<usize>().ok()) {
-                        self.toggle_private_mode();
-                        self.select_tab(i);
+                        self.handle_ui_events(vec![UiEvent::Clicked {
+                            action: ChromeAction::SelectOtherTab(i).id(),
+                            node: self.ui.root(),
+                        }]);
+                    }
+                }
+                // Capture aids: a real mouse press at window position "press:X:Y" (logical px),
+                // and letting go ("release") — with "sweep:" in between they drag (tabs).
+                press if press.starts_with("press:") => {
+                    let n: Vec<f32> = press.split(':').skip(1).filter_map(|v| v.parse().ok()).collect();
+                    if let [x, y] = n[..] {
+                        self.pointer_moved(Vec2::new(x, y));
+                        self.mouse_button(ElementState::Pressed, winit::event::MouseButton::Left);
+                    }
+                }
+                "release" => self.mouse_button(ElementState::Released, winit::event::MouseButton::Left),
+                // Capture aid: click a sidebar or toolbar control by its action ("chrome:N").
+                chrome if chrome.starts_with("chrome:") => {
+                    if let Ok(id) = chrome["chrome:".len()..].parse::<u32>() {
+                        let node = self.ui.root();
+                        self.handle_ui_events(vec![UiEvent::Clicked {
+                            action: axion_ui::ActionId(id),
+                            node,
+                        }]);
                     }
                 }
                 // Capture aid: start Picture in Picture for the page's main video.
@@ -3315,7 +3575,7 @@ impl Browser {
             let query = self.ui.field_text(self.overview.search_field()).unwrap_or_default().to_owned();
             if query != self.overview_query {
                 self.overview_query = query;
-                self.overview.rebuild(&mut self.ui, &self.tabs, &self.favicons);
+                self.rebuild_overview();
             }
             let engine = &self.engine;
             self.overview.update(&mut self.ui, dt, |view| {
@@ -3328,7 +3588,15 @@ impl Browser {
         // Keeps the sidebar's scroll in range when its content got shorter (tabs closed).
         self.chrome.scroll_sections(&mut self.ui, 0.0);
         self.update_suggestions();
+        // The lock screen covers the page wherever it is now (the sidebar slides it).
+        if self.lock_shown.is_some_and(|shown| shown != self.page_rect()) {
+            self.update_lock();
+        }
+        let hovered = if self.tab_drag.is_dragging() { None } else { self.ui.hovered() };
+        self.chrome.update_hover(&mut self.ui, hovered);
+        self.update_tab_drag(dt);
         self.ui.layout();
+        self.tab_drag.animate_rows(&mut self.ui, &self.chrome, &self.config, dt);
         if let Some(view) = self.active_view() {
             self.engine.request_frame(view);
         }
@@ -3345,7 +3613,8 @@ impl Browser {
         };
         let output = surface.texture.create_view(&Default::default());
 
-        let frame = self.active_view().and_then(|v| self.engine.frame(v));
+        // Locked private pages aren't drawn at all (the lock screen covers their place).
+        let frame = self.active_view().filter(|_| !self.is_locked()).and_then(|v| self.engine.frame(v));
         let page_view = frame.as_ref().map(|f| f.texture.create_view(&Default::default()));
         let s = self.scale();
         let page = self.page_rect();
@@ -3408,7 +3677,10 @@ impl Browser {
                 .collect();
             tracing::trace!(?kinds, "layers");
         }
-        let clear = self.page_tint.filter(|_| !self.overview.is_open()).unwrap_or(theme.color(Paint::Ground));
+        let clear = self
+            .page_tint
+            .filter(|_| !self.overview.is_open() && !self.is_locked())
+            .unwrap_or(theme.color(Paint::Ground));
         let scene = Scene { clear, layers };
         let size = (self.surface_config.width, self.surface_config.height);
         self.compositor.render(&scene, &mut self.ui.fonts(), &output, size);
@@ -3597,6 +3869,38 @@ fn load_keymap(paths: &ConfigPaths) -> Keymap {
     keymap
 }
 
+/// Shortcuts that still work while private browsing is shown locked: nothing that shows,
+/// changes or reaches the locked pages (switching to the normal tabs stays possible through
+/// the sidebar and the overview).
+fn allowed_while_locked(action: Action) -> bool {
+    matches!(
+        action,
+        Action::ToggleSidebar
+            | Action::TabOverview
+            | Action::OpenSettings
+            | Action::ToggleFullscreen
+            | Action::Quit
+    )
+}
+
+/// Chrome controls that still work while private browsing is shown locked.
+fn chrome_allowed_while_locked(action: ChromeAction) -> bool {
+    !matches!(
+        action,
+        ChromeAction::Back
+            | ChromeAction::Forward
+            | ChromeAction::ReloadOrStop
+            | ChromeAction::Shield
+            | ChromeAction::EditAddress
+            | ChromeAction::PageMenu
+            | ChromeAction::Share
+            | ChromeAction::NewTab
+            | ChromeAction::MuteTab
+            | ChromeAction::SelectTab(_)
+            | ChromeAction::CloseTab(_)
+    )
+}
+
 /// A tab by view, in either tab group.
 fn find_tab<'a>(tabs: &'a Tabs, parked: &'a Tabs, view: ViewId) -> Option<&'a Tab> {
     tabs.all().iter().chain(parked.all()).find(|t| t.view == view)
@@ -3654,5 +3958,60 @@ fn is_dark(config: &Config, window: &Window, desktop_dark: Option<bool>) -> bool
         ThemeMode::Light => false,
         ThemeMode::Dark => true,
         ThemeMode::Auto => desktop_dark.unwrap_or(window.theme() == Some(winit::window::Theme::Dark)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axion_ui::ActionId;
+
+    /// Every click goes to the first handler that claims its action id, so two parts of the
+    /// UI sharing ids means a click on one does the other's thing. (The overview's buttons
+    /// once shared the chrome's ids: the speaker opened a tab, the bars' pill switched to
+    /// private tabs; and Passwords swallowed the sidebar's rows of the other tab group.)
+    #[test]
+    fn action_ids_are_never_shared() {
+        for id in 0..30_000 {
+            let id = ActionId(id);
+            let claims = [
+                ChromeAction::from_id(id).is_some(),
+                OverviewAction::from_id(id).is_some(),
+                Passwords::owns_action(id),
+                LockScreen::is_lock_action(id),
+                SettingsAction::from_id(id).is_some(),
+                PlayerControl::from_id(id).is_some(),
+            ];
+            assert!(
+                claims.iter().filter(|&&c| c).count() <= 1,
+                "action {} is claimed twice: {claims:?}",
+                id.0
+            );
+        }
+    }
+
+    #[test]
+    fn a_locked_private_window_keeps_its_pages_out_of_reach() {
+        for action in
+            [Action::NewTab, Action::FocusAddressBar, Action::CloseTab, Action::NextTab, Action::Reload]
+        {
+            assert!(!allowed_while_locked(action), "{action:?}");
+        }
+        // The way back to the normal tabs stays open.
+        assert!(allowed_while_locked(Action::TabOverview) && allowed_while_locked(Action::ToggleSidebar));
+        for action in
+            [ChromeAction::EditAddress, ChromeAction::Shield, ChromeAction::Share, ChromeAction::SelectTab(0)]
+        {
+            assert!(!chrome_allowed_while_locked(action), "{action:?}");
+        }
+        for action in [
+            ChromeAction::SelectOtherTab(0),
+            ChromeAction::ToggleTabsSection,
+            ChromeAction::Overview,
+            ChromeAction::Private,
+            ChromeAction::Account,
+        ] {
+            assert!(chrome_allowed_while_locked(action), "{action:?}");
+        }
     }
 }

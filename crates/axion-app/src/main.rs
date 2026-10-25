@@ -35,6 +35,7 @@ mod settings;
 mod shields;
 mod shields_popover;
 mod suggestions;
+mod tabdrag;
 mod tabs;
 mod url;
 

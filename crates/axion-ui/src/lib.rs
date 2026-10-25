@@ -720,6 +720,14 @@ impl Ui {
         self.pressed
     }
 
+    /// Lets go of the held button without a click (the press became a drag of it).
+    pub fn cancel_press(&mut self) {
+        if let Some(glass) = self.pressed.take().and_then(|n| self.glass_of(n)) {
+            self.press_glass(glass, false);
+        }
+        self.press_anchor = None;
+    }
+
     /// The button under the pointer, if any.
     pub fn hovered(&self) -> Option<NodeId> {
         self.hover

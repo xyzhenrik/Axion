@@ -17,11 +17,14 @@ use crate::url::display_host;
 
 const SELECT_BASE: u32 = 3000;
 const CLOSE_BASE: u32 = 4000;
-const DONE: u32 = 20;
-const NEW_TAB: u32 = 21;
-const PRIVATE: u32 = 22;
-const NORMAL: u32 = 23;
-const SEARCH: u32 = 25;
+/// The header's buttons. Away from every other action range (the chrome's simple actions
+/// used to share 20–27 with these, so its mute button opened a tab and the bars' mini pill
+/// switched to private browsing).
+const DONE: u32 = 9200;
+const NEW_TAB: u32 = 9201;
+const PRIVATE: u32 = 9202;
+const NORMAL: u32 = 9203;
+const SEARCH: u32 = 9205;
 
 /// Layout from the design board, in logical pixels.
 const TOP: f32 = 14.0;

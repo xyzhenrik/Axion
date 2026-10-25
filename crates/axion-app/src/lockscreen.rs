@@ -2,6 +2,11 @@
 //! "“Private Browsing” is locked" and a blue Unlock button. Unlock brings up a glass alert
 //! card (scaling up and fading in) that asks for the account password — where Safari asks for
 //! Touch ID.
+//!
+//! Two planes: the cover, an opaque card over the page (above the chrome and its popovers, so
+//! nothing of a locked page shows), and the alert, the topmost plane of the window. The alert
+//! also comes up on its own (no cover) when something needs the private tabs unlocked from
+//! the normal tabs (a tab dragged into the private ones).
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{Color, Config};
@@ -27,6 +32,7 @@ pub struct LockScreen {
     /// The alert's line that names the account.
     text: NodeId,
     error: NodeId,
+    /// The cover is up (private tabs shown and locked).
     visible: bool,
     alert_open: bool,
     appear: Animated<f32>,
@@ -60,6 +66,15 @@ fn secondary(ui: &mut Ui, parent: NodeId, text: &str, style: TextStyle) -> NodeI
         w.set_paint(Paint::Secondary);
     }
     label
+}
+
+/// Places a plane over `frame` (logical px).
+fn place(ui: &mut Ui, node: NodeId, frame: Frame) {
+    let mut style = ui.style(node);
+    style.inset =
+        Rect { left: length(frame.origin.x), right: auto(), top: length(frame.origin.y), bottom: auto() };
+    style.size = Size { width: length(frame.size.x), height: length(frame.size.y) };
+    ui.set_style(node, style);
 }
 
 impl LockScreen {
@@ -105,13 +120,12 @@ impl LockScreen {
             w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
         }
 
-        // The alert, centred over the locked view.
+        // The alert, centred over the page: its own plane (see `planes`).
         let alert_layer = ui.add(
-            root,
+            ui.root(),
             Widget::container(),
             Style {
                 position: Position::Absolute,
-                inset: Rect { left: length(0.0), right: length(0.0), top: length(0.0), bottom: length(0.0) },
                 justify_content: JustifyContent::CENTER,
                 align_items: AlignItems::CENTER,
                 ..Default::default()
@@ -196,6 +210,12 @@ impl LockScreen {
         }
     }
 
+    /// The cover and the alert plane, for the window to put the cover above the chrome and
+    /// the alert above everything.
+    pub fn planes(&self) -> (NodeId, NodeId) {
+        (self.root, self.alert_layer)
+    }
+
     /// Names the account whose password unlocks.
     pub fn set_account(&self, ui: &mut Ui, name: &str) {
         let text = format!("Enter the password of “{name}”.");
@@ -210,6 +230,10 @@ impl LockScreen {
         action == UNLOCK
     }
 
+    pub fn is_cancel(action: ActionId) -> bool {
+        action == CANCEL
+    }
+
     pub fn is_lock_action(action: ActionId) -> bool {
         [SHOW_ALERT, UNLOCK, CANCEL].contains(&action)
     }
@@ -218,35 +242,31 @@ impl LockScreen {
         self.alert_open
     }
 
-    /// Shows the locked view in `page` (logical px, with the page's corner radius), or hides it.
+    /// Shows the locked view in `page` (logical px, with the page's corner radius), or hides it
+    /// (and its alert).
     pub fn show(&mut self, ui: &mut Ui, page: Option<Frame>, radius: f32) {
         match page {
             Some(page) => {
                 if let Some(w) = ui.widget_mut(self.root) {
                     w.radius = radius;
                 }
-                let mut style = ui.style(self.root);
-                style.inset = Rect {
-                    left: length(page.origin.x),
-                    right: auto(),
-                    top: length(page.origin.y),
-                    bottom: auto(),
-                };
-                style.size = Size { width: length(page.size.x), height: length(page.size.y) };
-                ui.set_style(self.root, style);
+                place(ui, self.root, page);
+                place(ui, self.alert_layer, page);
                 self.visible = true;
                 ui.set_visible(self.root, true);
             }
             None => {
                 self.visible = false;
-                self.alert_open = false;
-                self.appear.snap(0.0);
+                self.hide_alert(ui);
                 ui.set_visible(self.root, false);
-                ui.set_visible(self.alert_layer, false);
-                ui.set_visible(self.error, false);
-                ui.set_field_text(self.field, "");
             }
         }
+    }
+
+    /// The alert alone, centred in `page` (unlocking from the normal tabs).
+    pub fn show_alert_over(&mut self, ui: &mut Ui, config: &Config, page: Frame) -> Vec<UiEvent> {
+        place(ui, self.alert_layer, page);
+        self.open_alert(ui, config)
     }
 
     /// A click on the locked view's buttons. Returns the events of focusing the password field.
@@ -279,11 +299,23 @@ impl LockScreen {
         self.appear.target = 0.0;
         ui.set_field_text(self.field, "");
         ui.set_visible(self.error, false);
+        if !self.visible {
+            // On its own it goes at once (nothing to fade back to).
+            self.hide_alert(ui);
+        }
+    }
+
+    fn hide_alert(&mut self, ui: &mut Ui) {
+        self.alert_open = false;
+        self.appear.snap(0.0);
+        ui.set_visible(self.alert_layer, false);
+        ui.set_visible(self.error, false);
+        ui.set_field_text(self.field, "");
     }
 
     /// Advances the alert's appear / disappear animation. Call every frame.
     pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
-        if !self.visible {
+        if !ui.is_visible(self.alert_layer) {
             return;
         }
         self.appear.step(dt);

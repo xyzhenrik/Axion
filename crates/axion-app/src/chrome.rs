@@ -15,6 +15,8 @@ use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Align, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
 use glam::Vec2;
 
+use axion_engine::ViewId;
+
 use crate::favicons::{Favicons, favicon_node};
 use crate::tabs::{Tab, Tabs};
 use crate::url::display_host;
@@ -97,6 +99,52 @@ pub enum ChromeAction {
     Passwords,
     /// The account button: opens the account menu.
     Account,
+    /// The chevron of "N Tabs": collapses or expands the normal tabs' list.
+    CollapseTabs,
+    /// The chevron of "Private" (while unlocked): collapses or expands the private list.
+    CollapsePrivate,
+}
+
+/// The sidebar's sections that fold away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    Tabs,
+    Private,
+    Saved,
+}
+
+/// Where tabs are shown, for dragging them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Surface {
+    /// The sidebar's lists (both groups: drops can move a tab to the other group).
+    Sidebar,
+    /// The toolbar's tab capsule or the separate tab bar's row (the shown group only).
+    Bar,
+}
+
+/// A tab as one of the chrome's draggable items.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabItem {
+    pub node: NodeId,
+    pub view: ViewId,
+    /// Its group (`true`: private).
+    pub private: bool,
+    /// Its index in that group.
+    pub index: usize,
+    pub surface: Surface,
+}
+
+/// The sidebar's lists as laid out when a drag starts (logical px): a drop's place is decided
+/// against these, so the rows sliding aside don't move the targets.
+#[derive(Clone, Debug, Default)]
+pub struct SidebarLayout {
+    /// The "Private" row, and each list's rows: (view, frame).
+    pub private_header: Frame,
+    pub normal: Vec<(ViewId, Frame)>,
+    pub private: Vec<(ViewId, Frame)>,
+    /// Whether the lists are shown (folded away, or private tabs locked).
+    pub normal_open: bool,
+    pub private_open: bool,
 }
 
 const SELECT_TAB_BASE: u32 = 1000;
@@ -109,7 +157,7 @@ const PANEL_BUTTON_BASE: u32 = 13_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 27] = [
+    const SIMPLE: [ChromeAction; 29] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -137,9 +185,11 @@ impl ChromeAction {
         ChromeAction::DownloadsButton,
         ChromeAction::Passwords,
         ChromeAction::Account,
+        ChromeAction::CollapseTabs,
+        ChromeAction::CollapsePrivate,
     ];
 
-    fn id(self) -> ActionId {
+    pub fn id(self) -> ActionId {
         ActionId(match self {
             ChromeAction::SelectTab(i) => SELECT_TAB_BASE + i as u32,
             ChromeAction::CloseTab(i) => CLOSE_TAB_BASE + i as u32,
@@ -153,7 +203,7 @@ impl ChromeAction {
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=27 => Some(Self::SIMPLE[n as usize - 1]),
+            n @ 1..=29 => Some(Self::SIMPLE[n as usize - 1]),
             n if (PANEL_BUTTON_BASE..PANEL_BUTTON_BASE + 1000 * PANEL_BUTTONS as u32).contains(&n) => {
                 let k = (n - PANEL_BUTTON_BASE) as usize;
                 Some(ChromeAction::PanelButton(k / PANEL_BUTTONS, k % PANEL_BUTTONS))
@@ -225,7 +275,14 @@ const PANEL_ROW_HEIGHT: f32 = 52.0;
 const SLIDE_OVERSHOOT: f32 = 24.0;
 const SLIDE_SETTLED: f32 = 0.3;
 /// Indentation of tab rows under "N Tabs".
-const TAB_INDENT: f32 = 18.0;
+const TAB_INDENT: f32 = 10.0;
+/// A tab row's close button: a small dot beside the favicon (its slot is kept on every row so
+/// titles line up).
+const ROW_CLOSE_SLOT: f32 = 20.0;
+const ROW_CLOSE_DOT: f32 = 16.0;
+const ROW_FAVICON: f32 = 20.0;
+/// The chevron buttons of "N Tabs" and "Private".
+const CHEVRON_BUTTON: f32 = 28.0;
 
 pub struct Chrome {
     account: NodeId,
@@ -251,6 +308,14 @@ pub struct Chrome {
     slide: Animated<f32>,
     private_row: NodeId,
     private_lock: NodeId,
+    /// The chevron of "Private", shown instead of the lock while private tabs are unlocked.
+    private_chevron: NodeId,
+    private_chevron_icon: NodeId,
+    private_section_open: bool,
+    /// The tab rows of the sidebar and the bar, as built by `sync_tabs`.
+    items: Vec<TabItem>,
+    /// The row under the pointer, lit with a glass highlight (`update_hover`).
+    hovered_row: Option<NodeId>,
     /// Private tabs are the current group (listed under "Private" instead of "N Tabs").
     private_mode: bool,
     /// How many normal tabs there are while private tabs are shown.
@@ -377,20 +442,61 @@ fn icon_button(
 
 /// Safari's ⓧ: a small filled circle with a cross, closing a tab.
 fn close_dot(ui: &mut Ui, parent: NodeId, action: ChromeAction, hit: f32) -> NodeId {
+    close_dot_sized(ui, parent, action, hit, 20.0)
+}
+
+fn close_dot_sized(ui: &mut Ui, parent: NodeId, action: ChromeAction, hit: f32, dot: f32) -> NodeId {
     let button = ui.add(
         parent,
         Widget::container().with_action(action.id()).with_radius(CAPSULE),
-        Style { size: square(hit), justify_content: JustifyContent::CENTER, ..row(0.0) },
+        Style { size: square(hit), justify_content: JustifyContent::CENTER, flex_shrink: 0.0, ..row(0.0) },
     );
-    let dot = ui.add(
+    let dot_node = ui.add(
         button,
         Widget::container().with_background(Background::Fill(Paint::Label, 0.85)).with_radius(CAPSULE),
-        Style { size: square(20.0), justify_content: JustifyContent::CENTER, ..row(0.0) },
+        Style { size: square(dot), justify_content: JustifyContent::CENTER, ..row(0.0) },
     );
     let cross =
-        Widget::icon(Icon::Close, 11.0).with_icon_weight(IconWeight::Heavy).with_paint(Paint::Surface);
-    ui.add(dot, cross, Style::default());
+        Widget::icon(Icon::Close, dot * 0.55).with_icon_weight(IconWeight::Heavy).with_paint(Paint::Surface);
+    ui.add(dot_node, cross, Style::default());
     button
+}
+
+/// A group's row ("N Tabs", "Private"): accent icon and label, then a chevron button that
+/// folds its list, and (Private only) a lock shown instead while locked. Returns (label,
+/// chevron button, chevron icon, lock).
+fn group_row(
+    ui: &mut Ui,
+    parent: NodeId,
+    action: ChromeAction,
+    collapse: ChromeAction,
+    icon: Icon,
+    text: &str,
+    lock: bool,
+) -> (NodeId, NodeId, NodeId, Option<NodeId>) {
+    let row_node = ui.add(
+        parent,
+        Widget::container().with_action(action.id()).with_radius(CAPSULE),
+        Style {
+            size: Size { width: auto(), height: length(ROW_HEIGHT) },
+            padding: padding(10.0, 6.0, 0.0, 0.0),
+            ..row(12.0)
+        },
+    );
+    ui.add(row_node, Widget::icon(icon, 22.0).with_paint(Paint::Accent), Style::default());
+    let label = ui.add_label(row_node, text, TextStyle::Body, shrinking_label());
+    let lock = lock.then(|| {
+        let slot = ui.add(
+            row_node,
+            Widget::container(),
+            Style { size: square(CHEVRON_BUTTON), justify_content: JustifyContent::CENTER, ..row(0.0) },
+        );
+        ui.add(slot, Widget::icon(Icon::Lock, 16.0).with_paint(Paint::Secondary), Style::default());
+        slot
+    });
+    let glyph = Widget::icon(Icon::ChevronDown, 16.0).with_paint(Paint::Secondary);
+    let (chevron, chevron_icon) = icon_button(ui, row_node, collapse, glyph, CHEVRON_BUTTON);
+    (label, chevron, chevron_icon, lock)
 }
 
 /// A glass capsule grouping toolbar buttons.
@@ -499,13 +605,14 @@ impl Chrome {
             Widget::container(),
             Style { flex_shrink: 0.0, size: Size { width: percent(1.0), height: auto() }, ..column(2.0) },
         );
-        let (tab_group_label, tab_group_chevron) = sidebar_row(
+        let (tab_group_label, _, tab_group_chevron, _) = group_row(
             ui,
             sections,
             ChromeAction::ToggleTabsSection,
+            ChromeAction::CollapseTabs,
             Icon::TabGroup,
             "Tabs",
-            Some(Icon::ChevronDown),
+            false,
         );
         let sidebar_tabs = ui.add(
             sections,
@@ -517,8 +624,15 @@ impl Chrome {
             },
         );
         let sidebar_other = ui.add(sections, Widget::container(), ui.style(sidebar_tabs));
-        let (private_label, private_lock) =
-            sidebar_row(ui, sections, ChromeAction::Private, Icon::Hand, "Private", Some(Icon::Lock));
+        let (private_label, private_chevron, private_chevron_icon, private_lock) = group_row(
+            ui,
+            sections,
+            ChromeAction::Private,
+            ChromeAction::CollapsePrivate,
+            Icon::Hand,
+            "Private",
+            true,
+        );
         let saved_header = ui.add(
             sections,
             Widget::container().with_action(ChromeAction::ToggleSavedSection.id()).with_radius(CAPSULE),
@@ -897,6 +1011,11 @@ impl Chrome {
             slide: Animated::new(0.0, Spring::SMOOTH),
             private_row: ui.parent(private_label).unwrap_or(sidebar),
             private_lock: private_lock.unwrap_or(sidebar),
+            private_chevron,
+            private_chevron_icon,
+            private_section_open: true,
+            items: Vec::new(),
+            hovered_row: None,
             private_mode: false,
             normal_count: 0,
             locked: false,
@@ -912,7 +1031,7 @@ impl Chrome {
             panel_scroll: 0.0,
             panel_list,
             tab_group_label,
-            tab_group_chevron: tab_group_chevron.unwrap_or(sidebar),
+            tab_group_chevron,
             sidebar_tabs,
             sidebar_other,
             saved_chevron,
@@ -996,17 +1115,24 @@ impl Chrome {
         was_open
     }
 
-    /// Collapses or expands a sidebar section ("N Tabs" or "Saved").
-    pub fn toggle_section(&mut self, ui: &mut Ui, tabs_section: bool) {
-        let (open, list, chevron) = if tabs_section {
-            self.tabs_section_open = !self.tabs_section_open;
-            let list = if self.private_mode { self.sidebar_other } else { self.sidebar_tabs };
-            (self.tabs_section_open, list, self.tab_group_chevron)
-        } else {
-            self.saved_section_open = !self.saved_section_open;
-            (self.saved_section_open, self.saved_list, self.saved_chevron)
+    /// Collapses or expands a sidebar section ("N Tabs", "Private" or "Saved").
+    pub fn toggle_section(&mut self, ui: &mut Ui, section: Section) {
+        let (open, chevron) = match section {
+            Section::Tabs => {
+                self.tabs_section_open = !self.tabs_section_open;
+                (self.tabs_section_open, self.tab_group_chevron)
+            }
+            Section::Private => {
+                self.private_section_open = !self.private_section_open;
+                (self.private_section_open, self.private_chevron_icon)
+            }
+            Section::Saved => {
+                self.saved_section_open = !self.saved_section_open;
+                ui.set_visible(self.saved_list, self.saved_section_open);
+                (self.saved_section_open, self.saved_chevron)
+            }
         };
-        ui.set_visible(list, open);
+        self.update_tab_lists(ui);
         if let Some(w) = ui.widget_mut(chevron) {
             w.set_icon(if open { Icon::ChevronDown } else { Icon::ChevronRight });
         }
@@ -1221,15 +1347,18 @@ impl Chrome {
         self.normal_count = count;
     }
 
-    /// `hidden`: private tabs are locked away, so their titles are not listed.
+    /// `hidden`: private tabs are locked away, so their titles are not listed and "Private"
+    /// shows a lock; unlocked (or without a lock) it has a chevron that folds the list.
     pub fn set_private(&mut self, ui: &mut Ui, private: bool, has_lock: bool, hidden: bool) {
         self.private_mode = private;
         self.private_hidden = hidden;
         self.update_tab_lists(ui);
         if let Some(w) = ui.widget_mut(self.private_row) {
-            w.background = if private { Background::Fill(Paint::Label, 0.08) } else { Background::None };
+            w.background = if private { Background::Glass(GlassLevel::Thin) } else { Background::None };
         }
-        ui.set_visible(self.private_lock, has_lock);
+        let locked = has_lock && hidden;
+        ui.set_visible(self.private_lock, locked);
+        ui.set_visible(self.private_chevron, !locked);
     }
 
     /// While private browsing is locked, tab titles and the address stay hidden.
@@ -1519,15 +1648,132 @@ impl Chrome {
         self.page_fullscreen = fullscreen;
     }
 
-    /// Shows the normal tabs' list while "N Tabs" is expanded and the private one unless locked.
-    fn update_tab_lists(&self, ui: &mut Ui) {
-        let (normal, private) = if self.private_mode {
+    /// The normal and the private tabs' lists.
+    fn group_lists(&self) -> (NodeId, NodeId) {
+        if self.private_mode {
             (self.sidebar_other, self.sidebar_tabs)
         } else {
             (self.sidebar_tabs, self.sidebar_other)
-        };
+        }
+    }
+
+    fn private_list_open(&self) -> bool {
+        self.private_section_open && !self.private_hidden && !self.locked
+    }
+
+    /// Shows the normal tabs' list while "N Tabs" is expanded and the private one while
+    /// "Private" is expanded and unlocked.
+    fn update_tab_lists(&self, ui: &mut Ui) {
+        let (normal, private) = self.group_lists();
         ui.set_visible(normal, self.tabs_section_open);
-        ui.set_visible(private, !self.private_hidden && !self.locked);
+        ui.set_visible(private, self.private_list_open());
+    }
+
+    /// The tab item `node` is (a sidebar row, a bar segment, or the address segment that is the
+    /// active tab in the compact bar), if it is one.
+    pub fn tab_item(&self, node: NodeId) -> Option<TabItem> {
+        self.items.iter().copied().find(|item| item.node == node)
+    }
+
+    /// The items of `surface`, in order.
+    pub fn tab_items(&self, surface: Surface) -> Vec<TabItem> {
+        self.items.iter().copied().filter(|i| i.surface == surface).collect()
+    }
+
+    /// The sidebar's lists as laid out now (see [`SidebarLayout`]).
+    pub fn sidebar_layout(&self, ui: &Ui) -> SidebarLayout {
+        let rows = |private: bool| -> Vec<(ViewId, Frame)> {
+            self.items
+                .iter()
+                .filter(|i| i.surface == Surface::Sidebar && i.private == private)
+                .map(|i| (i.view, ui.frame(i.node)))
+                .collect()
+        };
+        SidebarLayout {
+            private_header: ui.frame(self.private_row),
+            normal: rows(false),
+            private: rows(true),
+            normal_open: self.tabs_section_open,
+            private_open: self.private_list_open(),
+        }
+    }
+
+    /// While a tab is dragged: puts its row (or segment) at `target` (`(private, index)` among
+    /// the other items; `None` leaves it where it was) and hides it, so the others make room.
+    /// Cleared by the next `sync_tabs`.
+    pub fn preview_drag(
+        &mut self,
+        ui: &mut Ui,
+        view: ViewId,
+        surface: Surface,
+        target: Option<(bool, usize)>,
+    ) {
+        let Some(source) = self.items.iter().copied().find(|i| i.view == view && i.surface == surface) else {
+            return;
+        };
+        ui.set_opacity(source.node, 0.0);
+        let Some((private, index)) = target else { return };
+        match surface {
+            Surface::Sidebar => {
+                let (normal, private_list) = self.group_lists();
+                let into = if private { private_list } else { normal };
+                let from = ui.parent(source.node).unwrap_or(into);
+                if from != into {
+                    let rest: Vec<NodeId> =
+                        ui.children(from).into_iter().filter(|&n| n != source.node).collect();
+                    ui.set_children(from, &rest);
+                }
+                let mut order: Vec<NodeId> =
+                    ui.children(into).into_iter().filter(|&n| n != source.node).collect();
+                order.insert(index.min(order.len()), source.node);
+                ui.set_children(into, &order);
+            }
+            Surface::Bar => {
+                let Some(parent) = ui.parent(source.node) else { return };
+                let mut order: Vec<NodeId> =
+                    ui.children(parent).into_iter().filter(|&n| n != source.node).collect();
+                order.insert(index.min(order.len()), source.node);
+                ui.set_children(parent, &order);
+            }
+        }
+    }
+
+    /// The nodes that move when tabs are reordered, keyed so they can be followed across the
+    /// rebuilds of `sync_tabs`: tab rows by view, the sidebar's other rows by node.
+    pub fn moving_nodes(&self, ui: &Ui) -> Vec<(MoveKey, NodeId)> {
+        let mut out: Vec<(MoveKey, NodeId)> =
+            self.items.iter().map(|i| (MoveKey::Tab(i.view, i.surface), i.node)).collect();
+        let lists = [self.sidebar_tabs, self.sidebar_other];
+        for node in ui.children(self.sections) {
+            if !lists.contains(&node) {
+                out.push((MoveKey::Node(node), node));
+            }
+        }
+        out
+    }
+
+    /// Lights the tab row under the pointer with a glass highlight (rows have no flat hover
+    /// fill). Call every frame with the UI's hovered node.
+    pub fn update_hover(&mut self, ui: &mut Ui, hovered: Option<NodeId>) {
+        let row = hovered.filter(|&n| {
+            self.items.iter().any(|i| i.node == n && i.surface == Surface::Sidebar)
+                && ui.widget(n).is_some_and(|w| w.background != Background::Glass(GlassLevel::Thin))
+        });
+        if row == self.hovered_row {
+            return;
+        }
+        if let Some(old) = self.hovered_row.take()
+            && let Some(w) = ui.widget_mut(old)
+            && w.background == Background::Glass(GlassLevel::Lens)
+        {
+            w.background = Background::None;
+        }
+        if let Some(new) = row
+            && let Some(w) = ui.widget_mut(new)
+        {
+            w.background = Background::Glass(GlassLevel::Lens);
+        }
+        self.hovered_row = row;
     }
 
     /// Rebuilds the tab segments and sidebar rows from the tab model. `other` is the group
@@ -1536,14 +1782,28 @@ impl Chrome {
         for pill in std::mem::take(&mut self.pills) {
             ui.remove(pill);
         }
+        self.items.clear();
+        self.hovered_row = None;
         let narrow = self.mode == Mode::Narrow;
         let separate = self.tab_bar == TabBarStyle::Separate;
         let mut order = Vec::with_capacity(tabs.len());
+        let private = self.private_mode;
+        ui.set_opacity(self.address, 1.0);
         for (i, tab) in tabs.all().iter().enumerate() {
             let active = i == tabs.active_index();
             if active && !separate {
                 // Compact: the persistent address segment sits at the active tab's position.
                 order.push(self.address);
+                if !self.locked && !narrow {
+                    let item = TabItem {
+                        node: self.address,
+                        view: tab.view,
+                        private,
+                        index: i,
+                        surface: Surface::Bar,
+                    };
+                    self.items.push(item);
+                }
                 continue;
             }
             let parent = if separate { self.tab_strip } else { self.tab_capsule };
@@ -1575,6 +1835,15 @@ impl Chrome {
             ui.set_visible(pill, !narrow || separate);
             self.pills.push(pill);
             order.push(pill);
+            if !self.locked && (separate || !narrow) {
+                self.items.push(TabItem {
+                    node: pill,
+                    view: tab.view,
+                    private,
+                    index: i,
+                    surface: Surface::Bar,
+                });
+            }
         }
         if separate {
             ui.set_children(self.tab_capsule, &[]);
@@ -1615,13 +1884,32 @@ impl Chrome {
             ui.set_children(self.sections, &order);
         }
         ui.clear_children(self.sidebar_tabs);
+        // Locked private tabs aren't listed at all (not even hidden): nothing to drag or read.
+        let hide_current = private && (self.private_hidden || self.locked);
+        let hide_other = !private && self.private_hidden;
         for (i, tab) in tabs.all().iter().enumerate() {
+            if hide_current {
+                break;
+            }
             let active = i == tabs.active_index();
-            sidebar_tab_row(ui, self.sidebar_tabs, tab, active, ChromeAction::SelectTab(i), favicons);
+            let node =
+                sidebar_tab_row(ui, self.sidebar_tabs, tab, active, ChromeAction::SelectTab(i), favicons);
+            self.items.push(TabItem { node, view: tab.view, private, index: i, surface: Surface::Sidebar });
         }
         ui.clear_children(self.sidebar_other);
         for (i, tab) in other.all().iter().enumerate() {
-            sidebar_tab_row(ui, self.sidebar_other, tab, false, ChromeAction::SelectOtherTab(i), favicons);
+            if hide_other {
+                break;
+            }
+            let action = ChromeAction::SelectOtherTab(i);
+            let node = sidebar_tab_row(ui, self.sidebar_other, tab, false, action, favicons);
+            self.items.push(TabItem {
+                node,
+                view: tab.view,
+                private: !private,
+                index: i,
+                surface: Surface::Sidebar,
+            });
         }
         self.update_tab_lists(ui);
         ui.set_text(self.tab_count_label, &count.to_string());
@@ -1656,8 +1944,15 @@ impl Chrome {
     }
 }
 
-/// One tab in a sidebar list: the active one is a grey capsule with a close button in place
-/// of its favicon.
+/// How [`Chrome::moving_nodes`] names a node across rebuilds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MoveKey {
+    Tab(ViewId, Surface),
+    Node(NodeId),
+}
+
+/// One tab in a sidebar list: the active one is a thin glass capsule with a small close button
+/// beside its favicon; the others light up with glass under the pointer (`update_hover`).
 fn sidebar_tab_row(
     ui: &mut Ui,
     parent: NodeId,
@@ -1665,31 +1960,39 @@ fn sidebar_tab_row(
     active: bool,
     select: ChromeAction,
     favicons: &Favicons,
-) {
-    let background = if active { Background::Fill(Paint::Label, 0.08) } else { Background::None };
+) -> NodeId {
+    let background = if active { Background::Glass(GlassLevel::Thin) } else { Background::None };
     let row_node = ui.add(
         parent,
-        Widget::container().with_action(select.id()).with_radius(CAPSULE).with_background(background),
+        Widget::container()
+            .with_action(select.id())
+            .with_radius(CAPSULE)
+            .with_background(background)
+            .without_feedback(),
         Style {
             size: Size { width: auto(), height: length(ROW_HEIGHT) },
             padding: padding(TAB_INDENT, 12.0, 0.0, 0.0),
-            ..row(12.0)
+            ..row(6.0)
         },
     );
     match select {
         ChromeAction::SelectTab(i) if active => {
-            close_dot(ui, row_node, ChromeAction::CloseTab(i), 24.0);
+            close_dot_sized(ui, row_node, ChromeAction::CloseTab(i), ROW_CLOSE_SLOT, ROW_CLOSE_DOT);
         }
         _ => {
-            // Same width as the close button, so titles line up.
-            let slot = ui.add(
+            // The close button's room, so favicons and titles line up.
+            ui.add(
                 row_node,
                 Widget::container(),
-                Style { size: square(24.0), justify_content: JustifyContent::CENTER, ..row(0.0) },
+                Style { size: square(ROW_CLOSE_SLOT), flex_shrink: 0.0, ..row(0.0) },
             );
-            favicon_node(ui, slot, &tab.url, 20.0, favicons);
         }
     }
+    favicon_node(ui, row_node, &tab.url, ROW_FAVICON, favicons);
     let style = if active { TextStyle::BodyEmphasis } else { TextStyle::Body };
-    ui.add_label(row_node, &tab.label(), style, shrinking_label());
+    let label = ui.add_label(row_node, &tab.label(), style, shrinking_label());
+    let mut layout = ui.style(label);
+    layout.margin = Rect { left: length(6.0), right: length(0.0), top: length(0.0), bottom: length(0.0) };
+    ui.set_style(label, layout);
+    row_node
 }

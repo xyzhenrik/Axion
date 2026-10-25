@@ -23,7 +23,9 @@ use zeroize::Zeroizing;
 use crate::drip::Phase;
 use crate::popover::Popover;
 
-const BASE: u32 = 12_000;
+/// Clear of the chrome's ranges (its other-group tab rows start at 12 000 and its panel
+/// buttons at 13 000, which this range used to swallow).
+const BASE: u32 = 20_000;
 const CLOSE: ActionId = ActionId(BASE);
 const LOCK: ActionId = ActionId(BASE + 1);
 const ADD: ActionId = ActionId(BASE + 2);
@@ -165,6 +167,25 @@ pub enum Outcome {
         view: ViewId,
         script: Zeroizing<String>,
     },
+    /// The sheet's lock button: lock the account (private tabs and Passwords) now.
+    LockSession,
+}
+
+/// Why the alert asks for the account password although the session may be unlocked: these
+/// always ask again (user decision); everything else (filling a login) doesn't.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reauth {
+    /// Opening the overview of everything saved.
+    OpenSheet,
+    /// Showing or copying a card's number or security code (field index).
+    Reveal(usize),
+    Copy(usize),
+}
+
+/// Whether using field `secret` of an item of `kind` asks for the password every time: a
+/// card's number and security code (money), nothing else.
+fn asks_every_time(kind: Kind, secret: bool) -> bool {
+    kind == Kind::Card && secret
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -259,6 +280,8 @@ pub struct Passwords {
     unlock_dismissed: HashSet<String>,
     /// The account's name, for the unlock texts (its password is the master password).
     account: String,
+    /// The alert asks again before this (see [`Reauth`]).
+    asking: Option<Reauth>,
 }
 
 fn padding(h: f32, v: f32) -> Rect<LengthPercentage> {
@@ -614,6 +637,7 @@ impl Passwords {
             prompt,
             unlock_dismissed: HashSet::new(),
             account: account.to_owned(),
+            asking: None,
         }
     }
 
@@ -633,15 +657,6 @@ impl Passwords {
     /// The account was renamed.
     pub fn set_account_name(&mut self, name: &str) {
         name.clone_into(&mut self.account);
-    }
-
-    /// Something was done that counts as using the account (resets the auto-lock timer).
-    pub fn touch(&mut self) {
-        if let Some(vault) = &mut self.vault
-            && vault.is_unlocked()
-        {
-            vault.touch();
-        }
     }
 
     /// Unlocks with the account password from elsewhere (the private tabs' lock screen): the
@@ -702,10 +717,15 @@ impl Passwords {
             || (ui.is_visible(self.alert_layer) && ui.frame(self.alert).contains(p))
     }
 
+    /// Whether a click with `action` belongs to the passwords UI.
+    pub fn owns_action(action: ActionId) -> bool {
+        (BASE..LAST).contains(&action.0)
+    }
+
     /// Whether this event belongs to the passwords UI.
     pub fn wants(&self, event: &UiEvent) -> bool {
         match event {
-            UiEvent::Clicked { action, .. } => (BASE..LAST).contains(&action.0),
+            UiEvent::Clicked { action, .. } => Self::owns_action(*action),
             UiEvent::Submitted { node, .. } | UiEvent::ValueChanged { node, .. } => self.owns(*node),
             _ => false,
         }
@@ -718,9 +738,12 @@ impl Passwords {
             || [self.generator_length, self.generator_symbols].contains(&Some(node))
     }
 
+    /// Opens the sheet. With an account password it is asked for first, every time (also
+    /// while the session is unlocked; then it is only checked).
     pub fn open(&mut self, ui: &mut Ui, config: &Config, window: Vec2) -> Outcome {
         self.open = true;
         self.prompt.hide();
+        self.asking = self.has_password().then_some(Reauth::OpenSheet);
         ui.set_visible(self.root, true);
         self.resize(ui, window);
         self.refresh(ui, config)
@@ -728,6 +751,9 @@ impl Passwords {
 
     pub fn close(&mut self, ui: &mut Ui) {
         self.open = false;
+        self.asking = None;
+        // What was revealed is hidden again next time.
+        self.revealed.clear();
         self.confirm_delete = false;
         // Edits in progress are dropped; what's typed doesn't stay in hidden fields.
         if matches!(self.shown, Detail::Edit { .. }) {
@@ -767,6 +793,12 @@ impl Passwords {
         if !self.open {
             return Outcome::Nothing;
         }
+        if let Some(reason) = self.asking {
+            return self.ask_again(ui, config, reason);
+        }
+        if let Some(w) = ui.widget_mut(self.alert_layer) {
+            w.background = Background::None;
+        }
         if self.is_unlocked() {
             ui.set_visible(self.alert_layer, false);
             ui.set_visible(self.sheet, true);
@@ -804,7 +836,89 @@ impl Passwords {
         if has_vault { Outcome::Events(ui.focus(self.alert_field)) } else { Outcome::Nothing }
     }
 
-    fn try_unlock(&mut self, ui: &mut Ui, config: &Config) -> Outcome {
+    /// The alert asking for the password before `reason`. Opening the sheet hides it until
+    /// then; for a card's details the sheet stays and the alert lies on top.
+    fn ask_again(&mut self, ui: &mut Ui, config: &Config, reason: Reauth) -> Outcome {
+        let over_sheet = reason != Reauth::OpenSheet && self.is_unlocked();
+        ui.set_visible(self.sheet, over_sheet);
+        ui.set_visible(self.alert_layer, true);
+        ui.set_visible(self.alert_error, false);
+        // Over the sheet the alert's layer takes the clicks (nothing behind it reacts).
+        if let Some(w) = ui.widget_mut(self.alert_layer) {
+            w.background = if over_sheet {
+                Background::Fill(Paint::Fixed(Color::rgb(0x000000)), BACKDROP_DIM / 2.0)
+            } else {
+                Background::None
+            };
+        }
+        let (title, note) = match reason {
+            Reauth::OpenSheet => ("Passwords", ""),
+            Reauth::Reveal(_) => ("Show Card Details", "Card details ask for the password every time."),
+            Reauth::Copy(_) => ("Copy Card Details", "Card details ask for the password every time."),
+        };
+        ui.set_text(self.alert_title, title);
+        let text = format!("Enter the password of “{}” to continue.", self.account);
+        ui.set_text(self.alert_text, &text);
+        ui.set_text(self.alert_note, note);
+        ui.set_visible(self.alert_note, !note.is_empty());
+        ui.set_text(self.alert_button, if self.is_unlocked() { "Continue" } else { "Unlock" });
+        ui.set_visible(ui.parent(self.alert_field).unwrap_or(self.alert_field), true);
+        ui.set_visible(self.confirm_box, false);
+        self.alert_appear.spring = spring(config);
+        self.alert_appear.snap(0.0);
+        self.alert_appear.target = 1.0;
+        Outcome::Events(ui.focus(self.alert_field))
+    }
+
+    /// The password asked for by [`Self::ask_again`]: checked (unlocking the vault, and so the
+    /// session, if it was locked), then what it was asked for happens.
+    fn answer_again(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        clipboard: &mut Option<arboard::Clipboard>,
+        reason: Reauth,
+    ) -> Outcome {
+        let Some(vault) = &mut self.vault else {
+            self.close(ui);
+            return Outcome::Nothing;
+        };
+        let password = Zeroizing::new(ui.field_text(self.alert_field).unwrap_or_default().to_owned());
+        let result = if vault.is_unlocked() { vault.verify(&password) } else { vault.unlock(&password) };
+        match result {
+            Ok(()) => {
+                ui.set_field_text(self.alert_field, "");
+                self.asking = None;
+                if let Some(pending) = self.pending.take() {
+                    self.save_login(pending);
+                }
+                match reason {
+                    Reauth::OpenSheet => {}
+                    Reauth::Reveal(i) => self.set_revealed(ui, i, true),
+                    Reauth::Copy(i) => self.copy_field(config, clipboard, i),
+                }
+                let outcome = self.refresh(ui, config);
+                // The alert's field had the keyboard; nothing else in the sheet takes it.
+                let _ = ui.blur();
+                outcome
+            }
+            Err(VaultError::WrongPassword) => self.alert_failed(ui, "Wrong password"),
+            Err(e) => {
+                tracing::error!("checking the account password failed: {e}");
+                self.alert_failed(ui, &e.to_string())
+            }
+        }
+    }
+
+    fn try_unlock(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        clipboard: &mut Option<arboard::Clipboard>,
+    ) -> Outcome {
+        if let Some(reason) = self.asking {
+            return self.answer_again(ui, config, clipboard, reason);
+        }
         let Some(vault) = &mut self.vault else {
             self.close(ui);
             return Outcome::Nothing;
@@ -1300,9 +1414,11 @@ impl Passwords {
                 if ui.is_visible(self.confirm_box) {
                     return Outcome::Events(ui.focus(self.confirm_field));
                 }
-                self.try_unlock(ui, config)
+                self.try_unlock(ui, config, clipboard)
             }
-            UiEvent::Submitted { node, .. } if node == self.confirm_field => self.try_unlock(ui, config),
+            UiEvent::Submitted { node, .. } if node == self.confirm_field => {
+                self.try_unlock(ui, config, clipboard)
+            }
             UiEvent::Submitted { node, .. } if self.prompt.field == Some(node) => {
                 self.unlock_from_prompt(ui, config)
             }
@@ -1340,9 +1456,16 @@ impl Passwords {
         match action {
             // The backdrop's action also fires for clicks on the sheet's background.
             CLOSE if pointer.is_some_and(|p| self.contains(ui, p)) => {}
+            // Not showing a card's details after all: the sheet stays.
+            CANCEL_UNLOCK if matches!(self.asking, Some(Reauth::Reveal(_) | Reauth::Copy(_))) => {
+                self.asking = None;
+                ui.set_field_text(self.alert_field, "");
+                return self.refresh(ui, config);
+            }
             CLOSE | CANCEL_UNLOCK => self.close(ui),
-            UNLOCK => return self.try_unlock(ui, config),
-            LOCK => return self.lock(ui, config),
+            UNLOCK => return self.try_unlock(ui, config, clipboard),
+            // Locks the whole account (private tabs too), like the account menu's Lock.
+            LOCK => return Outcome::LockSession,
             ADD => self.select(ui, config, Detail::Edit { id: None, kind: Kind::Login }),
             EDIT => {
                 if let Detail::View(id) = self.shown.clone() {
@@ -1418,6 +1541,10 @@ impl Passwords {
             ActionId(n) if (REVEAL_BASE..REVEAL_BASE + MAX_FIELDS).contains(&n) => {
                 let i = (n - REVEAL_BASE) as usize;
                 let on = !self.revealed.get(i).copied().unwrap_or(false);
+                if on && self.asks_every_time(i) {
+                    self.asking = Some(Reauth::Reveal(i));
+                    return self.refresh(ui, config);
+                }
                 if matches!(self.shown, Detail::Edit { .. }) {
                     self.set_revealed(ui, i, on);
                 } else {
@@ -1427,18 +1554,12 @@ impl Passwords {
             }
             ActionId(n) if (COPY_BASE..COPY_BASE + MAX_FIELDS).contains(&n) => {
                 let i = (n - COPY_BASE) as usize;
-                if let Detail::View(id) = &self.shown {
-                    let value = self
-                        .vault
-                        .as_ref()
-                        .and_then(|v| v.get(id))
-                        .map(|item| Zeroizing::new(field(&item.data, i).to_owned()));
-                    if let Some(value) = value {
-                        self.copy(config, clipboard, &value);
-                        self.copied_field = Some(i);
-                        self.show_detail(ui, config);
-                    }
+                if self.asks_every_time(i) {
+                    self.asking = Some(Reauth::Copy(i));
+                    return self.refresh(ui, config);
                 }
+                self.copy_field(config, clipboard, i);
+                self.show_detail(ui, config);
             }
             ActionId(n) if (ITEM_BASE..PROMPT_CLOSE.0).contains(&n) => {
                 if let Some(id) = self.list_ids.get((n - ITEM_BASE) as usize).cloned() {
@@ -1448,6 +1569,30 @@ impl Passwords {
             _ => {}
         }
         Outcome::Nothing
+    }
+
+    /// Whether field `i` of the item shown (or edited) asks for the password every time.
+    fn asks_every_time(&self, i: usize) -> bool {
+        let kind = match &self.shown {
+            Detail::View(id) => self.vault.as_ref().and_then(|v| v.get(id)).map(|item| item.data.kind()),
+            Detail::Edit { kind, .. } => Some(*kind),
+            Detail::Empty => None,
+        };
+        kind.is_some_and(|kind| fields(kind).get(i).is_some_and(|&(_, secret)| asks_every_time(kind, secret)))
+    }
+
+    /// Copies field `i` of the item shown.
+    fn copy_field(&mut self, config: &Config, clipboard: &mut Option<arboard::Clipboard>, i: usize) {
+        let Detail::View(id) = &self.shown else { return };
+        let value = self
+            .vault
+            .as_ref()
+            .and_then(|v| v.get(id))
+            .map(|item| Zeroizing::new(field(&item.data, i).to_owned()));
+        if let Some(value) = value {
+            self.copy(config, clipboard, &value);
+            self.copied_field = Some(i);
+        }
     }
 
     fn set_revealed(&mut self, ui: &mut Ui, i: usize, on: bool) {
@@ -1755,14 +1900,8 @@ impl Passwords {
                 tracing::info!("clipboard cleared");
             }
         }
-        let minutes = config.passwords.auto_lock_minutes;
-        if minutes > 0.0
-            && let Some(vault) = &mut self.vault
-            && vault.lock_if_idle(Duration::from_secs_f32(minutes * 60.0))
-        {
-            tracing::info!("passwords locked after inactivity");
-            return self.lock(ui, config);
-        }
+        // No auto-lock: an unlock lasts for the session (only Lock ends it).
+        let _ = (ui, config);
         Outcome::Nothing
     }
 
@@ -1949,6 +2088,25 @@ impl Prompt {
             ui.clear_children(self.root);
             self.field = None;
             self.error = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_card_secrets_ask_every_time() {
+        for (i, &(label, secret)) in fields(Kind::Card).iter().enumerate() {
+            let expected = matches!(label, "Card number" | "Security code");
+            assert_eq!(asks_every_time(Kind::Card, secret), expected, "card field {i} ({label})");
+        }
+        // A login's password fills without asking again; notes and addresses don't either.
+        for kind in [Kind::Login, Kind::Address, Kind::Note] {
+            for &(_, secret) in fields(kind) {
+                assert!(!asks_every_time(kind, secret));
+            }
         }
     }
 }
