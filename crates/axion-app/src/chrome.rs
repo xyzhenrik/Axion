@@ -385,6 +385,7 @@ impl Chrome {
         };
         let docked = self.sidebar_docked(config);
         self.docked = docked;
+        tracing::debug!(?window, mode = ?self.mode, docked, docked_open = self.docked_open, overlay_open = self.overlay_open, "chrome layout");
         let show_sidebar = self.sidebar_open() && !self.page_fullscreen;
         let m = l.margin;
 

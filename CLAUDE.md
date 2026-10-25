@@ -68,9 +68,10 @@ UI/rendering crates (`engine` uses wgpu only to hand out frame textures).
    **already-rendered layers beneath it** (backdrop texture), so glass genuinely refracts
    page content and other UI; glass inside glass (sidebar cards) is just a later layer.
    `axion-ui` groups glass by nesting depth and level (thin/regular/thick) into layers.
-3. The page starts below the bar; its top row (and left column, next to a docked sidebar) is
-   stretched into the gap ("edge extension") so the bar has the page's colours to refract.
-   A GPU luminance probe of that edge flips the chrome light/dark (`appearance.adapt_to_page`).
+3. The page starts below the bar and beside a docked sidebar, and ends there: the page never
+   shows behind the bar (user decision). Floating panels (overlay sidebar) do refract it.
+   A GPU luminance probe of the page's top edge flips the chrome light/dark
+   (`appearance.adapt_to_page`).
 4. Glass shapes are described as **signed distance fields**. Neighbouring shapes are merged
    with a smooth-min, which gives the "two drops connect" effect for free.
 5. The refraction offset comes from the SDF's gradient (surface normal) and a lens height

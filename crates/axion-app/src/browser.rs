@@ -760,25 +760,11 @@ impl Browser {
             self.adapt_appearance(view, &frame.texture);
         }
         let page_px = Rect { origin: page.origin * s, size: page.size * s };
-        let window_px = Vec2::new(self.surface_config.width as f32, self.surface_config.height as f32);
 
         let theme = self.ui.theme();
         let mut layers = Vec::new();
-        if let (Some(view), Some(frame)) = (&page_view, &frame) {
-            let texel = Vec2::new(1.0 / frame.texture.width() as f32, 1.0 / frame.texture.height() as f32);
-            // Edge extension: stretch the page's first row up behind the bar, and its first
-            // column left behind a docked sidebar, so the glass has the page's colours to refract.
-            if page_px.origin.y > 0.0 {
-                let mut top =
-                    ImageDraw::new(view, Rect::new(page_px.origin.x, 0.0, page_px.size.x, page_px.origin.y));
-                top.uv = Rect::new(0.0, 0.0, 1.0, texel.y);
-                layers.push(Layer::Image(top));
-            }
-            if page_px.origin.x > 0.0 {
-                let mut left = ImageDraw::new(view, Rect::new(0.0, 0.0, page_px.origin.x, window_px.y));
-                left.uv = Rect::new(0.0, 0.0, texel.x, 1.0);
-                layers.push(Layer::Image(left));
-            }
+        // The page ends where its rectangle ends: below the bar, beside a docked sidebar.
+        if let Some(view) = &page_view {
             layers.push(Layer::Image(ImageDraw::new(view, page_px)));
         }
         self.ui.paint(&mut layers);

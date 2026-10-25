@@ -146,8 +146,6 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. â
 - [ ] Merging between UI elements, drag stretch, fling, spring-back.
 - [ ] Adaptive tint/legibility; Reduce Transparency/Motion; perf mode. *(Phase 1 already flips
   the chrome light/dark from a GPU luminance probe of the page edge.)*
-- [ ] Better edge extension behind the bar: stretching the page's first row streaks when that
-  row has detail (e.g. a banner); try a blurred mirror of the top strip instead.
 - [ ] Perf budget: 120 fps at 1440p on integrated GPU.
 
 ### Phase 4 â€” Shields
@@ -193,9 +191,9 @@ Windows/macOS, touchscreen-first mode.
 | Sites with custom JS players (YouTube) fight our controls | Integrate with their player state where possible, per-site opt-out to native controls |
 
 ## 7. Decisions log
-- 2026-10-25: The page starts **below** the floating bar (ordinary sites don't know about it);
-  the gap is filled by stretching the page's top row ("edge extension"), so the bar still
-  refracts the page's colours. Revisit if we find a way to let content scroll under the bar.
+- 2026-10-25: The page starts **below** the floating bar and **ends there**, like in any
+  browser: nothing of the page shows or refracts behind the bar (user decision; an earlier
+  "edge extension" that stretched the page's top row behind the bar was removed).
 - 2026-10-25: Default search engine DuckDuckGo (configurable `general.search_url`).
 
 ## 8. Open questions
