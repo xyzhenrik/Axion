@@ -6,9 +6,11 @@
 
 mod client;
 mod download;
+mod drag;
 mod gpu;
 mod input;
 mod network;
+mod paste;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -20,7 +22,10 @@ use cef::*;
 
 pub use gpu::render_node_for;
 
-use crate::{Engine, EngineError, EngineEvent, Frame, InputEvent, RequestPolicy, ViewId, ViewSize};
+use crate::{
+    DropData, Engine, EngineError, EngineEvent, FindRequest, Frame, InputEvent, Modifiers, PasteData,
+    RequestPolicy, ViewId, ViewSize,
+};
 use client::{FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, build_client, favicon_callback};
 use input::InputState;
 use network::Network;
@@ -65,7 +70,7 @@ wrap_app! {
                 command_line.append_switch(Some(&"no-sandbox".into()));
             }
             // Without a Wayland display (e.g. forced onto XWayland), Chromium must use X11 too.
-            if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some() {
+            if on_x11() {
                 command_line.append_switch_with_value(Some(&"ozone-platform".into()), Some(&"x11".into()));
             }
             if self.flags.hardware_video_decoding {
@@ -91,6 +96,12 @@ wrap_app! {
             }
         }
     }
+}
+
+/// Whether Chromium runs on X11 (`--ozone-platform=x11`, see `on_before_command_line_processing`)
+/// rather than its default, Wayland.
+fn on_x11() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some()
 }
 
 /// If this process was launched by Chromium as a helper, runs it and returns its exit code;
@@ -353,6 +364,7 @@ impl Engine for CefEngine {
             frames: Rc::new(ViewFrames::default()),
             shared: self.shared.clone(),
             net: self.net.clone(),
+            drag: Rc::default(),
         };
         let state = ViewState {
             browser: None,
@@ -584,9 +596,11 @@ impl Engine for CefEngine {
     }
 
     fn set_hidden(&mut self, view: ViewId, hidden: bool) {
-        if let Some(host) = self.host(view) {
-            host.was_hidden(hidden as _);
+        let Some(host) = self.host(view) else { return };
+        if hidden && let Some(state) = self.views.get(&view) {
+            state.ctx.drag.cancel(&host);
         }
+        host.was_hidden(hidden as _);
     }
 
     fn set_focus(&mut self, view: ViewId, focused: bool) {
@@ -596,9 +610,70 @@ impl Engine for CefEngine {
     }
 
     fn send_input(&mut self, view: ViewId, event: &InputEvent) {
-        if let Some(host) = self.host(view) {
+        let Some(host) = self.host(view) else { return };
+        let Some(state) = self.views.get(&view) else { return };
+        if !state.ctx.drag.page_input(&host, &mut self.input, event) {
             self.input.send(&host, event);
         }
+    }
+
+    fn find(&mut self, view: ViewId, request: &FindRequest) {
+        let Some(host) = self.host(view) else { return };
+        if request.text.is_empty() {
+            host.stop_finding(1);
+            return;
+        }
+        host.find(
+            Some(&request.text.as_str().into()),
+            request.forward.into(),
+            request.match_case.into(),
+            request.next.into(),
+        );
+    }
+
+    fn stop_finding(&mut self, view: ViewId) {
+        if let Some(host) = self.host(view) {
+            // Keep the selected match selected, as browsers do when find closes.
+            host.stop_finding(0);
+        }
+    }
+
+    fn drag_enter(&mut self, view: ViewId, data: &DropData, pos: glam::Vec2, modifiers: Modifiers) {
+        let (Some(host), Some(state)) = (self.host(view), self.views.get(&view)) else { return };
+        state.ctx.drag.external_enter(&host, &self.input, &data.files, pos, modifiers);
+    }
+
+    fn drag_over(&mut self, view: ViewId, pos: glam::Vec2, modifiers: Modifiers) {
+        let (Some(host), Some(state)) = (self.host(view), self.views.get(&view)) else { return };
+        state.ctx.drag.external_over(&host, &self.input, pos, modifiers);
+    }
+
+    fn drag_leave(&mut self, view: ViewId) {
+        let (Some(host), Some(state)) = (self.host(view), self.views.get(&view)) else { return };
+        state.ctx.drag.external_leave(&host);
+    }
+
+    fn drag_drop(&mut self, view: ViewId, pos: glam::Vec2, modifiers: Modifiers) {
+        let (Some(host), Some(state)) = (self.host(view), self.views.get(&view)) else { return };
+        state.ctx.drag.external_drop(&host, &self.input, pos, modifiers);
+    }
+
+    fn has_system_clipboard(&self) -> bool {
+        // On Wayland only the client with keyboard focus sees the clipboard (and may set it),
+        // and off-screen Chromium has no surface to get focus.
+        on_x11()
+    }
+
+    fn paste(&mut self, view: ViewId, data: &PasteData) {
+        if data.is_empty() {
+            return;
+        }
+        // The frame with focus: the field may be inside an iframe.
+        let Some(frame) = self.browser(view).and_then(|b| b.focused_frame().or_else(|| b.main_frame()))
+        else {
+            return;
+        };
+        frame.execute_java_script(Some(&paste::script(data).as_str().into()), None, 0);
     }
 
     fn fetch_favicon(&mut self, view: ViewId, url: &str, max_size: u32) {
@@ -631,6 +706,11 @@ impl Engine for CefEngine {
     fn pump(&mut self) -> Vec<EngineEvent> {
         do_message_loop_work();
         self.fall_back_to_software_if_needed();
+        for state in self.views.values().filter(|v| !v.closing && v.ctx.drag.is_waiting()) {
+            if let Some(host) = state.browser.as_ref().and_then(|b| b.host()) {
+                state.ctx.drag.flush(&host);
+            }
+        }
 
         let mut raw = std::mem::take(&mut *self.shared.events.borrow_mut());
         raw.extend(self.net.take_events());
@@ -650,6 +730,7 @@ impl Engine for CefEngine {
                 | EngineEvent::PageMessage { view, .. }
                 | EngineEvent::RequestBlocked { view, .. }
                 | EngineEvent::NavigationBlocked { view, .. }
+                | EngineEvent::FindResult { view, .. }
                 | EngineEvent::Closed { view } => *view,
                 // Not tied to a view (and never queued here).
                 EngineEvent::DownloadUpdated(_) | EngineEvent::SiteData(_) => {

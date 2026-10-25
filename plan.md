@@ -275,6 +275,14 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. â
 
 ### Phase 7 â€” v0.1 polish
 - [ ] Downloads, find-in-page, zoom, context menus, permissions prompts (all glass).
+- [x] Find on Page: glass bar dripping out of the address field (Ctrl+F, page menu), search as
+      you type, "3 of 17", Enter / Shift+Enter / Ctrl+G, case toggle; closes on tab switch and
+      new page. Files dragged in from the desktop (X11/XWayland) and in-page drag and drop.
+      Pasting images and copied files: on Wayland Axion reads the clipboard (data-control) and
+      hands it to the page as a `paste` event, since off-screen Chromium has no focused surface.
+      *Open:* native Wayland file drops (winit 0.30 has no Wayland drag and drop; winit 0.31
+      or our own `wl_data_device`); copying *from* pages on native Wayland doesn't reach the
+      desktop clipboard yet (same cause); the find bar can cover the selected match.
 - [ ] Packaging: AUR / Flatpak / AppImage.
 - [ ] Crash handling, logging, first-run onboarding.
 

@@ -103,6 +103,26 @@ pub fn page_text(event: &KeyEvent, modifiers: Modifiers) -> Option<InputEvent> {
     Some(InputEvent::Text { text, modifiers: engine_modifiers(modifiers) })
 }
 
+/// The key events of Ctrl+<letter> as a keyboard sends them to the page (a test aid).
+pub fn ctrl_keys(letter: char) -> Vec<InputEvent> {
+    // XKB keycode of left Control, and of the letters on a QWERTY layout.
+    const CONTROL: i32 = 37;
+    const QWERTY: &str = "qwertyuiop    asdfghjkl     zxcvbnm";
+    const FIRST_LETTER_KEYCODE: i32 = 24;
+    let letter = letter.to_ascii_lowercase();
+    let Some(offset) = QWERTY.find(letter).filter(|_| letter.is_ascii_lowercase()) else { return Vec::new() };
+    let native = FIRST_LETTER_KEYCODE + offset as i32;
+    let key_code = letter.to_ascii_uppercase() as i32;
+    let ctrl = axion_engine::Modifiers { ctrl: true, ..Default::default() };
+    let none = axion_engine::Modifiers::default();
+    vec![
+        InputEvent::Key { pressed: true, key_code: 0x11, native_code: CONTROL, modifiers: ctrl },
+        InputEvent::Key { pressed: true, key_code, native_code: native, modifiers: ctrl },
+        InputEvent::Key { pressed: false, key_code, native_code: native, modifiers: ctrl },
+        InputEvent::Key { pressed: false, key_code: 0x11, native_code: CONTROL, modifiers: none },
+    ]
+}
+
 pub fn cursor_icon(kind: CursorKind) -> Option<CursorIcon> {
     Some(match kind {
         CursorKind::Default => CursorIcon::Default,
@@ -116,6 +136,8 @@ pub fn cursor_icon(kind: CursorKind) -> Option<CursorIcon> {
         CursorKind::Grab => CursorIcon::Grab,
         CursorKind::Grabbing => CursorIcon::Grabbing,
         CursorKind::NotAllowed => CursorIcon::NotAllowed,
+        CursorKind::Copy => CursorIcon::Copy,
+        CursorKind::Alias => CursorIcon::Alias,
         CursorKind::ResizeHorizontal => CursorIcon::EwResize,
         CursorKind::ResizeVertical => CursorIcon::NsResize,
         CursorKind::Hidden => return None,

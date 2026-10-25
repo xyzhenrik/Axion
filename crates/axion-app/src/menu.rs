@@ -52,6 +52,7 @@ pub enum MenuAction {
     ZoomOut,
     ZoomReset,
     HardReload,
+    FindOnPage,
     Settings,
     /// Switch to the account at this index of the list.
     SwitchAccount(usize),

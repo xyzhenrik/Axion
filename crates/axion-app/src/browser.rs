@@ -27,6 +27,8 @@ use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
 use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
 use crate::favicons::{FETCH_SIZE, Favicons};
+use crate::filedrop::{DropOutcome, FileDrop};
+use crate::find::{FindAction, FindBar};
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
 use crate::lockscreen::LockScreen;
@@ -39,6 +41,8 @@ use crate::mpris::{Mpris, MprisCommand, Track};
 use crate::overview::{Overview, OverviewAction};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
 use crate::pip::{PipOutcome, PipWindow};
+use crate::platform::clipboard::ClipboardReader;
+use crate::platform::pointer::PointerProbe;
 use crate::player::{
     Context as PlayerContext, Control as PlayerControl, Mode as PlayerMode, Outcome as PlayerOutcome,
     PlayerOverlay,
@@ -174,6 +178,15 @@ pub struct Browser {
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
     downloads_popover: DownloadsPopover,
+    find: FindBar,
+    /// Files dragged over the window from the desktop.
+    file_drop: FileDrop,
+    /// Asks the X server where the pointer is during such a drag (made on first use).
+    pointer_probe: Option<PointerProbe>,
+    /// Test aid: where a simulated file drag is (window, logical px), instead of the pointer.
+    file_drag_at: Option<Vec2>,
+    /// Clipboard reads for pastes into pages (where the engine can't read it itself).
+    clipboard_reader: ClipboardReader,
     player: PlayerOverlay,
     /// The active page's last reported scroll position (CSS px).
     last_scroll_y: f32,
@@ -396,6 +409,7 @@ impl Browser {
         let account_menu = Menu::build(&mut ui, chrome.sidebar_node(), ACCOUNT_MENU_BASE, Placement::Above);
         let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
+        let find = FindBar::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
         let settings = SettingsSheet::build(&mut ui);
         // The vault's second key factor: this device's key (TPM-sealed or a private file in
@@ -446,6 +460,11 @@ impl Browser {
             shields,
             shields_popover,
             downloads_popover,
+            find,
+            file_drop: FileDrop::default(),
+            pointer_probe: None,
+            file_drag_at: None,
+            clipboard_reader: ClipboardReader::default(),
             player,
             last_scroll_y: 0.0,
             capture_frame: 0,
@@ -672,6 +691,8 @@ impl Browser {
 
     fn on_active_changed(&mut self, previous: Option<ViewId>) {
         self.last_scroll_y = 0.0;
+        // Find on Page belongs to the page it was opened on.
+        self.close_find();
         self.passwords.hide_prompt(None, false);
         if let Some(tab) = self.tabs.active_mut() {
             tab.last_viewed = unix_now();
@@ -796,8 +817,19 @@ impl Browser {
                     self.handle_ui_events(events);
                 }
             }
-            Action::Find => {
-                tracing::info!("{action} arrives in a later phase");
+            Action::Find => self.open_find(),
+            Action::FindNext | Action::FindPrevious => {
+                if self.find.is_open() {
+                    self.find.step(&mut self.engine, action == Action::FindNext);
+                } else {
+                    self.open_find();
+                }
+            }
+            Action::Paste | Action::PastePlainText => {
+                if let Some(view) = view {
+                    let max = u64::from(self.config.clipboard.max_paste_mb) * 1024 * 1024;
+                    self.clipboard_reader.read(view, action == Action::PastePlainText, max);
+                }
             }
             Action::Quit => {}
             media => {
@@ -1975,6 +2007,7 @@ impl Browser {
                 MenuItem::new(Icon::Bookmark, "Add Bookmark", MenuAction::AddBookmark)
             },
             MenuItem::new(Icon::Share, "Copy Link", MenuAction::CopyLink),
+            MenuItem::new(Icon::Search, "Find on Page", MenuAction::FindOnPage),
             MenuItem::new(Icon::ZoomIn, "Zoom", MenuAction::Zoom).with_detail(zoom.clone()).with_submenu(
                 vec![
                     MenuItem::controls(vec![
@@ -1992,6 +2025,105 @@ impl Browser {
         let anchor = self.chrome.page_menu_frame(&self.ui);
         let window = self.logical_size();
         self.menu.open(&mut self.ui, &self.config, anchor, window, items);
+    }
+
+    // ---- find on page ----
+
+    /// Opens the find bar out of the address field with the field focused, or focuses it
+    /// again (selecting the text) if it is open.
+    fn open_find(&mut self) {
+        let Some(view) = self.active_view().filter(|_| !self.is_locked()) else { return };
+        if self.overview.is_open() {
+            return;
+        }
+        self.menu.close(&mut self.ui, &self.config);
+        let anchor = self.chrome.address_frame(&self.ui);
+        let width = self.logical_size().x;
+        self.find.open(&mut self.ui, &self.config, anchor, width, view);
+        let events = self.ui.focus(self.find.field());
+        self.handle_ui_events(events);
+    }
+
+    fn close_find(&mut self) {
+        if !self.find.is_open() {
+            return;
+        }
+        self.find.close(&mut self.ui, &self.config, &mut self.engine);
+        if self.ui.focused() == Some(self.find.field()) {
+            let events = self.ui.blur();
+            self.handle_ui_events(events);
+        }
+        // Typing goes back to the page.
+        if self.ui.focused().is_none()
+            && let Some(view) = self.active_view()
+        {
+            self.engine.set_focus(view, true);
+        }
+    }
+
+    fn find_action(&mut self, action: FindAction) {
+        match action {
+            FindAction::Previous | FindAction::Next => {
+                self.find.step(&mut self.engine, action == FindAction::Next);
+            }
+            FindAction::ToggleMatchCase => {
+                self.find.toggle_match_case(&mut self.ui, &mut self.config);
+                self.config_dirty_since.get_or_insert_with(Instant::now);
+            }
+            FindAction::Close => return self.close_find(),
+        }
+        // The buttons take the focus away from the field; typing goes on there.
+        self.refocus_find_field();
+    }
+
+    /// Puts the focus back into the find field, the caret at the end.
+    fn refocus_find_field(&mut self) {
+        let field = self.find.field();
+        if self.ui.focused() == Some(field) {
+            return;
+        }
+        let text = self.ui.field_text(field).unwrap_or_default().to_owned();
+        let events = self.ui.focus(field);
+        self.handle_ui_events(events);
+        let end = text.len();
+        self.ui.set_field_text_selecting(field, &text, end..end);
+    }
+
+    // ---- files dragged in ----
+
+    /// Moves a file drag from the desktop along with the pointer (every frame while one is
+    /// over the window) and finishes its drop.
+    fn update_file_drop(&mut self) {
+        if !self.file_drop.is_active() {
+            return;
+        }
+        if self.pointer_probe.is_none() && self.file_drag_at.is_none() {
+            self.pointer_probe = PointerProbe::connect(&self.window);
+        }
+        let pointer = self
+            .file_drag_at
+            .or_else(|| self.pointer_probe.as_ref().and_then(|p| p.position(&self.window)))
+            .or(self.pointer);
+        let page = self.page_rect();
+        let target = pointer
+            .filter(|&p| page.contains(p) && !self.ui.covers(p) && !self.is_locked())
+            .and_then(|p| Some((self.active_view()?, p - page.origin)));
+        let modifiers = input::engine_modifiers(self.modifiers);
+        let outcome = self.file_drop.update(&mut self.engine, target, modifiers);
+        if !self.file_drop.is_active() {
+            self.file_drag_at = None;
+        }
+        if let Some(DropOutcome::OpenTabs(files)) = outcome
+            && !self.is_locked()
+        {
+            // Dropped on the bar or the sidebar: each file opens in a tab of its own.
+            for (i, path) in files.iter().enumerate() {
+                let url = format!("file://{}", path.display());
+                if let Err(e) = self.open_tab(&url, i == 0) {
+                    tracing::error!("opening a dropped file failed: {e:#}");
+                }
+            }
+        }
     }
 
     fn menu_action(&mut self, action: MenuAction) {
@@ -2048,6 +2180,10 @@ impl Browser {
             }
             MenuAction::Zoom => {}
             MenuAction::HardReload => self.run(Action::HardReload),
+            MenuAction::FindOnPage => {
+                self.menu.close(&mut self.ui, &self.config);
+                self.run(Action::Find);
+            }
             MenuAction::Settings => {
                 // Out of the menu's Settings row (the menu's glass lies in the bar's plane).
                 // The menu is gone by the time Settings closes, so it drains into the address
@@ -2277,6 +2413,18 @@ impl Browser {
                         self.close_overview(i);
                     }
                 }
+                UiEvent::Clicked { action, .. } if FindBar::action(action).is_some() => {
+                    if let Some(action) = FindBar::action(action) {
+                        self.find_action(action);
+                    }
+                }
+                UiEvent::Submitted { node, .. } if node == self.find.field() => {
+                    // Enter: the next match; Shift+Enter: the previous one. The field keeps
+                    // the focus.
+                    self.find.step(&mut self.engine, !self.modifiers.shift);
+                    self.refocus_find_field();
+                }
+                UiEvent::Cancelled { node } if node == self.find.field() => self.close_find(),
                 UiEvent::Cancelled { node } if node == self.settings.search_field() => {
                     // Escape clears the settings search (and leaves the field).
                     self.ui.set_field_text(node, "");
@@ -2586,6 +2734,18 @@ impl Browser {
                 self.apply_theme();
             }
         }
+        while let Some((view, data)) = self.clipboard_reader.poll() {
+            // Only into the page that is still shown (and not locked away meanwhile).
+            if Some(view) == self.active_view() && !self.is_locked() {
+                tracing::debug!(
+                    text = data.text.is_some(),
+                    files = data.files.len(),
+                    "pasting into the page"
+                );
+                self.engine.paste(view, &data);
+            }
+        }
+        self.update_file_drop();
         let mut downloads_changed = false;
         for event in self.engine.pump() {
             match &event {
@@ -2631,6 +2791,13 @@ impl Browser {
                     {
                         tracing::debug!("fetching icon {icon}");
                         self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                    }
+                    if loading
+                        && self.find.view() == Some(view)
+                        && find_tab(&self.tabs, &self.parked, view).is_some_and(|t| !t.loading)
+                    {
+                        // Another page: Find on Page closes, as in Safari.
+                        self.close_find();
                     }
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
                         if loading && !tab.loading {
@@ -2720,6 +2887,9 @@ impl Browser {
                 EngineEvent::PageMessage { view, message } => self.page_message(view, &message),
                 EngineEvent::RequestBlocked { view, url } | EngineEvent::NavigationBlocked { view, url } => {
                     self.count_blocked(view, url);
+                }
+                EngineEvent::FindResult { view, active, count, final_update } => {
+                    self.find.set_result(&mut self.ui, &mut self.engine, view, (active, count, final_update));
                 }
                 EngineEvent::Closed { .. } => {}
                 EngineEvent::DownloadUpdated(info) => {
@@ -3075,6 +3245,9 @@ impl Browser {
                 }
             }
             WindowEvent::RedrawRequested => self.redraw()?,
+            WindowEvent::HoveredFile(path) => self.file_drop.hovered(path),
+            WindowEvent::HoveredFileCancelled => self.file_drop.cancelled(),
+            WindowEvent::DroppedFile(path) => self.file_drop.dropped(path),
             _ => {}
         }
         Ok(true)
@@ -3325,6 +3498,10 @@ impl Browser {
             && let Some(action) = self.keymap.action_for(&chord)
             // Media keys (Space, arrows…) are ours only while a video is fullscreen.
             && (!action.is_media() || self.player.mode() == PlayerMode::Fullscreen && self.ui.focused().is_none())
+            // Pasting into the page is ours only where its engine can't reach the clipboard;
+            // fields of the chrome paste by themselves.
+            && (!matches!(action, Action::Paste | Action::PastePlainText)
+                || self.ui.focused().is_none() && !self.engine.has_system_clipboard())
         {
             if action == Action::Quit {
                 return true;
@@ -3338,6 +3515,15 @@ impl Browser {
             if pressed && input::key(event) == Some(Key::Named("Escape".into())) {
                 self.close_overview(self.tabs.active_index());
             }
+            return false;
+        }
+
+        if pressed
+            && self.ui.focused() == Some(self.find.field())
+            && let Some(Key::Named(name)) = input::key(event)
+            && (name == "Up" || name == "Down")
+        {
+            self.find.step(&mut self.engine, name == "Down");
             return false;
         }
 
@@ -3600,6 +3786,60 @@ impl Browser {
                         self.sweep = Some((Vec2::new(x1, y1), Vec2::new(x2, y2), steps.max(1.0) as u32, 0));
                     }
                 }
+                // Test aids: Find on Page for "find:TEXT" (typed like the keyboard does), its
+                // next / previous match, the case toggle and closing it.
+                find if find.starts_with("find:") => {
+                    self.open_find();
+                    let (_, events) = self.ui.handle(UiInput::Text(find["find:".len()..].to_owned()));
+                    self.handle_ui_events(events);
+                }
+                "find-next" => self.find_action(FindAction::Next),
+                "find-previous" => self.find_action(FindAction::Previous),
+                "find-case" => self.find_action(FindAction::ToggleMatchCase),
+                "find-close" => self.find_action(FindAction::Close),
+                // Test aids: a file from the desktop dragged to window position
+                // "drag-file:PATH:X:Y" (logical px; it stays there until the next step), then
+                // dropped ("drop-file") or taken away ("drag-cancel").
+                drag if drag.starts_with("drag-file:") => {
+                    let mut parts = drag["drag-file:".len()..].rsplitn(3, ':');
+                    let (y, x, path) = (parts.next(), parts.next(), parts.next());
+                    if let (Some(Ok(y)), Some(Ok(x)), Some(path)) =
+                        (y.map(str::parse::<f32>), x.map(str::parse::<f32>), path)
+                    {
+                        self.file_drag_at = Some(Vec2::new(x, y));
+                        self.file_drop.hovered(PathBuf::from(path));
+                    }
+                }
+                "drop-file" => {
+                    if let Some(path) = self.file_drop.files().first().cloned() {
+                        self.file_drop.dropped(path);
+                    }
+                }
+                "drag-cancel" => self.file_drop.cancelled(),
+                // Test aid: a file dragged in and dropped at once at "drag-drop-file:PATH:X:Y".
+                drag if drag.starts_with("drag-drop-file:") => {
+                    let mut parts = drag["drag-drop-file:".len()..].rsplitn(3, ':');
+                    let (y, x, path) = (parts.next(), parts.next(), parts.next());
+                    if let (Some(Ok(y)), Some(Ok(x)), Some(path)) =
+                        (y.map(str::parse::<f32>), x.map(str::parse::<f32>), path)
+                    {
+                        self.file_drag_at = Some(Vec2::new(x, y));
+                        self.file_drop.hovered(PathBuf::from(path));
+                        self.file_drop.dropped(PathBuf::from(path));
+                    }
+                }
+                // Test aids: Ctrl+<letter> on the page as the keyboard sends it ("ctrl:v"), and
+                // the paste Axion makes itself where the engine has no clipboard ("paste").
+                ctrl if ctrl.starts_with("ctrl:") => {
+                    if let (Some(view), Some(letter)) =
+                        (self.active_view(), ctrl["ctrl:".len()..].chars().next())
+                    {
+                        for key in input::ctrl_keys(letter) {
+                            self.engine.send_input(view, &key);
+                        }
+                    }
+                }
+                "paste" => self.run(Action::Paste),
                 "scroll-page" => {
                     if let Some(view) = self.active_view() {
                         self.engine.run_script(view, "window.scrollBy(0, 600);", false);
@@ -3787,6 +4027,10 @@ impl Browser {
         self.add_account.animate(&mut self.ui, dt);
         self.shields_popover.animate(&mut self.ui, dt);
         self.downloads_popover.animate(&mut self.ui, dt);
+        let width = self.logical_size().x;
+        let address = self.chrome.address_frame(&self.ui);
+        self.find.follow(&mut self.ui, address, width);
+        self.find.animate(&mut self.ui, dt, &mut self.engine);
         self.lock_screen.animate(&mut self.ui, dt);
         self.settings.animate(&mut self.ui, dt);
         let address = self.chrome.address_frame(&self.ui);

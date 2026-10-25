@@ -36,6 +36,12 @@ winit.workspace = true
 zbus = "5"
 zeroize = "1"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Both already come with winit and arboard: the clipboard for pastes into pages (Wayland
+# data-control) and the pointer during file drags (X11).
+wl-clipboard-rs = "0.9"
+x11rb = { version = "0.13", default-features = false }
+
 [features]
 # The vault's device key is sealed with the TPM (needs libtss2-esys to build); without it the
 # device key lives in a file.
