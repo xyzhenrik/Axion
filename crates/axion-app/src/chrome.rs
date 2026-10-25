@@ -39,15 +39,19 @@ pub enum ChromeAction {
     Bookmarks,
     ReadingList,
     History,
+    ClosePanel,
     SelectTab(usize),
     CloseTab(usize),
+    /// An entry in the open bookmarks/history panel.
+    OpenPanelItem(usize),
 }
 
 const SELECT_TAB_BASE: u32 = 1000;
 const CLOSE_TAB_BASE: u32 = 2000;
+const PANEL_ITEM_BASE: u32 = 7000;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 17] = [
+    const SIMPLE: [ChromeAction; 18] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -65,19 +69,24 @@ impl ChromeAction {
         ChromeAction::Bookmarks,
         ChromeAction::ReadingList,
         ChromeAction::History,
+        ChromeAction::ClosePanel,
     ];
 
     fn id(self) -> ActionId {
         ActionId(match self {
             ChromeAction::SelectTab(i) => SELECT_TAB_BASE + i as u32,
             ChromeAction::CloseTab(i) => CLOSE_TAB_BASE + i as u32,
+            ChromeAction::OpenPanelItem(i) => PANEL_ITEM_BASE + i as u32,
             simple => 1 + Self::SIMPLE.iter().position(|&a| a == simple).unwrap_or(0) as u32,
         })
     }
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=17 => Some(Self::SIMPLE[n as usize - 1]),
+            n @ 1..=18 => Some(Self::SIMPLE[n as usize - 1]),
+            n if (PANEL_ITEM_BASE..PANEL_ITEM_BASE + 1000).contains(&n) => {
+                Some(ChromeAction::OpenPanelItem((n - PANEL_ITEM_BASE) as usize))
+            }
             n if (SELECT_TAB_BASE..CLOSE_TAB_BASE).contains(&n) => {
                 Some(ChromeAction::SelectTab((n - SELECT_TAB_BASE) as usize))
             }
@@ -87,6 +96,14 @@ impl ChromeAction {
             _ => None,
         }
     }
+}
+
+/// One row of a sidebar panel.
+pub struct PanelItem {
+    pub title: String,
+    pub url: String,
+    /// Second line (host, or when it was visited).
+    pub detail: String,
 }
 
 /// The three layouts from the design's responsive boards.
@@ -110,6 +127,7 @@ const ROW_HEIGHT: f32 = 42.0;
 /// than its minimum, so the address stays readable with many tabs.
 const ACTIVE_SEGMENT_GROW: f32 = 1.5;
 const ACTIVE_SEGMENT_MIN: f32 = 300.0;
+const PANEL_ROW_HEIGHT: f32 = 52.0;
 /// Indentation of tab rows under "N Tabs".
 const TAB_INDENT: f32 = 18.0;
 
@@ -125,6 +143,10 @@ pub struct Chrome {
     saved_section_open: bool,
 
     sidebar: NodeId,
+    sections: NodeId,
+    panel: NodeId,
+    panel_title: NodeId,
+    panel_list: NodeId,
     tab_group_label: NodeId,
     tab_group_chevron: NodeId,
     sidebar_tabs: NodeId,
@@ -142,6 +164,7 @@ pub struct Chrome {
     address_label: NodeId,
     pub address_field: NodeId,
     reload_icon: NodeId,
+    page_menu: NodeId,
     progress: NodeId,
     /// Inactive tab segments, rebuilt by `sync_tabs`.
     pills: Vec<NodeId>,
@@ -161,6 +184,14 @@ fn row(gap: f32) -> Style {
         align_items: AlignItems::CENTER,
         gap: Size { width: length(gap), height: length(0.0) },
         flex_shrink: 0.0,
+        ..Default::default()
+    }
+}
+
+fn column(gap: f32) -> Style {
+    Style {
+        flex_direction: FlexDirection::Column,
+        gap: Size { width: length(0.0), height: length(gap) },
         ..Default::default()
     }
 }
@@ -304,16 +335,18 @@ impl Chrome {
             );
             ui.add(button, Widget::icon(icon, 22.0), Style::default());
         }
+        // The normal sidebar content; a panel (bookmarks, history) replaces it when open.
+        let sections = ui.add(sidebar, Widget::container(), column(2.0));
         let (tab_group_label, tab_group_chevron) = sidebar_row(
             ui,
-            sidebar,
+            sections,
             ChromeAction::ToggleTabsSection,
             Icon::TabGroup,
             "Tabs",
             Some(Icon::ChevronDown),
         );
         let sidebar_tabs = ui.add(
-            sidebar,
+            sections,
             Widget::container(),
             Style {
                 flex_direction: FlexDirection::Column,
@@ -321,9 +354,9 @@ impl Chrome {
                 ..Default::default()
             },
         );
-        sidebar_row(ui, sidebar, ChromeAction::Private, Icon::Hand, "Private", Some(Icon::Lock));
+        sidebar_row(ui, sections, ChromeAction::Private, Icon::Hand, "Private", Some(Icon::Lock));
         let saved_header = ui.add(
-            sidebar,
+            sections,
             Widget::container().with_action(ChromeAction::ToggleSavedSection.id()).with_radius(CAPSULE),
             Style {
                 size: Size { width: auto(), height: length(ROW_HEIGHT) },
@@ -347,7 +380,7 @@ impl Chrome {
             Style::default(),
         );
         let saved_list = ui.add(
-            sidebar,
+            sections,
             Widget::container(),
             Style {
                 flex_direction: FlexDirection::Column,
@@ -358,6 +391,23 @@ impl Chrome {
         sidebar_row(ui, saved_list, ChromeAction::Bookmarks, Icon::Book, "Bookmarks", None);
         sidebar_row(ui, saved_list, ChromeAction::ReadingList, Icon::Glasses, "Reading List", None);
         sidebar_row(ui, saved_list, ChromeAction::History, Icon::History, "History", None);
+
+        let panel = ui.add(sidebar, Widget::container(), column(2.0));
+        let panel_header = ui.add(
+            panel,
+            Widget::container(),
+            Style { size: Size { width: auto(), height: length(ROW_HEIGHT) }, ..row(6.0) },
+        );
+        icon_button(
+            ui,
+            panel_header,
+            ChromeAction::ClosePanel,
+            Widget::icon(Icon::Back, 20.0).with_paint(Paint::Accent),
+            36.0,
+        );
+        let panel_title = ui.add_label(panel_header, "", TextStyle::Title2, shrinking_label());
+        let panel_list = ui.add(panel, Widget::container(), column(2.0));
+        ui.set_visible(panel, false);
 
         // ---- toolbar ----
         let bar = ui.add(
@@ -419,7 +469,8 @@ impl Chrome {
         ui.set_visible(address_field, false);
         let (_, reload_icon) =
             icon_button(ui, address, ChromeAction::ReloadOrStop, Widget::icon(Icon::Reload, 19.0), 34.0);
-        icon_button(ui, address, ChromeAction::PageMenu, Widget::icon(Icon::Menu, 20.0), 34.0);
+        let (page_menu, _) =
+            icon_button(ui, address, ChromeAction::PageMenu, Widget::icon(Icon::Menu, 20.0), 34.0);
         let progress = ui.add(
             address,
             Widget::progress(Paint::Accent),
@@ -458,6 +509,10 @@ impl Chrome {
             tabs_section_open: true,
             saved_section_open: true,
             sidebar,
+            sections,
+            panel,
+            panel_title,
+            panel_list,
             tab_group_label,
             tab_group_chevron: tab_group_chevron.unwrap_or(sidebar),
             sidebar_tabs,
@@ -473,6 +528,7 @@ impl Chrome {
             address_label,
             address_field,
             reload_icon,
+            page_menu,
             progress,
             pills: Vec::new(),
             overview,
@@ -523,6 +579,60 @@ impl Chrome {
         if let Some(w) = ui.widget_mut(chevron) {
             w.set_icon(if open { Icon::ChevronDown } else { Icon::ChevronRight });
         }
+    }
+
+    /// Shows a list (bookmarks, history) in place of the sidebar's sections. Rows send
+    /// [`ChromeAction::OpenPanelItem`] with their index.
+    pub fn show_panel(&mut self, ui: &mut Ui, title: &str, items: &[PanelItem], favicons: &Favicons) {
+        ui.set_text(self.panel_title, title);
+        ui.clear_children(self.panel_list);
+        if items.is_empty() {
+            let empty = ui.add_label(
+                self.panel_list,
+                "Nothing here yet",
+                TextStyle::Body,
+                Style { padding: padding(12.0, 12.0, 12.0, 12.0), ..Default::default() },
+            );
+            if let Some(w) = ui.widget_mut(empty) {
+                w.set_paint(Paint::Secondary);
+            }
+        }
+        for (i, item) in items.iter().enumerate() {
+            let row_node = ui.add(
+                self.panel_list,
+                Widget::container().with_action(ChromeAction::OpenPanelItem(i).id()).with_radius(14.0),
+                Style {
+                    size: Size { width: auto(), height: length(PANEL_ROW_HEIGHT) },
+                    padding: padding(10.0, 10.0, 0.0, 0.0),
+                    ..row(12.0)
+                },
+            );
+            favicon_node(ui, row_node, &item.url, 20.0, favicons);
+            let text = ui.add(
+                row_node,
+                Widget::container(),
+                Style {
+                    flex_grow: 1.0,
+                    flex_shrink: 1.0,
+                    min_size: Size { width: length(0.0), height: auto() },
+                    ..column(0.0)
+                },
+            );
+            let title =
+                if item.title.trim().is_empty() { display_host(&item.url) } else { item.title.clone() };
+            ui.add_label(text, &title, TextStyle::Body, shrinking_label());
+            let detail = ui.add_label(text, &item.detail, TextStyle::Footnote, shrinking_label());
+            if let Some(w) = ui.widget_mut(detail) {
+                w.set_paint(Paint::Secondary);
+            }
+        }
+        ui.set_visible(self.sections, false);
+        ui.set_visible(self.panel, true);
+    }
+
+    pub fn close_panel(&mut self, ui: &mut Ui) {
+        ui.set_visible(self.panel, false);
+        ui.set_visible(self.sections, true);
     }
 
     /// Positions the toolbar and sidebar for the window size (logical px).
@@ -588,6 +698,11 @@ impl Chrome {
     /// The active tab segment's frame (logical px), for attaching the suggestion list.
     pub fn address_frame(&self, ui: &Ui) -> Frame {
         ui.frame(self.address)
+    }
+
+    /// The page menu button's frame (logical px), for anchoring the menu.
+    pub fn page_menu_frame(&self, ui: &Ui) -> Frame {
+        ui.frame(self.page_menu)
     }
 
     pub fn page_fullscreen(&self) -> bool {

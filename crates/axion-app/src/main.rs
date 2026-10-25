@@ -1,7 +1,7 @@
 //! Axion — a Liquid Glass web browser.
 //!
 //! ```bash
-//! axion [url…] [--capture=out.png] [--size=1440x900] [--overview] [--address=TEXT]
+//! axion [url…] [--capture=out.png] [--size=1440x900] [--overview] [--address=TEXT] [--open=menu|history|bookmarks]
 //! ```
 //!
 //! Environment: `AXION_GPU=low` uses the integrated GPU, `AXION_OSR=software` disables GPU
@@ -14,6 +14,7 @@ mod chrome;
 mod favicons;
 mod gpu;
 mod input;
+mod menu;
 mod overview;
 mod suggestions;
 mod tabs;
@@ -50,6 +51,7 @@ fn main() -> Result<()> {
         urls: args.iter().filter(|a| !a.starts_with("--")).cloned().collect(),
         overview: args.iter().any(|a| a == "--overview"),
         address: args.iter().find_map(|a| a.strip_prefix("--address=")).map(str::to_owned),
+        open: args.iter().find_map(|a| a.strip_prefix("--open=")).map(str::to_owned),
         capture: args.iter().find_map(|a| a.strip_prefix("--capture=")).map(Into::into),
         capture_after: CAPTURE_AFTER,
         size: args.iter().find_map(|a| a.strip_prefix("--size=")).and_then(|s| {

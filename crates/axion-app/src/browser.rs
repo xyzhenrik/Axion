@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use axion_compositor::Icon;
 use axion_compositor::{Compositor, ImageDraw, Layer, Rect, Scene};
 use axion_config::{Action, Config, ConfigPaths, ConfigWatcher, Key, Keymap, Modifiers, ThemeMode};
 use axion_engine::cef::{CefEngine, CefOptions};
@@ -16,17 +17,23 @@ use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Fullscreen, Window};
 
-use crate::chrome::{Chrome, ChromeAction};
+use crate::chrome::{Chrome, ChromeAction, PanelItem};
 use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::input::{self, ClickCounter};
+use crate::menu::{Menu, MenuAction, MenuItem};
 use crate::overview::{Overview, OverviewAction};
 use crate::suggestions::{SuggestionList, suggest};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
+use crate::url::display_host;
 use crate::url::resolve_input;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
 /// How long before a `--capture --overview` screenshot the overview opens.
 const OVERVIEW_CAPTURE_LEAD: Duration = Duration::from_secs(2);
+/// History rows shown in the sidebar panel.
+const PANEL_HISTORY_LIMIT: usize = 100;
+/// Chromium's zoom levels are powers of this factor.
+const ZOOM_BASE: f64 = 1.2;
 /// Pixels per wheel notch.
 const LINE_SCROLL: f32 = 100.0;
 /// Upper bound for the page's frame rate.
@@ -48,6 +55,8 @@ pub struct Options {
     pub overview: bool,
     /// Type this into the address field shortly before `--capture` (for screenshots of it).
     pub address: Option<String>,
+    /// Open this UI (`menu`, `history`, `bookmarks`) shortly before `--capture`.
+    pub open: Option<String>,
     /// Save a screenshot here after `capture_after`, then quit.
     pub capture: Option<PathBuf>,
     pub capture_after: Duration,
@@ -67,6 +76,9 @@ pub struct Browser {
     chrome: Chrome,
     overview: Overview,
     suggestions: SuggestionList,
+    menu: Menu,
+    /// URLs of the open sidebar panel's rows, by index.
+    panel_urls: Vec<String>,
     favicons: Favicons,
     /// History and bookmarks; `None` if the database couldn't be opened (browsing still works).
     store: Option<axion_store::Store>,
@@ -96,6 +108,7 @@ pub struct Browser {
     /// When to open the overview for a `--capture --overview` screenshot.
     overview_at: Option<Instant>,
     address_at: Option<(Instant, String)>,
+    open_at: Option<(Instant, String)>,
 }
 
 impl Browser {
@@ -182,6 +195,7 @@ impl Browser {
         let queue = queue.clone();
         let chrome = Chrome::build(&mut ui, &config);
         let suggestions = SuggestionList::build(&mut ui);
+        let menu = Menu::build(&mut ui);
         let favicons = Favicons::new(device.clone(), queue.clone());
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
@@ -198,6 +212,8 @@ impl Browser {
             chrome,
             overview,
             suggestions,
+            menu,
+            panel_urls: Vec::new(),
             store,
             favicons,
             overview_query: String::new(),
@@ -219,6 +235,9 @@ impl Browser {
             tabs_changed: true,
             layout_size: Vec2::ZERO,
             capture: options.capture.clone().map(|path| (path, Instant::now() + options.capture_after)),
+            open_at: options.open.clone().filter(|_| options.capture.is_some()).map(|what| {
+                (Instant::now() + options.capture_after.saturating_sub(OVERVIEW_CAPTURE_LEAD), what)
+            }),
             address_at: options.address.clone().filter(|_| options.capture.is_some()).map(|text| {
                 (Instant::now() + options.capture_after.saturating_sub(OVERVIEW_CAPTURE_LEAD), text)
             }),
@@ -444,6 +463,91 @@ impl Browser {
         }
     }
 
+    fn show_panel(&mut self, panel: Panel) {
+        let Some(store) = &self.store else { return };
+        let items: Vec<PanelItem> = match panel {
+            Panel::Bookmarks => store
+                .bookmarks()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|b| PanelItem { detail: display_host(&b.url), title: b.title, url: b.url })
+                .collect(),
+            Panel::History => store
+                .recent_history(PANEL_HISTORY_LIMIT)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|h| PanelItem { detail: display_host(&h.url), title: h.title, url: h.url })
+                .collect(),
+            // Reading list entries arrive with Phase 6.
+            Panel::ReadingList => Vec::new(),
+        };
+        let title = match panel {
+            Panel::Bookmarks => "Bookmarks",
+            Panel::History => "History",
+            Panel::ReadingList => "Reading List",
+        };
+        self.panel_urls = items.iter().map(|i| i.url.clone()).collect();
+        self.chrome.show_panel(&mut self.ui, title, &items, &self.favicons);
+    }
+
+    fn open_page_menu(&mut self) {
+        if self.menu.is_open() {
+            self.menu.close(&mut self.ui);
+            return;
+        }
+        let Some(tab) = self.tabs.active() else { return };
+        let bookmarked = self.store.as_ref().and_then(|s| s.bookmark_for(&tab.url).ok().flatten()).is_some();
+        let zoom = format!("{:.0}%", ZOOM_BASE.powf(tab.zoom) * 100.0);
+        let items = vec![
+            if bookmarked {
+                MenuItem::new(Icon::Bookmark, "Remove Bookmark", MenuAction::RemoveBookmark)
+            } else {
+                MenuItem::new(Icon::Bookmark, "Add Bookmark", MenuAction::AddBookmark)
+            },
+            MenuItem::new(Icon::Share, "Copy Link", MenuAction::CopyLink),
+            MenuItem::new(Icon::ZoomIn, "Zoom In", MenuAction::ZoomIn),
+            MenuItem::new(Icon::Search, "Actual Size", MenuAction::ZoomReset).with_detail(zoom),
+            MenuItem::new(Icon::ZoomOut, "Zoom Out", MenuAction::ZoomOut),
+            MenuItem::new(Icon::Reload, "Reload Without Cache", MenuAction::HardReload),
+            MenuItem::new(Icon::Settings, "Settings", MenuAction::Settings),
+        ];
+        let anchor = self.chrome.page_menu_frame(&self.ui);
+        let width = self.logical_size().x;
+        self.menu.open(&mut self.ui, anchor, width, items);
+    }
+
+    fn menu_action(&mut self, action: MenuAction) {
+        let Some(tab) = self.tabs.active() else { return };
+        let (url, title) = (tab.url.clone(), tab.label());
+        match action {
+            MenuAction::AddBookmark => {
+                if let Some(store) = &self.store
+                    && let Err(e) = store.add_bookmark(&url, &title, unix_now())
+                {
+                    tracing::error!("adding a bookmark failed: {e}");
+                }
+            }
+            MenuAction::RemoveBookmark => {
+                if let Some(store) = &self.store
+                    && let Ok(Some(id)) = store.bookmark_for(&url)
+                    && let Err(e) = store.remove_bookmark(id)
+                {
+                    tracing::error!("removing a bookmark failed: {e}");
+                }
+            }
+            MenuAction::CopyLink => {
+                if let Some(clipboard) = &mut self.clipboard {
+                    let _ = clipboard.set_text(url);
+                }
+            }
+            MenuAction::ZoomIn => self.run(Action::ZoomIn),
+            MenuAction::ZoomOut => self.run(Action::ZoomOut),
+            MenuAction::ZoomReset => self.run(Action::ZoomReset),
+            MenuAction::HardReload => self.run(Action::HardReload),
+            MenuAction::Settings => self.run(Action::OpenSettings),
+        }
+    }
+
     fn edit_address(&mut self) {
         if let Some(view) = self.active_view() {
             self.engine.set_focus(view, false);
@@ -485,6 +589,13 @@ impl Browser {
                 UiEvent::Cancelled { node } if node == self.overview.search_field() => {
                     self.close_overview(self.tabs.active_index());
                 }
+                UiEvent::Clicked { action, .. } if self.menu.action(action).is_some() => {
+                    let action = self.menu.action(action);
+                    self.menu.close(&mut self.ui);
+                    if let Some(action) = action {
+                        self.menu_action(action);
+                    }
+                }
                 UiEvent::Clicked { action, .. } if SuggestionList::row_action(action).is_some() => {
                     let url = SuggestionList::row_action(action)
                         .and_then(|i| self.suggestions.get(i))
@@ -517,14 +628,22 @@ impl Browser {
                     }
                     Some(ChromeAction::ToggleTabsSection) => self.chrome.toggle_section(&mut self.ui, true),
                     Some(ChromeAction::ToggleSavedSection) => self.chrome.toggle_section(&mut self.ui, false),
-                    Some(
-                        action @ (ChromeAction::PageMenu
-                        | ChromeAction::NewTabGroup
-                        | ChromeAction::Private
-                        | ChromeAction::Bookmarks
-                        | ChromeAction::ReadingList
-                        | ChromeAction::History),
-                    ) => tracing::info!("{action:?} arrives in a later phase"),
+                    Some(ChromeAction::PageMenu) => self.open_page_menu(),
+                    Some(ChromeAction::Bookmarks) => self.show_panel(Panel::Bookmarks),
+                    Some(ChromeAction::History) => self.show_panel(Panel::History),
+                    Some(ChromeAction::ReadingList) => self.show_panel(Panel::ReadingList),
+                    Some(ChromeAction::ClosePanel) => {
+                        self.panel_urls.clear();
+                        self.chrome.close_panel(&mut self.ui);
+                    }
+                    Some(ChromeAction::OpenPanelItem(i)) => {
+                        if let Some(url) = self.panel_urls.get(i).cloned() {
+                            self.navigate_to(url);
+                        }
+                    }
+                    Some(action @ (ChromeAction::NewTabGroup | ChromeAction::Private)) => {
+                        tracing::info!("{action:?} arrives in a later phase");
+                    }
                     Some(ChromeAction::SelectTab(i)) => self.select_tab(i),
                     Some(ChromeAction::CloseTab(i)) => self.close_tab(i),
                     None => {}
@@ -842,6 +961,11 @@ impl Browser {
             _ => return,
         };
 
+        if pressed && self.menu.is_open() && !self.menu.contains(&self.ui, p) {
+            // A click outside only dismisses the menu.
+            self.menu.close(&mut self.ui);
+            return;
+        }
         if button == winit::event::MouseButton::Left {
             if pressed {
                 let (consumed, events) = self.ui.handle(UiInput::PointerDown);
@@ -886,6 +1010,10 @@ impl Browser {
     /// Returns `true` if the browser should quit.
     fn keyboard(&mut self, event: &winit::event::KeyEvent) -> bool {
         let pressed = event.state.is_pressed();
+        if pressed && self.menu.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.menu.close(&mut self.ui);
+            return false;
+        }
         if pressed
             && let Some(chord) = input::chord(event, self.modifiers)
             && let Some(action) = self.keymap.action_for(&chord)
@@ -962,6 +1090,15 @@ impl Browser {
         if self.overview_at.is_some_and(|at| now >= at) {
             self.overview_at = None;
             self.open_overview();
+        }
+        if let Some((_, what)) = self.open_at.take_if(|(at, _)| now >= *at) {
+            match what.as_str() {
+                "menu" => self.open_page_menu(),
+                "history" => self.show_panel(Panel::History),
+                "bookmarks" => self.show_panel(Panel::Bookmarks),
+                "settings" => self.run(Action::OpenSettings),
+                other => tracing::warn!("--open={other} is not a known view"),
+            }
         }
         if let Some((_, text)) = self.address_at.take_if(|(at, _)| now >= *at) {
             self.edit_address();
@@ -1096,6 +1233,13 @@ impl Browser {
     pub fn request_redraw(&self) {
         self.window.request_redraw();
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Panel {
+    Bookmarks,
+    History,
+    ReadingList,
 }
 
 /// Signals that `--capture` finished (not an error for the user).
