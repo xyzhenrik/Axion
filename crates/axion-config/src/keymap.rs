@@ -35,6 +35,13 @@ pub enum Action {
     ToggleSidebar,
     TabOverview,
     Find,
+    FindNext,
+    FindPrevious,
+    /// Paste into the page (only where Axion hands the clipboard to pages itself, i.e. on
+    /// Wayland; elsewhere the page handles its own Ctrl+V).
+    Paste,
+    /// Paste only the text, without formatting or images.
+    PastePlainText,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -89,6 +96,10 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::ToggleSidebar, "toggle_sidebar"),
     (Action::TabOverview, "tab_overview"),
     (Action::Find, "find"),
+    (Action::FindNext, "find_next"),
+    (Action::FindPrevious, "find_previous"),
+    (Action::Paste, "paste"),
+    (Action::PastePlainText, "paste_plain_text"),
     (Action::ZoomIn, "zoom_in"),
     (Action::ZoomOut, "zoom_out"),
     (Action::ZoomReset, "zoom_reset"),
@@ -341,6 +352,10 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::ToggleSidebar, &["Ctrl+Shift+L"]);
     bind(Action::TabOverview, &["Ctrl+Shift+\\"]);
     bind(Action::Find, &["Ctrl+F"]);
+    bind(Action::FindNext, &["Ctrl+G", "F3"]);
+    bind(Action::FindPrevious, &["Ctrl+Shift+G", "Shift+F3"]);
+    bind(Action::Paste, &["Ctrl+V", "Shift+Insert"]);
+    bind(Action::PastePlainText, &["Ctrl+Shift+V"]);
     bind(Action::ZoomIn, &["Ctrl++", "Ctrl+="]);
     bind(Action::ZoomOut, &["Ctrl+-"]);
     bind(Action::ZoomReset, &["Ctrl+0"]);

@@ -99,6 +99,7 @@ icons! {
     Person => "M12 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8zM4.5 20.5c.8-3.8 3.8-6 7.5-6s6.7 2.2 7.5 6",
     PersonAdd => "M10 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8zM3 20.5c.8-3.8 3.4-6 7-6 1.6 0 3 .4 4.2 1.2M18.5 14v6M15.5 17h6",
     ChevronUpDown => "M8 9.5l4-4 4 4M8 14.5l4 4 4-4",
+    ChevronUp => "M6 15l6-6 6 6",
 }
 
 /// Packs icon and weight into glyphon's custom glyph id.

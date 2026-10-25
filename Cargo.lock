@@ -425,6 +425,8 @@ dependencies = [
  "tracing-subscriber",
  "wgpu",
  "winit",
+ "wl-clipboard-rs",
+ "x11rb",
  "zbus",
  "zeroize",
 ]

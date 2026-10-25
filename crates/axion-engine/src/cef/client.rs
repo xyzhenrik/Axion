@@ -53,6 +53,7 @@ pub(super) struct ViewContext {
     pub frames: Rc<ViewFrames>,
     pub shared: Rc<Shared>,
     pub net: Arc<Network>,
+    pub drag: Rc<super::drag::ViewDrag>,
 }
 
 impl ViewContext {
@@ -228,6 +229,24 @@ wrap_render_handler! {
             let pixels = unsafe { std::slice::from_raw_parts(buffer, len) };
             self.ctx.upload(pixels, width as u32, height as u32);
         }
+
+        fn start_dragging(
+            &self,
+            browser: Option<&mut Browser>,
+            drag_data: Option<&mut DragData>,
+            allowed_ops: DragOperationsMask,
+            x: ::std::os::raw::c_int,
+            y: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            let (Some(host), Some(data)) = (browser.and_then(|b| b.host()), drag_data) else { return 0 };
+            self.ctx.drag.start(&host, data, allowed_ops, x, y).into()
+        }
+
+        fn update_drag_cursor(&self, browser: Option<&mut Browser>, operation: DragOperationsMask) {
+            let host = browser.as_ref().and_then(|b| b.host());
+            let cursor = self.ctx.drag.set_operation(host.as_ref(), operation);
+            self.ctx.emit(browser, EngineEvent::CursorChanged { view: self.ctx.view, cursor });
+        }
     }
 }
 
@@ -377,6 +396,31 @@ wrap_life_span_handler! {
     }
 }
 
+wrap_find_handler! {
+    pub(super) struct FindHandlerBuilder {
+        ctx: ViewContext,
+    }
+
+    impl FindHandler {
+        fn on_find_result(
+            &self,
+            browser: Option<&mut Browser>,
+            _identifier: ::std::os::raw::c_int,
+            count: ::std::os::raw::c_int,
+            _selection_rect: Option<&Rect>,
+            active_match_ordinal: ::std::os::raw::c_int,
+            final_update: ::std::os::raw::c_int,
+        ) {
+            self.ctx.emit(browser, EngineEvent::FindResult {
+                view: self.ctx.view,
+                active: active_match_ordinal.max(0) as u32,
+                count: count.max(0) as u32,
+                final_update: final_update != 0,
+            });
+        }
+    }
+}
+
 /// Receives a downloaded favicon.
 #[derive(Clone)]
 pub(super) struct FaviconRequest {
@@ -476,6 +520,7 @@ wrap_client! {
         life_span: LifeSpanHandler,
         request: RequestHandler,
         download: DownloadHandler,
+        find: FindHandler,
     }
 
     impl Client {
@@ -502,6 +547,10 @@ wrap_client! {
         fn download_handler(&self) -> Option<DownloadHandler> {
             Some(self.download.clone())
         }
+
+        fn find_handler(&self) -> Option<FindHandler> {
+            Some(self.find.clone())
+        }
     }
 }
 
@@ -513,6 +562,7 @@ pub(super) fn build_client(ctx: &ViewContext) -> Client {
         LifeSpanHandlerBuilder::new(ctx.clone()),
         build_request_handler(&ctx.net, ctx.view),
         super::download::build_download_handler(&ctx.shared.downloads),
+        FindHandlerBuilder::new(ctx.clone()),
     )
 }
 

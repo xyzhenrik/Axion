@@ -22,6 +22,8 @@ pub struct Config {
     pub downloads: Downloads,
     pub data: Data,
     pub passwords: Passwords,
+    pub find: Find,
+    pub clipboard: Clipboard,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -476,6 +478,29 @@ impl Default for Passwords {
             generator_length: 20,
             generator_symbols: true,
         }
+    }
+}
+
+/// Find on Page.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Find {
+    /// Match upper and lower case exactly (the find bar's "Aa" toggle).
+    pub match_case: bool,
+}
+
+/// Pasting into pages.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Clipboard {
+    /// Larger images and files on the clipboard are left out of a paste (MB). Only used where
+    /// Axion hands the clipboard to pages itself (Wayland).
+    pub max_paste_mb: u32,
+}
+
+impl Default for Clipboard {
+    fn default() -> Self {
+        Self { max_paste_mb: 64 }
     }
 }
 
