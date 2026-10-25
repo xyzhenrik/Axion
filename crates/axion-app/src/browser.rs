@@ -640,6 +640,9 @@ impl Browser {
                     if self.settings.category() == Category::Data {
                         self.settings_outcome(Outcome::DataPage);
                     }
+                    // Typing right away searches the settings.
+                    let events = self.ui.focus(self.settings.search_field());
+                    self.handle_ui_events(events);
                 }
             }
             Action::Find => {
@@ -1614,6 +1617,10 @@ impl Browser {
                     if let Some(i) = self.overview.first_match() {
                         self.close_overview(i);
                     }
+                }
+                UiEvent::Cancelled { node } if node == self.settings.search_field() => {
+                    // Escape clears the settings search (and leaves the field).
+                    self.ui.set_field_text(node, "");
                 }
                 UiEvent::Cancelled { node } if node == self.overview.search_field() => {
                     // Escape in the search field closes the search, not the overview.
@@ -2595,6 +2602,11 @@ impl Browser {
                         self.click_page(view, Vec2::new(x, y));
                     }
                 }
+                // Capture aid: search the open settings for "settings-search:TEXT".
+                query if query.starts_with("settings-search:") => {
+                    let field = self.settings.search_field();
+                    self.ui.set_field_text(field, &query["settings-search:".len()..]);
+                }
                 // Capture aid: pick tab N of the other group in the sidebar.
                 other if other.starts_with("other-tab:") => {
                     if let Some(i) = other.split(':').nth(1).and_then(|n| n.parse::<usize>().ok()) {
@@ -2731,6 +2743,7 @@ impl Browser {
                 Some((frame.texture.create_view(&Default::default()), size))
             });
         }
+        self.settings.poll_search(&mut self.ui, &self.config, &self.keymap);
         self.update_suggestions();
         self.ui.layout();
         if let Some(view) = self.active_view() {
