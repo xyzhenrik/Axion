@@ -48,6 +48,36 @@ const OVERVIEW_CAPTURE_LEAD: Duration = Duration::from_secs(2);
 /// Settings changes are written to disk once they've been still for this long.
 const CONFIG_SAVE_DELAY: Duration = Duration::from_millis(250);
 /// Saving the open tabs waits until they stop changing for this long.
+/// Frame times, logged at debug level every few seconds (`RUST_LOG=axion::browser=debug`).
+#[derive(Default)]
+struct FrameStats {
+    count: u32,
+    total: Duration,
+    worst: Duration,
+    since: Option<Instant>,
+    first_serial: Option<u64>,
+}
+
+impl FrameStats {
+    fn record(&mut self, took: Duration, page_serial: u64) {
+        let since = *self.since.get_or_insert_with(Instant::now);
+        let first = *self.first_serial.get_or_insert(page_serial);
+        self.count += 1;
+        self.total += took;
+        self.worst = self.worst.max(took);
+        if since.elapsed() >= Duration::from_secs(2) {
+            tracing::debug!(
+                fps = self.count as f32 / since.elapsed().as_secs_f32(),
+                avg_ms = self.total.as_secs_f32() * 1000.0 / self.count.max(1) as f32,
+                worst_ms = self.worst.as_secs_f32() * 1000.0,
+                page_fps = page_serial.saturating_sub(first) as f32 / since.elapsed().as_secs_f32(),
+                "frames"
+            );
+            *self = Self::default();
+        }
+    }
+}
+
 /// A click into a site player that should start it.
 struct SiteClick {
     view: ViewId,
@@ -133,6 +163,7 @@ pub struct Browser {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     site_click: Option<SiteClick>,
+    frame_stats: FrameStats,
     /// The tab whose media the Now Playing card and the desktop (MPRIS) show.
     now_playing: Option<ViewId>,
     mpris: Option<Mpris>,
@@ -313,6 +344,7 @@ impl Browser {
             instance,
             adapter: adapter.clone(),
             site_click: None,
+            frame_stats: FrameStats::default(),
             now_playing: None,
             mpris: if config.media.desktop_integration { Mpris::start() } else { None },
             memory: MemoryMonitor::start(Duration::from_secs_f32(
@@ -456,6 +488,23 @@ impl Browser {
         } else if previous != self.tabs.active().map(|t| t.view) || previous == Some(tab.view) {
             self.on_active_changed(None);
         }
+    }
+
+    /// Closes every private tab (leaving private browsing if it is shown).
+    fn close_private_tabs(&mut self) {
+        if self.private_mode {
+            self.toggle_private_mode();
+        }
+        for tab in std::mem::take(&mut self.parked).all() {
+            if self.pip.as_ref().is_some_and(|p| p.view == Some(tab.view)) {
+                self.end_pip(tab.view, None, false);
+            }
+            if self.now_playing == Some(tab.view) {
+                self.now_playing = None;
+            }
+            self.engine.close_view(tab.view);
+        }
+        self.tabs_changed = true;
     }
 
     fn select_tab(&mut self, index: usize) {
@@ -1196,7 +1245,8 @@ impl Browser {
     /// Shows or hides the lock screen and hides private tab titles while locked.
     fn update_lock(&mut self) {
         let has_lock = self.config.privacy.lock_private_tabs && self.lock.has_password();
-        self.chrome.set_private(&mut self.ui, self.private_mode, has_lock);
+        let hidden = has_lock && self.lock.is_locked();
+        self.chrome.set_private(&mut self.ui, self.private_mode, has_lock, hidden);
         let locked = self.is_locked();
         let page = locked.then(|| self.page_rect());
         if page == self.lock_shown {
@@ -1681,6 +1731,10 @@ impl Browser {
                         self.now_playing_command(axion_media::Action::Toggle)
                     }
                     Some(ChromeAction::SelectTab(i)) => self.select_tab(i),
+                    Some(ChromeAction::SelectOtherTab(i)) => {
+                        self.toggle_private_mode();
+                        self.select_tab(i);
+                    }
                     Some(ChromeAction::CloseTab(i)) => self.close_tab(i),
                     None => {}
                 },
@@ -1868,6 +1922,10 @@ impl Browser {
             }
             Outcome::Close => self.settings.close(&mut self.ui),
             Outcome::SetPassword(password) => {
+                // Changing the password ends the private session, like removing it.
+                if self.lock.has_password() {
+                    self.close_private_tabs();
+                }
                 if self.lock.set_password(self.store.as_ref(), Some(&password)) {
                     tracing::info!("private browsing password set");
                 }
@@ -1875,6 +1933,7 @@ impl Browser {
                 self.update_lock();
             }
             Outcome::RemovePassword => {
+                self.close_private_tabs();
                 self.lock.set_password(self.store.as_ref(), None);
                 self.settings.set_has_password(false);
                 self.update_lock();
@@ -2261,6 +2320,14 @@ impl Browser {
     // ---- drawing ----
 
     fn redraw(&mut self) -> Result<()> {
+        let started = Instant::now();
+        let result = self.redraw_frame();
+        let serial = self.active_view().and_then(|v| self.engine.frame(v)).map_or(0, |f| f.serial);
+        self.frame_stats.record(started.elapsed(), serial);
+        result
+    }
+
+    fn redraw_frame(&mut self) -> Result<()> {
         if self.logical_size() != self.layout_size {
             self.update_layout();
         }
@@ -2270,7 +2337,7 @@ impl Browser {
             self.session_changed = Instant::now();
             let normal_count = if self.private_mode { self.parked.len() } else { self.tabs.len() };
             self.chrome.set_normal_count(normal_count);
-            self.chrome.sync_tabs(&mut self.ui, &self.tabs, &self.favicons);
+            self.chrome.sync_tabs(&mut self.ui, &self.tabs, &self.parked, &self.favicons);
             let audio = self.tabs.active().map_or((false, false), |t| (t.playing_media, t.muted));
             self.chrome.set_audio(&mut self.ui, audio.0, audio.1);
             let level = self.tabs.active().map(|t| self.shields.level(&t.url));
@@ -2337,6 +2404,13 @@ impl Browser {
                     let mut parts = click.split(':').skip(1).filter_map(|n| n.parse::<f32>().ok());
                     if let (Some(x), Some(y), Some(view)) = (parts.next(), parts.next(), self.active_view()) {
                         self.click_page(view, Vec2::new(x, y));
+                    }
+                }
+                // Capture aid: pick tab N of the other group in the sidebar.
+                other if other.starts_with("other-tab:") => {
+                    if let Some(i) = other.split(':').nth(1).and_then(|n| n.parse::<usize>().ok()) {
+                        self.toggle_private_mode();
+                        self.select_tab(i);
                     }
                 }
                 // Capture aid: start Picture in Picture for the page's main video.
