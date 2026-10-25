@@ -1358,7 +1358,10 @@ impl Chrome {
             address.flex_grow = 1.0;
             address.max_size = Size { width: length(SEPARATE_ADDRESS_MAX), height: auto() };
             address.min_size = Size { width: length(0.0), height: auto() };
+            // On its own between the groups it is as tall as the buttons' capsules.
+            address.size.height = length(BAR_CAPSULE);
         } else {
+            address.size.height = length(SEGMENT_HEIGHT);
             address.flex_grow = ACTIVE_SEGMENT_GROW;
             address.max_size = Size { width: auto(), height: auto() };
             address.min_size = Size { width: length(ACTIVE_SEGMENT_MIN), height: auto() };
