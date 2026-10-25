@@ -22,6 +22,7 @@ use winit::window::{Fullscreen, Window};
 
 use crate::accounts::{AddAccountSheet, Relaunch, SheetAction};
 use crate::chrome::{Chrome, ChromeAction, MoveKey, NowPlaying, PanelItem, Section, Surface, TabItem};
+use crate::context_menu::ContextMenus;
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
 use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
@@ -51,6 +52,8 @@ use crate::tabdrag::{TabDrag, Target};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
 use crate::url::display_host;
 use crate::url::resolve_input;
+
+mod context;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
 /// How long before a `--capture --overview` screenshot the overview opens.
@@ -108,6 +111,8 @@ const SCROLL_SHOW_NEAR_TOP: f32 = 40.0;
 /// Time between the steps of a capture's `--open=a,b`.
 const OPEN_STEP_INTERVAL: Duration = Duration::from_millis(2500);
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
+/// How many of the saved session's tabs are pinned (they come first), in the profile's meta.
+const SESSION_PINNED_KEY: &str = "session_pinned_tabs";
 /// History rows shown in the sidebar panel.
 const PANEL_HISTORY_LIMIT: usize = 300;
 /// The History panel's clear button, and what it says while asking to confirm.
@@ -232,6 +237,12 @@ pub struct Browser {
     /// The plane the sidebar is drawn before (its place while nothing is locked).
     sidebar_before: Option<axion_ui::taffy::NodeId>,
     tab_drag: TabDrag,
+    /// Right-click menus of tabs and bookmarks, and the tab (view, private) one was opened for.
+    context_menus: ContextMenus,
+    context_tab: Option<(ViewId, bool)>,
+    /// The bookmarks bar's bookmarks (id, url, title), reloaded when `bookmarks_changed`.
+    bar_bookmarks: Vec<(i64, String, String)>,
+    bookmarks_changed: bool,
     /// What the overview lists while private tabs are locked: nothing.
     no_tabs: Tabs,
     config: Config,
@@ -395,6 +406,10 @@ impl Browser {
         let add_account = AddAccountSheet::build(&mut ui);
         // The dragged tab's lens above the chrome, and the lock screen's alert above all.
         let tab_drag = TabDrag::build(&mut ui);
+        let context_menus = ContextMenus::build(
+            &mut ui,
+            &[chrome.bar_node(), chrome.tab_strip_node(), chrome.sidebar_node(), chrome.bookmarks_bar_node()],
+        );
         let (_, alert_plane) = lock_screen.planes();
         let root = ui.root();
         let mut planes = ui.children(root);
@@ -466,6 +481,10 @@ impl Browser {
             pending_move: None,
             sidebar_before,
             tab_drag,
+            context_menus,
+            context_tab: None,
+            bar_bookmarks: Vec::new(),
+            bookmarks_changed: true,
             no_tabs: Tabs::default(),
             config,
             keymap,
@@ -1464,6 +1483,12 @@ impl Browser {
     /// they are shown. Returns false if there was nothing to restore.
     fn restore_session(&mut self) -> bool {
         let Some((saved, active)) = self.store.as_ref().and_then(|s| s.session().ok()) else { return false };
+        let pinned: usize = self
+            .store
+            .as_ref()
+            .and_then(|s| s.meta(SESSION_PINNED_KEY).ok().flatten())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
         if saved.is_empty() {
             return false;
         }
@@ -1477,6 +1502,7 @@ impl Browser {
             let (url, title) = (&saved_tab.url, &saved_tab.title);
             if max_age > 0
                 && i != active
+                && i >= pinned
                 && saved_tab.last_viewed > 0
                 && now - saved_tab.last_viewed > max_age
             {
@@ -1499,6 +1525,7 @@ impl Browser {
             };
             let mut tab = Tab::new(view, url);
             tab.title.clone_from(title);
+            tab.pinned = i < pinned;
             if saved_tab.last_viewed > 0 {
                 tab.last_viewed = saved_tab.last_viewed;
             }
@@ -1534,8 +1561,11 @@ impl Browser {
             })
             .collect();
         let active = normal.active_index();
+        let pinned = normal.pinned_count().to_string();
         if let Some(store) = &mut self.store
-            && let Err(e) = store.save_session(&tabs, active)
+            && let Err(e) = store
+                .save_session(&tabs, active)
+                .and_then(|()| store.set_meta(SESSION_PINNED_KEY, Some(&pinned)))
         {
             tracing::warn!("saving the session failed: {e}");
         }
@@ -1628,7 +1658,7 @@ impl Browser {
             .all()
             .iter()
             .enumerate()
-            .filter(|(i, t)| *i != active && t.last_viewed < cutoff && !t.playing_media)
+            .filter(|(i, t)| *i != active && t.last_viewed < cutoff && !t.playing_media && !t.pinned)
             .map(|(i, _)| i)
             .collect();
         for i in stale.into_iter().rev() {
@@ -1965,6 +1995,8 @@ impl Browser {
             MenuAction::AddAccount => return self.open_add_account(),
             MenuAction::AccountSettings => return self.open_account_settings(),
             MenuAction::LockAccount => return self.lock_account(),
+            MenuAction::Tab(command) => return self.tab_command(command),
+            MenuAction::Bookmark(command) => return self.bookmark_command(command),
             _ => {}
         }
         let Some(tab) = self.tabs.active() else { return };
@@ -1976,6 +2008,7 @@ impl Browser {
                 {
                     tracing::error!("adding a bookmark failed: {e}");
                 }
+                self.bookmarks_changed = true;
             }
             MenuAction::RemoveBookmark => {
                 if let Some(store) = &self.store
@@ -1984,6 +2017,7 @@ impl Browser {
                 {
                     tracing::error!("removing a bookmark failed: {e}");
                 }
+                self.bookmarks_changed = true;
             }
             MenuAction::CopyLink => {
                 if let Some(clipboard) = &mut self.clipboard {
@@ -2016,7 +2050,9 @@ impl Browser {
             MenuAction::SwitchAccount(_)
             | MenuAction::AddAccount
             | MenuAction::AccountSettings
-            | MenuAction::LockAccount => {}
+            | MenuAction::LockAccount
+            | MenuAction::Tab(_)
+            | MenuAction::Bookmark(_) => {}
         }
     }
 
@@ -2037,6 +2073,7 @@ impl Browser {
     /// `AXION_CAPTURE_FRAMES` it shows them on their way out).
     fn close_popups(&mut self) {
         self.menu.close(&mut self.ui, &self.config);
+        self.context_menus.close(&mut self.ui, &self.config);
         self.account_menu.close(&mut self.ui, &self.config);
         self.shields_popover.close(&mut self.ui, &self.config);
         self.downloads_popover.close(&mut self.ui, &self.config);
@@ -2325,6 +2362,14 @@ impl Browser {
                         self.menu_action(click.action);
                     }
                 }
+                UiEvent::Clicked { action, .. } if self.context_menus.owns(action) => {
+                    if let Some(click) = self.context_menus.click(&mut self.ui, &self.config, action) {
+                        if !click.keep_open {
+                            self.context_menus.close(&mut self.ui, &self.config);
+                        }
+                        self.menu_action(click.action);
+                    }
+                }
                 UiEvent::Clicked { action, node } if self.menu.owns(action) => {
                     self.menu_click_frame = Some(self.ui.frame(node));
                     if let Some(MenuClick { action, keep_open }) =
@@ -2479,6 +2524,10 @@ impl Browser {
                         self.select_tab(i);
                     }
                     Some(ChromeAction::CloseTab(i)) => self.close_tab(i),
+                    Some(ChromeAction::OpenBookmark(i)) => {
+                        self.bookmark_command(crate::context_menu::BookmarkCommand::Open(i))
+                    }
+                    Some(ChromeAction::BookmarksOverflow) => self.toggle_bookmarks_overflow(),
                     None => {}
                 },
                 UiEvent::Submitted { node, text } if node == self.chrome.address_field => {
@@ -3088,6 +3137,18 @@ impl Browser {
             self.account_menu.close(&mut self.ui, &self.config);
             return;
         }
+        if pressed && self.context_menus.is_open() && !self.context_menus.contains(&self.ui, p) {
+            self.context_menus.close(&mut self.ui, &self.config);
+            // A right click elsewhere opens that one's menu instead.
+            if button != winit::event::MouseButton::Right {
+                return;
+            }
+        }
+        // Right and middle clicks on tabs and bookmarks (never a tab drag: that is the left
+        // button's).
+        if pressed && button != winit::event::MouseButton::Left && self.secondary_click(button, p) {
+            return;
+        }
         if pressed
             && self.downloads_popover.is_open()
             && !self.downloads_popover.contains(&self.ui, p)
@@ -3196,6 +3257,10 @@ impl Browser {
         {
             self.lock_screen.close_alert(&mut self.ui);
             self.pending_move = None;
+            return false;
+        }
+        if pressed && self.context_menus.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.context_menus.close(&mut self.ui, &self.config);
             return false;
         }
         if pressed && self.menu.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
@@ -3316,6 +3381,7 @@ impl Browser {
         if self.logical_size() != self.layout_size {
             self.update_layout();
         }
+        let tabs_changed = self.tabs_changed;
         if std::mem::take(&mut self.tabs_changed) {
             self.update_now_playing();
             self.session_dirty = true;
@@ -3334,6 +3400,7 @@ impl Browser {
                 if title.is_empty() { "Axion".to_owned() } else { format!("Axion - {title}") }.as_str(),
             );
         }
+        self.sync_bookmarks_bar(tabs_changed);
         let now = Instant::now();
         if self.overview_at.is_some_and(|at| now >= at) {
             self.overview_at = None;
@@ -3444,6 +3511,36 @@ impl Browser {
                         self.mouse_button(ElementState::Pressed, winit::event::MouseButton::Left);
                         self.mouse_button(ElementState::Released, winit::event::MouseButton::Left);
                     }
+                }
+                // Capture aids: a right ("rtap:X:Y") or middle ("mtap:X:Y") click; pinning tab N
+                // ("pin-tab:N") and bookmarking all tabs, as their context menu rows do.
+                tap if tap.starts_with("rtap:") || tap.starts_with("mtap:") => {
+                    let n: Vec<f32> = tap.split(':').skip(1).filter_map(|v| v.parse().ok()).collect();
+                    let button = if tap.starts_with('r') {
+                        winit::event::MouseButton::Right
+                    } else {
+                        winit::event::MouseButton::Middle
+                    };
+                    if let [x, y] = n[..] {
+                        self.pointer_moved(Vec2::new(x, y));
+                        self.mouse_button(ElementState::Pressed, button);
+                        self.mouse_button(ElementState::Released, button);
+                    }
+                }
+                pin if pin.starts_with("pin-tab:") => {
+                    if let Some(view) = pin["pin-tab:".len()..]
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|i| self.tabs.all().get(i))
+                        .map(|t| t.view)
+                    {
+                        self.context_tab = Some((view, self.private_mode));
+                        self.tab_command(crate::context_menu::TabCommand::Pin);
+                    }
+                }
+                "bookmark-all" => {
+                    self.context_tab = self.active_view().map(|v| (v, self.private_mode));
+                    self.tab_command(crate::context_menu::TabCommand::BookmarkAll);
                 }
                 // Capture aid: click a sidebar or toolbar control by its action ("chrome:N").
                 chrome if chrome.starts_with("chrome:") => {
@@ -3663,6 +3760,7 @@ impl Browser {
         self.account_menu.track_hover(&mut self.ui, &self.config);
         self.menu.animate(&mut self.ui, dt);
         self.account_menu.animate(&mut self.ui, dt);
+        self.context_menus.animate(&mut self.ui, &self.config, dt);
         self.add_account.animate(&mut self.ui, dt);
         self.shields_popover.animate(&mut self.ui, dt);
         self.downloads_popover.animate(&mut self.ui, dt);
@@ -4000,6 +4098,8 @@ fn chrome_allowed_while_locked(action: ChromeAction) -> bool {
             | ChromeAction::DownloadsButton
             | ChromeAction::SelectTab(_)
             | ChromeAction::CloseTab(_)
+            | ChromeAction::OpenBookmark(_)
+            | ChromeAction::BookmarksOverflow
     )
 }
 
@@ -4065,6 +4165,9 @@ fn is_dark(config: &Config, window: &Window, desktop_dark: Option<bool>) -> bool
 
 #[cfg(test)]
 mod tests {
+    use crate::context_menu::CONTEXT_MENU_BASE;
+    use crate::menu::{ACCOUNT_MENU_BASE, MAX_ITEMS, PAGE_MENU_BASE};
+
     use super::*;
     use axion_ui::ActionId;
 
@@ -4083,6 +4186,8 @@ mod tests {
                 LockScreen::is_lock_action(id),
                 SettingsAction::from_id(id).is_some(),
                 PlayerControl::from_id(id).is_some(),
+                (CONTEXT_MENU_BASE..CONTEXT_MENU_BASE + 4 * MAX_ITEMS as u32).contains(&id.0),
+                (PAGE_MENU_BASE..ACCOUNT_MENU_BASE + MAX_ITEMS as u32).contains(&id.0),
             ];
             assert!(
                 claims.iter().filter(|&&c| c).count() <= 1,

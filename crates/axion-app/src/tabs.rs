@@ -39,6 +39,8 @@ pub struct Tab {
     pub last_viewed: i64,
     /// The page's media, as the bridge last reported it.
     pub media: Option<axion_media::PageMedia>,
+    /// Pinned tabs sit first, shown as just their favicon in the tab bar.
+    pub pinned: bool,
 }
 
 impl Tab {
@@ -61,6 +63,7 @@ impl Tab {
             playing_media: false,
             media: None,
             muted: false,
+            pinned: false,
             last_viewed: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as i64),
@@ -113,9 +116,26 @@ impl Tabs {
         self.tabs.iter_mut().find(|t| t.view == view)
     }
 
-    /// Inserts after the active tab (like Safari) and optionally activates it.
+    /// How many tabs are pinned (they are the first ones).
+    pub fn pinned_count(&self) -> usize {
+        self.tabs.iter().take_while(|t| t.pinned).count()
+    }
+
+    /// The indices a tab may take: pinned tabs stay among the pinned ones, the others after them.
+    fn allowed_range(&self, pinned: bool, len: usize) -> std::ops::RangeInclusive<usize> {
+        let pinned_count = self.pinned_count();
+        if pinned { 0..=pinned_count.min(len) } else { pinned_count.min(len)..=len }
+    }
+
+    /// Inserts after the active tab (like Safari), but never among the pinned tabs unless it is
+    /// pinned itself, and optionally activates it.
     pub fn insert(&mut self, tab: Tab, activate: bool) -> usize {
-        let index = if self.tabs.is_empty() { 0 } else { self.active + 1 };
+        let after = if self.tabs.is_empty() { 0 } else { self.active + 1 };
+        let range = self.allowed_range(tab.pinned, self.tabs.len());
+        let index = after.clamp(*range.start(), *range.end());
+        if !self.tabs.is_empty() && index <= self.active && !activate {
+            self.active += 1;
+        }
         self.tabs.insert(index, tab);
         if activate || self.tabs.len() == 1 {
             self.active = index;
@@ -143,7 +163,8 @@ impl Tabs {
     /// Inserts at `index` (clamped to the end) and optionally activates it; the active tab
     /// stays the same tab otherwise.
     pub fn insert_at(&mut self, index: usize, tab: Tab, activate: bool) -> usize {
-        let index = index.min(self.tabs.len());
+        let range = self.allowed_range(tab.pinned, self.tabs.len());
+        let index = index.clamp(*range.start(), *range.end());
         let was_empty = self.tabs.is_empty();
         self.tabs.insert(index, tab);
         if activate || was_empty {
@@ -172,7 +193,13 @@ impl Tabs {
         if from >= self.tabs.len() {
             return false;
         }
-        let to = to.min(self.tabs.len() - 1);
+        // Pinned tabs stay first: a tab only moves within its own part.
+        let pinned_count = self.pinned_count();
+        let to = if self.tabs[from].pinned {
+            to.min(pinned_count.saturating_sub(1))
+        } else {
+            to.clamp(pinned_count, self.tabs.len() - 1)
+        };
         if from == to {
             return false;
         }
@@ -183,9 +210,30 @@ impl Tabs {
         true
     }
 
+    /// Pins or unpins the tab at `index`: it moves to the end of the pinned tabs, or to just
+    /// after them. The active tab stays active. Returns its new index.
+    pub fn set_pinned(&mut self, index: usize, pinned: bool) -> Option<usize> {
+        let tab = self.tabs.get(index)?;
+        if tab.pinned == pinned {
+            return Some(index);
+        }
+        let active = self.tabs.get(self.active).map(|t| t.view);
+        let mut tab = self.tabs.remove(index);
+        tab.pinned = pinned;
+        let at = self.pinned_count();
+        self.tabs.insert(at, tab);
+        self.active = active.and_then(|v| self.tabs.iter().position(|t| t.view == v)).unwrap_or(0);
+        Some(at)
+    }
+
     /// The index of `view`'s tab.
     pub fn index_of(&self, view: ViewId) -> Option<usize> {
         self.tabs.iter().position(|t| t.view == view)
+    }
+
+    /// Whether closed tabs are remembered (for "reopen closed tab").
+    pub fn has_closed(&self) -> bool {
+        !self.closed.is_empty()
     }
 
     pub fn pop_closed(&mut self) -> Option<String> {
@@ -284,6 +332,34 @@ mod tests {
         // The active tab stays the same tab.
         assert_eq!(private.active().map(|t| t.view), Some(ViewId(0)));
         assert_eq!(private.index_of(ViewId(9)), Some(0));
+    }
+
+    #[test]
+    fn pinned_tabs_stay_first() {
+        let mut t = tabs(4);
+        t.select(2);
+        assert_eq!(t.set_pinned(2, true), Some(0));
+        assert_eq!(t.active().map(|t| t.view), Some(ViewId(2)));
+        assert_eq!(t.pinned_count(), 1);
+        // A new tab from the pinned one opens after the pinned tabs.
+        let i = t.insert(Tab::new(ViewId(9), "https://new.example"), false);
+        assert_eq!(i, 1);
+        assert_eq!(t.active().map(|t| t.view), Some(ViewId(2)));
+        // Unpinned tabs can't move in front of the pinned one, nor the pinned one behind them.
+        assert!(t.move_tab(3, 0));
+        assert_eq!(t.all()[0].view, ViewId(2));
+        assert_eq!(t.all()[1].view, ViewId(1));
+        assert!(!t.move_tab(0, 4));
+        assert_eq!(t.set_pinned(3, true), Some(1));
+        assert_eq!(t.pinned_count(), 2);
+        assert!(t.move_tab(1, 0));
+        // Unpinning puts it right after the pinned tabs.
+        let view = t.all()[0].view;
+        assert_eq!(t.set_pinned(0, false), Some(1));
+        assert_eq!(t.all()[1].view, view);
+        assert_eq!(t.pinned_count(), 1);
+        // Moved in from the other group: never among the pinned tabs.
+        assert_eq!(t.insert_at(0, Tab::new(ViewId(10), "https://x.example"), false), 1);
     }
 
     #[test]

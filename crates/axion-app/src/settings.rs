@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
-    ACCENT_SWATCHES, Action as KeyAction, ClearRange, Color, Config, Keymap, RemoveDownloads, ShieldLevel,
-    TabBarStyle, ThemeMode,
+    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, Keymap, RemoveDownloads,
+    ShieldLevel, TabBarStyle, ThemeMode,
 };
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
@@ -421,6 +421,7 @@ pub enum SettingsAction {
     ShieldLevel(ShieldLevel),
     UpdateFilterLists,
     TabBar(TabBarStyle),
+    BookmarksBar(BookmarksBar),
     CloseAfter(u32),
     AddTrustedSite,
     /// Index into `media.trusted_player_sites`.
@@ -464,6 +465,9 @@ const DESTRUCTIVE: Color = Color::rgb(0xD0362B);
 const CLOSE_AFTER: [(&str, u32); 4] =
     [("Manually", 0), ("After a Day", 1), ("After a Week", 7), ("After a Month", 30)];
 
+const BOOKMARKS_BAR: [(&str, BookmarksBar); 3] =
+    [("Always", BookmarksBar::Always), ("On Home Page", BookmarksBar::Home), ("Never", BookmarksBar::Never)];
+
 const SHIELD_LEVELS: [(&str, ShieldLevel); 3] =
     [("Off", ShieldLevel::Off), ("Standard", ShieldLevel::Standard), ("Aggressive", ShieldLevel::Aggressive)];
 
@@ -494,6 +498,9 @@ impl SettingsAction {
                     SettingsAction::TabBar(TabBarStyle::Compact) => 71,
                     SettingsAction::CloseAfter(days) => {
                         72 + CLOSE_AFTER.iter().position(|(_, d)| *d == days).unwrap_or(0) as u32
+                    }
+                    SettingsAction::BookmarksBar(mode) => {
+                        76 + BOOKMARKS_BAR.iter().position(|(_, m)| *m == mode).unwrap_or(0) as u32
                     }
                     SettingsAction::AddTrustedSite => 80,
                     SettingsAction::OpenPasswords => 85,
@@ -538,6 +545,7 @@ impl SettingsAction {
             70 => SettingsAction::TabBar(TabBarStyle::Separate),
             71 => SettingsAction::TabBar(TabBarStyle::Compact),
             72..=75 => SettingsAction::CloseAfter(CLOSE_AFTER[(n - 72) as usize].1),
+            76..=78 => SettingsAction::BookmarksBar(BOOKMARKS_BAR[(n - 76) as usize].1),
             80 => SettingsAction::AddTrustedSite,
             85 => SettingsAction::OpenPasswords,
             86 => SettingsAction::ImportPasswords,
@@ -1111,6 +1119,13 @@ impl SettingsSheet {
                 let current = CLOSE_AFTER.iter().position(|(_, d)| *d == config.tabs.close_after_days);
                 segmented(ui, row_node, &options, current);
                 self.note(ui, "Axion can close tabs you haven't looked at for a while.");
+                let row_node = self.row(ui, "Bookmarks bar");
+                let options: Vec<(&str, ActionId)> = BOOKMARKS_BAR
+                    .iter()
+                    .map(|(name, mode)| (*name, SettingsAction::BookmarksBar(*mode).id()))
+                    .collect();
+                let current = BOOKMARKS_BAR.iter().position(|(_, m)| *m == config.layout.bookmarks_bar);
+                segmented(ui, row_node, &options, current);
                 self.section(ui, "Memory");
                 for setting in [
                     Setting::FreezeAfter,
@@ -1829,6 +1844,10 @@ impl SettingsSheet {
             }
             SettingsAction::CloseAfter(days) => {
                 config.tabs.close_after_days = days;
+                Outcome::Changed
+            }
+            SettingsAction::BookmarksBar(mode) => {
+                config.layout.bookmarks_bar = mode;
                 Outcome::Changed
             }
             SettingsAction::AddTrustedSite => {

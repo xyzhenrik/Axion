@@ -13,6 +13,7 @@
 mod accounts;
 mod browser;
 mod chrome;
+mod context_menu;
 mod desktop;
 mod downloads;
 mod downloads_popover;
