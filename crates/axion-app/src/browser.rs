@@ -2607,9 +2607,15 @@ impl Browser {
                 }
                 step if step.starts_with("passwords-") && self.passwords.is_open() => {
                     let step = &step["passwords-".len()..];
-                    self.passwords.capture_step(&mut self.ui, &mut self.config, step);
+                    let outcome = self.passwords.capture_step(&mut self.ui, &mut self.config, step);
+                    self.passwords_outcome(outcome);
+                }
+                "prompt-fill" => {
+                    let outcome = self.passwords.capture_step(&mut self.ui, &mut self.config, "fill");
+                    self.passwords_outcome(outcome);
                 }
                 "save-prompt" | "fill-prompt" => {
+                    self.passwords.close(&mut self.ui);
                     let target = self.tabs.active().map(|t| (t.view, t.url.clone()));
                     if let Some((view, url)) = target {
                         if what == "save-prompt" {

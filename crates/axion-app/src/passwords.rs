@@ -338,7 +338,13 @@ fn field_box(ui: &mut Ui, parent: NodeId, placeholder: &str, layout: Style) -> N
     let boxed = ui.add(
         parent,
         Widget::container().with_background(Background::Fill(Paint::Label, 0.07)).with_radius(12.0),
-        Style { size: Size { width: auto(), height: length(38.0) }, padding: padding(12.0, 0.0), ..layout },
+        Style {
+            size: Size { width: auto(), height: length(38.0) },
+            padding: padding(12.0, 0.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::CENTER,
+            ..layout
+        },
     );
     ui.add_text_field(
         boxed,
@@ -969,15 +975,29 @@ impl Passwords {
         } else {
             format!("New {}", kind_name(kind))
         };
-        let header = self.header(ui, kind, &title, "");
+        self.header(ui, kind, &title, "");
         if item.is_none() {
+            let kinds = ui.add(
+                self.detail,
+                Widget::container(),
+                Style {
+                    flex_shrink: 0.0,
+                    margin: Rect {
+                        left: length(0.0),
+                        right: length(0.0),
+                        top: length(0.0),
+                        bottom: length(12.0),
+                    },
+                    ..row(0.0)
+                },
+            );
             let options: Vec<(&str, ActionId)> = Kind::ALL
                 .iter()
                 .enumerate()
                 .map(|(i, &k)| (kind_name(k), ActionId(KIND_BASE + i as u32)))
                 .collect();
             let current = Kind::ALL.iter().position(|&k| k == kind);
-            crate::settings::segmented(ui, header, &options, current);
+            crate::settings::segmented(ui, kinds, &options, current);
         }
         let group = self.group(ui);
         self.revealed.resize(fields(kind).len(), false);
@@ -1630,22 +1650,23 @@ impl Passwords {
 
     /// Capture aids: "first" shows the first item, "reveal" its secret, "edit" / "add" the
     /// editor, "generate" a password in it.
-    pub fn capture_step(&mut self, ui: &mut Ui, config: &mut Config, what: &str) {
+    pub fn capture_step(&mut self, ui: &mut Ui, config: &mut Config, what: &str) -> Outcome {
         let action = match what {
             "first" => {
                 if let Some(id) = self.vault.as_ref().and_then(|v| v.items().first()).map(|i| i.id.clone()) {
                     self.select(ui, config, Detail::View(id));
                 }
-                return;
+                return Outcome::Nothing;
             }
+            "fill" => ActionId(PROMPT_FILL_BASE),
             "reveal" => ActionId(REVEAL_BASE + 2),
             "edit" => EDIT,
             "add" => ADD,
             "generate" => GENERATE,
             "lock" => LOCK,
-            _ => return,
+            _ => return Outcome::Nothing,
         };
-        let _ = self.click(ui, config, &mut None, None, action);
+        self.click(ui, config, &mut None, None, action)
     }
 
     /// Capture aid: the save prompt as after signing in with new credentials.

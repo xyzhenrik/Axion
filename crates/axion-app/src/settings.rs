@@ -168,7 +168,7 @@ impl Setting {
             Setting::OfferToSavePasswords => "Offer to save passwords",
             Setting::AutofillPasswords => "Offer to fill saved passwords",
             Setting::PasswordsLockAfter => "Lock Passwords after",
-            Setting::ClearClipboardAfter => "Clear copied passwords from the clipboard after",
+            Setting::ClearClipboardAfter => "Clear clipboard after copying",
         }
     }
 
@@ -1135,7 +1135,8 @@ impl SettingsSheet {
                 pill_button(ui, row_node, "Import CSV", SettingsAction::ImportPasswords, false);
                 pill_button(ui, row_node, "Export Encrypted Copy", SettingsAction::ExportPasswords, false);
                 let note = self.passwords_status.clone().unwrap_or_else(|| {
-                    "Import reads CSV exports of Chrome, Firefox and Bitwarden. The export is an encrypted copy that opens with the same master password.".to_owned()
+                    "Imports CSV files from Chrome, Firefox or Bitwarden. Exports an encrypted copy."
+                        .to_owned()
                 });
                 self.note(ui, &note);
             }
