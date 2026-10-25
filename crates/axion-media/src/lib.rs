@@ -1,8 +1,10 @@
 //! The media bridge: a script injected into every frame that finds the page's `<video>` and
-//! `<audio>` elements (also in shadow DOM, iframes and never-attached `new Audio()`), hides
-//! their native controls, reports their state, and plays, seeks or fullscreens them on
-//! command. This crate holds the script and both directions of its protocol; the browser
-//! draws the controls.
+//! `<audio>` elements (also in shadow DOM, iframes and never-attached `new Audio()`), reports
+//! their state, and plays, seeks or fullscreens them on command. This crate holds the script
+//! and both directions of its protocol; the browser draws the controls.
+//!
+//! Axion's player only takes over videos in fullscreen; inline, pages keep their own controls,
+//! and trusted sites (YouTube, Twitch…) keep their player also in fullscreen.
 //!
 //! Page → browser: a console message `"\u{1}axion:" + JSON` ([`Message`]) from the top frame.
 //! Browser → page: JavaScript from [`Command::script`], run in the top frame.
@@ -14,28 +16,25 @@ pub const MARKER: &str = "\u{1}axion:";
 
 const SOURCE: &str = include_str!("bridge.js");
 
-/// Which page controls Axion's replace.
+/// How the bridge treats the page's players.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Replace {
-    /// `<video controls>`: the browser's built-in controls.
-    pub native_controls: bool,
-    /// Sites' own players: their UI is hidden around the video.
-    pub site_players: bool,
-    /// Sites (and their subdomains) whose players are kept as they are (YouTube, Twitch…).
+pub struct BridgeOptions {
+    /// Axion's player takes over videos in fullscreen (the built-in controls of a fullscreen
+    /// `<video>` are hidden).
+    pub own_fullscreen: bool,
+    /// Sites (and their subdomains) whose players are kept as they are, also in fullscreen.
     pub trusted_sites: Vec<String>,
 }
 
 /// The bridge script. `secret` keeps the frames' postMessage traffic apart from the page's.
-pub fn bridge_script(secret: &str, replace: &Replace) -> String {
+pub fn bridge_script(secret: &str, options: &BridgeOptions) -> String {
     let secret: String = secret.chars().filter(char::is_ascii_alphanumeric).collect();
-    let flag = |on: bool| if on { "true" } else { "false" };
-    let trusted: Vec<String> = replace.trusted_sites.iter().map(|s| s.trim().to_ascii_lowercase()).collect();
+    let trusted: Vec<String> = options.trusted_sites.iter().map(|s| s.trim().to_ascii_lowercase()).collect();
     let trusted = serde_json::to_string(&trusted).unwrap_or_else(|_| "[]".into());
     SOURCE
         .replace("__AXION_SECRET__", &secret)
         .replace("__AXION_TRUSTED__", &trusted)
-        .replace("__AXION_REPLACE_SITE__", flag(replace.site_players))
-        .replace("__AXION_REPLACE__", flag(replace.native_controls))
+        .replace("__AXION_OWN_FULLSCREEN__", if options.own_fullscreen { "true" } else { "false" })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,10 +81,8 @@ pub struct Player {
     pub captions: Vec<Caption>,
     /// The showing caption track, -1 for none.
     pub caption: i32,
-    /// It had native controls.
+    /// It has the browser's built-in controls (`<video controls>`).
     pub native: bool,
-    /// Axion's controls replace the page's (native ones or a site player's UI).
-    pub own: bool,
     /// It plays on a trusted site, whose player stays as it is (also in fullscreen).
     pub trusted: bool,
     /// It is (inside) the page's fullscreen element.
@@ -281,13 +278,11 @@ mod tests {
 
     #[test]
     fn script_is_filled_in() {
-        let replace =
-            Replace { native_controls: true, site_players: false, trusted_sites: vec!["YouTube.com".into()] };
-        let s = bridge_script("abc'; alert(1)//", &replace);
+        let options = BridgeOptions { own_fullscreen: true, trusted_sites: vec!["YouTube.com".into()] };
+        let s = bridge_script("abc'; alert(1)//", &options);
         assert!(s.contains(r#"})(location.hostname, ["youtube.com"]);"#));
         assert!(s.contains("var SECRET = 'abcalert1';"), "secret must be sanitised");
-        assert!(s.contains("var REPLACE_NATIVE = true;"));
-        assert!(s.contains("var REPLACE_SITE = false;"));
+        assert!(s.contains("var OWN_FULLSCREEN = true;"));
         assert!(!s.contains("__AXION_"));
     }
 

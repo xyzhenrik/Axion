@@ -37,6 +37,8 @@ Sliders behave the same way (the round knob becomes a lens while dragged).
   a speaker icon on the tab's segment; clicking it mutes the tab.
 - (YouTube's *desktop* site keeps its own player, Safari only shows the banner
   "„youtube.com" ist im Vollbildmodus". Axion keeps trusted sites' players — user decision.)
+- Axion uses this player only in fullscreen; inline, pages keep their own player (user
+  decision, 2026-10-25).
 
 ## Private browsing (locked)
 
