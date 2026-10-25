@@ -544,9 +544,10 @@ impl Passwords {
             },
         );
 
-        // The unlock / set-up card, centred over the dimmed browser.
+        // The unlock / set-up card, centred over the dimmed browser: its own plane, so it also
+        // lies above the sheet and its content when it asks again over it (card details).
         let alert_layer = ui.add(
-            root,
+            ui.root(),
             Widget::container(),
             Style {
                 position: Position::Absolute,
@@ -599,6 +600,7 @@ impl Passwords {
         capsule_button(ui, buttons, CANCEL_UNLOCK, "Cancel", false);
         let alert_button = capsule_button(ui, buttons, UNLOCK, "Unlock", true);
         ui.set_visible(root, false);
+        ui.set_visible(alert_layer, false);
         Self {
             vault,
             root,
@@ -763,6 +765,7 @@ impl Passwords {
         ui.set_field_text(self.alert_field, "");
         ui.set_field_text(self.confirm_field, "");
         ui.set_visible(self.root, false);
+        ui.set_visible(self.alert_layer, false);
     }
 
     pub fn resize(&mut self, ui: &mut Ui, window: Vec2) {
@@ -1998,6 +2001,21 @@ impl Passwords {
                     self.select(ui, config, Detail::View(id));
                 }
                 return Outcome::Nothing;
+            }
+            // The first card, and asking for its number (the password is asked again).
+            "card" => {
+                let card =
+                    self.vault.as_ref().and_then(|v| v.items().iter().find(|i| i.data.kind() == Kind::Card));
+                if let Some(id) = card.map(|i| i.id.clone()) {
+                    self.select(ui, config, Detail::View(id));
+                }
+                return Outcome::Nothing;
+            }
+            "reveal-card" => ActionId(REVEAL_BASE + 2),
+            // The sheet's alert, answered with the test vault's password.
+            "answer" => {
+                ui.set_field_text(self.alert_field, TEST_PASSWORD);
+                UNLOCK
             }
             "fill" => ActionId(PROMPT_FILL_BASE),
             // The unlock prompt, with the test vault's password typed in.

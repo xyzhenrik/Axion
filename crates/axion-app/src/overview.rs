@@ -123,6 +123,8 @@ pub struct Overview {
     private_segment: (NodeId, NodeId),
     normal_segment: (NodeId, NodeId),
     grid: NodeId,
+    /// A line in place of the cards (locked private tabs).
+    note: NodeId,
     ghost: NodeId,
     cards: Vec<Card>,
     fade: Animated<f32>,
@@ -222,6 +224,26 @@ impl Overview {
             },
         );
 
+        let note_row = ui.add(
+            backdrop,
+            Widget::container(),
+            Style {
+                position: Position::Absolute,
+                inset: insets(0.0, 0.0, GRID_TOP, 0.0),
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                gap: Size { width: length(0.0), height: length(LABEL_GAP * 2.0) },
+                ..Default::default()
+            },
+        );
+        ui.add(note_row, Widget::icon(Icon::Lock, 34.0).with_paint(Paint::Secondary), Style::default());
+        let note_label = ui.add_label(note_row, "", TextStyle::Title2, Style::default());
+        if let Some(w) = ui.widget_mut(note_label) {
+            w.set_paint(Paint::Secondary);
+        }
+        ui.set_visible(note_row, false);
+
         // Top bar (Safari): sidebar · [Private | N Tabs] · new tab, search, done.
         let header = ui.add(
             backdrop,
@@ -320,6 +342,7 @@ impl Overview {
             private_segment,
             normal_segment,
             grid,
+            note: note_label,
             ghost,
             cards: Vec::new(),
             fade: Animated::new(0.0, Spring::SMOOTH),
@@ -351,6 +374,14 @@ impl Overview {
             if let Some(w) = ui.widget_mut(label) {
                 w.set_paint(if selected { Paint::Label } else { Paint::Secondary });
             }
+        }
+    }
+
+    /// Shows `text` (with a lock) where the cards would be, or the cards again (`None`).
+    pub fn set_note(&mut self, ui: &mut Ui, text: Option<&str>) {
+        ui.set_text(self.note, text.unwrap_or_default());
+        if let Some(row) = ui.parent(self.note) {
+            ui.set_visible(row, text.is_some());
         }
     }
 

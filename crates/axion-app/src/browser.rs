@@ -228,6 +228,8 @@ pub struct Browser {
     /// A normal tab dropped into the locked private tabs: it moves there (to this index) once
     /// the account password is entered.
     pending_move: Option<(ViewId, usize)>,
+    /// The plane the sidebar is drawn before (its place while nothing is locked).
+    sidebar_before: Option<axion_ui::taffy::NodeId>,
     tab_drag: TabDrag,
     /// What the overview lists while private tabs are locked: nothing.
     no_tabs: Tabs,
@@ -394,6 +396,9 @@ impl Browser {
         planes.retain(|&n| n != alert_plane);
         planes.push(alert_plane);
         ui.set_children(root, &planes);
+        // Where the sidebar goes back to when the lock screen is gone (see `order_lock_planes`).
+        let sidebar_before =
+            planes.iter().position(|&n| n == chrome.sidebar_node()).and_then(|i| planes.get(i + 1)).copied();
 
         let mut browser = Self {
             window,
@@ -454,6 +459,7 @@ impl Browser {
             lock_screen,
             lock_shown: None,
             pending_move: None,
+            sidebar_before,
             tab_drag,
             no_tabs: Tabs::default(),
             config,
@@ -1648,7 +1654,27 @@ impl Browser {
         }
         let radius = self.config.layout.page_corner_radius;
         self.lock_screen.show(&mut self.ui, page, radius);
+        self.order_lock_planes(locked);
         self.tabs_changed = true;
+    }
+
+    /// The lock screen's cover lies above the toolbar and its popovers (nothing of a locked
+    /// page shows through them). While it is up, the sidebar comes above it, so a floating
+    /// sidebar still switches to the normal tabs; otherwise the sidebar stays below the bar.
+    fn order_lock_planes(&mut self, locked: bool) {
+        let root = self.ui.root();
+        let (cover, _) = self.lock_screen.planes();
+        let sidebar = self.chrome.sidebar_node();
+        let mut planes = self.ui.children(root);
+        let original = self.sidebar_before;
+        planes.retain(|&n| n != sidebar);
+        let at = if locked {
+            planes.iter().position(|&n| n == cover).map(|i| i + 1)
+        } else {
+            original.and_then(|next| planes.iter().position(|&n| n == next))
+        };
+        planes.insert(at.unwrap_or(0).min(planes.len()), sidebar);
+        self.ui.set_children(root, &planes);
     }
 
     /// The lock screen's password: unlocks the account (private tabs and Passwords).
@@ -1775,6 +1801,8 @@ impl Browser {
     fn sync_overview_mode(&mut self) {
         let normal = if self.private_mode { self.parked.len() } else { self.tabs.len() };
         self.overview.set_mode(&mut self.ui, self.private_mode, normal);
+        let note = self.is_locked().then_some("“Private Browsing” is locked");
+        self.overview.set_note(&mut self.ui, note);
     }
 
     fn show_panel(&mut self, panel: Panel) {
@@ -3896,6 +3924,7 @@ fn chrome_allowed_while_locked(action: ChromeAction) -> bool {
             | ChromeAction::Share
             | ChromeAction::NewTab
             | ChromeAction::MuteTab
+            | ChromeAction::DownloadsButton
             | ChromeAction::SelectTab(_)
             | ChromeAction::CloseTab(_)
     )

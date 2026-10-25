@@ -1354,7 +1354,7 @@ impl Chrome {
         self.private_hidden = hidden;
         self.update_tab_lists(ui);
         if let Some(w) = ui.widget_mut(self.private_row) {
-            w.background = if private { Background::Glass(GlassLevel::Thin) } else { Background::None };
+            w.background = if private { Background::Fill(Paint::Label, 0.08) } else { Background::None };
         }
         let locked = has_lock && hidden;
         ui.set_visible(self.private_lock, locked);
