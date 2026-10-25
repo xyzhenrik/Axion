@@ -7,21 +7,30 @@ pub fn resolve_input(input: &str, search_url: &str) -> Option<String> {
     if input.is_empty() {
         return None;
     }
-    let lower = input.to_ascii_lowercase();
-    let has_scheme = lower.contains("://")
-        || ["about:", "data:", "file:", "chrome:", "view-source:", "mailto:"]
-            .iter()
-            .any(|s| lower.starts_with(s));
-    if has_scheme {
+    if has_scheme(input) {
         return Some(input.to_owned());
     }
-    if !input.contains(char::is_whitespace) && looks_like_host(input) {
+    if is_address(input) {
         let host = input.split(['/', '?', '#']).next().unwrap_or(input);
         let local = host.starts_with("localhost") || host.starts_with("127.") || host.starts_with("[::1]");
         let scheme = if local { "http" } else { "https" };
         return Some(format!("{scheme}://{input}"));
     }
     Some(search_url.replace("{}", &encode_query(input)))
+}
+
+fn has_scheme(input: &str) -> bool {
+    let lower = input.to_ascii_lowercase();
+    lower.contains("://")
+        || ["about:", "data:", "file:", "chrome:", "view-source:", "mailto:"]
+            .iter()
+            .any(|s| lower.starts_with(s))
+}
+
+/// Whether address-field input is meant as an address (rather than a search).
+pub fn is_address(input: &str) -> bool {
+    let input = input.trim();
+    has_scheme(input) || (!input.contains(char::is_whitespace) && looks_like_host(input))
 }
 
 fn looks_like_host(input: &str) -> bool {

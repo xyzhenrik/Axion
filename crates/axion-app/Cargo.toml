@@ -17,6 +17,7 @@ axion-compositor.workspace = true
 axion-config.workspace = true
 axion-engine.workspace = true
 axion-physics.workspace = true
+axion-store.workspace = true
 axion-ui.workspace = true
 directories = "6"
 glam.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "axion-store"
+description = "Axion's local data: browsing history and bookmarks in SQLite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.41", features = ["bundled"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

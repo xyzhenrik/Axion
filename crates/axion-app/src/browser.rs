@@ -19,6 +19,7 @@ use winit::window::{Fullscreen, Window};
 use crate::chrome::{Chrome, ChromeAction};
 use crate::input::{self, ClickCounter};
 use crate::overview::{Overview, OverviewAction};
+use crate::suggestions::{SuggestionList, suggest};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
 use crate::url::resolve_input;
 
@@ -42,6 +43,8 @@ pub struct Options {
     pub urls: Vec<String>,
     /// Open the tab overview shortly before `--capture` (for screenshots of it).
     pub overview: bool,
+    /// Type this into the address field shortly before `--capture` (for screenshots of it).
+    pub address: Option<String>,
     /// Save a screenshot here after `capture_after`, then quit.
     pub capture: Option<PathBuf>,
     pub capture_after: Duration,
@@ -60,6 +63,9 @@ pub struct Browser {
     ui: Ui,
     chrome: Chrome,
     overview: Overview,
+    suggestions: SuggestionList,
+    /// History and bookmarks; `None` if the database couldn't be opened (browsing still works).
+    store: Option<axion_store::Store>,
     /// Search text the overview's cards were last built for.
     overview_query: String,
     last_frame: Instant,
@@ -83,6 +89,7 @@ pub struct Browser {
     capture: Option<(PathBuf, Instant)>,
     /// When to open the overview for a `--capture --overview` screenshot.
     overview_at: Option<Instant>,
+    address_at: Option<(Instant, String)>,
 }
 
 impl Browser {
@@ -142,11 +149,15 @@ impl Browser {
         if !accelerated {
             tracing::info!(driver = %info.driver, "using software paint for pages (set AXION_OSR=gpu to force GPU sharing)");
         }
+        let profile = profile_dir()?;
+        let store = axion_store::Store::open(&profile.join("axion.sqlite"))
+            .inspect_err(|e| tracing::error!("history unavailable: {e}"))
+            .ok();
         let engine = CefEngine::new(
             device.clone(),
             queue.clone(),
             CefOptions {
-                profile_dir: profile_dir()?,
+                profile_dir: profile,
                 accelerated,
                 render_node: if std::env::var_os("AXION_NO_RENDER_NODE").is_some() {
                     None
@@ -164,6 +175,7 @@ impl Browser {
         let compositor = Compositor::new(&device, &queue, format, &mut ui.fonts());
         let queue = queue.clone();
         let chrome = Chrome::build(&mut ui, &config);
+        let suggestions = SuggestionList::build(&mut ui);
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
 
@@ -178,6 +190,8 @@ impl Browser {
             ui,
             chrome,
             overview,
+            suggestions,
+            store,
             overview_query: String::new(),
             last_frame: Instant::now(),
             tabs: Tabs::default(),
@@ -196,6 +210,9 @@ impl Browser {
             tabs_changed: true,
             layout_size: Vec2::ZERO,
             capture: options.capture.clone().map(|path| (path, Instant::now() + options.capture_after)),
+            address_at: options.address.clone().filter(|_| options.capture.is_some()).map(|text| {
+                (Instant::now() + options.capture_after.saturating_sub(OVERVIEW_CAPTURE_LEAD), text)
+            }),
             overview_at: (options.overview && options.capture.is_some())
                 .then(|| Instant::now() + options.capture_after.saturating_sub(OVERVIEW_CAPTURE_LEAD)),
         };
@@ -428,6 +445,11 @@ impl Browser {
 
     fn navigate_from_address(&mut self, text: &str) {
         let Some(url) = resolve_input(text, &self.config.general.search_url) else { return };
+        self.navigate_to(url);
+    }
+
+    fn navigate_to(&mut self, url: String) {
+        self.suggestions.hide(&mut self.ui);
         if let Some(tab) = self.tabs.active_mut() {
             tab.url.clone_from(&url);
             let view = tab.view;
@@ -454,6 +476,14 @@ impl Browser {
                 UiEvent::Cancelled { node } if node == self.overview.search_field() => {
                     self.close_overview(self.tabs.active_index());
                 }
+                UiEvent::Clicked { action, .. } if SuggestionList::row_action(action).is_some() => {
+                    let url = SuggestionList::row_action(action)
+                        .and_then(|i| self.suggestions.get(i))
+                        .map(|s| s.url.clone());
+                    if let Some(url) = url {
+                        self.navigate_to(url);
+                    }
+                }
                 UiEvent::Clicked { action, .. } => match ChromeAction::from_id(action) {
                     Some(ChromeAction::ToggleSidebar) => self.run(Action::ToggleSidebar),
                     Some(ChromeAction::Back) => self.run(Action::Back),
@@ -473,15 +503,20 @@ impl Browser {
                     None => {}
                 },
                 UiEvent::Submitted { node, text } if node == self.chrome.address_field => {
-                    self.navigate_from_address(&text);
+                    match self.suggestions.selected() {
+                        Some(s) => self.navigate_to(s.url.clone()),
+                        None => self.navigate_from_address(&text),
+                    }
                 }
                 UiEvent::Cancelled { .. } => {
+                    self.suggestions.hide(&mut self.ui);
                     self.chrome.set_editing(&mut self.ui, false);
                     if let Some(view) = self.active_view() {
                         self.engine.set_focus(view, true);
                     }
                 }
                 UiEvent::FocusChanged { node: None } => {
+                    self.suggestions.hide(&mut self.ui);
                     self.chrome.set_editing(&mut self.ui, false);
                     self.tabs_changed = true;
                 }
@@ -515,12 +550,25 @@ impl Browser {
                     }
                 }
                 EngineEvent::TitleChanged { view, title } => {
+                    if let (Some(store), Some(tab)) =
+                        (&self.store, self.tabs.all().iter().find(|t| t.view == view))
+                        && let Err(e) = store.set_title(&tab.url, &title)
+                    {
+                        tracing::warn!("saving a title failed: {e}");
+                    }
                     if let Some(tab) = self.tabs.by_view_mut(view) {
                         tab.title = title;
                         self.tabs_changed = true;
                     }
                 }
                 EngineEvent::LoadingStateChanged { view, loading, can_go_back, can_go_forward } => {
+                    if !loading
+                        && let (Some(store), Some(tab)) =
+                            (&self.store, self.tabs.all().iter().find(|t| t.view == view))
+                        && let Err(e) = store.record_visit(&tab.url, &tab.title, unix_now())
+                    {
+                        tracing::warn!("saving history failed: {e}");
+                    }
                     if let Some(tab) = self.tabs.by_view_mut(view) {
                         tab.loading = loading;
                         tab.can_go_back = can_go_back;
@@ -795,6 +843,15 @@ impl Browser {
             return false;
         }
 
+        if pressed
+            && self.ui.focused() == Some(self.chrome.address_field)
+            && let Some(Key::Named(name)) = input::key(event)
+            && (name == "Up" || name == "Down")
+        {
+            self.suggestions.move_selection(&mut self.ui, if name == "Up" { -1 } else { 1 });
+            return false;
+        }
+
         if self.ui.focused().is_some() {
             if pressed {
                 if let Some(key) = input::key(event) {
@@ -844,6 +901,10 @@ impl Browser {
             self.overview_at = None;
             self.open_overview();
         }
+        if let Some((_, text)) = self.address_at.take_if(|(at, _)| now >= *at) {
+            self.edit_address();
+            self.ui.set_field_text(self.chrome.address_field, &text);
+        }
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
         if self.overview.is_open() {
@@ -859,6 +920,7 @@ impl Browser {
                 Some((frame.texture.create_view(&Default::default()), size))
             });
         }
+        self.update_suggestions();
         self.ui.layout();
         if let Some(view) = self.active_view() {
             self.engine.request_frame(view);
@@ -933,6 +995,24 @@ impl Browser {
         Ok(())
     }
 
+    /// Shows suggestions while the address field is being edited and differs from the page.
+    fn update_suggestions(&mut self) {
+        let editing = self.ui.focused() == Some(self.chrome.address_field) && !self.overview.is_open();
+        let text = self.ui.field_text(self.chrome.address_field).unwrap_or_default().to_owned();
+        let typed = editing && self.tabs.active().is_none_or(|t| t.url != text);
+        if !typed {
+            if self.suggestions.is_visible() {
+                self.suggestions.hide(&mut self.ui);
+            }
+            return;
+        }
+        let anchor = self.chrome.address_frame(&self.ui);
+        let (store, search_url) = (self.store.as_ref(), self.config.general.search_url.clone());
+        self.suggestions
+            .update(&mut self.ui, &text, anchor, || suggest(&text, store, &search_url, unix_now()));
+        self.suggestions.reposition(&mut self.ui, anchor);
+    }
+
     /// Background tabs render until loaded and painted once, then get hidden (throttled).
     fn snapshot_background_tabs(&mut self) {
         let active = self.active_view();
@@ -996,6 +1076,10 @@ fn load_keymap(paths: &ConfigPaths) -> Keymap {
         tracing::warn!("{} is bound to both {} and {}; using {}", c.chord, c.kept, c.ignored, c.kept);
     }
     keymap
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
 fn is_dark(config: &Config, window: &Window) -> bool {

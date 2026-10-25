@@ -97,6 +97,7 @@ pub struct Chrome {
     forward: NodeId,
     address_label: NodeId,
     pub address_field: NodeId,
+    address: NodeId,
     reload_icon: NodeId,
     progress: NodeId,
     pills: NodeId,
@@ -333,6 +334,7 @@ impl Chrome {
             forward,
             address_label,
             address_field,
+            address,
             reload_icon,
             progress,
             pills,
@@ -433,6 +435,11 @@ impl Chrome {
         let origin = Vec2::new(left, top);
         let size = window - origin - Vec2::splat(l.page_margin);
         Frame { origin, size: size.max(Vec2::ONE) }
+    }
+
+    /// The address field's frame (logical px), for attaching the suggestion list.
+    pub fn address_frame(&self, ui: &Ui) -> Frame {
+        ui.frame(self.address)
     }
 
     pub fn page_fullscreen(&self) -> bool {
