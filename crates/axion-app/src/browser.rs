@@ -3896,6 +3896,8 @@ impl Browser {
                     }
                 }
                 // Capture aid: start Picture in Picture for the page's main video.
+                // Capture aid: the window manager closes the PiP window (Alt+F4, its close button).
+                "pip-close" => self.pip_window_event(WindowEvent::CloseRequested),
                 "player-pip" => {
                     let target = self
                         .active_view()
