@@ -1098,7 +1098,7 @@ impl SettingsSheet {
                 group,
                 Widget::container().with_background(Background::Fill(Paint::Hairline, 1.0)),
                 Style {
-                    size: Size { width: auto(), height: length(0.5) },
+                    size: Size { width: auto(), height: length(1.0) },
                     flex_shrink: 0.0,
                     ..Default::default()
                 },
