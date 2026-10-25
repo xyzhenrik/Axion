@@ -93,7 +93,12 @@ wrap_scheme_handler_factory! {
             let own = from_own_page(frame, &url);
             if path.starts_with(API_PREFIX) && !own {
                 let from = frame.map(|f| (f.is_main() == 1, CefString::from(&f.url()).to_string()));
-                tracing::warn!(%url, ?from, "refused an axion:// API request from another page");
+                if from.as_ref().is_some_and(|(main, page)| *main && page.is_empty()) {
+                    // A new view whose page isn't committed browser-side yet; the page asks again.
+                    tracing::debug!(%url, "refused an axion:// API request before the page committed");
+                } else {
+                    tracing::warn!(%url, ?from, "refused an axion:// API request from another page");
+                }
                 return Some(handler(InternalResponse::forbidden()));
             }
             if path == MESSAGE_PATH {
