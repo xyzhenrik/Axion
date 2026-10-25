@@ -11,12 +11,14 @@ mod theme;
 mod widget;
 
 use std::cell::{RefCell, RefMut};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use axion_compositor::glyphon::{self, FontSystem};
 use axion_compositor::{Content, IconDraw, ImageDraw, Layer, Quad, Rect};
 use axion_config::{Key, Modifiers};
 use axion_glass::GlassShape;
+use axion_physics::{Animated, Spring};
 use glam::Vec2;
 pub use taffy;
 use taffy::prelude::*;
@@ -38,6 +40,9 @@ const SLIDER_KNOB: f32 = 24.0;
 const SLIDER_TRACK: f32 = 4.0;
 /// Below this opacity a widget (and its subtree) isn't drawn.
 const MIN_VISIBLE: f32 = 0.01;
+/// How much glass swells while a button on it is held.
+const PRESS_SCALE: f32 = 1.06;
+const PRESS_SETTLED: f32 = 0.001;
 /// Fading glass is grouped into this many opacity steps (each step is one glass pass).
 const GLASS_FADE_STEPS: f32 = 24.0;
 
@@ -103,6 +108,8 @@ pub struct Ui {
     pointer: Option<Vec2>,
     hover: Option<NodeId>,
     pressed: Option<NodeId>,
+    /// Glass that swells while a button on it is held, springing back on release.
+    press_scale: HashMap<NodeId, Animated<f32>>,
     focus: Option<NodeId>,
     /// A slider being dragged.
     dragging: Option<NodeId>,
@@ -129,6 +136,7 @@ impl Ui {
             pressed: None,
             focus: None,
             dragging: None,
+            press_scale: HashMap::new(),
             caret_epoch: Instant::now(),
             needs_layout: true,
         }
@@ -345,6 +353,12 @@ impl Ui {
                 }
                 None => *view = None,
             }
+        }
+    }
+
+    pub fn set_visual_frame(&mut self, node: NodeId, frame: Option<Rect>) {
+        if let Some(w) = self.tree.get_node_context_mut(node) {
+            w.visual_frame = frame;
         }
     }
 
@@ -630,6 +644,9 @@ impl Ui {
                     return (true, events);
                 }
                 let pressed = self.pressed.take();
+                if let Some(glass) = pressed.and_then(|n| self.glass_of(n)) {
+                    self.press_glass(glass, 1.0);
+                }
                 if let (Some(node), Some(p)) = (pressed, self.pointer)
                     && self.hit(p).and_then(|n| self.actionable(n)) == Some(node)
                     && let Some(action) = self.widget(node).and_then(|w| w.action)
@@ -696,6 +713,9 @@ impl Ui {
             events.extend(self.blur());
         }
         self.pressed = self.actionable(hit);
+        if let Some(glass) = self.pressed.and_then(|n| self.glass_of(n)) {
+            self.press_glass(glass, PRESS_SCALE);
+        }
         true
     }
 
@@ -767,6 +787,40 @@ impl Ui {
             }
             Key::Char(_) => {}
         }
+    }
+
+    /// The nearest glass at or above `node` (the surface a button sits on).
+    fn glass_of(&self, mut node: NodeId) -> Option<NodeId> {
+        loop {
+            if matches!(self.widget(node)?.background, Background::Glass(_)) {
+                return Some(node);
+            }
+            node = self.tree.parent(node)?;
+        }
+    }
+
+    fn press_glass(&mut self, glass: NodeId, scale: f32) {
+        let spring = self.press_spring();
+        let anim = self.press_scale.entry(glass).or_insert_with(|| Animated::new(1.0, spring));
+        anim.spring = spring;
+        anim.target = scale;
+    }
+
+    fn press_spring(&self) -> Spring {
+        let motion = &self.theme.config().motion;
+        if self.theme.config().glass.reduce_motion {
+            Spring::new(0.15, 1.0)
+        } else {
+            Spring::new(motion.snappy.response * motion.speed, motion.liquid.damping)
+        }
+    }
+
+    /// Advances UI animations (glass press feedback). Call once per frame.
+    pub fn animate(&mut self, dt: f32) {
+        self.press_scale.retain(|_, anim| {
+            anim.step(dt);
+            !(anim.target == 1.0 && anim.is_settled(PRESS_SETTLED))
+        });
     }
 
     // ---- painting ----
@@ -847,6 +901,14 @@ impl Ui {
         let frame = widget.frame;
         let px = Rect { origin: frame.origin * s, size: frame.size * s };
         let radius = widget.radius.min(frame.size.min_element() / 2.0) * s;
+        // The background may be animated separately from the layout (see `visual_frame`).
+        let (bg_px, bg_radius) = match widget.visual_frame {
+            Some(v) => (
+                Rect { origin: v.origin * s, size: v.size * s },
+                widget.radius.min(v.size.min_element() / 2.0) * s,
+            ),
+            None => (px, radius),
+        };
         // Disabled widgets dim themselves and everything inside them.
         let dim = inherited_alpha * if widget.enabled { 1.0 } else { DISABLED_ALPHA };
         let alpha = dim * fade;
@@ -859,15 +921,16 @@ impl Ui {
         let content = &mut stacks[depth].content;
         match widget.background {
             Background::Glass(level) => {
-                let shape = GlassShape::rounded_rect(px.center(), px.size * 0.5, radius);
+                let k = self.press_scale.get(&node).map_or(1.0, |a| a.value);
+                let shape = GlassShape::rounded_rect(bg_px.center(), bg_px.size * 0.5 * k, bg_radius * k);
                 stacks[depth + 1].glass.push(GlassItem { level, fade: quantize_fade(fade), shape });
                 child_depth = depth + 1;
             }
             Background::Fill(paint, opacity) => {
                 if let Some(shadow) = widget.shadow {
                     content.quads.push(Quad::shadow(
-                        px,
-                        radius,
+                        bg_px,
+                        bg_radius,
                         shadow.offset_y * s,
                         shadow.blur * s,
                         [0.0, 0.0, 0.0, shadow.opacity * fade],
@@ -875,7 +938,7 @@ impl Ui {
                 }
                 let mut color = theme.color(paint);
                 color[3] *= opacity * fade;
-                content.quads.push(Quad::fill(px, radius, color));
+                content.quads.push(Quad::fill(bg_px, bg_radius, color));
             }
             Background::None => {}
         }

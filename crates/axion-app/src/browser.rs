@@ -62,6 +62,9 @@ pub struct Options {
     pub address: Option<String>,
     /// Open this UI (`menu`, `history`, `bookmarks`) shortly before `--capture`.
     pub open: Option<String>,
+    /// How long before the capture `--open`/`--address`/`--overview` happen (default 2 s);
+    /// short leads catch animations mid-way.
+    pub lead: Option<Duration>,
     /// Save a screenshot here after `capture_after`, then quit.
     pub capture: Option<PathBuf>,
     pub capture_after: Duration,
@@ -211,8 +214,8 @@ impl Browser {
         let compositor = Compositor::new(&device, &queue, format, &mut ui.fonts());
         let queue = queue.clone();
         let chrome = Chrome::build(&mut ui, &config);
-        let suggestions = SuggestionList::build(&mut ui);
-        let menu = Menu::build(&mut ui);
+        let suggestions = SuggestionList::build(&mut ui, chrome.bar_node());
+        let menu = Menu::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
         let settings = SettingsSheet::build(&mut ui);
         let lock = PrivateLock::load(store.as_ref());
@@ -264,13 +267,23 @@ impl Browser {
             layout_size: Vec2::ZERO,
             capture: options.capture.clone().map(|path| (path, Instant::now() + options.capture_after)),
             open_at: options.open.clone().filter(|_| options.capture.is_some()).map(|what| {
-                (Instant::now() + options.capture_after.saturating_sub(OVERVIEW_CAPTURE_LEAD), what)
+                (
+                    Instant::now()
+                        + options.capture_after.saturating_sub(options.lead.unwrap_or(OVERVIEW_CAPTURE_LEAD)),
+                    what,
+                )
             }),
             address_at: options.address.clone().filter(|_| options.capture.is_some()).map(|text| {
-                (Instant::now() + options.capture_after.saturating_sub(OVERVIEW_CAPTURE_LEAD), text)
+                (
+                    Instant::now()
+                        + options.capture_after.saturating_sub(options.lead.unwrap_or(OVERVIEW_CAPTURE_LEAD)),
+                    text,
+                )
             }),
-            overview_at: (options.overview && options.capture.is_some())
-                .then(|| Instant::now() + options.capture_after.saturating_sub(OVERVIEW_CAPTURE_LEAD)),
+            overview_at: (options.overview && options.capture.is_some()).then(|| {
+                Instant::now()
+                    + options.capture_after.saturating_sub(options.lead.unwrap_or(OVERVIEW_CAPTURE_LEAD))
+            }),
         };
         browser.update_layout();
         let mut urls = options.urls;
@@ -455,7 +468,7 @@ impl Browser {
                 if self.settings.is_open() {
                     self.settings.close(&mut self.ui);
                 } else {
-                    self.menu.close(&mut self.ui);
+                    self.menu.close(&mut self.ui, &self.config);
                     self.settings.set_has_password(self.lock.has_password());
                     let window = self.logical_size();
                     self.settings.open(&mut self.ui, &self.config, &self.keymap, window);
@@ -480,8 +493,8 @@ impl Browser {
         }
         std::mem::swap(&mut self.tabs, &mut self.parked);
         self.private_mode = !self.private_mode;
-        self.menu.close(&mut self.ui);
-        self.suggestions.hide(&mut self.ui);
+        self.menu.close(&mut self.ui, &self.config);
+        self.suggestions.hide(&mut self.ui, &self.config);
         if self.tabs.is_empty() {
             let home = self.config.general.homepage.clone();
             if let Err(e) = self.open_tab(&home, true) {
@@ -602,7 +615,7 @@ impl Browser {
 
     fn open_page_menu(&mut self) {
         if self.menu.is_open() {
-            self.menu.close(&mut self.ui);
+            self.menu.close(&mut self.ui, &self.config);
             return;
         }
         let Some(tab) = self.tabs.active() else { return };
@@ -623,7 +636,7 @@ impl Browser {
         ];
         let anchor = self.chrome.page_menu_frame(&self.ui);
         let width = self.logical_size().x;
-        self.menu.open(&mut self.ui, anchor, width, items);
+        self.menu.open(&mut self.ui, &self.config, anchor, width, items);
     }
 
     fn menu_action(&mut self, action: MenuAction) {
@@ -672,7 +685,7 @@ impl Browser {
     }
 
     fn navigate_to(&mut self, url: String) {
-        self.suggestions.hide(&mut self.ui);
+        self.suggestions.hide(&mut self.ui, &self.config);
         if let Some(tab) = self.tabs.active_mut() {
             tab.url.clone_from(&url);
             let view = tab.view;
@@ -726,7 +739,7 @@ impl Browser {
                 UiEvent::Submitted { node, .. } if node == self.lock_screen.field() => self.try_unlock(),
                 UiEvent::Clicked { action, .. } if self.menu.action(action).is_some() => {
                     let action = self.menu.action(action);
-                    self.menu.close(&mut self.ui);
+                    self.menu.close(&mut self.ui, &self.config);
                     if let Some(action) = action {
                         self.menu_action(action);
                     }
@@ -789,14 +802,14 @@ impl Browser {
                     }
                 }
                 UiEvent::Cancelled { .. } => {
-                    self.suggestions.hide(&mut self.ui);
+                    self.suggestions.hide(&mut self.ui, &self.config);
                     self.chrome.set_editing(&mut self.ui, false);
                     if let Some(view) = self.active_view() {
                         self.engine.set_focus(view, true);
                     }
                 }
                 UiEvent::FocusChanged { node: None } => {
-                    self.suggestions.hide(&mut self.ui);
+                    self.suggestions.hide(&mut self.ui, &self.config);
                     self.chrome.set_editing(&mut self.ui, false);
                     self.tabs_changed = true;
                 }
@@ -1148,7 +1161,7 @@ impl Browser {
 
         if pressed && self.menu.is_open() && !self.menu.contains(&self.ui, p) {
             // A click outside only dismisses the menu.
-            self.menu.close(&mut self.ui);
+            self.menu.close(&mut self.ui, &self.config);
             return;
         }
         if button == winit::event::MouseButton::Left {
@@ -1204,7 +1217,7 @@ impl Browser {
             return false;
         }
         if pressed && self.menu.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
-            self.menu.close(&mut self.ui);
+            self.menu.close(&mut self.ui, &self.config);
             return false;
         }
         if pressed
@@ -1307,6 +1320,10 @@ impl Browser {
         }
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
+        self.ui.animate(dt);
+        self.chrome.animate(&mut self.ui, dt);
+        self.menu.animate(&mut self.ui, dt);
+        self.suggestions.animate(&mut self.ui, dt);
         if self.overview.is_open() {
             let query = self.ui.field_text(self.overview.search_field()).unwrap_or_default().to_owned();
             if query != self.overview_query {
@@ -1403,14 +1420,15 @@ impl Browser {
         let typed = editing && self.tabs.active().is_none_or(|t| t.url != text);
         if !typed {
             if self.suggestions.is_visible() {
-                self.suggestions.hide(&mut self.ui);
+                self.suggestions.hide(&mut self.ui, &self.config);
             }
             return;
         }
         let anchor = self.chrome.address_frame(&self.ui);
         let (store, search_url) = (self.store.as_ref(), self.config.general.search_url.clone());
-        self.suggestions
-            .update(&mut self.ui, &text, anchor, || suggest(&text, store, &search_url, unix_now()));
+        self.suggestions.update(&mut self.ui, &self.config, &text, anchor, || {
+            suggest(&text, store, &search_url, unix_now())
+        });
         self.suggestions.reposition(&mut self.ui, anchor);
     }
 

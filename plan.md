@@ -152,11 +152,14 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [x] Sidebar (overlay + docked), responsive breakpoints.
 
 ### Phase 3 — Liquid Glass integration
-- [ ] Port playground shaders into the compositor; all UI uses glass material.
-- [ ] Merging between UI elements, drag stretch, fling, spring-back.
-- [ ] Adaptive tint/legibility; Reduce Transparency/Motion; perf mode. *(Phase 1 already flips
-  the chrome light/dark from a GPU luminance probe of the page edge.)*
-- [ ] Perf budget: 120 fps at 1440p on integrated GPU.
+- [x] Glass renderer in the compositor; all chrome uses the glass material (thin/regular/thick).
+- [x] Liquid motion in the real UI: page menu and suggestions drip out of the toolbar's glass
+  and back (design's liquid spring), glass swells under a pressed button, floating sidebar
+  slides on a spring, overview zoom; all honour Reduce Motion.
+- [x] Adaptive legibility (light/dark chrome from the page's top colour); Reduce Transparency.
+- [ ] Drag a tab pill: stretch, reorder, pull out into its own glass droplet; fling.
+- [ ] Performance mode for weak GPUs, and measuring the full app (not just the playground)
+  against the 120 fps / iGPU budget.
 
 ### Phase 4 — Shields
 - [ ] adblock-rust request interception via CEF `ResourceRequestHandler`.

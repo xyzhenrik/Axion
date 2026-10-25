@@ -9,6 +9,7 @@
 
 use axion_compositor::{Icon, IconWeight, Rect as Frame};
 use axion_config::{Color, Config, SidebarMode};
+use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{
     ActionId, Align, Background, CAPSULE, GlassLevel, Paint, Shadow, TextStyle, Ui, UiEvent, Widget,
@@ -128,6 +129,9 @@ const ROW_HEIGHT: f32 = 42.0;
 const ACTIVE_SEGMENT_GROW: f32 = 1.5;
 const ACTIVE_SEGMENT_MIN: f32 = 300.0;
 const PANEL_ROW_HEIGHT: f32 = 52.0;
+/// Extra distance the sidebar slides past the window edge, so its shadow leaves too.
+const SLIDE_OVERSHOOT: f32 = 24.0;
+const SLIDE_SETTLED: f32 = 0.3;
 /// Indentation of tab rows under "N Tabs".
 const TAB_INDENT: f32 = 18.0;
 
@@ -143,6 +147,8 @@ pub struct Chrome {
     saved_section_open: bool,
 
     sidebar: NodeId,
+    /// Horizontal offset of the sidebar (0 = in place), animated.
+    slide: Animated<f32>,
     private_row: NodeId,
     private_lock: NodeId,
     locked: bool,
@@ -513,6 +519,7 @@ impl Chrome {
             tabs_section_open: true,
             saved_section_open: true,
             sidebar,
+            slide: Animated::new(0.0, Spring::SMOOTH),
             private_row: ui.parent(private_label).unwrap_or(sidebar),
             private_lock: private_lock.unwrap_or(sidebar),
             locked: false,
@@ -662,6 +669,20 @@ impl Chrome {
         }
     }
 
+    /// Advances the sidebar's slide. Call every frame.
+    pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
+        if self.slide.is_settled(SLIDE_SETTLED) {
+            if self.slide.target < 0.0 && ui.is_visible(self.sidebar) {
+                ui.set_visible(self.sidebar, false);
+            }
+            return;
+        }
+        self.slide.step(dt);
+        let mut side = ui.style(self.sidebar);
+        side.inset.left = length(self.slide.value);
+        ui.set_style(self.sidebar, side);
+    }
+
     /// Positions the toolbar and sidebar for the window size (logical px).
     pub fn apply_layout(&mut self, ui: &mut Ui, config: &Config, window: Vec2) {
         let l = &config.layout;
@@ -682,10 +703,24 @@ impl Chrome {
         bar_style.display = if self.page_fullscreen { Display::None } else { Display::Flex };
         ui.set_style(self.bar, bar_style);
 
+        // The sidebar slides in and out on a spring (see `animate`).
+        let hidden_x = -(l.sidebar_width + SLIDE_OVERSHOOT);
+        if show_sidebar && !ui.is_visible(self.sidebar) {
+            self.slide.snap(hidden_x);
+        }
+        self.slide.target = if show_sidebar { 0.0 } else { hidden_x };
+        let motion = &config.motion;
+        self.slide.spring = if config.glass.reduce_motion {
+            Spring::new(0.2, 1.0)
+        } else {
+            Spring::new(motion.smooth.response * motion.speed, motion.smooth.damping)
+        };
         let mut side = ui.style(self.sidebar);
         side.size = Size { width: length(l.sidebar_width), height: auto() };
-        side.inset = Rect { left: length(0.0), right: auto(), top: length(0.0), bottom: length(0.0) };
-        side.display = if show_sidebar { Display::Flex } else { Display::None };
+        side.inset =
+            Rect { left: length(self.slide.value), right: auto(), top: length(0.0), bottom: length(0.0) };
+        side.display =
+            if show_sidebar || ui.is_visible(self.sidebar) { Display::Flex } else { Display::None };
         ui.set_style(self.sidebar, side);
         if let Some(w) = ui.widget_mut(self.sidebar) {
             // Docked it's a panel beside the page; floating it needs more separation.
@@ -720,6 +755,11 @@ impl Chrome {
         let origin = Vec2::new(left, top);
         let size = window - origin - Vec2::splat(l.page_margin);
         Frame { origin, size: size.max(Vec2::ONE) }
+    }
+
+    /// The toolbar node: popovers that should flow out of the bar's glass live in it.
+    pub fn bar_node(&self) -> NodeId {
+        self.bar
     }
 
     /// The active tab segment's frame (logical px), for attaching the suggestion list.

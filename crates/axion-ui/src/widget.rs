@@ -126,8 +126,11 @@ pub struct Widget {
     pub enabled: bool,
     /// Draws the widget in its "on" state (e.g. the sidebar toggle while the sidebar is open).
     pub selected: bool,
-    /// Fades the widget and everything inside it (0–1). Glass shrinks away instead of fading.
+    /// Fades the widget and everything inside it (0–1); glass loses blur, tint and light.
     pub opacity: f32,
+    /// Draws the widget's own background (glass, fill, shadow) in this rectangle (absolute,
+    /// logical px) instead of its layout frame — for animating glass without relayout.
+    pub visual_frame: Option<Rect>,
     /// Absolute frame in logical pixels, updated by layout.
     pub(crate) frame: Rect,
 }
@@ -143,6 +146,7 @@ impl Widget {
             enabled: true,
             selected: false,
             opacity: 1.0,
+            visual_frame: None,
             frame: Rect::default(),
         }
     }

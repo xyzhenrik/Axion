@@ -1,15 +1,23 @@
-//! A glass popover menu anchored to a button (the page menu ≡). Clicking outside or pressing
-//! Escape closes it.
+//! A glass popover menu (the page menu ≡) that drips out of its button. It lives in the
+//! toolbar's plane with the toolbar's glass, so it visibly flows out of the bar. Clicking
+//! outside or pressing Escape closes it.
 
 use axion_compositor::{Icon, Rect as Frame};
+use axion_config::Config;
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
+use glam::Vec2;
+
+use crate::drip::{Drip, Phase};
 
 const ITEM_BASE: u32 = 6000;
 const WIDTH: f32 = 280.0;
 const ROW_HEIGHT: f32 = 44.0;
-const GAP_BELOW_ANCHOR: f32 = 10.0;
-const RADIUS: f32 = 20.0;
+const PADDING: f32 = 6.0;
+const GAP_BELOW_ANCHOR: f32 = 14.0;
+const RADIUS: f32 = 22.0;
+/// The frosted plate under the rows keeps text legible over any page.
+const PLATE_OPACITY: f32 = 0.55;
 
 /// What a page menu entry does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,43 +52,61 @@ impl MenuItem {
 }
 
 pub struct Menu {
+    parent: NodeId,
     root: NodeId,
+    plate: NodeId,
     actions: Vec<MenuAction>,
+    drip: Drip,
 }
 
 impl Menu {
-    pub fn build(ui: &mut Ui) -> Self {
+    /// `parent` is the toolbar, so the menu's glass merges with it.
+    pub fn build(ui: &mut Ui, parent: NodeId) -> Self {
         let root = ui.add(
-            ui.root(),
-            Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(RADIUS),
+            parent,
+            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(RADIUS),
             Style {
                 position: Position::Absolute,
                 size: Size { width: length(WIDTH), height: auto() },
-                flex_direction: FlexDirection::Column,
                 padding: Rect {
-                    left: length(6.0),
-                    right: length(6.0),
-                    top: length(6.0),
-                    bottom: length(6.0),
+                    left: length(PADDING),
+                    right: length(PADDING),
+                    top: length(PADDING),
+                    bottom: length(PADDING),
                 },
                 ..Default::default()
             },
         );
+        let plate = ui.add(
+            root,
+            Widget::container()
+                .with_background(Background::Fill(Paint::Surface, PLATE_OPACITY))
+                .with_radius(RADIUS - PADDING),
+            Style { flex_grow: 1.0, flex_direction: FlexDirection::Column, ..Default::default() },
+        );
         ui.set_visible(root, false);
-        Self { root, actions: Vec::new() }
+        Self { parent, root, plate, actions: Vec::new(), drip: Drip::new() }
     }
 
+    /// Open (or opening): clicks on rows count, outside clicks close it.
     pub fn is_open(&self) -> bool {
-        !self.actions.is_empty()
+        matches!(self.drip.phase(), Phase::Opening | Phase::Open)
     }
 
     /// Opens below `anchor` (logical px), right-aligned to it and kept inside the window.
-    pub fn open(&mut self, ui: &mut Ui, anchor: Frame, window_width: f32, items: Vec<MenuItem>) {
-        ui.clear_children(self.root);
+    pub fn open(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        anchor: Frame,
+        window_width: f32,
+        items: Vec<MenuItem>,
+    ) {
+        ui.clear_children(self.plate);
         self.actions = items.iter().map(|i| i.action).collect();
         for (i, item) in items.iter().enumerate() {
             let row = ui.add(
-                self.root,
+                self.plate,
                 Widget::container().with_action(ActionId(ITEM_BASE + i as u32)).with_radius(CAPSULE),
                 Style {
                     size: Size { width: auto(), height: length(ROW_HEIGHT) },
@@ -114,22 +140,31 @@ impl Menu {
                 }
             }
         }
+        let height = items.len() as f32 * ROW_HEIGHT + 2.0 * PADDING;
         let right = anchor.origin.x + anchor.size.x;
         let left = (right - WIDTH).clamp(8.0, (window_width - WIDTH - 8.0).max(8.0));
-        let mut style = ui.style(self.root);
-        style.inset = Rect {
-            left: length(left),
-            right: auto(),
-            top: length(anchor.origin.y + anchor.size.y + GAP_BELOW_ANCHOR),
-            bottom: auto(),
-        };
-        ui.set_style(self.root, style);
+        let target = Frame::new(left, anchor.origin.y + anchor.size.y + GAP_BELOW_ANCHOR, WIDTH, height);
+        place(ui, self.root, self.parent, target);
         ui.set_visible(self.root, true);
+        self.drip.open(config, anchor, target);
+        self.animate(ui, 0.0);
     }
 
-    pub fn close(&mut self, ui: &mut Ui) {
+    pub fn close(&mut self, ui: &mut Ui, config: &Config) {
         self.actions.clear();
-        ui.set_visible(self.root, false);
+        self.drip.close(config);
+        self.animate(ui, 0.0);
+    }
+
+    /// Advances the drip; call every frame.
+    pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
+        let phase = self.drip.step(dt);
+        if phase == Phase::Closed {
+            ui.set_visible(self.root, false);
+            return;
+        }
+        ui.set_visual_frame(self.root, Some(self.drip.frame()));
+        ui.set_opacity(self.plate, self.drip.content_opacity());
     }
 
     /// The menu action for a clicked row.
@@ -139,7 +174,16 @@ impl Menu {
     }
 
     /// Whether a point (logical px) is inside the open menu.
-    pub fn contains(&self, ui: &Ui, p: glam::Vec2) -> bool {
+    pub fn contains(&self, ui: &Ui, p: Vec2) -> bool {
         self.is_open() && ui.frame(self.root).contains(p)
     }
+}
+
+/// Positions an absolute child of `parent` at `target` (absolute logical px).
+pub fn place(ui: &mut Ui, node: NodeId, parent: NodeId, target: Frame) {
+    let origin = target.origin - ui.frame(parent).origin;
+    let mut style = ui.style(node);
+    style.inset = Rect { left: length(origin.x), right: auto(), top: length(origin.y), bottom: auto() };
+    style.size = Size { width: length(target.size.x), height: length(target.size.y) };
+    ui.set_style(node, style);
 }
