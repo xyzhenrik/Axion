@@ -238,6 +238,10 @@ pub const INDEX: &[Entry] = &[
             "importieren",
             "exportieren",
             "backup",
+            "restore",
+            "wiederherstellen",
+            "device",
+            "gerät",
         ],
     ),
 ];

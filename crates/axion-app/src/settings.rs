@@ -434,6 +434,7 @@ pub enum SettingsAction {
     RemoveSiteData(usize),
     OpenPasswords,
     ImportPasswords,
+    RestorePasswords,
     ExportPasswords,
 }
 
@@ -499,6 +500,7 @@ impl SettingsAction {
                     SettingsAction::OpenPasswords => 85,
                     SettingsAction::ImportPasswords => 86,
                     SettingsAction::ExportPasswords => 87,
+                    SettingsAction::RestorePasswords => 88,
                     SettingsAction::RemoveTrustedSite(i) => TRUSTED_SITE_BASE + i as u32,
                     SettingsAction::ChooseDownloadFolder => 90,
                     SettingsAction::RemoveDownloads(r) => {
@@ -542,6 +544,7 @@ impl SettingsAction {
             85 => SettingsAction::OpenPasswords,
             86 => SettingsAction::ImportPasswords,
             87 => SettingsAction::ExportPasswords,
+            88 => SettingsAction::RestorePasswords,
             90 => SettingsAction::ChooseDownloadFolder,
             91..=93 => SettingsAction::RemoveDownloads(REMOVE_DOWNLOADS[(n - 91) as usize].1),
             94..=97 => SettingsAction::ClearRange(CLEAR_RANGES[(n - 94) as usize].1),
@@ -583,8 +586,18 @@ pub enum Outcome {
     /// Remove one site's cookies and data, or every site's (`None`).
     RemoveSiteData(Option<String>),
     OpenPasswords,
+    /// Import a CSV file from another browser or manager.
     ImportPasswords(PathBuf),
-    ExportPasswords(PathBuf),
+    /// Restore an Axion export made with `password` (on this or another device).
+    RestorePasswords {
+        path: PathBuf,
+        password: Zeroizing<String>,
+    },
+    /// Write a portable export; `password` must be the account password.
+    ExportPasswords {
+        path: PathBuf,
+        password: Zeroizing<String>,
+    },
 }
 
 pub struct SettingsSheet {
@@ -616,8 +629,10 @@ pub struct SettingsSheet {
     confirm_delete: bool,
     /// The page must be rebuilt after a change (a toggle that shows more rows).
     rebuild: bool,
-    /// The import/export file field (Passwords page) and the last import/export result.
+    /// The import/export file and password fields (Passwords page) and the last
+    /// import/export result.
     passwords_file: Option<NodeId>,
+    passwords_secret: Option<NodeId>,
     passwords_status: Option<String>,
     /// The browser's memory use, shown on the Tabs page.
     memory_used: Option<u64>,
@@ -797,6 +812,7 @@ impl SettingsSheet {
             confirm_delete: false,
             rebuild: false,
             passwords_file: None,
+            passwords_secret: None,
             passwords_status: None,
             memory_used: None,
             group: None,
@@ -990,6 +1006,7 @@ impl SettingsSheet {
         self.password_fields = None;
         self.account_name = None;
         self.passwords_file = None;
+        self.passwords_secret = None;
         if !self.query.is_empty() {
             self.show_results(ui, config);
             return;
@@ -1256,7 +1273,10 @@ impl SettingsSheet {
                 }
                 self.section(ui, "Security");
                 self.control(ui, config, Setting::ClearClipboardAfter);
-                self.note(ui, "Everything is encrypted with your master password, which Axion never stores.");
+                self.note(
+                    ui,
+                    "Encrypted with your account password and a key that never leaves this device.",
+                );
                 self.section(ui, "Import and export");
                 let row_node = self.row(ui, "File");
                 let field_box = ui.add(
@@ -1277,12 +1297,15 @@ impl SettingsSheet {
                     Style { size: Size { width: length(260.0), height: length(22.0) }, ..Default::default() },
                 );
                 self.passwords_file = Some(field);
+                let row_node = self.row(ui, "Password");
+                self.passwords_secret =
+                    Some(text_field(ui, row_node, "For exports and restoring", 260.0, true));
                 let row_node = self.row(ui, "");
                 pill_button(ui, row_node, "Import CSV", SettingsAction::ImportPasswords, false);
+                pill_button(ui, row_node, "Restore Axion Export", SettingsAction::RestorePasswords, false);
                 pill_button(ui, row_node, "Export Encrypted Copy", SettingsAction::ExportPasswords, false);
                 let note = self.passwords_status.clone().unwrap_or_else(|| {
-                    "Imports CSV files from Chrome, Firefox or Bitwarden. Exports an encrypted copy."
-                        .to_owned()
+                    "Imports CSV from Chrome, Firefox or Bitwarden. Exports restore on any device.".to_owned()
                 });
                 self.note(ui, &note);
             }
@@ -1865,19 +1888,31 @@ impl SettingsSheet {
                 return Outcome::SetAccountPassword { current, new };
             }
             SettingsAction::OpenPasswords => return Outcome::OpenPasswords,
-            SettingsAction::ImportPasswords | SettingsAction::ExportPasswords => {
+            SettingsAction::ImportPasswords
+            | SettingsAction::RestorePasswords
+            | SettingsAction::ExportPasswords => {
                 let text =
                     self.passwords_file.and_then(|f| ui.field_text(f)).unwrap_or_default().trim().to_owned();
-                if text.is_empty() {
-                    self.passwords_status = Some("Enter the file's path first.".to_owned());
+                let password = Zeroizing::new(
+                    self.passwords_secret.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned(),
+                );
+                let problem = if text.is_empty() {
+                    Some("Enter the file's path first.")
+                } else if action != SettingsAction::ImportPasswords && password.is_empty() {
+                    Some("Enter the password first.")
+                } else {
+                    None
+                };
+                if let Some(problem) = problem {
+                    self.passwords_status = Some(problem.to_owned());
                     self.show(ui, config, keymap);
                     return Outcome::Nothing;
                 }
                 let path = expand_home(&text);
-                return if action == SettingsAction::ImportPasswords {
-                    Outcome::ImportPasswords(path)
-                } else {
-                    Outcome::ExportPasswords(path)
+                return match action {
+                    SettingsAction::ImportPasswords => Outcome::ImportPasswords(path),
+                    SettingsAction::RestorePasswords => Outcome::RestorePasswords { path, password },
+                    _ => Outcome::ExportPasswords { path, password },
                 };
             }
             SettingsAction::ClearHistory => {
@@ -2207,6 +2242,7 @@ mod tests {
             SettingsAction::RemoveSiteData(99),
             SettingsAction::Category(Category::Passwords),
             SettingsAction::ExportPasswords,
+            SettingsAction::RestorePasswords,
             SettingsAction::Category(Category::Account),
             SettingsAction::Category(Category::General),
             SettingsAction::AccountColor(5),

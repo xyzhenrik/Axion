@@ -1,6 +1,6 @@
 [package]
 name = "axion-vault"
-description = "Axion's password manager: logins, addresses, cards and notes, encrypted with a master password"
+description = "Axion's password manager: logins, addresses, cards and notes, encrypted with a master password and a device key"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,13 +10,25 @@ publish.workspace = true
 addr = { version = "0.15", default-features = false, features = ["psl"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "0.10", features = ["std"] }
+directories = "6"
+hkdf = "0.13"
 rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11"
 thiserror.workspace = true
 tracing.workspace = true
 url = "2"
 zeroize = { version = "1", features = ["derive"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Seals the device key with the TPM. Links libtss2-esys at build time, hence optional:
+# `--no-default-features` builds without it (the device key then lives in a file only).
+tss-esapi = { version = "7.6", optional = true }
+
+[features]
+default = ["tpm"]
+tpm = ["dep:tss-esapi"]
 
 [lints]
 workspace = true

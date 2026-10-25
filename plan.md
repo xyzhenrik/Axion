@@ -344,6 +344,14 @@ Windows/macOS, touchscreen-first mode.
   password is dropped. Switching relaunches Axion (`--account=ID`, same size/position) after
   Chromium shut down, since CEF allows one root cache path per process. Deleted accounts'
   directories are removed at the next start.
+- **Device-bound vault** (done): the vault key is HKDF-SHA256 over Argon2id(password) and a
+  per-device secret, so a copied vault or profile opens nowhere else (`OtherDevice`, distinct
+  from a wrong password). The secret is sealed by the TPM 2.0 (`/dev/tpmrm0`, ECC P-256 SRK +
+  sealed object, blob in `~/.local/share/axion/device.tpm`), else a 0600 `device.key` there.
+  Password-only vaults upgrade on their next unlock (one transaction). Settings › Passwords
+  exports a portable copy encrypted with the password alone and restores such exports (into
+  the unlocked vault, or as the vault of an account without password). Open: moving a
+  file key into the TPM once the user gains access to it.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

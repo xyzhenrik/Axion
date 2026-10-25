@@ -385,7 +385,17 @@ impl Browser {
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
         let settings = SettingsSheet::build(&mut ui);
-        let passwords = Passwords::build(&mut ui, chrome.bar_node(), &vault_path, &account_name);
+        // The vault's second key factor: this device's key (TPM-sealed or a private file in
+        // the user's data directory, never in the profile).
+        let device_key: std::sync::Arc<dyn axion_vault::DeviceKey> =
+            match axion_vault::SystemDeviceKey::system() {
+                Ok(key) => std::sync::Arc::new(key),
+                Err(e) => {
+                    tracing::error!("no device key: {e}");
+                    std::sync::Arc::new(axion_vault::device::NoDeviceKey)
+                }
+            };
+        let passwords = Passwords::build(&mut ui, chrome.bar_node(), &vault_path, device_key, &account_name);
         let lock = PrivateLock::new();
         let favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         // Built after the chrome so it draws above it.
@@ -1730,7 +1740,7 @@ impl Browser {
             Err(axion_vault::VaultError::WrongPassword) => self.lock_screen.wrong_password(&mut self.ui),
             Err(e) => {
                 tracing::error!("unlocking the account failed: {e}");
-                self.lock_screen.wrong_password(&mut self.ui);
+                self.lock_screen.show_error(&mut self.ui, &crate::passwords::describe(&e));
             }
         }
     }
@@ -2715,7 +2725,7 @@ impl Browser {
                     }
                     Err(e) => {
                         tracing::error!("setting the account password failed: {e}");
-                        e.to_string()
+                        crate::passwords::describe(&e)
                     }
                 };
                 self.settings.set_account_status(Some(status));
@@ -2757,8 +2767,21 @@ impl Browser {
                 self.settings.set_passwords_status(status);
                 self.settings.show(&mut self.ui, &self.config, &self.keymap);
             }
-            Outcome::ExportPasswords(path) => {
-                let status = self.passwords.export(&path);
+            Outcome::ExportPasswords { path, password } => {
+                let status = self.passwords.export(&path, &password);
+                self.settings.set_passwords_status(status);
+                self.settings.show(&mut self.ui, &self.config, &self.keymap);
+            }
+            Outcome::RestorePasswords { path, password } => {
+                let (status, now_has_password) =
+                    self.passwords.restore(&mut self.ui, &self.config, &path, &password);
+                if now_has_password {
+                    // The export's password became the account password, entered just now.
+                    self.lock.unlock();
+                    self.account_unlocked = true;
+                    self.settings.set_account(self.account_info());
+                    self.update_lock();
+                }
                 self.settings.set_passwords_status(status);
                 self.settings.show(&mut self.ui, &self.config, &self.keymap);
             }
