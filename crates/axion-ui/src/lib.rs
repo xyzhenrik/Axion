@@ -14,7 +14,7 @@ use std::cell::{RefCell, RefMut};
 use std::time::{Duration, Instant};
 
 use axion_compositor::glyphon::{self, FontSystem};
-use axion_compositor::{Content, IconDraw, Layer, Quad, Rect};
+use axion_compositor::{Content, IconDraw, ImageDraw, Layer, Quad, Rect};
 use axion_config::{Key, Modifiers};
 use axion_glass::GlassShape;
 use glam::Vec2;
@@ -32,6 +32,10 @@ const CARET_WIDTH: f32 = 1.5;
 const HOVER_ALPHA: f32 = 0.07;
 const PRESS_ALPHA: f32 = 0.13;
 const DISABLED_ALPHA: f32 = 0.4;
+/// Below this opacity a widget (and its subtree) isn't drawn.
+const MIN_VISIBLE: f32 = 0.01;
+/// Fading glass is grouped into this many opacity steps (each step is one glass pass).
+const GLASS_FADE_STEPS: f32 = 24.0;
 
 /// Input in logical pixels.
 #[derive(Clone, Debug, PartialEq)]
@@ -302,6 +306,27 @@ impl Ui {
         }
     }
 
+    /// Shows `view` (a texture of `size` pixels) in an image widget, or nothing.
+    pub fn set_image(&mut self, node: NodeId, image: Option<(wgpu::TextureView, (u32, u32))>) {
+        if let Some(Widget { kind: WidgetKind::Image { view, size }, .. }) =
+            self.tree.get_node_context_mut(node)
+        {
+            match image {
+                Some((v, s)) => {
+                    *view = Some(v);
+                    *size = (s.0.max(1), s.1.max(1));
+                }
+                None => *view = None,
+            }
+        }
+    }
+
+    pub fn set_opacity(&mut self, node: NodeId, opacity: f32) {
+        if let Some(w) = self.tree.get_node_context_mut(node) {
+            w.opacity = opacity.clamp(0.0, 1.0);
+        }
+    }
+
     pub fn set_progress(&mut self, node: NodeId, value: f32) {
         if let Some(Widget { kind: WidgetKind::Progress { value: v, .. }, .. }) =
             self.tree.get_node_context_mut(node)
@@ -387,11 +412,16 @@ impl Ui {
             width: AvailableSpace::Definite(self.size.x),
             height: AvailableSpace::Definite(self.size.y),
         };
+        let fonts = self.fonts.get_mut();
         let _ =
             self.tree.compute_layout_with_measure(self.root, available, |input, _node, widget, _style| {
                 let known = input.known_dimensions;
-                let size = match widget.map(|w| &w.kind) {
+                let size = match widget.map(|w| &mut w.kind) {
                     Some(WidgetKind::Label(label)) => {
+                        // Measure the natural size; the last layout may have squeezed the buffer
+                        // (e.g. to 0 while hidden).
+                        label.buffer.set_size(None, None);
+                        label.buffer.shape_until_scroll(fonts, false);
                         let (w, h) = measure(&label.buffer);
                         Size {
                             width: known.width.unwrap_or(w / scale),
@@ -635,23 +665,48 @@ impl Ui {
 
     /// Appends this UI's layers (content and glass, in stacking order) to `layers`.
     pub fn paint<'a>(&'a self, layers: &mut Vec<Layer<'a>>) {
-        let mut stacks: Vec<Stack<'a>> = Vec::new();
-        self.paint_node(self.root, 0, 1.0, &mut stacks);
+        // Each child of the root is its own plane (sidebar, bar, overlays…), painted completely
+        // before the next one, so later planes cover earlier ones — including their text.
+        for plane in self.tree.children(self.root).unwrap_or_default() {
+            let mut stacks: Vec<Stack<'a>> = Vec::new();
+            self.paint_node(plane, 0, 1.0, 1.0, &mut stacks);
+            self.flush(stacks, layers);
+        }
+    }
+
+    fn flush<'a>(&'a self, stacks: Vec<Stack<'a>>, layers: &mut Vec<Layer<'a>>) {
         let s = self.scale;
-        let levels = [GlassLevel::Thin, GlassLevel::Regular, GlassLevel::Thick];
         // Stack k holds the glass that has k-1 glass ancestors, and the content sitting on it.
+        // Glass is drawn in one pass per (thickness, opacity) group; only shapes in the same
+        // pass flow into each other.
         for stack in stacks {
-            for level in levels {
-                let shapes: Vec<GlassShape> =
-                    stack.glass.iter().filter(|(l, _)| *l == level).map(|(_, shape)| *shape).collect();
-                if !shapes.is_empty() {
-                    layers.push(Layer::Glass { shapes, params: self.theme.glass(level, s) });
+            let mut groups: Vec<(GlassLevel, f32)> = Vec::new();
+            for item in &stack.glass {
+                if !groups.contains(&(item.level, item.fade)) {
+                    groups.push((item.level, item.fade));
                 }
             }
-            if !stack.content.quads.is_empty()
-                || !stack.content.icons.is_empty()
-                || !stack.content.text.is_empty()
-            {
+            groups.sort_by_key(|(level, fade)| (*level as u8, (fade * GLASS_FADE_STEPS) as u32));
+            for (level, fade) in groups {
+                let shapes: Vec<GlassShape> = stack
+                    .glass
+                    .iter()
+                    .filter(|g| g.level == level && g.fade == fade)
+                    .map(|g| g.shape)
+                    .collect();
+                let mut params = self.theme.glass(level, s);
+                if fade < 1.0 {
+                    // Fading glass loses blur, tint, refraction and light together.
+                    params.blur_radius *= fade;
+                    params.tint[3] *= fade;
+                    params.refraction *= fade;
+                    params.dispersion *= fade;
+                    params.rim *= fade;
+                    params.shadow *= fade;
+                }
+                layers.push(Layer::Glass { shapes, params });
+            }
+            if !stack.content.is_empty() {
                 layers.push(Layer::Content(stack.content));
             }
         }
@@ -664,12 +719,18 @@ impl Ui {
         node: NodeId,
         depth: usize,
         inherited_alpha: f32,
+        inherited_fade: f32,
         stacks: &mut Vec<Stack<'a>>,
     ) {
         if !self.is_visible(node) {
             return;
         }
         let Some(widget) = self.widget(node) else { return };
+        // `fade` (opacity) applies to everything; `alpha` additionally dims disabled content.
+        let fade = inherited_fade * widget.opacity;
+        if fade <= MIN_VISIBLE {
+            return;
+        }
         while stacks.len() <= depth + 1 {
             stacks.push(Stack::default());
         }
@@ -679,15 +740,19 @@ impl Ui {
         let px = Rect { origin: frame.origin * s, size: frame.size * s };
         let radius = widget.radius.min(frame.size.min_element() / 2.0) * s;
         // Disabled widgets dim themselves and everything inside them.
-        let alpha = inherited_alpha * if widget.enabled { 1.0 } else { DISABLED_ALPHA };
+        let dim = inherited_alpha * if widget.enabled { 1.0 } else { DISABLED_ALPHA };
+        let alpha = dim * fade;
+        let faded = |mut c: [f32; 4]| {
+            c[3] *= fade;
+            c
+        };
 
         let mut child_depth = depth;
         let content = &mut stacks[depth].content;
         match widget.background {
             Background::Glass(level) => {
-                stacks[depth + 1]
-                    .glass
-                    .push((level, GlassShape::rounded_rect(px.center(), px.size * 0.5, radius)));
+                let shape = GlassShape::rounded_rect(px.center(), px.size * 0.5, radius);
+                stacks[depth + 1].glass.push(GlassItem { level, fade: quantize_fade(fade), shape });
                 child_depth = depth + 1;
             }
             Background::Fill(paint, opacity) => {
@@ -697,11 +762,11 @@ impl Ui {
                         radius,
                         shadow.offset_y * s,
                         shadow.blur * s,
-                        [0.0, 0.0, 0.0, shadow.opacity],
+                        [0.0, 0.0, 0.0, shadow.opacity * fade],
                     ));
                 }
                 let mut color = theme.color(paint);
-                color[3] *= opacity;
+                color[3] *= opacity * fade;
                 content.quads.push(Quad::fill(px, radius, color));
             }
             Background::None => {}
@@ -713,8 +778,8 @@ impl Ui {
             let label = theme.color(Paint::Label);
             if widget.selected {
                 let surface = theme.color(Paint::Surface);
-                content.quads.push(Quad::shadow(px, radius, 1.0 * s, 4.0 * s, [0.0, 0.0, 0.0, 0.08]));
-                content.quads.push(Quad::fill(px, radius, [surface[0], surface[1], surface[2], 0.7]));
+                content.quads.push(Quad::shadow(px, radius, 1.0 * s, 4.0 * s, [0.0, 0.0, 0.0, 0.08 * fade]));
+                content.quads.push(Quad::fill(px, radius, faded([surface[0], surface[1], surface[2], 0.7])));
             }
             let feedback = if self.pressed == Some(node) {
                 PRESS_ALPHA
@@ -724,7 +789,7 @@ impl Ui {
                 0.0
             };
             if feedback > 0.0 {
-                content.quads.push(Quad::fill(px, radius, [label[0], label[1], label[2], feedback]));
+                content.quads.push(Quad::fill(px, radius, faded([label[0], label[1], label[2], feedback])));
             }
         }
 
@@ -752,16 +817,25 @@ impl Ui {
             WidgetKind::Progress { value, paint } => {
                 if *value > 0.0 && *value < 1.0 {
                     let bar = Rect { origin: px.origin, size: Vec2::new(px.size.x * value, px.size.y) };
-                    content.quads.push(Quad::fill(bar, px.size.y / 2.0, theme.color(*paint)));
+                    content.quads.push(Quad::fill(bar, px.size.y / 2.0, faded(theme.color(*paint))));
                 }
             }
             WidgetKind::TextField(field) => {
                 self.paint_field(node, field, px, &mut stacks[child_depth].content);
             }
+            WidgetKind::Image { view: Some(view), size } => {
+                // Cover the frame, cropping the texture's bottom (or sides) if aspects differ.
+                let tex = Vec2::new(size.0 as f32, size.1 as f32);
+                let scale = (px.size / tex).max_element();
+                let visible = (px.size / (tex * scale)).min(Vec2::ONE);
+                let uv = Rect { origin: Vec2::new((1.0 - visible.x) / 2.0, 0.0), size: visible };
+                content.images.push(ImageDraw { texture: view, rect: px, uv, radius, opacity: alpha });
+            }
+            WidgetKind::Image { view: None, .. } => {}
         }
 
         for child in self.tree.children(node).unwrap_or_default() {
-            self.paint_node(child, child_depth, alpha, stacks);
+            self.paint_node(child, child_depth, dim, fade, stacks);
         }
     }
 
@@ -788,8 +862,14 @@ impl Ui {
             let rect = Rect::new(left + x0, top, x1 - x0, h);
             content.quads.push(Quad::fill(clip(rect, px), 3.0 * s, color));
         }
-        if empty && !focused {
-            content.text.push(text_area(&field.placeholder, left, top, px, theme.color(Paint::Secondary)));
+        if empty {
+            let mut color = theme.color(Paint::Secondary);
+            if field.paint != Paint::Label {
+                // A recoloured field (e.g. light text on dark) gets a matching placeholder.
+                color = theme.color(field.paint);
+                color[3] *= 0.6;
+            }
+            content.text.push(text_area(&field.placeholder, left, top, px, color));
         } else {
             content.text.push(text_area(&field.buffer, left, top, px, theme.color(field.paint)));
         }
@@ -805,7 +885,17 @@ impl Ui {
 #[derive(Default)]
 struct Stack<'a> {
     content: Content<'a>,
-    glass: Vec<(GlassLevel, GlassShape)>,
+    glass: Vec<GlassItem>,
+}
+
+struct GlassItem {
+    level: GlassLevel,
+    fade: f32,
+    shape: GlassShape,
+}
+
+fn quantize_fade(fade: f32) -> f32 {
+    ((fade * GLASS_FADE_STEPS).round() / GLASS_FADE_STEPS).clamp(0.0, 1.0)
 }
 
 fn text_area(

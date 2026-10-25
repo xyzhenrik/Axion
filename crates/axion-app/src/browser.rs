@@ -18,10 +18,13 @@ use winit::window::{Fullscreen, Window};
 
 use crate::chrome::{Chrome, ChromeAction};
 use crate::input::{self, ClickCounter};
+use crate::overview::{Overview, OverviewAction};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
 use crate::url::resolve_input;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
+/// How long before a `--capture --overview` screenshot the overview opens.
+const OVERVIEW_CAPTURE_LEAD: Duration = Duration::from_secs(2);
 /// Pixels per wheel notch.
 const LINE_SCROLL: f32 = 100.0;
 /// Upper bound for the page's frame rate.
@@ -35,7 +38,10 @@ const LIGHT_ABOVE: f32 = 0.6;
 const NVIDIA_VENDOR_ID: u32 = 0x10DE;
 
 pub struct Options {
-    pub url: Option<String>,
+    /// Tabs to open; the first one is active. Empty opens the homepage.
+    pub urls: Vec<String>,
+    /// Open the tab overview shortly before `--capture` (for screenshots of it).
+    pub overview: bool,
     /// Save a screenshot here after `capture_after`, then quit.
     pub capture: Option<PathBuf>,
     pub capture_after: Duration,
@@ -53,6 +59,10 @@ pub struct Browser {
     engine: CefEngine,
     ui: Ui,
     chrome: Chrome,
+    overview: Overview,
+    /// Search text the overview's cards were last built for.
+    overview_query: String,
+    last_frame: Instant,
     tabs: Tabs,
     config: Config,
     keymap: Keymap,
@@ -71,6 +81,8 @@ pub struct Browser {
     tabs_changed: bool,
     layout_size: Vec2,
     capture: Option<(PathBuf, Instant)>,
+    /// When to open the overview for a `--capture --overview` screenshot.
+    overview_at: Option<Instant>,
 }
 
 impl Browser {
@@ -96,6 +108,7 @@ impl Browser {
             )?,
         );
 
+        place_on_monitor(event_loop, &window);
         let (surface, adapter, device, queue) = crate::gpu::init(event_loop, &window)?;
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
@@ -123,7 +136,8 @@ impl Browser {
                 // Zero-copy import is only verified on NVIDIA's driver so far. On RADV (AMD) it
                 // currently triggers a GPU memory fault and context loss, so other drivers use
                 // software paint until that is understood (see plan.md, Phase 0 follow-ups).
-                _ => info.vendor == NVIDIA_VENDOR_ID,
+                // Under X11/XWayland Chromium has no GBM device for shared buffers at all.
+                _ => info.vendor == NVIDIA_VENDOR_ID && std::env::var_os("WAYLAND_DISPLAY").is_some(),
             };
         if !accelerated {
             tracing::info!(driver = %info.driver, "using software paint for pages (set AXION_OSR=gpu to force GPU sharing)");
@@ -150,6 +164,8 @@ impl Browser {
         let compositor = Compositor::new(&device, &queue, format, &mut ui.fonts());
         let queue = queue.clone();
         let chrome = Chrome::build(&mut ui, &config);
+        // Built after the chrome so it draws above it.
+        let overview = Overview::build(&mut ui);
 
         let mut browser = Self {
             window,
@@ -161,6 +177,9 @@ impl Browser {
             engine,
             ui,
             chrome,
+            overview,
+            overview_query: String::new(),
+            last_frame: Instant::now(),
             tabs: Tabs::default(),
             config,
             keymap,
@@ -176,11 +195,20 @@ impl Browser {
             clipboard: arboard::Clipboard::new().inspect_err(|e| tracing::warn!("no clipboard: {e}")).ok(),
             tabs_changed: true,
             layout_size: Vec2::ZERO,
-            capture: options.capture.map(|path| (path, Instant::now() + options.capture_after)),
+            capture: options.capture.clone().map(|path| (path, Instant::now() + options.capture_after)),
+            overview_at: (options.overview && options.capture.is_some())
+                .then(|| Instant::now() + options.capture_after.saturating_sub(OVERVIEW_CAPTURE_LEAD)),
         };
         browser.update_layout();
-        let url = options.url.unwrap_or_else(|| browser.config.general.homepage.clone());
-        browser.open_tab(&url, true)?;
+        let mut urls = options.urls;
+        if urls.is_empty() {
+            urls.push(browser.config.general.homepage.clone());
+        }
+        browser.open_tab(&urls[0], true)?;
+        // Background tabs go in right after the active one, so add them last-first.
+        for url in urls[1..].iter().rev() {
+            browser.open_tab(url, false)?;
+        }
         Ok(browser)
     }
 
@@ -205,6 +233,7 @@ impl Browser {
         let size = self.logical_size();
         self.ui.set_viewport(size, self.scale());
         self.chrome.apply_layout(&mut self.ui, &self.config, size);
+        self.overview.resize(&mut self.ui, &self.tabs, size);
         let view_size = self.view_size();
         for tab in self.tabs.all() {
             self.engine.resize(tab.view, view_size);
@@ -217,11 +246,12 @@ impl Browser {
     fn open_tab(&mut self, url: &str, activate: bool) -> Result<()> {
         let view = self.engine.create_view(url, self.view_size())?;
         let previous = self.tabs.active().map(|t| t.view);
-        self.tabs.insert(Tab::new(view, url), activate);
+        let mut tab = Tab::new(view, url);
+        // Background tabs render until they have a thumbnail for the overview.
+        tab.needs_snapshot = !activate;
+        self.tabs.insert(tab, activate);
         if activate {
             self.on_active_changed(previous);
-        } else {
-            self.engine.set_hidden(view, true);
         }
         self.tabs_changed = true;
         Ok(())
@@ -331,10 +361,60 @@ impl Browser {
                 let fullscreen = self.window.fullscreen().is_none().then_some(Fullscreen::Borderless(None));
                 self.window.set_fullscreen(fullscreen);
             }
-            Action::TabOverview | Action::Find | Action::OpenSettings => {
+            Action::TabOverview => {
+                if self.overview.is_open() {
+                    self.close_overview(self.tabs.active_index());
+                } else {
+                    self.open_overview();
+                }
+            }
+            Action::Find | Action::OpenSettings => {
                 tracing::info!("{action} arrives in a later phase");
             }
             Action::Quit => {}
+        }
+    }
+
+    fn open_overview(&mut self) {
+        if let Some(view) = self.active_view() {
+            self.engine.set_focus(view, false);
+        }
+        self.chrome.set_editing(&mut self.ui, false);
+        let window = self.logical_size();
+        let page = self.page_rect();
+        let events = self.overview.open(&mut self.ui, &self.tabs, &self.config, window, page);
+        self.overview_query.clear();
+        self.handle_ui_events(events);
+    }
+
+    /// Closes the overview into tab `index`, which becomes the active tab.
+    fn close_overview(&mut self, index: usize) {
+        self.select_tab(index);
+        let page = self.page_rect();
+        let events =
+            self.overview.close(&mut self.ui, &self.tabs, &self.config, self.tabs.active_index(), page);
+        self.handle_ui_events(events);
+        if let Some(view) = self.active_view() {
+            self.engine.set_focus(view, true);
+        }
+    }
+
+    fn overview_action(&mut self, action: OverviewAction) {
+        match action {
+            OverviewAction::Select(i) => self.close_overview(i),
+            OverviewAction::Done => self.close_overview(self.tabs.active_index()),
+            OverviewAction::Close(i) => {
+                self.close_tab(i);
+                self.overview.rebuild(&mut self.ui, &self.tabs);
+            }
+            OverviewAction::NewTab => {
+                let home = self.config.general.homepage.clone();
+                if let Err(e) = self.open_tab(&home, true) {
+                    tracing::error!("opening a new tab failed: {e:#}");
+                }
+                self.overview.rebuild(&mut self.ui, &self.tabs);
+                self.close_overview(self.tabs.active_index());
+            }
         }
     }
 
@@ -361,6 +441,19 @@ impl Browser {
     fn handle_ui_events(&mut self, events: Vec<UiEvent>) {
         for event in events {
             match event {
+                UiEvent::Clicked { action, .. } if OverviewAction::from_id(action).is_some() => {
+                    if let Some(action) = OverviewAction::from_id(action) {
+                        self.overview_action(action);
+                    }
+                }
+                UiEvent::Submitted { node, .. } if node == self.overview.search_field() => {
+                    if let Some(i) = self.overview.first_match() {
+                        self.close_overview(i);
+                    }
+                }
+                UiEvent::Cancelled { node } if node == self.overview.search_field() => {
+                    self.close_overview(self.tabs.active_index());
+                }
                 UiEvent::Clicked { action, .. } => match ChromeAction::from_id(action) {
                     Some(ChromeAction::ToggleSidebar) => self.run(Action::ToggleSidebar),
                     Some(ChromeAction::Back) => self.run(Action::Back),
@@ -556,7 +649,9 @@ impl Browser {
                     MouseScrollDelta::LineDelta(x, y) => Vec2::new(x, y) * LINE_SCROLL,
                     MouseScrollDelta::PixelDelta(p) => Vec2::new(p.x as f32, p.y as f32) / self.scale(),
                 };
-                if let (Some(p), Some(view)) = (self.pointer, self.active_view())
+                if self.overview.is_open() {
+                    self.overview.scroll_by(&mut self.ui, delta.y);
+                } else if let (Some(p), Some(view)) = (self.pointer, self.active_view())
                     && !self.ui.covers(p)
                     && self.page_rect().contains(p)
                 {
@@ -692,6 +787,14 @@ impl Browser {
             return false;
         }
 
+        if self.overview.is_open() && self.ui.focused().is_none() {
+            // The overview owns the keyboard; Escape closes it, nothing reaches the page.
+            if pressed && input::key(event) == Some(Key::Named("Escape".into())) {
+                self.close_overview(self.tabs.active_index());
+            }
+            return false;
+        }
+
         if self.ui.focused().is_some() {
             if pressed {
                 if let Some(key) = input::key(event) {
@@ -736,10 +839,31 @@ impl Browser {
                 if title.is_empty() { "Axion".to_owned() } else { format!("{title} — Axion") }.as_str(),
             );
         }
+        let now = Instant::now();
+        if self.overview_at.is_some_and(|at| now >= at) {
+            self.overview_at = None;
+            self.open_overview();
+        }
+        let dt = now.duration_since(self.last_frame).as_secs_f32();
+        self.last_frame = now;
+        if self.overview.is_open() {
+            let query = self.ui.field_text(self.overview.search_field()).unwrap_or_default().to_owned();
+            if query != self.overview_query {
+                self.overview_query = query;
+                self.overview.rebuild(&mut self.ui, &self.tabs);
+            }
+            let engine = &self.engine;
+            self.overview.update(&mut self.ui, dt, |view| {
+                let frame = engine.frame(view)?;
+                let size = (frame.texture.width(), frame.texture.height());
+                Some((frame.texture.create_view(&Default::default()), size))
+            });
+        }
         self.ui.layout();
         if let Some(view) = self.active_view() {
             self.engine.request_frame(view);
         }
+        self.snapshot_background_tabs();
 
         let surface = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -773,6 +897,21 @@ impl Browser {
             layers.push(Layer::Image(page));
         }
         self.ui.paint(&mut layers);
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let kinds: Vec<String> = layers
+                .iter()
+                .map(|l| match l {
+                    Layer::Image(_) => "image".to_owned(),
+                    Layer::Glass { shapes, params } => {
+                        format!("glass×{}(blur {:.0})", shapes.len(), params.blur_radius)
+                    }
+                    Layer::Content(c) => {
+                        format!("content(q{} i{} t{})", c.quads.len(), c.images.len(), c.text.len())
+                    }
+                })
+                .collect();
+            tracing::trace!(?kinds, "layers");
+        }
         let scene = Scene { clear: theme.color(Paint::Ground), layers };
         let size = (self.surface_config.width, self.surface_config.height);
         self.compositor.render(&scene, &mut self.ui.fonts(), &output, size);
@@ -794,6 +933,23 @@ impl Browser {
         Ok(())
     }
 
+    /// Background tabs render until loaded and painted once, then get hidden (throttled).
+    fn snapshot_background_tabs(&mut self) {
+        let active = self.active_view();
+        for tab in self.tabs.all_mut() {
+            if !tab.needs_snapshot || Some(tab.view) == active {
+                tab.needs_snapshot = false;
+                continue;
+            }
+            if !tab.loading && self.engine.frame(tab.view).is_some() {
+                tab.needs_snapshot = false;
+                self.engine.set_hidden(tab.view, true);
+            } else {
+                self.engine.request_frame(tab.view);
+            }
+        }
+    }
+
     pub fn request_redraw(&self) {
         self.window.request_redraw();
     }
@@ -810,6 +966,26 @@ impl std::fmt::Display for CaptureDone {
 }
 
 impl std::error::Error for CaptureDone {}
+
+/// Moves the window onto the monitor named by `AXION_MONITOR` (a substring of its name, e.g.
+/// "HDMI-A-1"). Only X11 lets applications place windows; on Wayland the compositor decides.
+fn place_on_monitor(event_loop: &ActiveEventLoop, window: &Window) {
+    let Ok(wanted) = std::env::var("AXION_MONITOR") else { return };
+    let monitor = event_loop
+        .available_monitors()
+        .find(|m| m.name().is_some_and(|n| n.to_lowercase().contains(&wanted.to_lowercase())));
+    let Some(monitor) = monitor else {
+        let names: Vec<String> = event_loop.available_monitors().filter_map(|m| m.name()).collect();
+        tracing::warn!(%wanted, ?names, "AXION_MONITOR matches no monitor");
+        return;
+    };
+    let position = monitor.position();
+    let size = monitor.size();
+    let window_size = window.outer_size();
+    let x = position.x + (size.width.saturating_sub(window_size.width) / 2) as i32;
+    let y = position.y + (size.height.saturating_sub(window_size.height) / 2) as i32;
+    window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+}
 
 fn load_keymap(paths: &ConfigPaths) -> Keymap {
     let keymap = axion_config::load_keymap(paths).unwrap_or_else(|e| {

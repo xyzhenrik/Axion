@@ -5,7 +5,7 @@ use axion_glass::GlassParams;
 use glam::Vec2;
 
 /// How much a glass surface separates from what's behind it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum GlassLevel {
     Thin,
     Regular,

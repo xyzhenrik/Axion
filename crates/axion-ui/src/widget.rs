@@ -70,6 +70,11 @@ pub enum WidgetKind {
         value: f32,
         paint: Paint,
     },
+    /// A texture scaled to cover the frame, cropped from the top (tab thumbnails, favicons).
+    Image {
+        view: Option<wgpu::TextureView>,
+        size: (u32, u32),
+    },
 }
 
 pub struct Widget {
@@ -83,6 +88,8 @@ pub struct Widget {
     pub enabled: bool,
     /// Draws the widget in its "on" state (e.g. the sidebar toggle while the sidebar is open).
     pub selected: bool,
+    /// Fades the widget and everything inside it (0–1). Glass shrinks away instead of fading.
+    pub opacity: f32,
     /// Absolute frame in logical pixels, updated by layout.
     pub(crate) frame: Rect,
 }
@@ -97,6 +104,7 @@ impl Widget {
             action: None,
             enabled: true,
             selected: false,
+            opacity: 1.0,
             frame: Rect::default(),
         }
     }
@@ -107,6 +115,10 @@ impl Widget {
 
     pub fn icon(icon: Icon, size: f32) -> Self {
         Self::new(WidgetKind::Icon { icon, weight: IconWeight::Regular, size, paint: Paint::Label })
+    }
+
+    pub fn image() -> Self {
+        Self::new(WidgetKind::Image { view: None, size: (1, 1) })
     }
 
     pub fn progress(paint: Paint) -> Self {
@@ -183,7 +195,7 @@ impl Widget {
             WidgetKind::Label(l) => l.paint = paint,
             WidgetKind::Icon { paint: p, .. } | WidgetKind::Progress { paint: p, .. } => *p = paint,
             WidgetKind::TextField(f) => f.paint = paint,
-            WidgetKind::Container => {}
+            WidgetKind::Container | WidgetKind::Image { .. } => {}
         }
     }
 

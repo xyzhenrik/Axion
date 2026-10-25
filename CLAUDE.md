@@ -120,6 +120,8 @@ cargo run -p axion-glass --example playground --release -- --capture=out.png  # 
 AXION_GPU=low ...            # force the integrated GPU
 AXION_OSR=software|gpu ...   # force page frame sharing off/on (default: on for NVIDIA only)
 AXION_CONFIG_DIR / AXION_PROFILE_DIR   # use throwaway settings/profile (do this for test runs)
+AXION_MONITOR=HDMI-A-1 ...   # open on that monitor (X11/XWayland only: run with `env -u WAYLAND_DISPLAY`)
+axion url1 url2 --overview --capture=out.png   # several tabs; screenshot of the tab overview
 ```
 
 ## Things to watch

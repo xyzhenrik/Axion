@@ -43,9 +43,6 @@ pub struct GlassRenderer {
     blur_pipeline: wgpu::RenderPipeline,
     blur_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    params_buffer: wgpu::Buffer,
-    shapes_buffer: wgpu::Buffer,
-    blur_buffers: [wgpu::Buffer; 2],
     blur_targets: Option<BlurTargets>,
     warned_overflow: bool,
 }
@@ -131,45 +128,29 @@ impl GlassRenderer {
             ..Default::default()
         });
 
-        let buffer = |label, size, usage| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage: usage | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        };
-        let params_buffer =
-            buffer("glass params", size_of::<ParamsUniform>() as u64, wgpu::BufferUsages::UNIFORM);
-        let shapes_buffer =
-            buffer("glass shapes", (size_of::<ShapeGpu>() * MAX_SHAPES) as u64, wgpu::BufferUsages::STORAGE);
-        let blur_buffers = [
-            buffer("glass blur h", size_of::<BlurUniform>() as u64, wgpu::BufferUsages::UNIFORM),
-            buffer("glass blur v", size_of::<BlurUniform>() as u64, wgpu::BufferUsages::UNIFORM),
-        ];
-
         Self {
             composite_pipeline,
             composite_layout,
             blur_pipeline,
             blur_layout,
             sampler,
-            params_buffer,
-            shapes_buffer,
-            blur_buffers,
             blur_targets: None,
             warned_overflow: false,
         }
     }
 
     /// Records the blur and composite passes into `encoder`.
+    ///
+    /// Each call gets its own parameter buffers: several glass layers in one frame are recorded
+    /// into the same command buffer, and shared buffers would all end up with the last values.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         frame: GlassFrame<'_>,
     ) {
+        use wgpu::util::DeviceExt;
+
         let (width, height) = frame.backdrop_size;
         let resolution = [width as f32, height as f32];
 
@@ -186,34 +167,39 @@ impl GlassRenderer {
         } else {
             frame.shapes
         };
-        let gpu_shapes: Vec<ShapeGpu> = shapes.iter().map(|s| s.to_gpu()).collect();
-        if !gpu_shapes.is_empty() {
-            queue.write_buffer(&self.shapes_buffer, 0, bytemuck::cast_slice(&gpu_shapes));
+        let mut gpu_shapes: Vec<ShapeGpu> = shapes.iter().map(|s| s.to_gpu()).collect();
+        let count = gpu_shapes.len() as u32;
+        if gpu_shapes.is_empty() {
+            // Storage bindings can't be empty; the shader ignores it (count is 0).
+            gpu_shapes.push(GlassShape::circle(glam::Vec2::ZERO, 0.0).to_gpu());
         }
-        let uniform = ParamsUniform::new(frame.params, resolution, gpu_shapes.len() as u32);
-        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&uniform));
-
+        let buffer = |label: &str, contents: &[u8], usage| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage,
+            })
+        };
+        let shapes_buffer =
+            buffer("glass shapes", bytemuck::cast_slice(&gpu_shapes), wgpu::BufferUsages::STORAGE);
+        let uniform = ParamsUniform::new(frame.params, resolution, count);
+        let params_buffer = buffer("glass params", bytemuck::bytes_of(&uniform), wgpu::BufferUsages::UNIFORM);
         let step = frame.params.blur_radius.max(0.0) / BLUR_TAPS;
-        queue.write_buffer(
-            &self.blur_buffers[0],
-            0,
-            bytemuck::bytes_of(&BlurUniform { step_uv: [step / resolution[0], 0.0], _pad: [0.0; 2] }),
-        );
-        queue.write_buffer(
-            &self.blur_buffers[1],
-            0,
-            bytemuck::bytes_of(&BlurUniform { step_uv: [0.0, step / resolution[1]], _pad: [0.0; 2] }),
-        );
+        let blur_buffers = [
+            BlurUniform { step_uv: [step / resolution[0], 0.0], _pad: [0.0; 2] },
+            BlurUniform { step_uv: [0.0, step / resolution[1]], _pad: [0.0; 2] },
+        ]
+        .map(|u| buffer("glass blur", bytemuck::bytes_of(&u), wgpu::BufferUsages::UNIFORM));
 
         let targets = self.blur_targets(device, (width, height));
-        let blur_h = self.blur_bind_group(device, 0, frame.backdrop);
-        let blur_v = self.blur_bind_group(device, 1, &targets.horizontal);
+        let blur_h = self.blur_bind_group(device, &blur_buffers[0], frame.backdrop);
+        let blur_v = self.blur_bind_group(device, &blur_buffers[1], &targets.horizontal);
         let composite = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("glass composite"),
             layout: &self.composite_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.params_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.shapes_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: shapes_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -265,14 +251,14 @@ impl GlassRenderer {
     fn blur_bind_group(
         &self,
         device: &wgpu::Device,
-        pass: usize,
+        uniform: &wgpu::Buffer,
         src: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("glass blur"),
             layout: &self.blur_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.blur_buffers[pass].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(src) },
             ],

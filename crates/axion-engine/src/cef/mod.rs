@@ -51,6 +51,10 @@ wrap_app! {
             if self.flags.no_sandbox {
                 command_line.append_switch(Some(&"no-sandbox".into()));
             }
+            // Without a Wayland display (e.g. forced onto XWayland), Chromium must use X11 too.
+            if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some() {
+                command_line.append_switch_with_value(Some(&"ozone-platform".into()), Some(&"x11".into()));
+            }
             if let Some(node) = &self.flags.render_node {
                 let node = node.to_string_lossy();
                 command_line.append_switch_with_value(Some(&"render-node-override".into()), Some(&node.as_ref().into()));

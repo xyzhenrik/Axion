@@ -95,12 +95,19 @@ impl<'a> ImageDraw<'a> {
     }
 }
 
-/// Solid shapes, then icons, then text — all above what was drawn before.
+/// Solid shapes, then images, then icons and text — all above what was drawn before.
 #[derive(Default)]
 pub struct Content<'a> {
     pub quads: Vec<Quad>,
+    pub images: Vec<ImageDraw<'a>>,
     pub icons: Vec<IconDraw>,
     pub text: Vec<glyphon::TextArea<'a>>,
+}
+
+impl Content<'_> {
+    pub fn is_empty(&self) -> bool {
+        self.quads.is_empty() && self.images.is_empty() && self.icons.is_empty() && self.text.is_empty()
+    }
 }
 
 pub enum Layer<'a> {
@@ -350,7 +357,6 @@ impl Compositor {
                     let next = 1 - current;
                     self.glass.render(
                         &self.device,
-                        &self.queue,
                         &mut encoder,
                         GlassFrame {
                             backdrop: &targets.views[current],
@@ -363,7 +369,14 @@ impl Compositor {
                     current = next;
                 }
                 Layer::Content(content) => {
-                    self.draw_content(&mut encoder, &targets.views[current], content, fonts, text_batch);
+                    self.draw_content(
+                        &mut encoder,
+                        &targets.views[current],
+                        content,
+                        fonts,
+                        text_batch,
+                        viewport,
+                    );
                     text_batch += 1;
                 }
             }
@@ -390,7 +403,10 @@ impl Compositor {
         content: &Content<'_>,
         fonts: &mut glyphon::FontSystem,
         batch: usize,
+        viewport: Vec2,
     ) {
+        let image_groups: Vec<wgpu::BindGroup> =
+            content.images.iter().map(|image| self.image_bind_group(image, viewport)).collect();
         let instances: Vec<QuadInstance> = content
             .quads
             .iter()
@@ -467,6 +483,13 @@ impl Compositor {
             pass.set_bind_group(0, &self.quad_bind_group, &[]);
             pass.set_vertex_buffer(0, buffer.slice(..));
             pass.draw(0..4, 0..instances.len() as u32);
+        }
+        if !image_groups.is_empty() {
+            pass.set_pipeline(&self.image_pipeline);
+            for group in &image_groups {
+                pass.set_bind_group(0, group, &[]);
+                pass.draw(0..4, 0..1);
+            }
         }
         if let Err(error) =
             self.text_batches[batch].renderer.render(&self.text_atlas, &self.text_viewport, &mut pass)

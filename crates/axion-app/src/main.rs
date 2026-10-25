@@ -1,17 +1,19 @@
 //! Axion — a Liquid Glass web browser.
 //!
 //! ```bash
-//! axion [url] [--capture=out.png] [--size=1440x900]
+//! axion [url…] [--capture=out.png] [--size=1440x900] [--overview]
 //! ```
 //!
 //! Environment: `AXION_GPU=low` uses the integrated GPU, `AXION_OSR=software` disables GPU
 //! frame sharing, `AXION_NO_SANDBOX=1` disables Chromium's sandbox, `AXION_CONFIG_DIR` and
-//! `AXION_PROFILE_DIR` move settings and browsing data.
+//! `AXION_PROFILE_DIR` move settings and browsing data, `AXION_MONITOR=HDMI-A-1` opens the
+//! window on that monitor (X11/XWayland only).
 
 mod browser;
 mod chrome;
 mod gpu;
 mod input;
+mod overview;
 mod tabs;
 mod url;
 
@@ -43,7 +45,8 @@ fn main() -> Result<()> {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let options = Options {
-        url: args.iter().find(|a| !a.starts_with("--")).cloned(),
+        urls: args.iter().filter(|a| !a.starts_with("--")).cloned().collect(),
+        overview: args.iter().any(|a| a == "--overview"),
         capture: args.iter().find_map(|a| a.strip_prefix("--capture=")).map(Into::into),
         capture_after: CAPTURE_AFTER,
         size: args.iter().find_map(|a| a.strip_prefix("--size=")).and_then(|s| {

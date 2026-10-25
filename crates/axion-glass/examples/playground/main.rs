@@ -322,7 +322,6 @@ impl Gpu {
         let shapes = self.scene.shapes();
         self.glass.render(
             &self.device,
-            &self.queue,
             &mut encoder,
             GlassFrame {
                 backdrop: &self.backdrop.view,
@@ -370,7 +369,6 @@ impl Gpu {
         let shapes = self.scene.shapes();
         glass.render(
             &self.device,
-            &self.queue,
             &mut encoder,
             GlassFrame {
                 backdrop: &self.backdrop.view,
@@ -456,7 +454,6 @@ impl Gpu {
             };
             self.glass.render(
                 &self.device,
-                &self.queue,
                 &mut encoder,
                 GlassFrame {
                     backdrop: &self.backdrop.view,

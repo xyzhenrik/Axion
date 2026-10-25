@@ -16,6 +16,7 @@ arboard = { version = "3", default-features = false, features = ["wayland-data-c
 axion-compositor.workspace = true
 axion-config.workspace = true
 axion-engine.workspace = true
+axion-physics.workspace = true
 axion-ui.workspace = true
 directories = "6"
 glam.workspace = true

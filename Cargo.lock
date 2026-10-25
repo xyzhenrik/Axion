@@ -208,6 +208,7 @@ dependencies = [
  "axion-compositor",
  "axion-config",
  "axion-engine",
+ "axion-physics",
  "axion-ui",
  "directories",
  "glam",

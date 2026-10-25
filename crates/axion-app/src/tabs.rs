@@ -17,6 +17,8 @@ pub struct Tab {
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub zoom: f64,
+    /// A background tab keeps rendering until it has a thumbnail, then gets hidden.
+    pub needs_snapshot: bool,
 }
 
 impl Tab {
@@ -30,6 +32,7 @@ impl Tab {
             can_go_back: false,
             can_go_forward: false,
             zoom: 0.0,
+            needs_snapshot: false,
         }
     }
 
@@ -65,6 +68,10 @@ impl Tabs {
 
     pub fn active(&self) -> Option<&Tab> {
         self.tabs.get(self.active)
+    }
+
+    pub fn all_mut(&mut self) -> &mut [Tab] {
+        &mut self.tabs
     }
 
     pub fn active_mut(&mut self) -> Option<&mut Tab> {

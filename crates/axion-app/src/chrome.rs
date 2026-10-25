@@ -141,7 +141,7 @@ fn icon_button(
 }
 
 /// A favicon stand-in: a rounded square in a colour derived from the host (as in the design).
-fn favicon_color(url: &str) -> Color {
+pub fn favicon_color(url: &str) -> Color {
     const COLORS: [u32; 8] = [0xF2742B, 0x2E6BFF, 0x7C5CFF, 0x1F9D57, 0xE2457A, 0x1C5FA6, 0xD98A06, 0x8E3FA6];
     let host = display_host(url);
     let hash = host.bytes().fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
