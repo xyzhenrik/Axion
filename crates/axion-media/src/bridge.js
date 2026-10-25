@@ -8,6 +8,11 @@
   if (window.__axionMedia) return;
   var SECRET = '__AXION_SECRET__';
   var REPLACE_NATIVE = __AXION_REPLACE__;
+  var REPLACE_SITE = __AXION_REPLACE_SITE__;
+  // Site players (YouTube…) smaller than this keep their own UI.
+  var MIN_W = 220, MIN_H = 124;
+  // A player's container is the ancestors up to this much bigger than its video.
+  var CONTAINER_SLACK = 1.6;
   var MARK = '\u0001axion:';
   var log = console.debug.bind(console);
   var isTop = window === window.top;
@@ -43,7 +48,10 @@
   style.textContent = 'video[data-axion-controls]::-webkit-media-controls{display:none!important}' +
     'html.axion-takeover,html.axion-takeover body{background:#000!important}' +
     'html.axion-takeover *{visibility:hidden!important}' +
-    'html.axion-takeover [data-axion-takeover]{visibility:visible!important}';
+    'html.axion-takeover [data-axion-takeover]{visibility:visible!important}' +
+    // A site player whose UI ours replaces: everything in its container but the video.
+    '[data-axion-player] *{visibility:hidden!important}' +
+    '[data-axion-player] [data-axion-own]{visibility:visible!important}';
   function addStyle() {
     var root = document.head || document.documentElement;
     if (!root) return false;
@@ -71,6 +79,25 @@
       .observe(el, { attributes: true, attributeFilter: ['controls'] });
     el.addEventListener('click', function () { if (el.paused) el.play(); else el.pause(); });
     el.addEventListener('dblclick', function () { event({ e: 'dblclick', id: el.__axId }); });
+  }
+
+  // Gives a site player's video our controls: hides the site's player UI around it. Muted
+  // looping videos are decoration (animated backgrounds) and stay as they are.
+  function replaceSitePlayer(el) {
+    if (el.__axOwn) return true;
+    if (!REPLACE_SITE || el.__axNative || el.tagName !== 'VIDEO' || (el.loop && el.muted)) return false;
+    var r = el.getBoundingClientRect();
+    if (r.width < MIN_W || r.height < MIN_H) return false;
+    var area = r.width * r.height, container = null;
+    for (var p = el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
+      var pr = p.getBoundingClientRect();
+      if (pr.width * pr.height > area * CONTAINER_SLACK) break;
+      container = p;
+    }
+    if (container) container.setAttribute('data-axion-player', '');
+    el.setAttribute('data-axion-own', '');
+    el.__axOwn = true;
+    return true;
   }
 
   function scan() {
@@ -116,6 +143,7 @@
       duration: isFinite(el.duration) ? el.duration : 0, live: el.duration === Infinity,
       volume: el.volume, muted: el.muted, rate: el.playbackRate, buffered: buffered,
       captions: captions, caption: caption, native: !!el.__axNative,
+      own: (!!el.__axNative && REPLACE_NATIVE) || replaceSitePlayer(el),
       fullscreen: !!document.fullscreenElement &&
         (document.fullscreenElement === el || document.fullscreenElement.contains(el)) || (takeover && takeover.el === el) || false
     };

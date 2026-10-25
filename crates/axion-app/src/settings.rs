@@ -105,6 +105,7 @@ enum Setting {
     KeepMediaAwake,
     RestoreSession,
     OwnControls,
+    ReplaceSitePlayers,
     OwnFullscreenControls,
     HideControlsAfter,
     HardwareDecoding,
@@ -139,6 +140,7 @@ impl Setting {
             Setting::KeepMediaAwake => "Keep tabs playing audio awake",
             Setting::RestoreSession => "Reopen last session's tabs at start",
             Setting::OwnControls => "Axion's controls for page videos",
+            Setting::ReplaceSitePlayers => "Also instead of sites' own players (YouTube…)",
             Setting::OwnFullscreenControls => "Axion's controls in fullscreen, also over site players",
             Setting::HideControlsAfter => "Hide controls while playing after (1 – 10 seconds)",
             Setting::HardwareDecoding => "Hardware video decoding (after restart)",
@@ -163,6 +165,7 @@ impl Setting {
                 | Setting::KeepMediaAwake
                 | Setting::RestoreSession
                 | Setting::OwnControls
+                | Setting::ReplaceSitePlayers
                 | Setting::OwnFullscreenControls
                 | Setting::HardwareDecoding
                 | Setting::DesktopIntegration
@@ -206,6 +209,7 @@ impl Setting {
             Setting::KeepMediaAwake => return c.tabs.keep_media_awake as u8 as f32,
             Setting::RestoreSession => return c.tabs.restore_session as u8 as f32,
             Setting::OwnControls => return c.media.own_controls as u8 as f32,
+            Setting::ReplaceSitePlayers => return c.media.replace_site_players as u8 as f32,
             Setting::OwnFullscreenControls => return c.media.own_fullscreen_controls as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
             Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
@@ -246,6 +250,7 @@ impl Setting {
             Setting::KeepMediaAwake => c.tabs.keep_media_awake = on,
             Setting::RestoreSession => c.tabs.restore_session = on,
             Setting::OwnControls => c.media.own_controls = on,
+            Setting::ReplaceSitePlayers => c.media.replace_site_players = on,
             Setting::OwnFullscreenControls => c.media.own_fullscreen_controls = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
             Setting::DesktopIntegration => c.media.desktop_integration = on,
@@ -709,6 +714,7 @@ impl SettingsSheet {
             Category::Media => {
                 for setting in [
                     Setting::OwnControls,
+                    Setting::ReplaceSitePlayers,
                     Setting::OwnFullscreenControls,
                     Setting::HideControlsAfter,
                     Setting::HardwareDecoding,

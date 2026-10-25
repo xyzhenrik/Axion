@@ -229,7 +229,7 @@ impl Browser {
             },
         )?;
         engine.set_request_policy(Some(shields.policy()));
-        engine.set_page_script(Some(axion_media::bridge_script(&bridge_secret(), config.media.own_controls)));
+        engine.set_page_script(Some(axion_media::bridge_script(&bridge_secret(), media_replace(&config))));
 
         let dark = is_dark(&config, &window);
         let scale = window.scale_factor() as f32;
@@ -1065,7 +1065,7 @@ impl Browser {
     fn apply_shields_config(&mut self) {
         self.shields.apply_config(&self.config);
         // Pages loaded from now on get the media bridge with the current setting.
-        let script = axion_media::bridge_script(&bridge_secret(), self.config.media.own_controls);
+        let script = axion_media::bridge_script(&bridge_secret(), media_replace(&self.config));
         self.engine.set_page_script(Some(script));
     }
 
@@ -2034,6 +2034,15 @@ fn find_tab<'a>(tabs: &'a Tabs, parked: &'a Tabs, view: ViewId) -> Option<&'a Ta
 
 fn tab_mut<'a>(tabs: &'a mut Tabs, parked: &'a mut Tabs, view: ViewId) -> Option<&'a mut Tab> {
     if tabs.all().iter().any(|t| t.view == view) { tabs.by_view_mut(view) } else { parked.by_view_mut(view) }
+}
+
+/// Which page controls the media bridge replaces with ours.
+fn media_replace(config: &Config) -> axion_media::Replace {
+    let media = &config.media;
+    axion_media::Replace {
+        native_controls: media.own_controls,
+        site_players: media.own_controls && media.replace_site_players,
+    }
 }
 
 /// A per-run secret that keeps the media bridge's frame messages apart from the page's.

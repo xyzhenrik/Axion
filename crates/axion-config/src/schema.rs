@@ -422,6 +422,8 @@ impl Default for Tabs {
 pub struct Media {
     /// Replace the native controls of page videos with Axion's glass controls.
     pub own_controls: bool,
+    /// Also replace the players sites build themselves (YouTube…): their UI is hidden.
+    pub replace_site_players: bool,
     /// Show Axion's controls over every fullscreen video, also ones with a site's own player.
     pub own_fullscreen_controls: bool,
     /// Hide the controls of a playing video after this long without pointer movement.
@@ -442,6 +444,7 @@ impl Default for Media {
     fn default() -> Self {
         Self {
             own_controls: true,
+            replace_site_players: true,
             own_fullscreen_controls: true,
             hide_controls_after_seconds: 2.5,
             skip_seconds: 10.0,

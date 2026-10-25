@@ -14,13 +14,23 @@ pub const MARKER: &str = "\u{1}axion:";
 
 const SOURCE: &str = include_str!("bridge.js");
 
-/// The bridge script. `secret` keeps the frames' postMessage traffic apart from the page's;
-/// with `replace_native_controls` videos with native controls get ours instead.
-pub fn bridge_script(secret: &str, replace_native_controls: bool) -> String {
+/// Which page controls Axion's replace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Replace {
+    /// `<video controls>`: the browser's built-in controls.
+    pub native_controls: bool,
+    /// Sites' own players (YouTube…): their UI is hidden around the video.
+    pub site_players: bool,
+}
+
+/// The bridge script. `secret` keeps the frames' postMessage traffic apart from the page's.
+pub fn bridge_script(secret: &str, replace: Replace) -> String {
     let secret: String = secret.chars().filter(char::is_ascii_alphanumeric).collect();
+    let flag = |on: bool| if on { "true" } else { "false" };
     SOURCE
         .replace("__AXION_SECRET__", &secret)
-        .replace("__AXION_REPLACE__", if replace_native_controls { "true" } else { "false" })
+        .replace("__AXION_REPLACE_SITE__", flag(replace.site_players))
+        .replace("__AXION_REPLACE__", flag(replace.native_controls))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,8 +74,10 @@ pub struct Player {
     pub captions: Vec<Caption>,
     /// The showing caption track, -1 for none.
     pub caption: i32,
-    /// It had native controls, which the bridge replaced with ours.
+    /// It had native controls.
     pub native: bool,
+    /// Axion's controls replace the page's (native ones or a site player's UI).
+    pub own: bool,
     /// It is (inside) the page's fullscreen element.
     pub fullscreen: bool,
 }
@@ -239,9 +251,10 @@ mod tests {
 
     #[test]
     fn script_is_filled_in() {
-        let s = bridge_script("abc'; alert(1)//", true);
+        let s = bridge_script("abc'; alert(1)//", Replace { native_controls: true, site_players: false });
         assert!(s.contains("var SECRET = 'abcalert1';"), "secret must be sanitised");
         assert!(s.contains("var REPLACE_NATIVE = true;"));
+        assert!(s.contains("var REPLACE_SITE = false;"));
         assert!(!s.contains("__AXION_"));
     }
 

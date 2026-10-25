@@ -202,7 +202,10 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
       `Runtime.evaluate` with a user gesture (play with sound, fullscreen need one).
 - [x] Glass controls (design "In-page player" / "Fullscreen player"), always dark glass
       (`Ui::set_plane_dark`): play, ±10 s (fullscreen), time, scrubber, remaining, mute, speed
-      cycle, captions cycle, fullscreen/exit; inline only over videos that had native controls.
+      cycle, captions cycle, fullscreen/exit. They replace native controls and sites' own
+      players (YouTube…): the bridge hides everything in the player's container (ancestors up
+      to 1.6× the video's area) but the video. Muted looping videos (backgrounds) and small
+      ones (< 220×124) keep the site's look. `media.replace_site_players` turns it off.
 - [x] Own fullscreen: the element's real fullscreen; in a site's own fullscreen (YouTube…)
       the video "takes over" (everything else `visibility:hidden`) under our controls.
       Controls and pointer hide after 2.5 s; media keys (Space/K, ←/→, ↑/↓, M, F/Esc, C, <, >)

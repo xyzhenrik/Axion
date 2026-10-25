@@ -1,8 +1,9 @@
 //! Axion's own media controls (design: "In-page player", "Fullscreen player"): a dark glass
 //! capsule over the page's video, driven through the media bridge.
 //!
-//! Inline, they replace the native controls of `<video controls>` elements and show while the
-//! video is paused or the pointer is over it. In fullscreen they sit over every video, also
+//! Inline, they replace the native controls of `<video controls>` elements and the UI of sites'
+//! own players (hidden by the bridge), and show while the video is paused or the pointer is
+//! over it. In fullscreen they sit over every video, also
 //! ones with a site's own player, and hide after a moment without pointer movement.
 
 use std::time::{Duration, Instant};
@@ -362,7 +363,7 @@ impl PlayerOverlay {
         let candidates: Vec<(&Player, Frame)> = media
             .players
             .iter()
-            .filter(|p| p.kind == Kind::Video && p.native)
+            .filter(|p| p.kind == Kind::Video && p.own)
             .map(|p| (p, clip(to_logical(p), cx.page)))
             .filter(|(_, r)| r.size.x >= MIN_SIZE.x && r.size.y >= MIN_SIZE.y)
             .collect();
