@@ -27,17 +27,18 @@ pub fn panel_items(entries: Vec<HistoryEntry>, now: i64) -> Vec<PanelItem> {
                 url: entry.url,
                 section,
                 deletable: true,
+                ..PanelItem::default()
             }
         })
         .collect()
 }
 
-fn local_date(unix: i64, tz: &TimeZone) -> Option<Date> {
+pub(crate) fn local_date(unix: i64, tz: &TimeZone) -> Option<Date> {
     Some(Timestamp::from_second(unix).ok()?.to_zoned(tz.clone()).date())
 }
 
 /// "Today", "Yesterday", "Saturday, 24 October", or with the year when it isn't this year.
-fn day_label(day: Date, today: Option<Date>) -> String {
+pub(crate) fn day_label(day: Date, today: Option<Date>) -> String {
     if let Some(today) = today {
         if day == today {
             return "Today".into();

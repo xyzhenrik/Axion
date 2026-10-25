@@ -20,6 +20,7 @@ pub(super) struct Shared {
     pub events: RefCell<Vec<(i32, EngineEvent)>>,
     /// Run in every document as it starts loading (see `Engine::set_page_script`).
     pub page_script: RefCell<Option<String>>,
+    pub downloads: Rc<super::download::Downloads>,
 }
 
 #[derive(Default)]
@@ -419,6 +420,7 @@ wrap_client! {
         load: LoadHandler,
         life_span: LifeSpanHandler,
         request: RequestHandler,
+        download: DownloadHandler,
     }
 
     impl Client {
@@ -441,6 +443,10 @@ wrap_client! {
         fn request_handler(&self) -> Option<RequestHandler> {
             Some(self.request.clone())
         }
+
+        fn download_handler(&self) -> Option<DownloadHandler> {
+            Some(self.download.clone())
+        }
     }
 }
 
@@ -451,6 +457,7 @@ pub(super) fn build_client(ctx: &ViewContext) -> Client {
         LoadHandlerBuilder::new(ctx.clone()),
         LifeSpanHandlerBuilder::new(ctx.clone()),
         build_request_handler(&ctx.net, ctx.view),
+        super::download::build_download_handler(&ctx.shared.downloads),
     )
 }
 

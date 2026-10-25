@@ -39,6 +39,10 @@ const MINI_TOP: f32 = 6.0;
 const SEPARATE_ADDRESS_MAX: f32 = 680.0;
 const ADDRESS_FAVICON: f32 = 18.0;
 const NOW_PLAYING_RADIUS: f32 = 20.0;
+const DOWNLOAD_BAR_WIDTH: f32 = 18.0;
+const PANEL_PROGRESS_HEIGHT: f32 = 4.0;
+/// Extra height of a panel row with a progress bar.
+const PANEL_PROGRESS_ROOM: f32 = 12.0;
 
 /// What a click in the chrome means.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,15 +80,22 @@ pub enum ChromeAction {
     DeletePanelItem(usize),
     /// The panel header's clear button ("Clear History…").
     ClearPanel,
+    /// The sidebar's Downloads row and the toolbar's download button.
+    Downloads,
+    /// The `k`th trailing button of panel entry `i` (a download's pause, open …).
+    PanelButton(usize, usize),
 }
 
 const SELECT_TAB_BASE: u32 = 1000;
 const CLOSE_TAB_BASE: u32 = 2000;
 const PANEL_ITEM_BASE: u32 = 7000;
 const DELETE_PANEL_ITEM_BASE: u32 = 10_000;
+const PANEL_BUTTON_BASE: u32 = 12_000;
+/// Trailing buttons a panel entry can have.
+pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 23] = [
+    const SIMPLE: [ChromeAction; 24] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -108,6 +119,7 @@ impl ChromeAction {
         ChromeAction::MuteTab,
         ChromeAction::ExpandBars,
         ChromeAction::ClearPanel,
+        ChromeAction::Downloads,
     ];
 
     fn id(self) -> ActionId {
@@ -116,13 +128,18 @@ impl ChromeAction {
             ChromeAction::CloseTab(i) => CLOSE_TAB_BASE + i as u32,
             ChromeAction::OpenPanelItem(i) => PANEL_ITEM_BASE + i as u32,
             ChromeAction::DeletePanelItem(i) => DELETE_PANEL_ITEM_BASE + i as u32,
+            ChromeAction::PanelButton(i, k) => PANEL_BUTTON_BASE + (i * PANEL_BUTTONS + k) as u32,
             simple => 1 + Self::SIMPLE.iter().position(|&a| a == simple).unwrap_or(0) as u32,
         })
     }
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=23 => Some(Self::SIMPLE[n as usize - 1]),
+            n @ 1..=24 => Some(Self::SIMPLE[n as usize - 1]),
+            n if (PANEL_BUTTON_BASE..PANEL_BUTTON_BASE + 1000 * PANEL_BUTTONS as u32).contains(&n) => {
+                let k = (n - PANEL_BUTTON_BASE) as usize;
+                Some(ChromeAction::PanelButton(k / PANEL_BUTTONS, k % PANEL_BUTTONS))
+            }
             n if (DELETE_PANEL_ITEM_BASE..DELETE_PANEL_ITEM_BASE + 1000).contains(&n) => {
                 Some(ChromeAction::DeletePanelItem((n - DELETE_PANEL_ITEM_BASE) as usize))
             }
@@ -141,6 +158,7 @@ impl ChromeAction {
 }
 
 /// One row of a sidebar panel.
+#[derive(Default)]
 pub struct PanelItem {
     pub title: String,
     pub url: String,
@@ -150,6 +168,12 @@ pub struct PanelItem {
     pub section: Option<String>,
     /// The row has a × that sends [`ChromeAction::DeletePanelItem`].
     pub deletable: bool,
+    /// Shown instead of the URL's favicon (a download's file).
+    pub icon: Option<Icon>,
+    /// A progress bar under the detail (0–1; a download's).
+    pub progress: Option<f32>,
+    /// Trailing buttons, sending [`ChromeAction::PanelButton`] (at most [`PANEL_BUTTONS`]).
+    pub buttons: Vec<Icon>,
 }
 
 /// The three layouts from the design's responsive boards.
@@ -258,6 +282,12 @@ pub struct Chrome {
     overview: NodeId,
     tab_count: NodeId,
     tab_count_label: NodeId,
+    /// The toolbar's download button, its progress bar and the bar's fill.
+    downloads: NodeId,
+    download_track: NodeId,
+    download_fill: NodeId,
+    /// What the download button last showed (visible, progress in %).
+    download_state: Option<(bool, Option<u8>)>,
 }
 
 fn square(side: f32) -> Size<Dimension> {
@@ -479,6 +509,7 @@ impl Chrome {
         sidebar_row(ui, saved_list, ChromeAction::Bookmarks, Icon::Book, "Bookmarks", None);
         sidebar_row(ui, saved_list, ChromeAction::ReadingList, Icon::Glasses, "Reading List", None);
         sidebar_row(ui, saved_list, ChromeAction::History, Icon::History, "History", None);
+        sidebar_row(ui, saved_list, ChromeAction::Downloads, Icon::Download, "Downloads", None);
 
         // Fills the sidebar below its header, so the list scrolls inside it.
         let panel = ui.add(
@@ -708,6 +739,29 @@ impl Chrome {
         );
         let mini_label = ui.add_label(mini, "", TextStyle::Footnote, Style::default());
         ui.set_visible(mini, false);
+        // While downloads run (Safari): an arrow over a thin progress bar; opens the list.
+        let downloads = ui.add(
+            actions,
+            Widget::container().with_action(ChromeAction::Downloads.id()).with_radius(CAPSULE),
+            Style {
+                size: square(BUTTON),
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..column(2.0)
+            },
+        );
+        ui.add(downloads, Widget::icon(Icon::Download, 19.0), Style::default());
+        let download_track = ui.add(
+            downloads,
+            Widget::container().with_background(Background::Fill(Paint::Label, 0.15)).with_radius(CAPSULE),
+            Style { size: Size { width: length(DOWNLOAD_BAR_WIDTH), height: length(3.0) }, ..row(0.0) },
+        );
+        let download_fill = ui.add(
+            download_track,
+            Widget::container().with_background(Background::Fill(Paint::Accent, 1.0)).with_radius(CAPSULE),
+            Style { size: Size { width: percent(0.0), height: percent(1.0) }, ..Default::default() },
+        );
+        ui.set_visible(downloads, false);
         icon_button(ui, actions, ChromeAction::Share, Widget::icon(Icon::Share, 21.0), BUTTON);
         icon_button(ui, actions, ChromeAction::NewTab, Widget::icon(Icon::Plus, 22.0), BUTTON);
         let (overview, _) =
@@ -797,6 +851,10 @@ impl Chrome {
             overview,
             tab_count,
             tab_count_label,
+            downloads,
+            download_track,
+            download_fill,
+            download_state: None,
         };
         chrome.apply_layout(ui, config, Vec2::new(1440.0, 900.0));
         chrome
@@ -909,12 +967,25 @@ impl Chrome {
                 self.panel_list,
                 Widget::container().with_action(ChromeAction::OpenPanelItem(i).id()).with_radius(14.0),
                 Style {
-                    size: Size { width: auto(), height: length(PANEL_ROW_HEIGHT) },
+                    size: Size {
+                        width: auto(),
+                        height: length(
+                            PANEL_ROW_HEIGHT
+                                + if item.progress.is_some() { PANEL_PROGRESS_ROOM } else { 0.0 },
+                        ),
+                    },
                     padding: padding(10.0, 10.0, 0.0, 0.0),
                     ..row(12.0)
                 },
             );
-            favicon_node(ui, row_node, &item.url, 20.0, favicons);
+            match item.icon {
+                Some(icon) => {
+                    ui.add(row_node, Widget::icon(icon, 22.0).with_paint(Paint::Accent), Style::default());
+                }
+                None => {
+                    favicon_node(ui, row_node, &item.url, 20.0, favicons);
+                }
+            }
             let text = ui.add(
                 row_node,
                 Widget::container(),
@@ -928,9 +999,42 @@ impl Chrome {
             let title =
                 if item.title.trim().is_empty() { display_host(&item.url) } else { item.title.clone() };
             ui.add_label(text, &title, TextStyle::Body, shrinking_label());
+            if let Some(progress) = item.progress {
+                let track = ui.add(
+                    text,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Label, 0.12))
+                        .with_radius(CAPSULE),
+                    Style {
+                        size: Size { width: percent(1.0), height: length(PANEL_PROGRESS_HEIGHT) },
+                        margin: Rect {
+                            left: length(0.0),
+                            right: length(0.0),
+                            top: length(3.0),
+                            bottom: length(3.0),
+                        },
+                        flex_shrink: 0.0,
+                        ..row(0.0)
+                    },
+                );
+                ui.add(
+                    track,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Accent, 1.0))
+                        .with_radius(CAPSULE),
+                    Style {
+                        size: Size { width: percent(progress.clamp(0.0, 1.0)), height: percent(1.0) },
+                        ..Default::default()
+                    },
+                );
+            }
             let detail = ui.add_label(text, &item.detail, TextStyle::Footnote, shrinking_label());
             if let Some(w) = ui.widget_mut(detail) {
                 w.set_paint(Paint::Secondary);
+            }
+            for (k, &icon) in item.buttons.iter().take(PANEL_BUTTONS).enumerate() {
+                let glyph = Widget::icon(icon, 15.0).with_paint(Paint::Accent);
+                icon_button(ui, row_node, ChromeAction::PanelButton(i, k), glyph, 30.0);
             }
             if item.deletable {
                 let glyph = Widget::icon(Icon::Close, 14.0).with_paint(Paint::Secondary);
@@ -939,6 +1043,22 @@ impl Chrome {
         }
         ui.set_visible(self.sections, false);
         ui.set_visible(self.panel, true);
+    }
+
+    /// Shows the toolbar's download button with `progress` (0–1) on its bar, or hides it.
+    /// `None` progress (size unknown) hides the bar.
+    pub fn set_download_indicator(&mut self, ui: &mut Ui, shown: bool, progress: Option<f32>) {
+        // Called every frame: only touch the tree on change (in 1 % steps).
+        let state = (shown, progress.map(|p| (p.clamp(0.0, 1.0) * 100.0).round() as u8));
+        if self.download_state == Some(state) {
+            return;
+        }
+        self.download_state = Some(state);
+        ui.set_visible(self.downloads, shown);
+        ui.set_visible(self.download_track, progress.is_some());
+        let mut style = ui.style(self.download_fill);
+        style.size.width = percent(progress.unwrap_or(0.0).clamp(0.0, 1.0));
+        ui.set_style(self.download_fill, style);
     }
 
     pub fn set_panel_clear_label(&self, ui: &mut Ui, text: &str) {

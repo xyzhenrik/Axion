@@ -82,6 +82,9 @@ icons! {
     ExitFullscreen => "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5",
     Gauge => "M4.5 16.5a7.5 7.5 0 1 1 15 0M12 16.5l3.5-4.5M7.5 16.5h.01M16.5 16.5h.01",
     Check => "M5 12.5l4.5 4.5L19 7.5",
+    Download => "M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19.5h14",
+    File => "M7 3.5h6.5L18 8v11a1.5 1.5 0 0 1-1.5 1.5h-9.5A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5zM13.5 3.5V8H18",
+    Folder => "M4.5 6h5l2 2h8A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-10A1.5 1.5 0 0 1 4.5 6z",
 }
 
 /// Packs icon and weight into glyphon's custom glyph id.

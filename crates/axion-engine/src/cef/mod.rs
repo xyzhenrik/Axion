@@ -5,6 +5,7 @@
 //! [`required_features`] and build a [`CefEngine`] on the main thread.
 
 mod client;
+mod download;
 mod gpu;
 mod input;
 mod network;
@@ -393,6 +394,66 @@ impl Engine for CefEngine {
         }
     }
 
+    fn set_download_options(&mut self, options: crate::DownloadOptions) {
+        self.shared.downloads.options.replace(Some(options));
+    }
+
+    fn download_action(&mut self, id: u32, action: crate::DownloadAction) {
+        let control = self.shared.downloads.controls.borrow().get(&id).cloned();
+        let Some(control) = control else { return };
+        match action {
+            crate::DownloadAction::Cancel => control.cancel(),
+            crate::DownloadAction::Pause => control.pause(),
+            crate::DownloadAction::Resume => control.resume(),
+        }
+    }
+
+    fn clear_data(&mut self, what: &crate::ClearData) {
+        let Some(context) = request_context_get_global_context() else { return };
+        if what.cache {
+            download::clear_cache(&context);
+        }
+        if what.all_site_data {
+            download::delete_cookies(&context, None);
+        }
+        for host in &what.sites {
+            download::delete_cookies(&context, Some(host));
+        }
+        // Local storage, IndexedDB, service workers … per origin, through any open page.
+        let host =
+            self.views.values().filter(|v| !v.closing && !v.private).find_map(|v| v.browser.as_ref()?.host());
+        if let Some(host) = host {
+            for site in &what.sites {
+                for origin in
+                    [format!("https://{site}"), format!("https://www.{site}"), format!("http://{site}")]
+                {
+                    let Some(mut params) = dictionary_value_create() else { continue };
+                    params.set_string(Some(&"origin".into()), Some(&origin.as_str().into()));
+                    params.set_string(Some(&"storageTypes".into()), Some(&"all".into()));
+                    host.execute_dev_tools_method(
+                        0,
+                        Some(&"Storage.clearDataForOrigin".into()),
+                        Some(&mut params),
+                    );
+                }
+            }
+        }
+        if what.all_site_data || !what.sites.is_empty() {
+            tracing::info!(
+                all = what.all_site_data,
+                sites = what.sites.len(),
+                "cleared cookies and site data"
+            );
+        }
+    }
+
+    fn request_site_data(&mut self) {
+        match request_context_get_global_context() {
+            Some(context) => download::visit_cookies(&context, &self.shared.downloads),
+            None => self.shared.downloads.cookie_visit_done.set(true),
+        }
+    }
+
     fn set_audio_muted(&mut self, view: ViewId, muted: bool) {
         if let Some(host) = self.host(view) {
             host.set_audio_muted(muted as _);
@@ -584,6 +645,11 @@ impl Engine for CefEngine {
                 | EngineEvent::RequestBlocked { view, .. }
                 | EngineEvent::NavigationBlocked { view, .. }
                 | EngineEvent::Closed { view } => *view,
+                // Not tied to a view (and never queued here).
+                EngineEvent::DownloadUpdated(_) | EngineEvent::SiteData(_) => {
+                    events.push(event);
+                    continue;
+                }
             };
             let Some(state) = self.views.get_mut(&view) else { continue };
             // Events from a browser we replaced (software fallback) are stale.
@@ -598,6 +664,14 @@ impl Engine for CefEngine {
                 _ => {}
             }
             events.push(event);
+        }
+        // Downloads go on when their tab closes, so they aren't filtered by view.
+        let downloads = &self.shared.downloads;
+        events.extend(downloads.updates.borrow_mut().drain(..).map(EngineEvent::DownloadUpdated));
+        if downloads.cookie_visit_done.replace(false) || downloads.cookie_visit_was_empty() {
+            downloads.cookie_visit_started.set(None);
+            let sites = downloads.cookie_sites.borrow().iter().map(|(h, n)| (h.clone(), *n)).collect();
+            events.push(EngineEvent::SiteData(sites));
         }
         events
     }

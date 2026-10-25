@@ -7,9 +7,11 @@
 //! engine (e.g. Servo) can be added behind the same trait.
 
 pub mod cef;
+pub mod download;
 mod input;
 mod policy;
 
+pub use download::{ClearData, DownloadAction, DownloadInfo, DownloadOptions, DownloadState};
 pub use input::{CursorKind, InputEvent, Modifiers, MouseButton};
 pub use policy::{NavigationRequest, RequestPolicy, RequestVerdict, ResourceKind, ResourceRequest};
 
@@ -114,6 +116,11 @@ pub enum EngineEvent {
         view: ViewId,
         url: String,
     },
+    /// A download started, progressed or finished.
+    DownloadUpdated(DownloadInfo),
+    /// The sites (hosts) that store cookies, with their counts — the answer to
+    /// [`Engine::request_site_data`].
+    SiteData(Vec<(String, usize)>),
     /// The view is gone (after [`Engine::close_view`], or the engine had to drop it).
     Closed {
         view: ViewId,
@@ -163,6 +170,13 @@ pub trait Engine {
     /// Light or dark for pages (`prefers-color-scheme`, form controls, scrollbars), applied to
     /// open pages at once.
     fn set_color_scheme(&mut self, dark: bool);
+    /// Where downloads are saved, and whether to ask each time.
+    fn set_download_options(&mut self, options: DownloadOptions);
+    fn download_action(&mut self, id: u32, action: DownloadAction);
+    /// Clears cached files and / or cookies and site storage (normal profile).
+    fn clear_data(&mut self, what: &ClearData);
+    /// Lists the sites with cookies; answers with [`EngineEvent::SiteData`].
+    fn request_site_data(&mut self);
     /// Mutes or unmutes everything the view plays.
     fn set_audio_muted(&mut self, view: ViewId, muted: bool);
     /// Pauses a hidden view completely (no JavaScript, timers or loading) or resumes it.

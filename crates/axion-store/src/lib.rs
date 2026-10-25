@@ -44,7 +44,35 @@ const MIGRATIONS: &[&str] = &[
         title TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 0);",
     // 5: when each open tab was last looked at (for closing unused tabs)
     "ALTER TABLE session_tabs ADD COLUMN last_viewed INTEGER NOT NULL DEFAULT 0;",
+    // 6: finished downloads (the download list)
+    "CREATE TABLE downloads (
+        id INTEGER PRIMARY KEY,
+        url TEXT NOT NULL,
+        path TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL DEFAULT '',
+        size INTEGER NOT NULL DEFAULT 0,
+        state TEXT NOT NULL,
+        finished INTEGER NOT NULL
+    );
+    CREATE INDEX downloads_by_time ON downloads(finished);",
 ];
+
+/// A finished download in the download list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredDownload {
+    pub id: i64,
+    pub url: String,
+    pub path: String,
+    pub file_name: String,
+    pub mime_type: String,
+    /// Bytes.
+    pub size: i64,
+    /// "complete", "cancelled" or "failed".
+    pub state: String,
+    /// Unix seconds.
+    pub finished: i64,
+}
 
 /// A saved tab of the session.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -266,6 +294,75 @@ impl Store {
             None => self.conn.execute("DELETE FROM meta WHERE key = ?1", [key])?,
         };
         Ok(())
+    }
+
+    // ---- downloads ----
+
+    /// Adds a finished download to the list; returns its id.
+    pub fn add_download(&self, d: &StoredDownload) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO downloads (url, path, file_name, mime_type, size, state, finished)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![d.url, d.path, d.file_name, d.mime_type, d.size, d.state, d.finished],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// The download list, newest first.
+    pub fn downloads(&self, limit: usize) -> Result<Vec<StoredDownload>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, url, path, file_name, mime_type, size, state, finished FROM downloads
+             ORDER BY finished DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            Ok(StoredDownload {
+                id: r.get(0)?,
+                url: r.get(1)?,
+                path: r.get(2)?,
+                file_name: r.get(3)?,
+                mime_type: r.get(4)?,
+                size: r.get(5)?,
+                state: r.get(6)?,
+                finished: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn remove_download(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM downloads WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Removes list entries finished before `before` (unix seconds; `i64::MAX`: all).
+    pub fn clear_downloads_before(&self, before: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM downloads WHERE finished < ?1", [before])?;
+        Ok(())
+    }
+
+    /// Removes list entries finished at or after `since`.
+    pub fn clear_downloads_since(&self, since: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM downloads WHERE finished >= ?1", [since])?;
+        Ok(())
+    }
+
+    /// The hosts visited at or after `since` (for clearing their site data).
+    pub fn hosts_visited_since(&self, since: i64) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT u.url FROM urls u JOIN visits v ON v.url_id = u.id WHERE v.at >= ?1")?;
+        let urls = stmt.query_map([since], |r| r.get::<_, String>(0))?;
+        let mut hosts: Vec<String> = urls
+            .filter_map(|u| u.ok())
+            .filter_map(|u| {
+                let rest = u.split_once("://")?.1;
+                let host = rest.split(['/', '?', '#']).next()?.split(':').next()?;
+                (!host.is_empty()).then(|| host.trim_start_matches("www.").to_ascii_lowercase())
+            })
+            .collect();
+        hosts.sort();
+        hosts.dedup();
+        Ok(hosts)
     }
 
     // ---- session ----
@@ -522,6 +619,38 @@ mod tests {
         assert_eq!(s.session().unwrap(), (tabs.clone(), 1));
         s.save_session(&tabs[..1], 0).unwrap();
         assert_eq!(s.session().unwrap().0.len(), 1);
+    }
+
+    #[test]
+    fn downloads_list() {
+        let s = store();
+        let d = |name: &str, finished: i64| StoredDownload {
+            id: 0,
+            url: format!("https://a.example/{name}"),
+            path: format!("/tmp/{name}"),
+            file_name: name.into(),
+            mime_type: "application/zip".into(),
+            size: 10,
+            state: "complete".into(),
+            finished,
+        };
+        let a = s.add_download(&d("a.zip", 100)).unwrap();
+        s.add_download(&d("b.zip", 200)).unwrap();
+        let list = s.downloads(10).unwrap();
+        assert_eq!(list.iter().map(|x| x.file_name.as_str()).collect::<Vec<_>>(), ["b.zip", "a.zip"]);
+        s.remove_download(a).unwrap();
+        assert_eq!(s.downloads(10).unwrap().len(), 1);
+        s.clear_downloads_before(i64::MAX).unwrap();
+        assert!(s.downloads(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn hosts_since() {
+        let s = store();
+        s.record_visit("https://www.News.example/a?b", "", 100).unwrap();
+        s.record_visit("http://other.org:8080/", "", 50).unwrap();
+        assert_eq!(s.hosts_visited_since(60).unwrap(), ["news.example"]);
+        assert_eq!(s.hosts_visited_since(0).unwrap().len(), 2);
     }
 
     #[test]

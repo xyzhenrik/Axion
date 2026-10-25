@@ -21,6 +21,7 @@ use winit::window::{Fullscreen, Window};
 
 use crate::chrome::{Chrome, ChromeAction, NowPlaying, PanelItem};
 use crate::desktop::DesktopTheme;
+use crate::downloads::{self, Downloads};
 use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
@@ -150,6 +151,7 @@ pub struct Browser {
     /// The open sidebar panel, and whether its clear button asks for confirmation.
     panel: Option<(Panel, bool)>,
     favicons: Favicons,
+    downloads: Downloads,
     /// History and bookmarks; `None` if the database couldn't be opened (browsing still works).
     store: Option<axion_store::Store>,
     /// Search text the overview's cards were last built for.
@@ -253,6 +255,7 @@ impl Browser {
             .inspect_err(|e| tracing::error!("history unavailable: {e}"))
             .ok();
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
+        let downloads = Downloads::new(profile.clone());
         let mut engine = CefEngine::new(
             device.clone(),
             queue.clone(),
@@ -270,6 +273,10 @@ impl Browser {
             },
         )?;
         engine.set_request_policy(Some(shields.policy()));
+        engine.set_download_options(Downloads::options(&config));
+        Downloads::prune(store.as_ref(), &config, unix_now());
+        // What the last quit should have removed, in case it didn't get to (a crash).
+        Downloads::on_quit(store.as_ref(), &config, &mut engine);
         engine.set_page_script(Some(axion_media::bridge_script(&bridge_secret(), &media_replace(&config))));
 
         let desktop_theme = DesktopTheme::start();
@@ -328,6 +335,7 @@ impl Browser {
             panel: None,
             store,
             favicons,
+            downloads,
             overview_query: String::new(),
             last_frame: Instant::now(),
             page_tint: None,
@@ -573,6 +581,9 @@ impl Browser {
                     self.settings.set_memory_used(self.memory.used());
                     let window = self.logical_size();
                     self.settings.open(&mut self.ui, &self.config, &self.keymap, window);
+                    if self.settings.category() == Category::Data {
+                        self.settings_outcome(Outcome::DataPage);
+                    }
                 }
             }
             Action::Find => {
@@ -1321,6 +1332,7 @@ impl Browser {
                     url: b.url,
                     section: None,
                     deletable: false,
+                    ..PanelItem::default()
                 })
                 .collect(),
             Panel::History => crate::history::panel_items(
@@ -1329,20 +1341,31 @@ impl Browser {
             ),
             // Reading list entries arrive with Phase 6.
             Panel::ReadingList => Vec::new(),
+            Panel::Downloads => self.downloads.panel_items(Some(store), &self.config, unix_now()),
         };
         let title = match panel {
             Panel::Bookmarks => "Bookmarks",
             Panel::History => "History",
             Panel::ReadingList => "Reading List",
+            Panel::Downloads => "Downloads",
         };
         self.panel_urls = items.iter().map(|i| i.url.clone()).collect();
-        let clear = (panel == Panel::History && !items.is_empty()).then_some(CLEAR_HISTORY);
+        let clear = match panel {
+            Panel::History => (!items.is_empty()).then_some(CLEAR_HISTORY),
+            Panel::Downloads => self.downloads.has_finished().then_some("Clear List"),
+            _ => None,
+        };
         self.panel = Some((panel, false));
         self.chrome.show_panel(&mut self.ui, title, &items, &self.favicons, clear, keep_scroll);
     }
 
     /// The History panel's clear button: the first click asks, the second clears.
     fn clear_panel(&mut self) {
+        if let Some((Panel::Downloads, _)) = self.panel {
+            Downloads::clear_list(self.store.as_ref());
+            self.show_panel_with(Panel::Downloads, true);
+            return;
+        }
         let Some((Panel::History, confirming)) = self.panel else { return };
         if !confirming {
             self.panel = Some((Panel::History, true));
@@ -1359,6 +1382,11 @@ impl Browser {
 
     fn delete_panel_item(&mut self, index: usize) {
         let Some((panel, _)) = self.panel else { return };
+        if panel == Panel::Downloads {
+            self.downloads.remove_row(index, self.store.as_ref());
+            self.show_panel_with(panel, true);
+            return;
+        }
         let (Some(store), Some(url)) = (&self.store, self.panel_urls.get(index)) else { return };
         if let Err(e) = store.delete_history_url(url) {
             tracing::error!("deleting a history entry failed: {e}");
@@ -1656,6 +1684,21 @@ impl Browser {
                     }
                     Some(ChromeAction::ClearPanel) => self.clear_panel(),
                     Some(ChromeAction::DeletePanelItem(i)) => self.delete_panel_item(i),
+                    Some(ChromeAction::Downloads) => {
+                        if !self.chrome.sidebar_open() {
+                            self.run(Action::ToggleSidebar);
+                        }
+                        self.show_panel(Panel::Downloads);
+                    }
+                    Some(ChromeAction::PanelButton(i, k)) => {
+                        self.downloads.row_button(i, k, &mut self.engine);
+                        self.show_panel_with(Panel::Downloads, true);
+                    }
+                    Some(ChromeAction::OpenPanelItem(i))
+                        if self.panel.is_some_and(|(p, _)| p == Panel::Downloads) =>
+                    {
+                        self.downloads.open_row(i);
+                    }
                     Some(ChromeAction::OpenPanelItem(i)) => {
                         if let Some(url) = self.panel_urls.get(i).cloned() {
                             self.navigate_to(url);
@@ -1730,6 +1773,7 @@ impl Browser {
                 self.apply_theme();
             }
         }
+        let mut downloads_changed = false;
         for event in self.engine.pump() {
             tracing::debug!(?event, "engine");
             match event {
@@ -1841,8 +1885,17 @@ impl Browser {
                     self.count_blocked(view, url);
                 }
                 EngineEvent::Closed { .. } => {}
+                EngineEvent::DownloadUpdated(info) => {
+                    self.downloads.update(info, self.store.as_ref(), &self.config, unix_now());
+                    downloads_changed = true;
+                }
+                EngineEvent::SiteData(sites) => {
+                    self.settings.set_site_data(Some(sites));
+                    self.refresh_settings();
+                }
             }
         }
+        self.downloads_pump(downloads_changed);
         self.reload_config_if_changed();
         self.apply_lifecycle();
         if self.config.privacy.lock_private_tabs {
@@ -1861,6 +1914,7 @@ impl Browser {
             Outcome::Changed => {
                 // Apply at once; write to disk a moment later (sliders send many changes).
                 self.config_dirty_since.get_or_insert(Instant::now());
+                self.engine.set_download_options(Downloads::options(&self.config));
                 self.apply_shields_config();
                 self.apply_theme();
                 self.update_layout();
@@ -1887,6 +1941,53 @@ impl Browser {
                     tracing::error!("clearing history failed: {e}");
                 }
             }
+            Outcome::DataPage => {
+                self.downloads.measure_cache();
+                self.engine.request_site_data();
+            }
+            Outcome::ChooseDownloadFolder => self.downloads.choose_folder(),
+            Outcome::ClearBrowsingData => {
+                downloads::clear_browsing_data(
+                    &self.config,
+                    self.store.as_ref(),
+                    &mut self.engine,
+                    unix_now(),
+                );
+                self.settings_outcome(Outcome::DataPage);
+            }
+            Outcome::RemoveSiteData(site) => {
+                let sites = site.map(|s| vec![s]).unwrap_or_default();
+                let all = sites.is_empty();
+                self.engine.clear_data(&axion_engine::ClearData { cache: false, all_site_data: all, sites });
+                self.engine.request_site_data();
+            }
+        }
+    }
+
+    /// Downloads: the toolbar indicator, the open list, and background results (cache size,
+    /// chosen folder).
+    fn downloads_pump(&mut self, changed: bool) {
+        let (shown, progress) = self.downloads.indicator(&self.config);
+        self.chrome.set_download_indicator(&mut self.ui, shown, progress);
+        if changed && self.panel.is_some_and(|(p, _)| p == Panel::Downloads) {
+            self.show_panel_with(Panel::Downloads, true);
+        }
+        for event in self.downloads.poll() {
+            match event {
+                downloads::Event::CacheSize(size) => self.settings.set_cache_size(Some(size)),
+                downloads::Event::FolderChosen(folder) => {
+                    self.config.downloads.directory = downloads::short_path(&folder);
+                    self.settings_outcome(Outcome::Changed);
+                }
+            }
+            self.refresh_settings();
+        }
+    }
+
+    /// Rebuilds the open settings page (after data it shows arrived).
+    fn refresh_settings(&mut self) {
+        if self.settings.is_open() {
+            self.settings.show(&mut self.ui, &self.config, &self.keymap);
         }
     }
 
@@ -1911,6 +2012,7 @@ impl Browser {
                 Ok(config) => {
                     tracing::info!("settings reloaded");
                     self.config = config;
+                    self.engine.set_download_options(Downloads::options(&self.config));
                     self.apply_shields_config();
                     self.apply_theme();
                     self.update_layout();
@@ -2295,6 +2397,13 @@ impl Browser {
                 "menu" => self.open_page_menu(),
                 "shields" => self.toggle_shields_popover(),
                 "history" => self.show_panel(Panel::History),
+                "downloads" => self.show_panel(Panel::Downloads),
+                // Capture aid: "Clear Browsing Data" with the configured choices.
+                "clear-data" => self.settings_outcome(Outcome::ClearBrowsingData),
+                "data-settings" => {
+                    self.settings.set_category(Category::Data);
+                    self.run(Action::OpenSettings);
+                }
                 // Capture aid: type "type:TEXT" into the address bar like the keyboard does.
                 typed if typed.starts_with("type:") => {
                     self.edit_address();
@@ -2621,6 +2730,7 @@ enum Panel {
     Bookmarks,
     History,
     ReadingList,
+    Downloads,
 }
 
 /// Signals that `--capture` finished (not an error for the user).
@@ -2628,6 +2738,7 @@ impl Drop for Browser {
     fn drop(&mut self) {
         self.shields.save(self.store.as_ref());
         self.save_session_if_due(true);
+        Downloads::on_quit(self.store.as_ref(), &self.config, &mut self.engine);
     }
 }
 

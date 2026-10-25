@@ -19,6 +19,8 @@ pub struct Config {
     pub shields: Shields,
     pub tabs: Tabs,
     pub media: Media,
+    pub downloads: Downloads,
+    pub data: Data,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -342,6 +344,84 @@ pub struct Privacy {
 impl Default for Privacy {
     fn default() -> Self {
         Self { lock_private_tabs: true, lock_after_seconds: 60.0 }
+    }
+}
+
+/// When finished downloads leave the Downloads list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoveDownloads {
+    /// Only with "Clear List" or a row's remove button.
+    #[default]
+    Manually,
+    AfterOneDay,
+    /// When Axion quits.
+    OnQuit,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Downloads {
+    /// Folder new downloads go to; empty means the desktop's Downloads folder.
+    pub directory: String,
+    /// Ask where to save each file instead of saving it straight to `directory`.
+    pub ask_where_to_save: bool,
+    /// Open "safe" files (images, PDFs, text, audio, video) once they finished downloading.
+    pub open_safe_files: bool,
+    pub remove_list_items: RemoveDownloads,
+    /// The toolbar's download button stays this long after the last download finished (seconds).
+    pub indicator_linger_seconds: f32,
+    /// How many finished downloads the list keeps at most.
+    pub list_limit: u32,
+}
+
+impl Default for Downloads {
+    fn default() -> Self {
+        Self {
+            directory: String::new(),
+            ask_where_to_save: true,
+            open_safe_files: false,
+            remove_list_items: RemoveDownloads::Manually,
+            indicator_linger_seconds: 60.0,
+            list_limit: 500,
+        }
+    }
+}
+
+/// How far back "Clear Browsing Data" goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClearRange {
+    LastHour,
+    Today,
+    LastWeek,
+    #[default]
+    AllTime,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Data {
+    /// Delete all cookies and site data when Axion quits.
+    pub clear_cookies_on_quit: bool,
+    /// What "Clear Browsing Data" selects (remembered between uses).
+    pub clear_history: bool,
+    pub clear_cookies: bool,
+    pub clear_cache: bool,
+    pub clear_downloads: bool,
+    pub clear_range: ClearRange,
+}
+
+impl Default for Data {
+    fn default() -> Self {
+        Self {
+            clear_cookies_on_quit: false,
+            clear_history: true,
+            clear_cookies: true,
+            clear_cache: true,
+            clear_downloads: true,
+            clear_range: ClearRange::AllTime,
+        }
     }
 }
 

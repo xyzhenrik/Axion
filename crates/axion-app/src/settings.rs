@@ -2,7 +2,10 @@
 //! categories on the left. Every change is written to `config.toml` at once.
 
 use axion_compositor::Icon;
-use axion_config::{Action as KeyAction, Color, Config, Keymap, ShieldLevel, TabBarStyle, ThemeMode};
+use axion_config::{
+    Action as KeyAction, ClearRange, Color, Config, Keymap, RemoveDownloads, ShieldLevel, TabBarStyle,
+    ThemeMode,
+};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
@@ -44,10 +47,11 @@ pub enum Category {
     Keyboard,
     Shields,
     Privacy,
+    Data,
 }
 
 impl Category {
-    const ALL: [Category; 8] = [
+    const ALL: [Category; 9] = [
         Category::General,
         Category::Appearance,
         Category::LiquidGlass,
@@ -56,6 +60,7 @@ impl Category {
         Category::Keyboard,
         Category::Shields,
         Category::Privacy,
+        Category::Data,
     ];
 
     fn title(self) -> &'static str {
@@ -68,6 +73,7 @@ impl Category {
             Category::Keyboard => "Keyboard",
             Category::Shields => "Shields",
             Category::Privacy => "Privacy",
+            Category::Data => "Data & Downloads",
         }
     }
 
@@ -81,6 +87,7 @@ impl Category {
             Category::Keyboard => Icon::Menu,
             Category::Shields => Icon::Shield,
             Category::Privacy => Icon::Lock,
+            Category::Data => Icon::Download,
         }
     }
 }
@@ -118,6 +125,13 @@ enum Setting {
     HideControlsAfter,
     HardwareDecoding,
     DesktopIntegration,
+    AskWhereToSave,
+    OpenSafeFiles,
+    ClearCookiesOnQuit,
+    ClearHistoryItem,
+    ClearCookiesItem,
+    ClearCacheItem,
+    ClearDownloadsItem,
 }
 
 impl Setting {
@@ -153,6 +167,13 @@ impl Setting {
             Setting::HideControlsAfter => "Hide controls while playing after",
             Setting::HardwareDecoding => "Hardware video decoding (after restart)",
             Setting::DesktopIntegration => "Desktop media controls and media keys (after restart)",
+            Setting::AskWhereToSave => "Ask where to save each file",
+            Setting::OpenSafeFiles => "Open “safe” files after downloading",
+            Setting::ClearCookiesOnQuit => "Clear cookies and site data when Axion quits",
+            Setting::ClearHistoryItem => "Browsing history",
+            Setting::ClearCookiesItem => "Cookies and other site data",
+            Setting::ClearCacheItem => "Cached images and files",
+            Setting::ClearDownloadsItem => "Downloads list",
         }
     }
 
@@ -177,6 +198,13 @@ impl Setting {
                 | Setting::OwnFullscreenControls
                 | Setting::HardwareDecoding
                 | Setting::DesktopIntegration
+                | Setting::AskWhereToSave
+                | Setting::OpenSafeFiles
+                | Setting::ClearCookiesOnQuit
+                | Setting::ClearHistoryItem
+                | Setting::ClearCookiesItem
+                | Setting::ClearCacheItem
+                | Setting::ClearDownloadsItem
         )
     }
 
@@ -261,6 +289,13 @@ impl Setting {
             Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
             Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
+            Setting::AskWhereToSave => return c.downloads.ask_where_to_save as u8 as f32,
+            Setting::OpenSafeFiles => return c.downloads.open_safe_files as u8 as f32,
+            Setting::ClearCookiesOnQuit => return c.data.clear_cookies_on_quit as u8 as f32,
+            Setting::ClearHistoryItem => return c.data.clear_history as u8 as f32,
+            Setting::ClearCookiesItem => return c.data.clear_cookies as u8 as f32,
+            Setting::ClearCacheItem => return c.data.clear_cache as u8 as f32,
+            Setting::ClearDownloadsItem => return c.data.clear_downloads as u8 as f32,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes,
             Setting::DiscardAfter => c.tabs.discard_after_minutes,
@@ -302,6 +337,13 @@ impl Setting {
             Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
             Setting::DesktopIntegration => c.media.desktop_integration = on,
+            Setting::AskWhereToSave => c.downloads.ask_where_to_save = on,
+            Setting::OpenSafeFiles => c.downloads.open_safe_files = on,
+            Setting::ClearCookiesOnQuit => c.data.clear_cookies_on_quit = on,
+            Setting::ClearHistoryItem => c.data.clear_history = on,
+            Setting::ClearCookiesItem => c.data.clear_cookies = on,
+            Setting::ClearCacheItem => c.data.clear_cache = on,
+            Setting::ClearDownloadsItem => c.data.clear_downloads = on,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds = (v * 2.0).round() / 2.0,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes = v.round(),
             Setting::DiscardAfter => c.tabs.discard_after_minutes = (v / 5.0).round() * 5.0,
@@ -351,10 +393,36 @@ pub enum SettingsAction {
     AddTrustedSite,
     /// Index into `media.trusted_player_sites`.
     RemoveTrustedSite(usize),
+    ChooseDownloadFolder,
+    RemoveDownloads(RemoveDownloads),
+    ClearRange(ClearRange),
+    ClearBrowsingData,
+    RemoveAllSiteData,
+    /// Index into the listed sites with data.
+    RemoveSiteData(usize),
 }
 
 /// Remove buttons of the trusted player sites (one id per row).
 const TRUSTED_SITE_BASE: u32 = 200;
+
+/// Remove buttons of the sites with data, and how many sites are listed.
+const SITE_DATA_BASE: u32 = 100;
+const SITE_DATA_LIMIT: usize = 100;
+
+const REMOVE_DOWNLOADS: [(&str, RemoveDownloads); 3] = [
+    ("Manually", RemoveDownloads::Manually),
+    ("After One Day", RemoveDownloads::AfterOneDay),
+    ("When Axion Quits", RemoveDownloads::OnQuit),
+];
+
+const CLEAR_RANGES: [(&str, ClearRange); 4] = [
+    ("Last Hour", ClearRange::LastHour),
+    ("Today", ClearRange::Today),
+    ("Last 7 Days", ClearRange::LastWeek),
+    ("All Time", ClearRange::AllTime),
+];
+
+const DESTRUCTIVE: Color = Color::rgb(0xD0362B);
 
 const CLOSE_AFTER: [(&str, u32); 4] =
     [("Manually", 0), ("After a Day", 1), ("After a Week", 7), ("After a Month", 30)];
@@ -390,6 +458,16 @@ impl SettingsAction {
                     }
                     SettingsAction::AddTrustedSite => 80,
                     SettingsAction::RemoveTrustedSite(i) => TRUSTED_SITE_BASE + i as u32,
+                    SettingsAction::ChooseDownloadFolder => 90,
+                    SettingsAction::RemoveDownloads(r) => {
+                        91 + REMOVE_DOWNLOADS.iter().position(|(_, x)| *x == r).unwrap_or(0) as u32
+                    }
+                    SettingsAction::ClearRange(r) => {
+                        94 + CLEAR_RANGES.iter().position(|(_, x)| *x == r).unwrap_or(0) as u32
+                    }
+                    SettingsAction::ClearBrowsingData => 98,
+                    SettingsAction::RemoveAllSiteData => 99,
+                    SettingsAction::RemoveSiteData(i) => SITE_DATA_BASE + i as u32,
                 },
         )
     }
@@ -398,7 +476,7 @@ impl SettingsAction {
         let n = id.0.checked_sub(ACTION_BASE)?;
         Some(match n {
             0 => SettingsAction::Close,
-            10..=17 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
+            10..=18 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
             20 => SettingsAction::Theme(ThemeMode::Auto),
             21 => SettingsAction::Theme(ThemeMode::Light),
             22 => SettingsAction::Theme(ThemeMode::Dark),
@@ -415,6 +493,14 @@ impl SettingsAction {
             71 => SettingsAction::TabBar(TabBarStyle::Compact),
             72..=75 => SettingsAction::CloseAfter(CLOSE_AFTER[(n - 72) as usize].1),
             80 => SettingsAction::AddTrustedSite,
+            90 => SettingsAction::ChooseDownloadFolder,
+            91..=93 => SettingsAction::RemoveDownloads(REMOVE_DOWNLOADS[(n - 91) as usize].1),
+            94..=97 => SettingsAction::ClearRange(CLEAR_RANGES[(n - 94) as usize].1),
+            98 => SettingsAction::ClearBrowsingData,
+            99 => SettingsAction::RemoveAllSiteData,
+            n if (SITE_DATA_BASE..SITE_DATA_BASE + SITE_DATA_LIMIT as u32).contains(&n) => {
+                SettingsAction::RemoveSiteData((n - SITE_DATA_BASE) as usize)
+            }
             n if (TRUSTED_SITE_BASE..TRUSTED_SITE_BASE + 800).contains(&n) => {
                 SettingsAction::RemoveTrustedSite((n - TRUSTED_SITE_BASE) as usize)
             }
@@ -433,6 +519,13 @@ pub enum Outcome {
     SetPassword(String),
     RemovePassword,
     UpdateFilterLists,
+    /// The Data & Downloads page opened: measure the cache and list the sites with data.
+    DataPage,
+    ChooseDownloadFolder,
+    /// Clear what `config.data` selects.
+    ClearBrowsingData,
+    /// Remove one site's cookies and data, or every site's (`None`).
+    RemoveSiteData(Option<String>),
 }
 
 pub struct SettingsSheet {
@@ -458,6 +551,12 @@ pub struct SettingsSheet {
     /// The browser's memory use, shown on the Tabs page.
     memory_used: Option<u64>,
     confirm_clear: bool,
+    /// Data page: the cache's size, the sites with cookies (`None` while unknown) and
+    /// which destructive button asks for confirmation.
+    cache_size: Option<u64>,
+    site_data: Option<Vec<(String, usize)>>,
+    confirm_clear_data: bool,
+    confirm_remove_all: bool,
     open: bool,
 }
 
@@ -592,6 +691,10 @@ impl SettingsSheet {
             memory_used: None,
             group: None,
             confirm_clear: false,
+            cache_size: None,
+            site_data: None,
+            confirm_clear_data: false,
+            confirm_remove_all: false,
             open: false,
         }
     }
@@ -633,6 +736,19 @@ impl SettingsSheet {
         self.memory_used = used;
     }
 
+    pub fn category(&self) -> Category {
+        self.category
+    }
+
+    pub fn set_cache_size(&mut self, size: Option<u64>) {
+        self.cache_size = size;
+    }
+
+    /// The sites with cookies and how many each has (`None`: being listed).
+    pub fn set_site_data(&mut self, sites: Option<Vec<(String, usize)>>) {
+        self.site_data = sites;
+    }
+
     /// Scrolls the page by `dy` logical px (wheel: positive scrolls up).
     pub fn scroll_by(&mut self, ui: &mut Ui, dy: f32) {
         let max = (ui.frame(self.content).size.y - ui.frame(self.viewport).size.y).max(0.0);
@@ -656,6 +772,8 @@ impl SettingsSheet {
     pub fn close(&mut self, ui: &mut Ui) {
         self.open = false;
         self.confirm_clear = false;
+        self.confirm_clear_data = false;
+        self.confirm_remove_all = false;
         ui.set_visible(self.root, false);
     }
 
@@ -988,6 +1106,103 @@ impl SettingsSheet {
                     });
                 }
             }
+            Category::Data => self.data_page(ui, config),
+        }
+    }
+
+    /// Data & Downloads (Safari's Downloads and "Clear History and Website Data", Chrome's
+    /// "Delete browsing data", Firefox's "Cookies and Site Data").
+    fn data_page(&mut self, ui: &mut Ui, config: &Config) {
+        self.section(ui, "Downloads");
+        let folder = crate::downloads::display_path(&crate::downloads::download_dir(config));
+        let row_node = self.row(ui, "Download location");
+        let label = ui.add_label(row_node, &folder, TextStyle::Callout, Style::default());
+        if let Some(w) = ui.widget_mut(label) {
+            w.set_paint(Paint::Secondary);
+        }
+        pill_button(ui, row_node, "Change…", SettingsAction::ChooseDownloadFolder, false);
+        for setting in [Setting::AskWhereToSave, Setting::OpenSafeFiles] {
+            self.control(ui, config, setting);
+        }
+        let row_node = self.row(ui, "Remove download list items");
+        let options: Vec<(&str, ActionId)> = REMOVE_DOWNLOADS
+            .iter()
+            .map(|(name, r)| (*name, SettingsAction::RemoveDownloads(*r).id()))
+            .collect();
+        let current = REMOVE_DOWNLOADS.iter().position(|(_, r)| *r == config.downloads.remove_list_items);
+        segmented(ui, row_node, &options, current);
+        self.note(ui, "“Safe” files are pictures, movies, sounds, PDF and text documents.");
+
+        self.section(ui, "Clear browsing data");
+        let row_node = self.row(ui, "Time range");
+        let options: Vec<(&str, ActionId)> =
+            CLEAR_RANGES.iter().map(|(name, r)| (*name, SettingsAction::ClearRange(*r).id())).collect();
+        let current = CLEAR_RANGES.iter().position(|(_, r)| *r == config.data.clear_range);
+        segmented(ui, row_node, &options, current);
+        for setting in [Setting::ClearHistoryItem, Setting::ClearCookiesItem] {
+            self.control(ui, config, setting);
+        }
+        let cache = match self.cache_size {
+            Some(size) => {
+                format!("{} ({})", Setting::ClearCacheItem.label(), crate::downloads::human_size(size as i64))
+            }
+            None => Setting::ClearCacheItem.label().to_owned(),
+        };
+        self.control_labeled(ui, config, Setting::ClearCacheItem, &cache);
+        self.control(ui, config, Setting::ClearDownloadsItem);
+        let row_node = self.row(ui, "");
+        let text = if self.confirm_clear_data { "Click Again to Clear" } else { "Clear Browsing Data…" };
+        destructive_button(ui, row_node, text, SettingsAction::ClearBrowsingData, self.confirm_clear_data);
+        self.note(
+            ui,
+            "A time range clears cookies only for the sites visited in it; the cache is cleared completely.",
+        );
+
+        self.section(ui, "Cookies and website data");
+        self.control(ui, config, Setting::ClearCookiesOnQuit);
+        match self.site_data.clone() {
+            None => {
+                self.row(ui, "Looking for websites with data…");
+            }
+            Some(sites) => {
+                let summary = match sites.len() {
+                    0 => "No websites store cookies".to_owned(),
+                    1 => "1 website stores cookies".to_owned(),
+                    n => format!("{n} websites store cookies"),
+                };
+                let row_node = self.row(ui, &summary);
+                if !sites.is_empty() {
+                    let text = if self.confirm_remove_all { "Click Again to Remove" } else { "Remove All" };
+                    let confirming = self.confirm_remove_all;
+                    destructive_button(ui, row_node, text, SettingsAction::RemoveAllSiteData, confirming);
+                }
+                for (i, (site, count)) in sites.iter().take(SITE_DATA_LIMIT).enumerate() {
+                    let row_node = self.row_with_height(ui, site, 40.0);
+                    let cookies =
+                        if *count == 1 { "1 cookie".to_owned() } else { format!("{count} cookies") };
+                    let label = ui.add_label(row_node, &cookies, TextStyle::Footnote, Style::default());
+                    if let Some(w) = ui.widget_mut(label) {
+                        w.set_paint(Paint::Secondary);
+                    }
+                    let remove = ui.add(
+                        row_node,
+                        Widget::container()
+                            .with_action(SettingsAction::RemoveSiteData(i).id())
+                            .with_radius(CAPSULE)
+                            .with_background(Background::Fill(Paint::Label, 0.08)),
+                        Style {
+                            size: Size { width: length(28.0), height: length(28.0) },
+                            justify_content: JustifyContent::CENTER,
+                            ..row(0.0)
+                        },
+                    );
+                    let cross = Widget::icon(Icon::Close, 14.0).with_paint(Paint::Secondary);
+                    ui.add(remove, cross, Style::default());
+                }
+                if sites.len() > SITE_DATA_LIMIT {
+                    self.note(ui, &format!("And {} more.", sites.len() - SITE_DATA_LIMIT));
+                }
+            }
         }
     }
 
@@ -1140,7 +1355,11 @@ impl SettingsSheet {
     }
 
     fn control(&mut self, ui: &mut Ui, config: &Config, setting: Setting) {
-        let row_node = self.row(ui, setting.label());
+        self.control_labeled(ui, config, setting, setting.label());
+    }
+
+    fn control_labeled(&mut self, ui: &mut Ui, config: &Config, setting: Setting, label: &str) {
+        let row_node = self.row(ui, label);
         let value = setting.get(config);
         let node = if setting.is_toggle() {
             ui.add(row_node, Widget::toggle(value > 0.5), Style::default())
@@ -1202,7 +1421,48 @@ impl SettingsSheet {
             SettingsAction::Category(category) => {
                 self.category = category;
                 self.confirm_clear = false;
-                Outcome::Nothing
+                self.confirm_clear_data = false;
+                self.confirm_remove_all = false;
+                if category == Category::Data {
+                    self.site_data = None;
+                    Outcome::DataPage
+                } else {
+                    Outcome::Nothing
+                }
+            }
+            SettingsAction::ChooseDownloadFolder => return Outcome::ChooseDownloadFolder,
+            SettingsAction::RemoveDownloads(r) => {
+                config.downloads.remove_list_items = r;
+                Outcome::Changed
+            }
+            SettingsAction::ClearRange(r) => {
+                config.data.clear_range = r;
+                Outcome::Changed
+            }
+            SettingsAction::ClearBrowsingData => {
+                self.confirm_clear_data = !self.confirm_clear_data;
+                if self.confirm_clear_data {
+                    Outcome::Nothing
+                } else {
+                    self.cache_size = None;
+                    self.site_data = None;
+                    Outcome::ClearBrowsingData
+                }
+            }
+            SettingsAction::RemoveAllSiteData => {
+                self.confirm_remove_all = !self.confirm_remove_all;
+                if self.confirm_remove_all {
+                    Outcome::Nothing
+                } else {
+                    self.site_data = None;
+                    Outcome::RemoveSiteData(None)
+                }
+            }
+            SettingsAction::RemoveSiteData(i) => {
+                match self.site_data.as_mut().filter(|s| i < s.len()).map(|s| s.remove(i)) {
+                    Some((site, _)) => Outcome::RemoveSiteData(Some(site)),
+                    None => Outcome::Nothing,
+                }
             }
             SettingsAction::Theme(mode) => {
                 config.appearance.theme = mode;
@@ -1284,6 +1544,22 @@ fn pill_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsAction, 
     let label = ui.add_label(button, text, TextStyle::Callout, Style::default());
     if let Some(w) = ui.widget_mut(label) {
         w.set_paint(color);
+    }
+}
+
+/// A red button for destructive actions; filled while it asks for confirmation.
+fn destructive_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsAction, confirming: bool) {
+    let button = ui.add(
+        parent,
+        Widget::container().with_action(action.id()).with_radius(CAPSULE).with_background(Background::Fill(
+            Paint::Fixed(DESTRUCTIVE),
+            if confirming { 1.0 } else { 0.14 },
+        )),
+        Style { size: Size { width: auto(), height: length(36.0) }, padding: padding(16.0, 0.0), ..row(0.0) },
+    );
+    let label = ui.add_label(button, text, TextStyle::Callout, Style::default());
+    if let Some(w) = ui.widget_mut(label) {
+        w.set_paint(Paint::Fixed(if confirming { Color::rgb(0xFFFFFF) } else { DESTRUCTIVE }));
     }
 }
 
@@ -1450,6 +1726,13 @@ mod tests {
             SettingsAction::UpdateFilterLists,
             SettingsAction::AddTrustedSite,
             SettingsAction::RemoveTrustedSite(7),
+            SettingsAction::Category(Category::Data),
+            SettingsAction::ChooseDownloadFolder,
+            SettingsAction::RemoveDownloads(RemoveDownloads::OnQuit),
+            SettingsAction::ClearRange(ClearRange::LastWeek),
+            SettingsAction::ClearBrowsingData,
+            SettingsAction::RemoveAllSiteData,
+            SettingsAction::RemoveSiteData(99),
         ] {
             assert_eq!(SettingsAction::from_id(action.id()), Some(action));
         }
