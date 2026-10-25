@@ -300,7 +300,7 @@ impl Default for Layout {
             wide_from: 1280.0,
             narrow_below: 800.0,
             tab_width: 150.0,
-            page_corner_radius: 20.0,
+            page_corner_radius: 10.0,
             page_margin: 8.0,
         }
     }
