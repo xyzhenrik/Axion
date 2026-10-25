@@ -121,6 +121,18 @@ pub const INDEX: &[Entry] = &[
     control(C::Tabs, S::HideBarOnScroll, &["fullscreen", "autohide", "ausblenden", "scroll"]),
     control(C::Tabs, S::OpenInBackground, &["new tab", "links", "hintergrund", "middle click"]),
     page(C::Tabs, "Close tabs", &["auto close", "old tabs", "cleanup", "schließen", "aufräumen"]),
+    page(
+        C::Tabs,
+        "Bookmarks bar",
+        &[
+            "lesezeichenleiste",
+            "favoriten",
+            "bookmarks bar",
+            "favorites bar",
+            "lesezeichen",
+            "favoritenleiste",
+        ],
+    ),
     control(C::Tabs, S::FreezeAfter, &["sleep", "suspend", "pause", "einfrieren", "battery", "cpu"]),
     control(C::Tabs, S::DiscardAfter, &["unload", "sleep", "memory", "entladen", "ram"]),
     control(C::Tabs, S::LimitMemory, &["ram", "memory saver", "speicher", "arbeitsspeicher"]),
@@ -318,6 +330,8 @@ mod tests {
         assert!(titles("passwort ändern").contains(&"Account password"));
         assert!(titles("benutzer").contains(&"Account"));
         assert!(titles("konto löschen").contains(&"Delete account"));
+        assert!(titles("lesezeichenleiste").contains(&"Bookmarks bar"));
+        assert!(titles("favoriten").contains(&"Bookmarks bar"));
     }
 
     #[test]

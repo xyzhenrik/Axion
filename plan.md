@@ -161,6 +161,15 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. â
 - [x] Tab drag and drop: sidebar lists, compact tab capsule and separate tab bar, spring
   physics (lens follows the pointer, rows slide aside), between normal and private tabs
   (`tabs.drag_threshold`).
+- [x] Tab bar widths: all tabs equally wide (`layout.tab_width`, shrinking equally to
+  `layout.tab_min_width`, then overflowing), springing to new widths; hairline separators in
+  the separate tab bar (hidden beside the open and the hovered tab).
+- [x] Tab context menu (right click on tab bar, compact segments, sidebar rows; glass menu
+  flowing out of the tab, shortcuts from the keymap); pinned tabs (first, favicon only,
+  `layout.pinned_tab_width`, kept in the session via the `session_pinned_tabs` meta key).
+- [x] Bookmarks bar (`layout.bookmarks_bar` = always/home/never; overflow chevron menu,
+  middle click opens in the background, right click: Open in New Tab / Delete). Top-level
+  bookmarks only until bookmark folders exist.
 - [x] Local accounts (`axion-accounts`): separate profiles, account button + menu in the
   sidebar, Add Account sheet, Settings â€º Account (name, colour, password, delete), switching
   by relaunching, migration of the pre-accounts profile.

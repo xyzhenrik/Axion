@@ -311,8 +311,15 @@ pub struct Layout {
     pub wide_from: f32,
     /// Below this window width, tabs collapse into a single compact capsule.
     pub narrow_below: f32,
-    /// Width of an inactive tab pill.
+    /// Preferred width of a tab in the separate tab bar and of the other tabs' segments in the
+    /// compact one; all tabs share it, and they shrink equally when they don't fit.
     pub tab_width: f32,
+    /// Tabs shrink no further than this (logical px); beyond it they overflow.
+    pub tab_min_width: f32,
+    /// Width of a pinned tab (favicon only).
+    pub pinned_tab_width: f32,
+    /// When the bookmarks bar under the toolbar is shown.
+    pub bookmarks_bar: BookmarksBar,
     /// Corner radius of the web page area.
     pub page_corner_radius: f32,
     /// Gap between the page and the window's edges (and a floating sidebar's side).
@@ -321,6 +328,17 @@ pub struct Layout {
     pub tab_bar: TabBarStyle,
     /// Scrolling down collapses the bars into a small pill with the site's name.
     pub hide_bar_on_scroll: bool,
+}
+
+/// When the bookmarks bar is shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BookmarksBar {
+    #[default]
+    Always,
+    /// Only on the home page (new tabs).
+    Home,
+    Never,
 }
 
 /// Safari's two tab bar layouts.
@@ -344,7 +362,10 @@ impl Default for Layout {
             sidebar_visible: true,
             wide_from: 1280.0,
             narrow_below: 800.0,
-            tab_width: 150.0,
+            tab_width: 220.0,
+            tab_min_width: 72.0,
+            pinned_tab_width: 44.0,
+            bookmarks_bar: BookmarksBar::Always,
             page_corner_radius: 10.0,
             page_margin: 8.0,
             tab_bar: TabBarStyle::Compact,
