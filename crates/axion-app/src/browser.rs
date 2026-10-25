@@ -2780,6 +2780,10 @@ impl Browser {
                     let outcome = self.passwords.capture_step(&mut self.ui, &mut self.config, step);
                     self.passwords_outcome(outcome);
                 }
+                "prompt-unlock" => {
+                    let outcome = self.passwords.capture_step(&mut self.ui, &mut self.config, "unlock");
+                    self.passwords_outcome(outcome);
+                }
                 "prompt-fill" => {
                     let outcome = self.passwords.capture_step(&mut self.ui, &mut self.config, "fill");
                     self.passwords_outcome(outcome);

@@ -5,6 +5,7 @@
 //!
 //! Secrets stay out of logs; only the user's clicks put them on the clipboard or into a page.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -36,6 +37,7 @@ const COPY_BASE: u32 = BASE + 40;
 const ITEM_BASE: u32 = BASE + 100;
 const PROMPT_CLOSE: ActionId = ActionId(BASE + 1000);
 const PROMPT_SAVE: ActionId = ActionId(BASE + 1001);
+const PROMPT_UNLOCK: ActionId = ActionId(BASE + 1002);
 const PROMPT_FILL_BASE: u32 = BASE + 1010;
 const LAST: u32 = BASE + 1100;
 const MAX_FIELDS: u32 = 20;
@@ -170,7 +172,16 @@ struct PendingSave {
 }
 
 enum PromptState {
-    Fill { view: ViewId, url: String, ids: Vec<String> },
+    Fill {
+        view: ViewId,
+        url: String,
+        ids: Vec<String>,
+    },
+    /// A sign-in form while the vault is locked: unlock right here, then pick a login.
+    Unlock {
+        view: ViewId,
+        url: String,
+    },
     Save(PendingSave),
 }
 
@@ -178,6 +189,9 @@ enum PromptState {
 struct Prompt {
     root: NodeId,
     state: Option<PromptState>,
+    /// The master password field and its error line (unlock prompt only).
+    field: Option<NodeId>,
+    error: Option<NodeId>,
     appear: Animated<f32>,
 }
 
@@ -223,6 +237,8 @@ pub struct Passwords {
     /// Credentials to save once the vault is unlocked.
     pending: Option<PendingSave>,
     prompt: Prompt,
+    /// Sites whose unlock prompt was dismissed ("Not Now"); not offered again this session.
+    unlock_dismissed: HashSet<String>,
 }
 
 fn padding(h: f32, v: f32) -> Rect<LengthPercentage> {
@@ -568,6 +584,7 @@ impl Passwords {
             copied: None,
             pending: None,
             prompt,
+            unlock_dismissed: HashSet::new(),
         }
     }
 
@@ -596,6 +613,7 @@ impl Passwords {
 
     fn owns(&self, node: NodeId) -> bool {
         [self.alert_field, self.confirm_field, self.search].contains(&node)
+            || self.prompt.field == Some(node)
             || self.edit_fields.contains(&node)
             || [self.generator_length, self.generator_symbols].contains(&Some(node))
     }
@@ -1185,6 +1203,9 @@ impl Passwords {
                 self.try_unlock(ui, config)
             }
             UiEvent::Submitted { node, .. } if node == self.confirm_field => self.try_unlock(ui, config),
+            UiEvent::Submitted { node, .. } if self.prompt.field == Some(node) => {
+                self.unlock_from_prompt(ui, config)
+            }
             UiEvent::Submitted { .. } => {
                 if let Detail::Edit { id, kind } = self.shown.clone() {
                     self.save_edit(ui, config, id, kind);
@@ -1268,8 +1289,12 @@ impl Passwords {
                 }
             }
             PROMPT_CLOSE => {
+                if let Some(PromptState::Unlock { url, .. }) = &self.prompt.state {
+                    self.unlock_dismissed.insert(site::display_host(url));
+                }
                 self.prompt.hide();
             }
+            PROMPT_UNLOCK => return self.unlock_from_prompt(ui, config),
             PROMPT_SAVE => {
                 if let Some(PromptState::Save(pending)) = self.prompt.state.take() {
                     self.prompt.hide();
@@ -1396,20 +1421,24 @@ impl Passwords {
                 if !config.passwords.autofill || matches!(self.prompt.state, Some(PromptState::Save(_))) {
                     return;
                 }
-                let ids: Vec<String> = match &self.vault {
-                    Some(vault) if vault.is_unlocked() => {
-                        vault.logins_for(url).iter().take(PROMPT_LOGINS).map(|i| i.id.clone()).collect()
+                let Some(vault) = &self.vault else { return };
+                if !vault.is_unlocked() {
+                    // Locked: which sites have logins is encrypted too, so offer to unlock on
+                    // every sign-in form, unless the user said "Not Now" for this site.
+                    if vault.is_set_up() && !self.unlock_dismissed.contains(&site::display_host(url)) {
+                        self.prompt.state = Some(PromptState::Unlock { view, url: url.to_owned() });
+                        self.build_prompt(ui, config);
                     }
-                    _ => return,
-                };
-                if ids.is_empty() {
                     return;
                 }
-                self.prompt.state = Some(PromptState::Fill { view, url: url.to_owned(), ids });
-                self.build_prompt(ui, config);
+                if !self.show_fill(ui, config, view, url) {
+                    self.prompt.hide();
+                }
             }
             PageEvent::NoForm => {
-                if matches!(&self.prompt.state, Some(PromptState::Fill { view: v, .. }) if *v == view) {
+                if matches!(&self.prompt.state,
+                    Some(PromptState::Fill { view: v, .. } | PromptState::Unlock { view: v, .. }) if *v == view)
+                {
                     self.prompt.hide();
                 }
             }
@@ -1430,9 +1459,66 @@ impl Passwords {
         }
     }
 
+    /// Offers the logins saved for `url`. Returns false when there are none.
+    fn show_fill(&mut self, ui: &mut Ui, config: &Config, view: ViewId, url: &str) -> bool {
+        let ids: Vec<String> = match &self.vault {
+            Some(vault) if vault.is_unlocked() => {
+                vault.logins_for(url).iter().take(PROMPT_LOGINS).map(|i| i.id.clone()).collect()
+            }
+            _ => return false,
+        };
+        if ids.is_empty() {
+            return false;
+        }
+        self.prompt.state = Some(PromptState::Fill { view, url: url.to_owned(), ids });
+        self.build_prompt(ui, config);
+        true
+    }
+
+    /// The unlock prompt's password was entered: unlock, then offer this site's logins.
+    fn unlock_from_prompt(&mut self, ui: &mut Ui, config: &Config) -> Outcome {
+        let (Some(PromptState::Unlock { view, url }), Some(field)) = (&self.prompt.state, self.prompt.field)
+        else {
+            return Outcome::Nothing;
+        };
+        let (view, url) = (*view, url.clone());
+        let Some(vault) = &mut self.vault else { return Outcome::Nothing };
+        let password = Zeroizing::new(ui.field_text(field).unwrap_or_default().to_owned());
+        ui.set_field_text(field, "");
+        match vault.unlock(&password) {
+            Ok(()) => {
+                tracing::info!("passwords unlocked");
+                if let Some(pending) = self.pending.take() {
+                    self.save_login(pending);
+                }
+                if !self.show_fill(ui, config, view, &url) {
+                    self.prompt.hide();
+                }
+                Outcome::Nothing
+            }
+            Err(e) => {
+                if !matches!(e, VaultError::WrongPassword) {
+                    tracing::error!("unlocking passwords failed: {e}");
+                }
+                if let Some(error) = self.prompt.error {
+                    let text = if matches!(e, VaultError::WrongPassword) {
+                        "Wrong password".to_owned()
+                    } else {
+                        e.to_string()
+                    };
+                    ui.set_text(error, &text);
+                    ui.set_visible(error, true);
+                }
+                Outcome::Events(ui.focus(field))
+            }
+        }
+    }
+
     fn build_prompt(&mut self, ui: &mut Ui, config: &Config) {
         let root = self.prompt.root;
         ui.clear_children(root);
+        self.prompt.field = None;
+        self.prompt.error = None;
         let header = ui.add(root, Widget::container(), Style { padding: padding(6.0, 2.0), ..row(10.0) });
         ui.add(header, Widget::icon(Icon::Key, 20.0).with_paint(Paint::Accent), Style::default());
         let titles = ui.add(header, Widget::container(), Style { ..column(0.0) });
@@ -1474,6 +1560,26 @@ impl Passwords {
                     secondary(ui, row_node, HIDDEN, TextStyle::Footnote);
                 }
             }
+            Some(PromptState::Unlock { url, .. }) => {
+                ui.add_label(titles, "Unlock to fill", TextStyle::BodyEmphasis, Style::default());
+                secondary(ui, titles, &site::display_host(url), TextStyle::Footnote);
+                icon_button(ui, header, PROMPT_CLOSE, Icon::Close, 28.0);
+                let line =
+                    ui.add(root, Widget::container(), Style { padding: padding(2.0, 0.0), ..row(8.0) });
+                let field = field_box(ui, line, "Master password", Style { flex_grow: 1.0, ..row(0.0) });
+                ui.set_secure(field, true);
+                // The field takes the room; the button keeps its natural width.
+                let label = capsule_button(ui, line, PROMPT_UNLOCK, "Unlock", true);
+                if let Some(button) = ui.parent(label) {
+                    let mut style = ui.style(button);
+                    style.flex_grow = 0.0;
+                    ui.set_style(button, style);
+                }
+                let error = painted(ui, root, "", TextStyle::Footnote, Paint::Fixed(ERROR));
+                ui.set_visible(error, false);
+                self.prompt.field = Some(field);
+                self.prompt.error = Some(error);
+            }
             Some(PromptState::Save(pending)) => {
                 let update = self.is_unlocked()
                     && self
@@ -1507,7 +1613,9 @@ impl Passwords {
     /// Hides the prompt (another tab was selected, or the page navigated away).
     pub fn hide_prompt(&mut self, view: Option<ViewId>, keep_save: bool) {
         let hide = match &self.prompt.state {
-            Some(PromptState::Fill { view: v, .. }) => view.is_none_or(|view| view == *v),
+            Some(PromptState::Fill { view: v, .. } | PromptState::Unlock { view: v, .. }) => {
+                view.is_none_or(|view| view == *v)
+            }
             Some(PromptState::Save(_)) => !keep_save,
             None => false,
         };
@@ -1659,6 +1767,13 @@ impl Passwords {
                 return Outcome::Nothing;
             }
             "fill" => ActionId(PROMPT_FILL_BASE),
+            // The unlock prompt, with the test vault's password typed in.
+            "unlock" => {
+                if let Some(field) = self.prompt.field {
+                    ui.set_field_text(field, "test-only-pass");
+                }
+                PROMPT_UNLOCK
+            }
             "reveal" => ActionId(REVEAL_BASE + 2),
             "edit" => EDIT,
             "add" => ADD,
@@ -1694,7 +1809,7 @@ impl Prompt {
             },
         );
         ui.set_visible(root, false);
-        Self { root, state: None, appear: Animated::new(0.0, Spring::SNAPPY) }
+        Self { root, state: None, field: None, error: None, appear: Animated::new(0.0, Spring::SNAPPY) }
     }
 
     fn hide(&mut self) {
