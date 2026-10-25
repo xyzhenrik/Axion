@@ -131,6 +131,67 @@ pub const INDEX: &[Entry] = &[
         "Website data",
         &["cookies", "site data", "storage", "websitedaten", "websites", "manage", "verwalten"],
     ),
+    page(
+        C::Passwords,
+        "Saved passwords, cards and addresses",
+        &[
+            "passwords",
+            "passwörter",
+            "logins",
+            "anmeldedaten",
+            "cards",
+            "credit card",
+            "kreditkarte",
+            "karten",
+            "addresses",
+            "adresse",
+            "adressen",
+            "notes",
+            "notizen",
+            "vault",
+            "tresor",
+            "master password",
+            "masterpasswort",
+            "hauptpasswort",
+            "password manager",
+            "passwortmanager",
+        ],
+    ),
+    control(
+        C::Passwords,
+        S::OfferToSavePasswords,
+        &["save password", "passwort speichern", "remember", "merken", "login"],
+    ),
+    control(
+        C::Passwords,
+        S::AutofillPasswords,
+        &["autofill", "auto fill", "ausfüllen", "automatisch ausfüllen", "fill", "login"],
+    ),
+    control(
+        C::Passwords,
+        S::PasswordsLockAfter,
+        &["auto lock", "timeout", "sperren", "master password", "passwörter sperren"],
+    ),
+    control(
+        C::Passwords,
+        S::ClearClipboardAfter,
+        &["clipboard", "zwischenablage", "copy", "kopieren", "leeren"],
+    ),
+    page(
+        C::Passwords,
+        "Import and export",
+        &[
+            "import",
+            "export",
+            "csv",
+            "chrome",
+            "firefox",
+            "bitwarden",
+            "importieren",
+            "exportieren",
+            "backup",
+        ],
+    ),
 ];
 
 /// Lower-case, with German umlauts also findable as ae/oe/ue/ss.
@@ -198,6 +259,8 @@ mod tests {
         assert!(titles("youtube").contains(&"Sites that keep their own player"));
         assert!(titles("cache").contains(&"Cached images and files"));
         assert!(titles("speicherort").contains(&"Download location"));
+        assert!(titles("kreditkarte").contains(&"Saved passwords, cards and addresses"));
+        assert!(titles("ausfüllen").contains(&"Offer to fill saved passwords"));
     }
 
     #[test]

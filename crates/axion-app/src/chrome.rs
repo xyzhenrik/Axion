@@ -89,6 +89,8 @@ pub enum ChromeAction {
     DownloadsButton,
     /// The `k`th trailing button of panel entry `i` (a download's pause, open …).
     PanelButton(usize, usize),
+    /// Opens the Passwords sheet.
+    Passwords,
 }
 
 const SELECT_TAB_BASE: u32 = 1000;
@@ -101,7 +103,7 @@ const PANEL_BUTTON_BASE: u32 = 13_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 25] = [
+    const SIMPLE: [ChromeAction; 26] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -127,6 +129,7 @@ impl ChromeAction {
         ChromeAction::ClearPanel,
         ChromeAction::Downloads,
         ChromeAction::DownloadsButton,
+        ChromeAction::Passwords,
     ];
 
     fn id(self) -> ActionId {
@@ -143,7 +146,7 @@ impl ChromeAction {
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=25 => Some(Self::SIMPLE[n as usize - 1]),
+            n @ 1..=26 => Some(Self::SIMPLE[n as usize - 1]),
             n if (PANEL_BUTTON_BASE..PANEL_BUTTON_BASE + 1000 * PANEL_BUTTONS as u32).contains(&n) => {
                 let k = (n - PANEL_BUTTON_BASE) as usize;
                 Some(ChromeAction::PanelButton(k / PANEL_BUTTONS, k % PANEL_BUTTONS))
@@ -519,6 +522,7 @@ impl Chrome {
         sidebar_row(ui, saved_list, ChromeAction::ReadingList, Icon::Glasses, "Reading List", None);
         sidebar_row(ui, saved_list, ChromeAction::History, Icon::History, "History", None);
         sidebar_row(ui, saved_list, ChromeAction::Downloads, Icon::Download, "Downloads", None);
+        sidebar_row(ui, saved_list, ChromeAction::Passwords, Icon::Key, "Passwords", None);
 
         // Fills the sidebar below its header, so the list scrolls inside it.
         let panel = ui.add(

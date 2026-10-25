@@ -30,6 +30,7 @@ use crate::lockscreen::LockScreen;
 use crate::menu::{Menu, MenuAction, MenuItem};
 use crate::mpris::{Mpris, MprisCommand, Track};
 use crate::overview::{Overview, OverviewAction};
+use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
 use crate::pip::{PipOutcome, PipWindow};
 use crate::player::{
     Context as PlayerContext, Control as PlayerControl, Mode as PlayerMode, Outcome as PlayerOutcome,
@@ -177,6 +178,7 @@ pub struct Browser {
     session_dirty: bool,
     session_changed: Instant,
     settings: SettingsSheet,
+    passwords: Passwords,
     /// Unsaved settings changes since this time (saving is throttled while dragging).
     config_dirty_since: Option<Instant>,
     /// What we last wrote to config.toml, so the file watcher can ignore our own writes.
@@ -291,6 +293,7 @@ impl Browser {
             .ok();
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
         let downloads = Downloads::new(profile.clone());
+        let vault_path = profile.join("vault.sqlite");
         let mut engine = CefEngine::new(
             device.clone(),
             queue.clone(),
@@ -312,7 +315,7 @@ impl Browser {
         Downloads::prune(store.as_ref(), &config, unix_now());
         // What the last quit should have removed, in case it didn't get to (a crash).
         Downloads::on_quit(store.as_ref(), &config, &mut engine);
-        engine.set_page_script(Some(axion_media::bridge_script(&bridge_secret(), &media_replace(&config))));
+        engine.set_page_script(Some(page_script(&config)));
 
         let desktop_theme = DesktopTheme::start();
         let dark = is_dark(&config, &window, desktop_theme.dark());
@@ -329,6 +332,7 @@ impl Browser {
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
         let settings = SettingsSheet::build(&mut ui);
+        let passwords = Passwords::build(&mut ui, &vault_path);
         let lock = PrivateLock::load(store.as_ref());
         let favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         // Built after the chrome so it draws above it.
@@ -368,6 +372,7 @@ impl Browser {
             session_dirty: false,
             session_changed: Instant::now(),
             settings,
+            passwords,
             config_dirty_since: None,
             last_saved_config: None,
             panel_urls: Vec::new(),
@@ -531,6 +536,7 @@ impl Browser {
 
     fn on_active_changed(&mut self, previous: Option<ViewId>) {
         self.last_scroll_y = 0.0;
+        self.passwords.hide_prompt(None, false);
         if let Some(tab) = self.tabs.active_mut() {
             tab.last_viewed = unix_now();
         }
@@ -750,6 +756,10 @@ impl Browser {
     }
 
     fn page_message(&mut self, view: ViewId, message: &str) {
+        if axion_vault::autofill::is_message(message) {
+            self.autofill_message(view, message);
+            return;
+        }
         let message = match axion_media::parse(message) {
             Ok(Some(message)) => message,
             Ok(None) => return,
@@ -790,6 +800,41 @@ impl Browser {
                 self.media_command(view, &command);
             }
         }
+    }
+
+    /// The autofill script reported a sign-in form or a submitted password. Only the shown,
+    /// unlocked tab counts, and logins are matched against the tab's own address.
+    fn autofill_message(&mut self, view: ViewId, message: &str) {
+        if Some(view) != self.active_view() || self.is_locked() {
+            return;
+        }
+        let (Some(event), Some(url)) =
+            (axion_vault::autofill::parse(message), self.tabs.active().map(|t| t.url.clone()))
+        else {
+            return;
+        };
+        self.passwords.page_event(&mut self.ui, &self.config, view, &url, event);
+    }
+
+    fn passwords_outcome(&mut self, outcome: PasswordsOutcome) {
+        match outcome {
+            PasswordsOutcome::Nothing => {}
+            PasswordsOutcome::ConfigChanged => {
+                self.config_dirty_since.get_or_insert(Instant::now());
+            }
+            PasswordsOutcome::Events(events) => self.handle_ui_events(events),
+            PasswordsOutcome::Fill { view, script } => self.engine.run_script(view, &script, false),
+        }
+    }
+
+    fn open_passwords(&mut self) {
+        if self.settings.is_open() {
+            self.settings.close(&mut self.ui);
+        }
+        self.shields_popover.close(&mut self.ui, &self.config);
+        let window = self.logical_size();
+        let outcome = self.passwords.open(&mut self.ui, &self.config, window);
+        self.passwords_outcome(outcome);
     }
 
     fn primary_player(&self, view: ViewId) -> Option<&axion_media::Player> {
@@ -1576,8 +1621,7 @@ impl Browser {
     fn apply_shields_config(&mut self) {
         self.shields.apply_config(&self.config);
         // Pages loaded from now on get the media bridge with the current setting.
-        let script = axion_media::bridge_script(&bridge_secret(), &media_replace(&self.config));
-        self.engine.set_page_script(Some(script));
+        self.engine.set_page_script(Some(page_script(&self.config)));
     }
 
     fn edit_address(&mut self) {
@@ -1608,6 +1652,11 @@ impl Browser {
     fn handle_ui_events(&mut self, events: Vec<UiEvent>) {
         for event in events {
             match event {
+                event if self.passwords.wants(&event) => {
+                    let (ui, config, clipboard) = (&mut self.ui, &mut self.config, &mut self.clipboard);
+                    let outcome = self.passwords.event(ui, config, clipboard, self.pointer, event);
+                    self.passwords_outcome(outcome);
+                }
                 UiEvent::Clicked { action, .. } if OverviewAction::from_id(action).is_some() => {
                     if let Some(action) = OverviewAction::from_id(action) {
                         self.overview_action(action);
@@ -1755,6 +1804,7 @@ impl Browser {
                     Some(ChromeAction::PageMenu) => self.open_page_menu(),
                     Some(ChromeAction::Bookmarks) => self.show_panel(Panel::Bookmarks),
                     Some(ChromeAction::History) => self.show_panel(Panel::History),
+                    Some(ChromeAction::Passwords) => self.open_passwords(),
                     Some(ChromeAction::ReadingList) => self.show_panel(Panel::ReadingList),
                     Some(ChromeAction::ClosePanel) => {
                         self.panel_urls.clear();
@@ -1854,9 +1904,17 @@ impl Browser {
         }
         let mut downloads_changed = false;
         for event in self.engine.pump() {
-            tracing::debug!(?event, "engine");
+            match &event {
+                // Autofill messages may hold a submitted password: never log their content.
+                EngineEvent::PageMessage { view, message } if axion_vault::autofill::is_message(message) => {
+                    tracing::debug!(?view, "engine: autofill message");
+                }
+                event => tracing::debug!(?event, "engine"),
+            }
             match event {
                 EngineEvent::AddressChanged { view, url } => {
+                    // The fill offer was for the page that was there (a save offer stays).
+                    self.passwords.hide_prompt(Some(view), true);
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
                         tab.url = url;
                         self.tabs_changed = true;
@@ -1991,6 +2049,8 @@ impl Browser {
             }
         }
         self.downloads_pump(downloads_changed);
+        let outcome = self.passwords.tick(&mut self.ui, &self.config, &mut self.clipboard);
+        self.passwords_outcome(outcome);
         self.reload_config_if_changed();
         self.apply_lifecycle();
         if self.config.privacy.lock_private_tabs {
@@ -2034,6 +2094,17 @@ impl Browser {
                 self.update_lock();
             }
             Outcome::UpdateFilterLists => self.shields.update_lists(),
+            Outcome::OpenPasswords => self.open_passwords(),
+            Outcome::ImportPasswords(path) => {
+                let status = self.passwords.import_csv(&path);
+                self.settings.set_passwords_status(status);
+                self.settings.show(&mut self.ui, &self.config, &self.keymap);
+            }
+            Outcome::ExportPasswords(path) => {
+                let status = self.passwords.export(&path);
+                self.settings.set_passwords_status(status);
+                self.settings.show(&mut self.ui, &self.config, &self.keymap);
+            }
             Outcome::ClearHistory => {
                 if let Some(store) = &self.store
                     && let Err(e) = store.clear_history_since(0)
@@ -2238,6 +2309,8 @@ impl Browser {
                 };
                 if self.overview.is_open() {
                     self.overview.scroll_by(&mut self.ui, delta.y);
+                } else if self.passwords.is_open() {
+                    self.passwords.scroll_by(&mut self.ui, delta.y);
                 } else if self.settings.is_open() {
                     self.settings.scroll_by(&mut self.ui, delta.y);
                 } else if self.pointer.is_some_and(|p| self.chrome.panel_contains(&self.ui, p)) {
@@ -2400,6 +2473,11 @@ impl Browser {
     /// Returns `true` if the browser should quit.
     fn keyboard(&mut self, event: &winit::event::KeyEvent) -> bool {
         let pressed = event.state.is_pressed();
+        if pressed && self.passwords.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.passwords.close(&mut self.ui);
+            let _ = self.ui.blur();
+            return false;
+        }
         if pressed
             && self.settings.is_open()
             && self.ui.focused().is_none()
@@ -2687,6 +2765,37 @@ impl Browser {
                 // Capture aid: switch the open overview to the private or normal tabs.
                 "overview-private" => self.overview_action(OverviewAction::ShowPrivate),
                 "overview-normal" => self.overview_action(OverviewAction::ShowNormal),
+                "passwords" => self.open_passwords(),
+                "passwords-settings" => {
+                    self.settings.set_category(Category::Passwords);
+                    self.run(Action::OpenSettings);
+                }
+                // Capture aids: fake entries in a throwaway profile's vault, then views of them.
+                "passwords-test" if std::env::var_os("AXION_PROFILE_DIR").is_some() => {
+                    self.passwords.seed_test_data();
+                    self.open_passwords();
+                }
+                step if step.starts_with("passwords-") && self.passwords.is_open() => {
+                    let step = &step["passwords-".len()..];
+                    let outcome = self.passwords.capture_step(&mut self.ui, &mut self.config, step);
+                    self.passwords_outcome(outcome);
+                }
+                "prompt-fill" => {
+                    let outcome = self.passwords.capture_step(&mut self.ui, &mut self.config, "fill");
+                    self.passwords_outcome(outcome);
+                }
+                "save-prompt" | "fill-prompt" => {
+                    self.passwords.close(&mut self.ui);
+                    let target = self.tabs.active().map(|t| (t.view, t.url.clone()));
+                    if let Some((view, url)) = target {
+                        if what == "save-prompt" {
+                            self.passwords.show_save_prompt_for_test(&mut self.ui, &self.config, view, &url);
+                        } else {
+                            let event = axion_vault::autofill::PageEvent::Form;
+                            self.passwords.page_event(&mut self.ui, &self.config, view, &url, event);
+                        }
+                    }
+                }
                 "private-locked" => {
                     // Capture aid: lock private browsing with a throwaway test password.
                     self.lock.set_password(self.store.as_ref(), Some("capture-test"));
@@ -2728,6 +2837,8 @@ impl Browser {
         self.shields_popover.animate(&mut self.ui, dt);
         self.downloads_popover.animate(&mut self.ui, dt);
         self.lock_screen.animate(&mut self.ui, dt);
+        let address = self.chrome.address_frame(&self.ui);
+        self.passwords.animate(&mut self.ui, dt, address);
         self.update_player(dt);
         self.suggestions.animate(&mut self.ui, dt);
         if self.overview.is_open() {
@@ -3009,6 +3120,12 @@ fn letterbox(tex: Vec2, aspect: f32) -> Rect {
         Vec2::new(aspect / frame_aspect, 1.0)
     };
     Rect { origin: (Vec2::ONE - size) / 2.0, size }
+}
+
+/// What runs in every document: the media bridge and the password autofill script.
+fn page_script(config: &Config) -> String {
+    let bridge = axion_media::bridge_script(&bridge_secret(), &media_replace(config));
+    format!("{bridge}\n{}", axion_vault::autofill::page_script())
 }
 
 /// A per-run secret that keeps the media bridge's frame messages apart from the page's.

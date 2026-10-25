@@ -1,6 +1,8 @@
 //! The settings sheet (design: "Settings"): a large glass sheet over the dimmed browser with
 //! categories on the left. Every change is written to `config.toml` at once.
 
+use std::path::PathBuf;
+
 use axion_compositor::Icon;
 use axion_config::{
     Action as KeyAction, ClearRange, Color, Config, Keymap, RemoveDownloads, ShieldLevel, TabBarStyle,
@@ -50,10 +52,11 @@ pub enum Category {
     Shields,
     Privacy,
     Data,
+    Passwords,
 }
 
 impl Category {
-    const ALL: [Category; 9] = [
+    const ALL: [Category; 10] = [
         Category::General,
         Category::Appearance,
         Category::LiquidGlass,
@@ -63,6 +66,7 @@ impl Category {
         Category::Shields,
         Category::Privacy,
         Category::Data,
+        Category::Passwords,
     ];
 
     fn title(self) -> &'static str {
@@ -76,6 +80,7 @@ impl Category {
             Category::Shields => "Shields",
             Category::Privacy => "Privacy",
             Category::Data => "Data & Downloads",
+            Category::Passwords => "Passwords",
         }
     }
 
@@ -90,6 +95,7 @@ impl Category {
             Category::Shields => Icon::Shield,
             Category::Privacy => Icon::Lock,
             Category::Data => Icon::Download,
+            Category::Passwords => Icon::Key,
         }
     }
 }
@@ -134,6 +140,10 @@ enum Setting {
     ClearCookiesItem,
     ClearCacheItem,
     ClearDownloadsItem,
+    OfferToSavePasswords,
+    AutofillPasswords,
+    PasswordsLockAfter,
+    ClearClipboardAfter,
 }
 
 impl Setting {
@@ -176,6 +186,10 @@ impl Setting {
             Setting::ClearCookiesItem => "Cookies and other site data",
             Setting::ClearCacheItem => "Cached images and files",
             Setting::ClearDownloadsItem => "Downloads list",
+            Setting::OfferToSavePasswords => "Offer to save passwords",
+            Setting::AutofillPasswords => "Offer to fill saved passwords",
+            Setting::PasswordsLockAfter => "Lock Passwords after",
+            Setting::ClearClipboardAfter => "Clear clipboard after copying",
         }
     }
 
@@ -207,6 +221,8 @@ impl Setting {
                 | Setting::ClearCookiesItem
                 | Setting::ClearCacheItem
                 | Setting::ClearDownloadsItem
+                | Setting::OfferToSavePasswords
+                | Setting::AutofillPasswords
         )
     }
 
@@ -226,6 +242,8 @@ impl Setting {
             Setting::HideControlsAfter => (1.0, 10.0),
             Setting::DiscardAfter => (0.0, 480.0),
             Setting::MemoryBudget => (0.0, memory_slider_max_mb()),
+            Setting::PasswordsLockAfter => (0.0, 120.0),
+            Setting::ClearClipboardAfter => (0.0, 300.0),
             _ => (0.0, 1.0),
         }
     }
@@ -266,6 +284,12 @@ impl Setting {
                 mb => format_bytes(u64::from(mb) * 1024 * 1024),
             },
             Setting::HideControlsAfter => format!("{} s", trim_number(c.media.hide_controls_after_seconds)),
+            Setting::PasswordsLockAfter => minutes(c.passwords.auto_lock_minutes),
+            Setting::ClearClipboardAfter => match c.passwords.clear_clipboard_seconds {
+                s if s <= 0.0 => "Never".to_owned(),
+                s if s < 60.0 => format!("{s:.0} s"),
+                s => format!("{} min", trim_number(s / 60.0)),
+            },
             _ => String::new(),
         }
     }
@@ -298,6 +322,10 @@ impl Setting {
             Setting::ClearCookiesItem => return c.data.clear_cookies as u8 as f32,
             Setting::ClearCacheItem => return c.data.clear_cache as u8 as f32,
             Setting::ClearDownloadsItem => return c.data.clear_downloads as u8 as f32,
+            Setting::OfferToSavePasswords => return c.passwords.offer_to_save as u8 as f32,
+            Setting::AutofillPasswords => return c.passwords.autofill as u8 as f32,
+            Setting::PasswordsLockAfter => c.passwords.auto_lock_minutes,
+            Setting::ClearClipboardAfter => c.passwords.clear_clipboard_seconds,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes,
             Setting::DiscardAfter => c.tabs.discard_after_minutes,
@@ -346,6 +374,10 @@ impl Setting {
             Setting::ClearCookiesItem => c.data.clear_cookies = on,
             Setting::ClearCacheItem => c.data.clear_cache = on,
             Setting::ClearDownloadsItem => c.data.clear_downloads = on,
+            Setting::OfferToSavePasswords => c.passwords.offer_to_save = on,
+            Setting::AutofillPasswords => c.passwords.autofill = on,
+            Setting::PasswordsLockAfter => c.passwords.auto_lock_minutes = v.round(),
+            Setting::ClearClipboardAfter => c.passwords.clear_clipboard_seconds = (v / 5.0).round() * 5.0,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds = (v * 2.0).round() / 2.0,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes = v.round(),
             Setting::DiscardAfter => c.tabs.discard_after_minutes = (v / 5.0).round() * 5.0,
@@ -402,6 +434,9 @@ pub enum SettingsAction {
     RemoveAllSiteData,
     /// Index into the listed sites with data.
     RemoveSiteData(usize),
+    OpenPasswords,
+    ImportPasswords,
+    ExportPasswords,
 }
 
 /// Remove buttons of the trusted player sites (one id per row).
@@ -459,6 +494,9 @@ impl SettingsAction {
                         72 + CLOSE_AFTER.iter().position(|(_, d)| *d == days).unwrap_or(0) as u32
                     }
                     SettingsAction::AddTrustedSite => 80,
+                    SettingsAction::OpenPasswords => 85,
+                    SettingsAction::ImportPasswords => 86,
+                    SettingsAction::ExportPasswords => 87,
                     SettingsAction::RemoveTrustedSite(i) => TRUSTED_SITE_BASE + i as u32,
                     SettingsAction::ChooseDownloadFolder => 90,
                     SettingsAction::RemoveDownloads(r) => {
@@ -478,7 +516,7 @@ impl SettingsAction {
         let n = id.0.checked_sub(ACTION_BASE)?;
         Some(match n {
             0 => SettingsAction::Close,
-            10..=18 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
+            10..=19 => SettingsAction::Category(Category::ALL[(n - 10) as usize]),
             20 => SettingsAction::Theme(ThemeMode::Auto),
             21 => SettingsAction::Theme(ThemeMode::Light),
             22 => SettingsAction::Theme(ThemeMode::Dark),
@@ -495,6 +533,9 @@ impl SettingsAction {
             71 => SettingsAction::TabBar(TabBarStyle::Compact),
             72..=75 => SettingsAction::CloseAfter(CLOSE_AFTER[(n - 72) as usize].1),
             80 => SettingsAction::AddTrustedSite,
+            85 => SettingsAction::OpenPasswords,
+            86 => SettingsAction::ImportPasswords,
+            87 => SettingsAction::ExportPasswords,
             90 => SettingsAction::ChooseDownloadFolder,
             91..=93 => SettingsAction::RemoveDownloads(REMOVE_DOWNLOADS[(n - 91) as usize].1),
             94..=97 => SettingsAction::ClearRange(CLEAR_RANGES[(n - 94) as usize].1),
@@ -528,6 +569,9 @@ pub enum Outcome {
     ClearBrowsingData,
     /// Remove one site's cookies and data, or every site's (`None`).
     RemoveSiteData(Option<String>),
+    OpenPasswords,
+    ImportPasswords(PathBuf),
+    ExportPasswords(PathBuf),
 }
 
 pub struct SettingsSheet {
@@ -550,6 +594,9 @@ pub struct SettingsSheet {
     trusted_site: Option<NodeId>,
     password: Option<NodeId>,
     has_password: bool,
+    /// The import/export file field (Passwords page) and the last import/export result.
+    passwords_file: Option<NodeId>,
+    passwords_status: Option<String>,
     /// The browser's memory use, shown on the Tabs page.
     memory_used: Option<u64>,
     confirm_clear: bool,
@@ -720,6 +767,8 @@ impl SettingsSheet {
             trusted_site: None,
             password: None,
             has_password: false,
+            passwords_file: None,
+            passwords_status: None,
             memory_used: None,
             group: None,
             confirm_clear: false,
@@ -757,6 +806,11 @@ impl SettingsSheet {
 
     pub fn homepage_field(&self) -> Option<NodeId> {
         self.homepage
+    }
+
+    /// Shows the result of the last password import or export (Passwords page).
+    pub fn set_passwords_status(&mut self, status: String) {
+        self.passwords_status = Some(status);
     }
 
     pub fn open(&mut self, ui: &mut Ui, config: &Config, keymap: &Keymap, window: Vec2) {
@@ -861,6 +915,7 @@ impl SettingsSheet {
         self.homepage = None;
         self.trusted_site = None;
         self.password = None;
+        self.passwords_file = None;
         if !self.query.is_empty() {
             self.show_results(ui, config);
             return;
@@ -1162,6 +1217,46 @@ impl SettingsSheet {
                         Paint::Fixed(Color::rgb(0xD0362B))
                     });
                 }
+            }
+            Category::Passwords => {
+                let row_node = self.row(ui, "Saved passwords, cards and addresses");
+                pill_button(ui, row_node, "Open Passwords", SettingsAction::OpenPasswords, false);
+                for setting in [Setting::OfferToSavePasswords, Setting::AutofillPasswords] {
+                    self.control(ui, config, setting);
+                }
+                self.section(ui, "Security");
+                for setting in [Setting::PasswordsLockAfter, Setting::ClearClipboardAfter] {
+                    self.control(ui, config, setting);
+                }
+                self.note(ui, "Everything is encrypted with your master password, which Axion never stores.");
+                self.section(ui, "Import and export");
+                let row_node = self.row(ui, "File");
+                let field_box = ui.add(
+                    row_node,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Label, 0.06))
+                        .with_radius(12.0),
+                    Style {
+                        size: Size { width: auto(), height: length(38.0) },
+                        padding: padding(12.0, 0.0),
+                        ..row(0.0)
+                    },
+                );
+                let field = ui.add_text_field(
+                    field_box,
+                    "~/passwords.csv",
+                    TextStyle::Body,
+                    Style { size: Size { width: length(260.0), height: length(22.0) }, ..Default::default() },
+                );
+                self.passwords_file = Some(field);
+                let row_node = self.row(ui, "");
+                pill_button(ui, row_node, "Import CSV", SettingsAction::ImportPasswords, false);
+                pill_button(ui, row_node, "Export Encrypted Copy", SettingsAction::ExportPasswords, false);
+                let note = self.passwords_status.clone().unwrap_or_else(|| {
+                    "Imports CSV files from Chrome, Firefox or Bitwarden. Exports an encrypted copy."
+                        .to_owned()
+                });
+                self.note(ui, &note);
             }
             Category::Data => self.data_page(ui, config),
         }
@@ -1625,6 +1720,22 @@ impl SettingsSheet {
                 self.show(ui, config, keymap);
                 return Outcome::RemovePassword;
             }
+            SettingsAction::OpenPasswords => return Outcome::OpenPasswords,
+            SettingsAction::ImportPasswords | SettingsAction::ExportPasswords => {
+                let text =
+                    self.passwords_file.and_then(|f| ui.field_text(f)).unwrap_or_default().trim().to_owned();
+                if text.is_empty() {
+                    self.passwords_status = Some("Enter the file's path first.".to_owned());
+                    self.show(ui, config, keymap);
+                    return Outcome::Nothing;
+                }
+                let path = expand_home(&text);
+                return if action == SettingsAction::ImportPasswords {
+                    Outcome::ImportPasswords(path)
+                } else {
+                    Outcome::ExportPasswords(path)
+                };
+            }
             SettingsAction::ClearHistory => {
                 if self.confirm_clear {
                     self.confirm_clear = false;
@@ -1637,6 +1748,14 @@ impl SettingsSheet {
         };
         self.show(ui, config, keymap);
         outcome
+    }
+}
+
+/// "~/x" → the home directory's "x".
+fn expand_home(path: &str) -> PathBuf {
+    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(path),
     }
 }
 
@@ -1848,6 +1967,8 @@ mod tests {
             SettingsAction::ClearBrowsingData,
             SettingsAction::RemoveAllSiteData,
             SettingsAction::RemoveSiteData(99),
+            SettingsAction::Category(Category::Passwords),
+            SettingsAction::ExportPasswords,
         ] {
             assert_eq!(SettingsAction::from_id(action.id()), Some(action));
         }

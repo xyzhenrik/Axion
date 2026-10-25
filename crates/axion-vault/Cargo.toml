@@ -1,0 +1,22 @@
+[package]
+name = "axion-vault"
+description = "Axion's password manager: logins, addresses, cards and notes, encrypted with a master password"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+addr = { version = "0.15", default-features = false, features = ["psl"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "0.10", features = ["std"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror.workspace = true
+tracing.workspace = true
+url = "2"
+zeroize = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true
