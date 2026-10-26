@@ -17,7 +17,7 @@ defaults come from. Match new UI to these boards.
 
 ## Communication
 
-- All code, comments, commits, docs and UI strings: **English**.
+- All code, comments, commits and docs: **English**. UI strings: **English is the source language** (written as `tr("…")` literals); German is a translation in `crates/axion-i18n/locales/de.toml` (see plan.md §7, language).
 - Clarifying questions to the user: **German**.
 - Ask before guessing on anything that changes product behaviour or architecture.
 
@@ -53,6 +53,7 @@ crates/
   axion-accounts/    local accounts: shared accounts.toml, per-account directories, migration
                      (switching relaunches; UI in app/accounts.rs, chrome.rs, settings.rs)
   axion-tabs/        tab lifecycle planner (freeze/discard by idle time + memory budget), PSS monitor
+  axion-i18n/        UI translations: `tr("English")` lookup, catalog `locales/de.toml`, source scanner
   axion-media/       media bridge script (bridge.js) + its protocol; controls live in app/player.rs,
                      MPRIS in app/mpris.rs
 ```

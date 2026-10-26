@@ -474,6 +474,25 @@ Windows/macOS, touchscreen-first mode.
 | Sites with custom JS players (YouTube) fight our controls | Integrate with their player state where possible, per-site opt-out to native controls |
 
 ## 7. Decisions log
+- 2026-10-26: **Interface language (English default, German).** `general.language` =
+  `system` (default: `LC_ALL`/`LC_MESSAGES`/`LANGUAGE`/`LANG`, else English) | `en` | `de`;
+  Settings > General > Language. Crate `axion-i18n` (depends only on `toml`): gettext-style, the
+  **English source text is the key**: `tr("Text")` (returns `&'static str`; missing/empty
+  translation falls back to English), `tr_fmt!("Delete {count} items", count = n)` (named
+  placeholders, reorderable), `tr_n("{n} Tab", "{n} Tabs", n)` (plural, one when n == 1),
+  `tr_mark("Text")` for const tables (translate with `tr(x)` where shown). The catalog
+  `crates/axion-i18n/locales/de.toml` (`"English" = "Deutsch"`, empty = untranslated) is embedded
+  and parsed once; the language is process-wide and applied when Axion starts, so switching in
+  Settings takes effect **after a restart** (chrome nodes are retained; a live rebuild would touch
+  every widget; `axion_i18n::generation()` exists for a later live switch). The start page gets the
+  catalog through `/api/state` (`i18n` map of exactly the keys its HTML (`data-t`,
+  `data-t-attrs`) and script (`t("…")`) use, plus `lang`). Not translated: logs, config keys,
+  identifiers, URLs, shortcut chord names, brand names. `cargo test -p axion-i18n` scans all
+  sources (regex-free scanner, `axion_i18n::scan`) and fails with the list of missing, unused or
+  placeholder-mismatching keys; `cargo run -p axion-i18n --example extract` appends missing keys.
+  Translator instructions and glossary: `crates/axion-i18n/locales/GLOSSARY.md`. Known gaps:
+  library `thiserror` messages shown verbatim (vault/accounts), weekday/month names in history
+  headings, PiP window title (matched by a KWin script).
 - 2026-10-26: **App icon.** Default is **v2 "lens A"** (`assets/icons/axion-v2.svg`: white axis-built
   "A" with an orange glass droplet on a blue squircle): the most legible at 16-32 px and the
   least compass-like. Sources are hand-written SVGs in `assets/icons/`; `axion-small.svg` is the
