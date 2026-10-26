@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use axion_i18n::tr;
 use crate::downloads::{Choose, choose_portal, spawn};
 use crate::home::Image;
 
@@ -97,7 +98,7 @@ pub struct PhotoChooser {
 impl PhotoChooser {
     pub fn choose(&self, target: PhotoFor) {
         let chosen = Arc::clone(&self.chosen);
-        spawn("choose-photo", move || match choose_portal("Profile Photo", Choose::Photo) {
+        spawn("choose-photo", move || match choose_portal(tr("Profile Photo"), Choose::Photo) {
             Ok(Some(path)) => *chosen.lock().unwrap_or_else(PoisonError::into_inner) = Some((target, path)),
             Ok(None) => {}
             Err(e) => tracing::warn!("file chooser unavailable: {e}"),
