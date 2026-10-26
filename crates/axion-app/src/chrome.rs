@@ -1089,7 +1089,7 @@ impl Chrome {
         ui.set_label_align(address_label, Align::Start);
         let address_field = ui.add_text_field(
             address,
-            crate::home::ADDRESS_PLACEHOLDER,
+            tr(crate::home::ADDRESS_PLACEHOLDER),
             TextStyle::Body,
             Style { size: Size { width: auto(), height: length(22.0) }, ..shrinking_label() },
         );
@@ -2534,7 +2534,7 @@ impl Chrome {
         let home = crate::home::is_home_url(&tab.url);
         let host = match () {
             _ if self.locked => tr("Private Browsing").to_owned(),
-            _ if home => crate::home::ADDRESS_PLACEHOLDER.to_owned(),
+            _ if home => tr(crate::home::ADDRESS_PLACEHOLDER).to_owned(),
             _ => display_host(&tab.url),
         };
         ui.set_text(self.address_label, &host);
