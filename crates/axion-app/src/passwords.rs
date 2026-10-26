@@ -445,8 +445,11 @@ fn secondary(ui: &mut Ui, parent: NodeId, text: &str, style: TextStyle) -> NodeI
 }
 
 fn capsule_button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, primary: bool) -> NodeId {
-    let background =
-        if primary { Background::Fill(Paint::Accent, 1.0) } else { Background::Fill(Paint::Label, 0.08) };
+    let background = if primary {
+        Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
+    } else {
+        Background::Fill(Paint::Label, 0.08)
+    };
     let button = ui.add(
         parent,
         Widget::container().with_action(action).with_radius(CAPSULE).with_background(background),
@@ -459,22 +462,26 @@ fn capsule_button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, pri
             ..Default::default()
         },
     );
-    let paint = if primary { Paint::Fixed(Color::rgb(0xFFFFFF)) } else { Paint::Label };
+    let paint = if primary { Paint::OnAccent } else { Paint::Label };
     painted(ui, button, text, TextStyle::BodyEmphasis, paint)
 }
 
 /// A small capsule button (accent tint, or red for destructive ones).
 fn pill(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, destructive: bool) {
-    let color = if destructive { Paint::Fixed(ERROR) } else { Paint::Accent };
+    let (color, on) = if destructive {
+        (Paint::Fixed(ERROR), Paint::OnColor(ERROR))
+    } else {
+        (Paint::Accent, Paint::OnAccent)
+    };
     let button = ui.add(
         parent,
         Widget::container()
             .with_action(action)
             .with_radius(CAPSULE)
-            .with_background(Background::Fill(color, 0.14)),
+            .with_background(Background::TintedGlass(GlassLevel::Thin, color)),
         Style { size: Size { width: auto(), height: length(34.0) }, padding: padding(16.0, 0.0), ..row(0.0) },
     );
-    painted(ui, button, text, TextStyle::Callout, color);
+    painted(ui, button, text, TextStyle::Callout, on);
 }
 
 /// A round icon button.

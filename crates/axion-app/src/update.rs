@@ -721,11 +721,13 @@ mod tests {
 
     #[test]
     fn nothing_is_checked_without_a_source() {
+        let mut config = Config::default();
+        config.updates.repository.clear();
         let mut updater = Updater::new();
-        updater.check(&Config::default(), true);
+        updater.check(&config, true);
         assert!(!updater.is_checking());
         assert!(updater.poll().is_empty());
-        let about = updater.about(&Config::default(), None);
+        let about = updater.about(&config, None);
         assert_eq!(about.state, AboutState::NoSource);
         assert!(about.last_checked.is_empty());
     }

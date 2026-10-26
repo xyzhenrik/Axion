@@ -326,7 +326,6 @@ const SLIDE_DISTANCE: f32 = 56.0;
 /// How far the focused tile grows on every side (logical px).
 const FOCUS_GROW: f32 = 4.0;
 const ERROR: Color = Color::rgb(0xD0362B);
-const WHITE: Paint = Paint::Fixed(Color::rgb(0xFFFFFF));
 
 fn spring(config: &Config) -> Spring {
     if config.glass.reduce_motion {
@@ -1414,7 +1413,7 @@ impl Onboarding {
     fn pill(&mut self, ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, kind: PillKind) -> NodeId {
         let (background, label_paint) = match kind {
             PillKind::Primary | PillKind::Selected => {
-                (Background::TintedGlass(GlassLevel::Thin, Paint::Accent), Some(WHITE))
+                (Background::TintedGlass(GlassLevel::Thin, Paint::Accent), Some(Paint::OnAccent))
             }
             PillKind::Plain | PillKind::Small => (Background::Glass(GlassLevel::Thin), None),
         };
@@ -1535,12 +1534,12 @@ impl Onboarding {
         picture(ui, node);
         let name = ui.add_label(node, label, TextStyle::Callout, Style::default());
         if selected && let Some(w) = ui.widget_mut(name) {
-            w.set_paint(WHITE);
+            w.set_paint(Paint::OnAccent);
         }
         if let Some(detail) = detail {
             let note = ui.add_label(node, detail, TextStyle::Footnote, Style::default());
             if let Some(w) = ui.widget_mut(note) {
-                w.set_paint(if selected { WHITE } else { Paint::Secondary });
+                w.set_paint(if selected { Paint::OnAccent } else { Paint::Secondary });
             }
         }
         let mark = ui.add(

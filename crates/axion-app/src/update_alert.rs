@@ -80,7 +80,7 @@ fn column_gap(gap: f32) -> Size<LengthPercentage> {
 
 fn button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, tone: Tone) {
     let background = match tone {
-        Tone::Accent => Background::Fill(Paint::Accent, 1.0),
+        Tone::Accent => Background::TintedGlass(GlassLevel::Thin, Paint::Accent),
         Tone::Plain => Background::Fill(Paint::Label, 0.08),
     };
     let node = ui.add(
@@ -101,7 +101,7 @@ fn button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, tone: Tone)
     if tone == Tone::Accent
         && let Some(w) = ui.widget_mut(label)
     {
-        w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
+        w.set_paint(Paint::OnAccent);
     }
 }
 

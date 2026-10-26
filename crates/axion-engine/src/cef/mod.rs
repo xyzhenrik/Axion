@@ -49,6 +49,8 @@ struct ProcessFlags {
     no_sandbox: bool,
     render_node: Option<PathBuf>,
     hardware_video_decoding: bool,
+    /// Chromium switches from the settings (`[hardware]`, see `CefOptions::extra_switches`).
+    extra_switches: Vec<(String, Option<String>)>,
     /// The browser process's message pump schedule (`None` in helper processes).
     schedule: Option<Arc<PumpSchedule>>,
 }
@@ -100,6 +102,13 @@ wrap_app! {
                     Some(&"AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL".into()),
                 );
             }
+            for (name, value) in &self.flags.extra_switches {
+                match value {
+                    Some(value) => command_line
+                        .append_switch_with_value(Some(&name.as_str().into()), Some(&value.as_str().into())),
+                    None => command_line.append_switch(Some(&name.as_str().into())),
+                }
+            }
             // Debugging aid: extra Chromium switches, e.g. "autoplay-policy=no-user-gesture-required".
             if let Ok(extra) = std::env::var("AXION_CHROMIUM_SWITCHES") {
                 for switch in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -143,9 +152,15 @@ pub fn run_subprocess_if_needed() -> Option<i32> {
         no_sandbox: false,
         render_node: None,
         hardware_video_decoding: false,
+        extra_switches: Vec::new(),
         schedule: None,
     });
     Some(execute_process(Some(args.as_main_args()), Some(&mut app), std::ptr::null_mut()))
+}
+
+/// The Chromium Embedded Framework version this build links (for diagnostics).
+pub fn cef_version() -> String {
+    sys::CEF_VERSION.iter().take_while(|&&b| b != 0).map(|&b| b as char).collect()
 }
 
 /// wgpu features the device must have for zero-copy GPU frames.
@@ -169,6 +184,8 @@ pub struct CefOptions {
     pub frame_settle: std::time::Duration,
     /// Decode video on the GPU (VA-API).
     pub hardware_video_decoding: bool,
+    /// More Chromium command line switches (name, value), e.g. from Settings › Hardware.
+    pub extra_switches: Vec<(String, Option<String>)>,
     /// Wakes the embedder's event loop when Chromium has work (see [`Engine::next_pump`]).
     pub waker: Option<Waker>,
 }
@@ -215,6 +232,7 @@ impl CefEngine {
             no_sandbox: options.no_sandbox,
             render_node: options.render_node.clone(),
             hardware_video_decoding: options.hardware_video_decoding,
+            extra_switches: options.extra_switches.clone(),
             schedule: Some(schedule.clone()),
         });
         let profile = options.profile_dir.to_string_lossy().into_owned();

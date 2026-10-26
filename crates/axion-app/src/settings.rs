@@ -5,8 +5,9 @@ use std::path::PathBuf;
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
-    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, GlassStyle, Keymap,
-    PlaylistSort, RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode, TintMode, UiLanguage,
+    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, GlassStyle, GpuChoice,
+    Keymap, PageFrames, PlaylistSort, RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode, TintMode,
+    UiLanguage,
 };
 use axion_i18n::{tr, tr_fmt, tr_mark, tr_n};
 use axion_ui::taffy::prelude::*;
@@ -96,11 +97,12 @@ pub enum Category {
     Privacy,
     Data,
     Passwords,
+    Hardware,
     About,
 }
 
 impl Category {
-    pub const ALL: [Category; 12] = [
+    pub const ALL: [Category; 13] = [
         Category::Account,
         Category::General,
         Category::Appearance,
@@ -112,6 +114,7 @@ impl Category {
         Category::Privacy,
         Category::Data,
         Category::Passwords,
+        Category::Hardware,
         Category::About,
     ];
 
@@ -134,6 +137,7 @@ impl Category {
             Category::Privacy => tr_mark("Privacy"),
             Category::Data => tr_mark("Data & Downloads"),
             Category::Passwords => tr_mark("Passwords"),
+            Category::Hardware => tr_mark("Hardware"),
             Category::About => tr_mark("About & Updates"),
         }
     }
@@ -151,6 +155,7 @@ impl Category {
             Category::Privacy => Icon::Lock,
             Category::Data => Icon::Download,
             Category::Passwords => Icon::Key,
+            Category::Hardware => Icon::Gauge,
             Category::About => Icon::Info,
         }
     }
@@ -198,6 +203,8 @@ enum Setting {
     OwnFullscreenControls,
     HideControlsAfter,
     HardwareDecoding,
+    HardwareEnabled,
+    GpuRasterization,
     DesktopIntegration,
     AskWhereToSave,
     OpenSafeFiles,
@@ -264,6 +271,8 @@ impl Setting {
             Setting::OwnFullscreenControls => tr_mark("Axion's player in fullscreen"),
             Setting::HideControlsAfter => tr_mark("Hide controls while playing after"),
             Setting::HardwareDecoding => tr_mark("Hardware video decoding (after restart)"),
+            Setting::HardwareEnabled => tr_mark("Use hardware acceleration"),
+            Setting::GpuRasterization => tr_mark("Smooth WebGL, canvas and GPU rasterization"),
             Setting::DesktopIntegration => tr_mark("Desktop media controls and media keys (after restart)"),
             Setting::AskWhereToSave => tr_mark("Ask where to save each file"),
             Setting::OpenSafeFiles => tr_mark("Open “safe” files after downloading"),
@@ -312,6 +321,8 @@ impl Setting {
                 | Setting::OpenInBackground
                 | Setting::OwnFullscreenControls
                 | Setting::HardwareDecoding
+                | Setting::HardwareEnabled
+                | Setting::GpuRasterization
                 | Setting::DesktopIntegration
                 | Setting::AskWhereToSave
                 | Setting::OpenSafeFiles
@@ -433,6 +444,8 @@ impl Setting {
             Setting::HomeButton => return c.layout.home_button as u8 as f32,
             Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
+            Setting::HardwareEnabled => return c.hardware.enabled as u8 as f32,
+            Setting::GpuRasterization => return c.hardware.gpu_rasterization as u8 as f32,
             Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
             Setting::AskWhereToSave => return c.downloads.ask_where_to_save as u8 as f32,
             Setting::OpenSafeFiles => return c.downloads.open_safe_files as u8 as f32,
@@ -506,6 +519,8 @@ impl Setting {
             Setting::HomeButton => c.layout.home_button = on,
             Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
+            Setting::HardwareEnabled => c.hardware.enabled = on,
+            Setting::GpuRasterization => c.hardware.gpu_rasterization = on,
             Setting::DesktopIntegration => c.media.desktop_integration = on,
             Setting::AskWhereToSave => c.downloads.ask_where_to_save = on,
             Setting::OpenSafeFiles => c.downloads.open_safe_files = on,
@@ -624,7 +639,16 @@ pub enum SettingsAction {
     /// Store the repository typed into the field.
     SaveRepository,
     RelaunchNow,
+    /// Hardware page: how page frames reach Axion, and which graphics card.
+    PageFrames(PageFrames),
+    GpuCard(GpuChoice),
+    CopyDiagnostics,
+    /// Relaunch to apply the Hardware settings.
+    RestartAxion,
 }
+
+/// The Hardware page's actions (ids between the trusted sites' and the pages').
+const HARDWARE_BASE: u32 = 880;
 
 /// The About page's actions: the ids after the background picker's.
 const UPDATE_BASE: u32 = 990;
@@ -698,6 +722,38 @@ fn set_icon_weight(config: &mut Config, preset: usize) {
 /// The language choices, named in their own language (never translated).
 const LANGUAGES: [(&str, UiLanguage); 3] =
     [("System", UiLanguage::System), ("English", UiLanguage::English), ("Deutsch", UiLanguage::German)];
+
+/// The page rendering choices (labels are translated where drawn).
+const PAGE_FRAMES: [(&str, PageFrames); 3] = [
+    (tr_mark("Automatic"), PageFrames::Auto),
+    (tr_mark("Shared GPU memory"), PageFrames::Gpu),
+    (tr_mark("Software"), PageFrames::Software),
+];
+
+const GPU_CARDS: [(&str, GpuChoice); 3] = [
+    (tr_mark("Automatic"), GpuChoice::Auto),
+    (tr_mark("Integrated"), GpuChoice::Low),
+    (tr_mark("Dedicated"), GpuChoice::High),
+];
+
+/// An adapter type (`AdapterLine::kind`) in the current language.
+fn adapter_kind(kind: &str) -> &'static str {
+    match kind {
+        "integrated" => tr("integrated"),
+        "discrete" => tr("dedicated"),
+        "virtual" => tr("virtual"),
+        "software" => tr("software"),
+        _ => tr("other"),
+    }
+}
+
+fn page_frames_index(frames: PageFrames) -> u32 {
+    PAGE_FRAMES.iter().position(|&(_, f)| f == frames).unwrap_or(0) as u32
+}
+
+fn gpu_card_index(card: GpuChoice) -> u32 {
+    GPU_CARDS.iter().position(|&(_, g)| g == card).unwrap_or(0) as u32
+}
 
 const SHIELD_LEVELS: [(&str, ShieldLevel); 3] = [
     (tr_mark("Off"), ShieldLevel::Off),
@@ -785,6 +841,10 @@ impl SettingsAction {
                     SettingsAction::OpenReleasePage => UPDATE_BASE + 4,
                     SettingsAction::SaveRepository => UPDATE_BASE + 5,
                     SettingsAction::RelaunchNow => UPDATE_BASE + 6,
+                    SettingsAction::PageFrames(f) => HARDWARE_BASE + page_frames_index(f),
+                    SettingsAction::GpuCard(g) => HARDWARE_BASE + 3 + gpu_card_index(g),
+                    SettingsAction::CopyDiagnostics => HARDWARE_BASE + 6,
+                    SettingsAction::RestartAxion => HARDWARE_BASE + 7,
                 },
         )
     }
@@ -839,7 +899,13 @@ impl SettingsAction {
             n if (SITE_DATA_BASE..SITE_DATA_BASE + SITE_DATA_LIMIT as u32).contains(&n) => {
                 SettingsAction::RemoveSiteData((n - SITE_DATA_BASE) as usize)
             }
-            n if (TRUSTED_SITE_BASE..CATEGORY_BASE).contains(&n) => {
+            n if (HARDWARE_BASE..HARDWARE_BASE + 8).contains(&n) => match n - HARDWARE_BASE {
+                i @ 0..=2 => SettingsAction::PageFrames(PAGE_FRAMES[i as usize].1),
+                i @ 3..=5 => SettingsAction::GpuCard(GPU_CARDS[i as usize - 3].1),
+                6 => SettingsAction::CopyDiagnostics,
+                _ => SettingsAction::RestartAxion,
+            },
+            n if (TRUSTED_SITE_BASE..HARDWARE_BASE).contains(&n) => {
                 SettingsAction::RemoveTrustedSite((n - TRUSTED_SITE_BASE) as usize)
             }
             NO_BACKGROUND => SettingsAction::NoBackground,
@@ -922,6 +988,12 @@ pub enum Outcome {
     RemindLater,
     OpenReleasePage,
     RelaunchNow,
+    /// Hardware: copy the GPU diagnostics to the clipboard.
+    CopyDiagnostics,
+    /// Hardware: relaunch Axion to apply the changed settings.
+    RestartAxion,
+    /// Hardware: ask before "Shared GPU memory" is used on AMD graphics.
+    ConfirmGpuFrames,
     /// The repository changed (`config.updates.repository`); save it and look for updates.
     SourceChanged,
 }
@@ -993,6 +1065,8 @@ pub struct SettingsSheet {
     /// release notes box (clipped viewport, scrolling content) with its scroll, and the dot
     /// beside the page's entry in the list.
     about: AboutInfo,
+    /// What the GPU session uses (Hardware page); `None` before the browser set it.
+    hardware: Option<crate::hardware::Status>,
     repository_field: Option<NodeId>,
     repository_status: Option<String>,
     /// What was typed in the repository field when it was refused (put back after a redraw).
@@ -1206,6 +1280,7 @@ impl SettingsSheet {
             background_status: None,
             background_error: None,
             about: AboutInfo::default(),
+            hardware: None,
             repository_field: None,
             repository_status: None,
             repository_draft: None,
@@ -1213,6 +1288,11 @@ impl SettingsSheet {
             notes_scroll: 0.0,
             about_badge,
         }
+    }
+
+    /// What the Hardware page reports.
+    pub fn set_hardware(&mut self, status: crate::hardware::Status) {
+        self.hardware = Some(status);
     }
 
     /// What the About & Updates page shows; call [`Self::show`] to redraw it.
@@ -1797,6 +1877,7 @@ impl SettingsSheet {
                     self.control(ui, config, setting);
                 }
             }
+            Category::Hardware => self.hardware_page(ui, config),
             Category::Shields => {
                 let row_node = self.row(ui, tr("Shields on sites you haven't set"));
                 let options: Vec<(&str, ActionId)> = SHIELD_LEVELS
@@ -2580,6 +2661,141 @@ impl SettingsSheet {
 
     /// The settings matching the search, grouped by page: toggles and sliders work right
     /// here, everything else has a button that opens its page.
+    /// A row with a short label and a grey value (the status rows).
+    fn info_row(&mut self, ui: &mut Ui, label: &str, value: &str) {
+        let row_node = self.row(ui, label);
+        let text = ui.add_label(
+            row_node,
+            value,
+            TextStyle::Callout,
+            Style {
+                flex_grow: 0.0,
+                flex_shrink: 1.0,
+                // The values start at one edge, whatever the labels' widths.
+                flex_basis: percent(0.6),
+                min_size: Size { width: length(0.0), height: auto() },
+                ..Default::default()
+            },
+        );
+        ui.set_label_lines(text, NOTE_LINES);
+        if let Some(w) = ui.widget_mut(text) {
+            w.set_paint(Paint::Secondary);
+        }
+    }
+
+    /// A note in warning red.
+    fn warning_note(&mut self, ui: &mut Ui, text: &str) {
+        self.note(ui, text);
+        if let Some(&label) = ui.children(self.content).last()
+            && let Some(w) = ui.widget_mut(label)
+        {
+            w.set_paint(Paint::Fixed(DESTRUCTIVE));
+        }
+    }
+
+    /// Settings › Hardware: acceleration switches, page rendering, graphics card, and what is
+    /// actually active (all read when Axion starts).
+    fn hardware_page(&mut self, ui: &mut Ui, config: &Config) {
+        let status = self.hardware.clone();
+        let amd = status.as_ref().is_some_and(|h| crate::hardware::is_amd(h.in_use.vendor));
+
+        self.section(ui, tr("Acceleration"));
+        self.control(ui, config, Setting::HardwareEnabled);
+        self.control_labeled(ui, config, Setting::HardwareDecoding, tr("Hardware video decoding"));
+        self.control(ui, config, Setting::GpuRasterization);
+        self.note(
+            ui,
+            tr("Off: Chromium draws pages, video and canvas in software. Axion's own interface always \
+                uses the graphics card (it cannot run without one)."),
+        );
+
+        self.section(ui, tr("Page rendering"));
+        let row_node = self.row(ui, tr("Page frames"));
+        let options: Vec<(&str, ActionId)> =
+            PAGE_FRAMES.iter().map(|&(name, f)| (tr(name), SettingsAction::PageFrames(f).id())).collect();
+        let current = PAGE_FRAMES.iter().position(|&(_, f)| f == config.hardware.page_frames);
+        segmented(ui, row_node, &options, current);
+        self.note(
+            ui,
+            tr(
+                "Automatic shares GPU memory only where that is known to work (NVIDIA on Wayland) and copies \
+                frames through system memory elsewhere. Software is the safe choice.",
+            ),
+        );
+        if amd {
+            let text =
+                tr("Warning: on AMD graphics (RADV), “Shared GPU memory” can crash the graphics driver. \
+                           Keep Automatic unless you know your setup works.");
+            if config.hardware.page_frames == PageFrames::Gpu {
+                self.warning_note(ui, text);
+            } else {
+                self.note(ui, text);
+            }
+        }
+
+        self.section(ui, tr("Graphics card"));
+        let row_node = self.row(ui, tr("Graphics card"));
+        let options: Vec<(&str, ActionId)> =
+            GPU_CARDS.iter().map(|&(name, g)| (tr(name), SettingsAction::GpuCard(g).id())).collect();
+        let current = GPU_CARDS.iter().position(|&(_, g)| g == config.hardware.gpu);
+        segmented(ui, row_node, &options, current);
+        if let Some(status) = &status {
+            let describe = |a: &crate::hardware::AdapterLine| {
+                tr_fmt!(
+                    "{name} ({backend}, {kind})",
+                    name = a.name.as_str(),
+                    backend = a.backend.as_str(),
+                    kind = adapter_kind(a.kind)
+                )
+            };
+            self.info_row(ui, tr("In use"), &describe(&status.in_use));
+            for adapter in status.adapters.iter().filter(|a| {
+                (a.name.as_str(), a.vendor, a.device)
+                    != (status.in_use.name.as_str(), status.in_use.vendor, status.in_use.device)
+            }) {
+                self.info_row(ui, tr("Also available"), &describe(adapter));
+            }
+        }
+        self.note(
+            ui,
+            tr("Integrated saves power, Dedicated is the fastest. Automatic prefers the dedicated card if \
+                there is one. Applies after restarting Axion."),
+        );
+
+        if let Some(status) = &status {
+            self.section(ui, tr("GPU status"));
+            let frames = match status.frames {
+                crate::hardware::FrameMode::Gpu => tr("Shared GPU memory"),
+                crate::hardware::FrameMode::Software => tr("Software (system memory)"),
+            };
+            self.info_row(ui, tr("Page frames"), frames);
+            let video = if status.video_decoding { tr("VA-API requested") } else { tr("Off") };
+            self.info_row(ui, tr("Video decoding"), video);
+            self.info_row(ui, tr("Chromium"), &status.cef_version);
+            let mut overridden = Vec::new();
+            if let Some(v) = &status.env.gpu {
+                overridden.push(format!("AXION_GPU={v}"));
+            }
+            if let Some(v) = &status.env.osr {
+                overridden.push(format!("AXION_OSR={v}"));
+            }
+            if !overridden.is_empty() {
+                self.note(
+                    ui,
+                    &tr_fmt!("Overridden by the environment: {names}.", names = overridden.join(", ")),
+                );
+            }
+            let row_node = self.row(ui, tr("Diagnostics"));
+            glass_pill(ui, row_node, tr("Copy Diagnostics"), SettingsAction::CopyDiagnostics);
+        }
+
+        if status.as_ref().is_some_and(|h| h.startup.needs_restart(config)) {
+            self.section(ui, "");
+            let row_node = self.row(ui, tr("Applies after restarting Axion."));
+            primary_button(ui, row_node, tr("Restart Axion to Apply"), SettingsAction::RestartAxion);
+        }
+    }
+
     fn show_results(&mut self, ui: &mut Ui, config: &Config) {
         ui.add_label(
             self.content,
@@ -2882,7 +3098,14 @@ impl SettingsSheet {
             Some(&(_, setting)) => {
                 setting.set(config, value);
                 // The Privacy page shows the password fields while the lock has no password.
-                self.rebuild |= matches!(setting, Setting::LockPrivateTabs | Setting::TintFromPage);
+                self.rebuild |= matches!(
+                    setting,
+                    Setting::LockPrivateTabs
+                        | Setting::TintFromPage
+                        | Setting::HardwareEnabled
+                        | Setting::HardwareDecoding
+                        | Setting::GpuRasterization
+                );
                 // The preview dims live; its blur follows once it is made (see the browser).
                 if setting == Setting::HomeDim
                     && let Some(node) = self.preview_node
@@ -3131,6 +3354,23 @@ impl SettingsSheet {
             SettingsAction::RemindLater => return Outcome::RemindLater,
             SettingsAction::OpenReleasePage => return Outcome::OpenReleasePage,
             SettingsAction::RelaunchNow => return Outcome::RelaunchNow,
+            SettingsAction::PageFrames(frames) => {
+                let amd = self
+                    .hardware
+                    .as_ref()
+                    .is_some_and(|h| crate::hardware::needs_gpu_frames_confirmation(h.in_use.vendor, frames));
+                if amd && config.hardware.page_frames != PageFrames::Gpu {
+                    return Outcome::ConfirmGpuFrames;
+                }
+                config.hardware.page_frames = frames;
+                Outcome::Changed
+            }
+            SettingsAction::GpuCard(card) => {
+                config.hardware.gpu = card;
+                Outcome::Changed
+            }
+            SettingsAction::CopyDiagnostics => return Outcome::CopyDiagnostics,
+            SettingsAction::RestartAxion => return Outcome::RestartAxion,
             SettingsAction::SaveRepository => {
                 let text = self
                     .repository_field
@@ -3214,12 +3454,12 @@ fn primary_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsActio
         Widget::container()
             .with_action(action.id())
             .with_radius(CAPSULE)
-            .with_background(Background::Fill(Paint::Accent, 1.0)),
+            .with_background(Background::TintedGlass(GlassLevel::Thin, Paint::Accent)),
         Style { size: Size { width: auto(), height: length(36.0) }, padding: padding(18.0, 0.0), ..row(0.0) },
     );
     let label = ui.add_label(button, text, TextStyle::Callout, Style::default());
     if let Some(w) = ui.widget_mut(label) {
-        w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
+        w.set_paint(Paint::OnAccent);
     }
 }
 
@@ -3238,18 +3478,22 @@ fn idle_pill(ui: &mut Ui, parent: NodeId, text: &str) {
 
 /// A small capsule button (accent tint, or red for destructive ones).
 fn pill_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsAction, destructive: bool) {
-    let color = if destructive { Paint::Fixed(Color::rgb(0xD0362B)) } else { Paint::Accent };
+    let (tint, on) = if destructive {
+        (Paint::Fixed(DESTRUCTIVE), Paint::OnColor(DESTRUCTIVE))
+    } else {
+        (Paint::Accent, Paint::OnAccent)
+    };
     let button = ui.add(
         parent,
         Widget::container()
             .with_action(action.id())
             .with_radius(CAPSULE)
-            .with_background(Background::Fill(color, 0.14)),
+            .with_background(Background::TintedGlass(GlassLevel::Thin, tint)),
         Style { size: Size { width: auto(), height: length(36.0) }, padding: padding(16.0, 0.0), ..row(0.0) },
     );
     let label = ui.add_label(button, text, TextStyle::Callout, Style::default());
     if let Some(w) = ui.widget_mut(label) {
-        w.set_paint(color);
+        w.set_paint(on);
     }
 }
 
@@ -3277,15 +3521,17 @@ pub fn glass_pill(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsActio
 fn destructive_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsAction, confirming: bool) {
     let button = ui.add(
         parent,
-        Widget::container().with_action(action.id()).with_radius(CAPSULE).with_background(Background::Fill(
-            Paint::Fixed(DESTRUCTIVE),
-            if confirming { 1.0 } else { 0.14 },
-        )),
+        Widget::container().with_action(action.id()).with_radius(CAPSULE).with_background(
+            Background::TintedGlass(
+                if confirming { GlassLevel::Regular } else { GlassLevel::Thin },
+                Paint::Fixed(DESTRUCTIVE),
+            ),
+        ),
         Style { size: Size { width: auto(), height: length(36.0) }, padding: padding(16.0, 0.0), ..row(0.0) },
     );
     let label = ui.add_label(button, text, TextStyle::Callout, Style::default());
     if let Some(w) = ui.widget_mut(label) {
-        w.set_paint(Paint::Fixed(if confirming { Color::rgb(0xFFFFFF) } else { DESTRUCTIVE }));
+        w.set_paint(Paint::OnColor(DESTRUCTIVE));
     }
 }
 
@@ -3741,6 +3987,15 @@ mod tests {
             SettingsAction::OpenReleasePage,
             SettingsAction::SaveRepository,
             SettingsAction::RelaunchNow,
+            SettingsAction::PageFrames(PageFrames::Auto),
+            SettingsAction::PageFrames(PageFrames::Gpu),
+            SettingsAction::PageFrames(PageFrames::Software),
+            SettingsAction::GpuCard(GpuChoice::Auto),
+            SettingsAction::GpuCard(GpuChoice::Low),
+            SettingsAction::GpuCard(GpuChoice::High),
+            SettingsAction::CopyDiagnostics,
+            SettingsAction::RestartAxion,
+            SettingsAction::Category(Category::Hardware),
             SettingsAction::Category(Category::About),
         ] {
             assert_eq!(SettingsAction::from_id(action.id()), Some(action));

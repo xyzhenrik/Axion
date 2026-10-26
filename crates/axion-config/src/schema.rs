@@ -20,6 +20,7 @@ pub struct Config {
     pub shields: Shields,
     pub tabs: Tabs,
     pub media: Media,
+    pub hardware: Hardware,
     pub playlist: Playlist,
     pub downloads: Downloads,
     pub data: Data,
@@ -408,6 +409,9 @@ pub struct Glass {
     /// thickness: buttons are pure refractive glass, never a grey plate. Text-bearing panels keep
     /// their level's opacity.
     pub button_opacity: f32,
+    /// Tint opacity (0–1) of tinted (primary, destructive) glass buttons: how much of the accent
+    /// colour the glass takes. The rest is the backdrop, refracted, with the rim light on top.
+    pub tinted_opacity: f32,
     /// Extra tint opacity over busy or mid-grey backdrops, to keep labels legible.
     pub adaptive_opacity: f32,
     /// Replace glass with opaque surfaces.
@@ -472,6 +476,7 @@ impl Default for Glass {
             popover_bridge_fillet: 30.0,
             menu_plate_opacity: 0.6,
             button_opacity: 0.04,
+            tinted_opacity: 0.85,
             adaptive_opacity: 0.12,
             reduce_transparency: false,
             reduce_motion: false,
@@ -992,7 +997,7 @@ impl Default for Ui {
 /// with a GitHub-compatible releases API via `updates.api_url`). **Fill this in once the
 /// project's repository exists**; while it and `updates.manifest_url` are both empty, the
 /// updater does nothing at all (no network access, no notices).
-pub const DEFAULT_REPOSITORY: &str = "";
+pub const DEFAULT_REPOSITORY: &str = "xyzhenrik/Axion";
 
 /// Which releases the updater offers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1101,6 +1106,54 @@ pub struct Clipboard {
 impl Default for Clipboard {
     fn default() -> Self {
         Self { max_paste_mb: 64 }
+    }
+}
+
+/// How Chromium hands finished page frames to Axion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PageFrames {
+    /// Share them as GPU textures where that is known to work (NVIDIA's driver on Wayland),
+    /// copy them through memory elsewhere.
+    #[default]
+    Auto,
+    /// Always share GPU memory. On AMD's RADV driver this can crash the GPU driver.
+    Gpu,
+    /// Always copy frames through system memory.
+    Software,
+}
+
+/// Which graphics card Axion draws with (and Chromium is pinned to).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuChoice {
+    /// The discrete card if there is one (`AXION_GPU` can override).
+    #[default]
+    Auto,
+    /// The integrated card (power saving).
+    Low,
+    /// The most powerful card (performance).
+    High,
+}
+
+/// Hardware acceleration. Everything here is read when Axion starts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Hardware {
+    /// Master switch. Off: Chromium renders pages, video and canvas in software and pages are
+    /// painted through system memory. Axion's own interface still needs the GPU (wgpu).
+    pub enabled: bool,
+    /// How page frames reach Axion (`AXION_OSR=software|gpu` overrides it).
+    pub page_frames: PageFrames,
+    /// Which graphics card to use (`AXION_GPU=low` overrides it).
+    pub gpu: GpuChoice,
+    /// GPU rasterization (also what makes WebGL and canvas smooth) and zero-copy uploads.
+    pub gpu_rasterization: bool,
+}
+
+impl Default for Hardware {
+    fn default() -> Self {
+        Self { enabled: true, page_frames: PageFrames::Auto, gpu: GpuChoice::Auto, gpu_rasterization: true }
     }
 }
 
@@ -1236,7 +1289,8 @@ pub struct Media {
     pub volume_step: f32,
     /// The speed button cycles through these.
     pub playback_speeds: Vec<f32>,
-    /// Decode video on the GPU (VA-API).
+    /// Decode video on the GPU (VA-API). Needs `hardware.enabled`; shown in Settings › Media and
+    /// Settings › Hardware (applies after a restart).
     pub hardware_decoding: bool,
     /// Show what plays in the desktop's media controls and take the media keys (MPRIS).
     pub desktop_integration: bool,
