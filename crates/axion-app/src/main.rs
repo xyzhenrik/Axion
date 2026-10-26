@@ -45,6 +45,8 @@ mod overview;
 mod page_color;
 mod page_menu;
 mod passwords;
+mod permission_prompt;
+mod permissions;
 mod pip;
 mod platform;
 mod player;

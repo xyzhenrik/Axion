@@ -79,6 +79,7 @@ use crate::window_resize::{Debounce, ResizePacer};
 mod context;
 mod onboarding;
 mod page_context;
+mod permissions;
 mod playlist;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
@@ -248,6 +249,8 @@ pub struct Browser {
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
     downloads_popover: DownloadsPopover,
+    /// Site permissions: the prompt, the recording indicator's popover and the decisions.
+    permissions: permissions::PermissionsUi,
     toast: Toast,
     updater: Updater,
     update_alert: UpdateAlert,
@@ -618,6 +621,7 @@ impl Browser {
         let account_menu = Menu::build(&mut ui, chrome.sidebar_node(), ACCOUNT_MENU_BASE, Placement::Above);
         let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
+        let permissions = permissions::PermissionsUi::build(&mut ui, chrome.bar_node(), store.as_ref());
         let toast = Toast::build(&mut ui, chrome.bar_node());
         let find = FindBar::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
@@ -697,6 +701,7 @@ impl Browser {
             shields,
             shields_popover,
             downloads_popover,
+            permissions,
             toast,
             updater: Updater::new(),
             update_alert,
@@ -852,6 +857,7 @@ impl Browser {
             }),
         };
         browser.show_account();
+        browser.start_permissions();
         browser.frame_interval = display_frame_interval(&browser.window);
         browser.update_layout();
         browser.start_onboarding(&options, accounts_file, config_file);
@@ -1161,6 +1167,7 @@ impl Browser {
                     self.settings.set_account(self.account_info());
                     self.sync_about();
                     self.settings.set_memory_used(self.memory.used());
+                    self.settings.set_site_permissions(self.permissions.model.remembered());
                     let window = self.logical_size();
                     // Out of what it was opened from (the address field by default).
                     let fallback = self.address_origin();
@@ -2241,6 +2248,7 @@ impl Browser {
                 // A background tab still waiting for its overview snapshot counts as loading.
                 loading: t.loading || t.needs_snapshot,
                 devtools_open: self.engine.devtools_open(t.view),
+                capturing: t.capture.any(),
             })
             .collect();
         self.close_unused_tabs();
@@ -2278,7 +2286,9 @@ impl Browser {
             .all()
             .iter()
             .enumerate()
-            .filter(|(i, t)| *i != active && t.last_viewed < cutoff && !t.playing_media && !t.pinned)
+            .filter(|(i, t)| {
+                *i != active && t.last_viewed < cutoff && !t.playing_media && !t.pinned && !t.capture.any()
+            })
             .map(|(i, _)| i)
             .collect();
         for i in stale.into_iter().rev() {
@@ -2920,6 +2930,7 @@ impl Browser {
         self.account_menu.close(&mut self.ui, &self.config);
         self.shields_popover.close(&mut self.ui, &self.config);
         self.downloads_popover.close(&mut self.ui, &self.config);
+        self.permissions.capture.close(&mut self.ui, &self.config);
         self.suggestions.hide(&mut self.ui, &self.config);
         self.passwords.hide_prompt(None, false);
         if self.settings.is_open() {
@@ -3405,6 +3416,16 @@ impl Browser {
                         None => {}
                     }
                 }
+                UiEvent::Clicked { action, .. } if self.permissions.prompt.action(action).is_some() => {
+                    if let Some(choice) = self.permissions.prompt.action(action) {
+                        self.answer_permission_prompt(choice);
+                    }
+                }
+                UiEvent::Clicked { action, .. } if self.permissions.capture.action(action).is_some() => {
+                    if let Some(action) = self.permissions.capture.action(action) {
+                        self.capture_action(action);
+                    }
+                }
                 UiEvent::Clicked { action, .. } if self.shields_popover.action(action).is_some() => {
                     match self.shields_popover.action(action) {
                         Some(PopoverAction::SetLevel(level)) => self.set_shields_level(level),
@@ -3522,6 +3543,7 @@ impl Browser {
                     Some(ChromeAction::Private) if !self.private_mode => self.toggle_private_mode(),
                     Some(ChromeAction::Private) if self.is_locked() => self.show_unlock_alert(),
                     Some(ChromeAction::Private) => self.chrome.toggle_section(&mut self.ui, Section::Private),
+                    Some(ChromeAction::Capture) => self.toggle_capture_popover(),
                     Some(ChromeAction::MuteTab) => {
                         if let Some(tab) = self.tabs.active_mut() {
                             tab.muted = !tab.muted;
@@ -3697,6 +3719,7 @@ impl Browser {
                 EngineEvent::AddressChanged { view, url } => {
                     // The fill offer was for the page that was there (a save offer stays).
                     self.passwords.hide_prompt(Some(view), true);
+                    self.permissions_navigated(view, &url);
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
                         tab.url = url;
                         self.tabs_changed = true;
@@ -3889,7 +3912,15 @@ impl Browser {
                 EngineEvent::MediaSniffed { view, url, mime, referer } => {
                     self.playlist_sniffed(view, url, mime, referer);
                 }
+                EngineEvent::PermissionRequest { view, id, origin, kinds } => {
+                    self.permission_requested(view, id, origin, kinds);
+                }
+                EngineEvent::PermissionCancelled { view, id } => self.permission_cancelled(view, id),
+                EngineEvent::CaptureChanged { view, audio, video } => {
+                    self.capture_changed(view, audio, video)
+                }
                 EngineEvent::Closed { view } => {
+                    self.permissions_closed(view);
                     self.playlist.sniffed.remove(&view);
                     self.page_colors.closed(view);
                 }
@@ -3911,6 +3942,8 @@ impl Browser {
             }
         }
         self.downloads_pump(downloads_changed);
+        self.check_capture_stops();
+        self.apply_permission_defaults();
         self.playlist_housekeeping();
         self.update_home();
         self.update_photos();
@@ -4124,6 +4157,7 @@ impl Browser {
                 self.engine.clear_data(&axion_engine::ClearData { cache: false, all_site_data: all, sites });
                 self.engine.request_site_data();
             }
+            Outcome::ForgetPermissions(which) => self.forget_site_permissions(which),
         }
     }
 
@@ -4193,6 +4227,8 @@ impl Browser {
             || self.context_menus.is_open()
             || self.shields_popover.is_open()
             || self.downloads_popover.is_open()
+            || self.permissions.prompt.is_open()
+            || self.permissions.capture.is_open()
             || self.suggestions.is_visible()
             || self.find.is_open()
             || self.overview.is_open()
@@ -4990,6 +5026,9 @@ impl Browser {
             self.downloads_popover.close(&mut self.ui, &self.config);
             return;
         }
+        if pressed && self.permissions_press(p) {
+            return;
+        }
         if pressed && self.shields_popover.is_open() && !self.shields_popover.contains(&self.ui, p) {
             self.shields_popover.close(&mut self.ui, &self.config);
             return;
@@ -5165,6 +5204,9 @@ impl Browser {
             && input::key(event) == Some(Key::Named("Escape".into()))
         {
             self.downloads_popover.close(&mut self.ui, &self.config);
+            return false;
+        }
+        if pressed && input::key(event) == Some(Key::Named("Escape".into())) && self.permissions_escape() {
             return false;
         }
         if pressed && self.shields_popover.is_open() && input::key(event) == Some(Key::Named("Escape".into()))
@@ -5364,6 +5406,8 @@ impl Browser {
             self.chrome.sync_tabs(&mut self.ui, &self.tabs, &self.parked, &self.favicons);
             let audio = self.tabs.active().map_or((false, false), |t| (t.playing_media, t.muted));
             self.chrome.set_audio(&mut self.ui, audio.0, audio.1);
+            let capture = self.tabs.active().map(|t| t.capture).unwrap_or_default();
+            self.chrome.set_capture(&mut self.ui, capture);
             let level = self.tabs.active().map(|t| self.shields.level(&t.url));
             self.chrome.set_shield_active(&mut self.ui, level.is_some_and(|l| l != Level::Off));
             // A locked private tab's title stays out of the window title too.
@@ -5399,6 +5443,13 @@ impl Browser {
                 "zoom-in" => self.menu_action(MenuAction::ZoomIn),
                 "close-popups" => self.close_popups(),
                 "shields" => self.toggle_shields_popover(),
+                // Test aids: answer the permission prompt, open the recording indicator's
+                // popover and stop everything the tab records.
+                answer if answer.starts_with("permission-") => self.answer_permission_for_test(answer),
+                "capture-popover" => self.toggle_capture_popover(),
+                "capture-stop" => self.capture_action(crate::permission_prompt::CaptureAction::StopAll),
+                // Test aid: load "navigate:URL" in the shown tab (after "private": a private one).
+                url if url.starts_with("navigate:") => self.navigate_to(url["navigate:".len()..].to_owned()),
                 "history" => self.show_panel(Panel::History),
                 "downloads" => self.show_panel(Panel::Downloads),
                 "downloads-popover" => self.toggle_downloads_popover(),
@@ -6104,6 +6155,7 @@ impl Browser {
         self.settings.animate(&mut self.ui, dt);
         let address = self.chrome.address_frame(&self.ui);
         self.passwords.animate(&mut self.ui, &self.config, dt, address);
+        self.animate_permissions(dt, address);
         self.update_player(dt);
         self.update_playlist_buttons();
         self.playlist_ui.popover.animate(&mut self.ui, dt);
@@ -6980,6 +7032,7 @@ mod tests {
                 ChromeAction::from_id(id).is_some(),
                 OverviewAction::from_id(id).is_some(),
                 Passwords::owns_action(id),
+                crate::permission_prompt::PermissionPrompt::owns(id),
                 LockScreen::is_lock_action(id),
                 SettingsAction::from_id(id).is_some(),
                 PlayerControl::from_id(id).is_some(),

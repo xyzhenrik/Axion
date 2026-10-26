@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
     ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, GlassStyle, GpuChoice,
-    Keymap, PageFrames, PlaylistSort, RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode, TintMode,
-    UiLanguage,
+    Keymap, PageFrames, PermissionDefault, PlaylistSort, RemoveDownloads, ShieldLevel, TabBarStyle,
+    ThemeMode, TintMode, UiLanguage,
 };
 use axion_i18n::{tr, tr_fmt, tr_mark, tr_n};
 use axion_ui::taffy::prelude::*;
@@ -15,9 +15,12 @@ use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, 
 use glam::Vec2;
 use zeroize::Zeroizing;
 
+use axion_engine::PermissionKind;
+
 use crate::home::Image;
 use crate::morph::{Origin, SheetMorph};
 use crate::passwords::MIN_MASTER_LENGTH;
+use crate::permissions::Group;
 use crate::update::{AboutInfo, AboutState, InstallMode};
 
 mod search;
@@ -645,7 +648,21 @@ pub enum SettingsAction {
     CopyDiagnostics,
     /// Relaunch to apply the Hardware settings.
     RestartAxion,
+    /// Privacy › Site Permissions: a group's default (index into `Group::ALL`), Ask or Block.
+    PermissionDefault(usize, PermissionDefault),
+    /// Forget one remembered site decision (index into the listed ones), or all of them.
+    ForgetPermission(usize),
+    ResetPermissions,
 }
+
+/// Privacy › Site Permissions: the defaults' segments, "Reset All", then one forget button per
+/// listed decision (ids between the trusted sites' and the Hardware page's).
+const PERMISSION_DEFAULT_BASE: u32 = 600;
+const RESET_PERMISSIONS: u32 = 619;
+const PERMISSION_SITE_BASE: u32 = 620;
+const PERMISSION_SITE_LIMIT: usize = (HARDWARE_BASE - PERMISSION_SITE_BASE) as usize;
+const PERMISSION_DEFAULTS: [(&str, PermissionDefault); 2] =
+    [(tr_mark("Ask"), PermissionDefault::Ask), (tr_mark("Block"), PermissionDefault::Block)];
 
 /// The Hardware page's actions (ids between the trusted sites' and the pages').
 const HARDWARE_BASE: u32 = 880;
@@ -817,6 +834,13 @@ impl SettingsAction {
                     SettingsAction::ExportPasswords => 87,
                     SettingsAction::RestorePasswords => 88,
                     SettingsAction::RemoveTrustedSite(i) => TRUSTED_SITE_BASE + i as u32,
+                    SettingsAction::PermissionDefault(group, value) => {
+                        PERMISSION_DEFAULT_BASE
+                            + 2 * group as u32
+                            + PERMISSION_DEFAULTS.iter().position(|(_, v)| *v == value).unwrap_or(0) as u32
+                    }
+                    SettingsAction::ResetPermissions => RESET_PERMISSIONS,
+                    SettingsAction::ForgetPermission(i) => PERMISSION_SITE_BASE + i as u32,
                     SettingsAction::ChooseDownloadFolder => 90,
                     SettingsAction::ResetPlaylistFolder => 84,
                     SettingsAction::ChoosePlaylistFolder => 89,
@@ -905,7 +929,17 @@ impl SettingsAction {
                 6 => SettingsAction::CopyDiagnostics,
                 _ => SettingsAction::RestartAxion,
             },
-            n if (TRUSTED_SITE_BASE..HARDWARE_BASE).contains(&n) => {
+            n if (PERMISSION_DEFAULT_BASE..PERMISSION_DEFAULT_BASE + 2 * Group::ALL.len() as u32)
+                .contains(&n) =>
+            {
+                let i = n - PERMISSION_DEFAULT_BASE;
+                SettingsAction::PermissionDefault((i / 2) as usize, PERMISSION_DEFAULTS[(i % 2) as usize].1)
+            }
+            RESET_PERMISSIONS => SettingsAction::ResetPermissions,
+            n if (PERMISSION_SITE_BASE..HARDWARE_BASE).contains(&n) => {
+                SettingsAction::ForgetPermission((n - PERMISSION_SITE_BASE) as usize)
+            }
+            n if (TRUSTED_SITE_BASE..PERMISSION_DEFAULT_BASE).contains(&n) => {
                 SettingsAction::RemoveTrustedSite((n - TRUSTED_SITE_BASE) as usize)
             }
             NO_BACKGROUND => SettingsAction::NoBackground,
@@ -961,6 +995,8 @@ pub enum Outcome {
     ClearBrowsingData,
     /// Remove one site's cookies and data, or every site's (`None`).
     RemoveSiteData(Option<String>),
+    /// Forget one site's remembered permission decision, or every one (`None`).
+    ForgetPermissions(Option<(String, PermissionKind)>),
     OpenPasswords,
     /// Import a CSV file from another browser or manager.
     ImportPasswords(PathBuf),
@@ -1048,6 +1084,10 @@ pub struct SettingsSheet {
     site_data: Option<Vec<(String, usize)>>,
     confirm_clear_data: bool,
     confirm_remove_all: bool,
+    /// Privacy: the remembered permission decisions (origin, kind, allowed) and whether "Reset
+    /// All" asks for confirmation.
+    site_permissions: Vec<(String, PermissionKind, bool)>,
+    confirm_reset_permissions: bool,
     open: bool,
     /// The search field above the categories, and what it held when the page was built.
     search: NodeId,
@@ -1270,6 +1310,8 @@ impl SettingsSheet {
             site_data: None,
             confirm_clear_data: false,
             confirm_remove_all: false,
+            site_permissions: Vec::new(),
+            confirm_reset_permissions: false,
             open: false,
             search,
             query: String::new(),
@@ -1433,6 +1475,11 @@ impl SettingsSheet {
     }
 
     /// The sites with cookies and how many each has (`None`: being listed).
+    /// The remembered permission decisions Privacy lists.
+    pub fn set_site_permissions(&mut self, decisions: Vec<(String, PermissionKind, bool)>) {
+        self.site_permissions = decisions;
+    }
+
     pub fn set_site_data(&mut self, sites: Option<Vec<(String, usize)>>) {
         self.site_data = sites;
     }
@@ -1944,6 +1991,7 @@ impl SettingsSheet {
                         Paint::Fixed(Color::rgb(0xD0362B))
                     });
                 }
+                self.site_permissions_section(ui, config);
             }
             Category::Passwords => {
                 let row_node = self.row(ui, tr("Saved passwords, cards and addresses"));
@@ -2480,6 +2528,66 @@ impl SettingsSheet {
 
     fn row(&mut self, ui: &mut Ui, label: &str) -> NodeId {
         self.row_with_height(ui, label, ROW_HEIGHT)
+    }
+
+    /// Privacy › Site Permissions: what sites may ask for, and the decisions remembered per
+    /// site (with forget buttons and "Reset All").
+    fn site_permissions_section(&mut self, ui: &mut Ui, config: &Config) {
+        self.section(ui, tr("Site Permissions"));
+        for (i, group) in Group::ALL.into_iter().enumerate() {
+            let row_node = self.row(ui, tr(group.name()));
+            let options: Vec<(&str, ActionId)> = PERMISSION_DEFAULTS
+                .iter()
+                .map(|(name, value)| (tr(name), SettingsAction::PermissionDefault(i, *value).id()))
+                .collect();
+            let current = PERMISSION_DEFAULTS.iter().position(|(_, v)| *v == group.default_of(config));
+            segmented(ui, row_node, &options, current);
+        }
+        self.note(
+            ui,
+            tr("Ask shows a prompt under the address field. Screen sharing asks every time; it is never remembered."),
+        );
+        self.section(ui, tr("Remembered for Sites"));
+        let decisions = self.site_permissions.clone();
+        let summary = match decisions.len() {
+            0 => tr("No decisions remembered").to_owned(),
+            n => tr_n("{n} decision remembered", "{n} decisions remembered", n),
+        };
+        let row_node = self.row(ui, &summary);
+        if !decisions.is_empty() {
+            let confirming = self.confirm_reset_permissions;
+            let text = if confirming { tr("Click Again to Reset") } else { tr("Reset All") };
+            destructive_button(ui, row_node, text, SettingsAction::ResetPermissions, confirming);
+        }
+        for (i, (origin, kind, allowed)) in decisions.iter().take(PERMISSION_SITE_LIMIT).enumerate() {
+            let site = crate::url::display_host(origin);
+            let row_node = self.row_with_height(ui, if site.is_empty() { origin } else { &site }, 40.0);
+            let state = if *allowed { tr("Allowed") } else { tr("Blocked") };
+            let what = format!("{} · {state}", tr(crate::permissions::kind_name(*kind)));
+            let label = ui.add_label(row_node, &what, TextStyle::Footnote, Style::default());
+            if let Some(w) = ui.widget_mut(label) {
+                w.set_paint(Paint::Secondary);
+            }
+            let remove = ui.add(
+                row_node,
+                Widget::container()
+                    .with_action(SettingsAction::ForgetPermission(i).id())
+                    .with_radius(CAPSULE)
+                    .with_background(Background::Fill(Paint::Label, 0.08)),
+                Style {
+                    size: Size { width: length(28.0), height: length(28.0) },
+                    flex_shrink: 0.0,
+                    justify_content: JustifyContent::CENTER,
+                    ..row(0.0)
+                },
+            );
+            let cross = Widget::icon(Icon::Close, 14.0).with_paint(Paint::Secondary);
+            ui.add(remove, cross, Style::default());
+        }
+        if decisions.len() > PERMISSION_SITE_LIMIT {
+            self.note(ui, &tr_fmt!("And {count} more.", count = decisions.len() - PERMISSION_SITE_LIMIT));
+        }
+        self.note(ui, tr("Decisions in private tabs are forgotten when Axion quits."));
     }
 
     /// The start page's backgrounds: a large preview of the selected one (dimmed and blurred
@@ -3141,6 +3249,7 @@ impl SettingsSheet {
                 self.confirm_clear = false;
                 self.confirm_clear_data = false;
                 self.confirm_remove_all = false;
+                self.confirm_reset_permissions = false;
                 if category == Category::Data {
                     self.site_data = None;
                     Outcome::DataPage
@@ -3205,6 +3314,30 @@ impl SettingsSheet {
                 } else {
                     self.site_data = None;
                     Outcome::RemoveSiteData(None)
+                }
+            }
+            SettingsAction::PermissionDefault(group, value) => match Group::ALL.get(group) {
+                Some(group) => {
+                    group.set_default(config, value);
+                    Outcome::Changed
+                }
+                None => Outcome::Nothing,
+            },
+            SettingsAction::ResetPermissions => {
+                self.confirm_reset_permissions = !self.confirm_reset_permissions;
+                if self.confirm_reset_permissions {
+                    Outcome::Nothing
+                } else {
+                    self.site_permissions.clear();
+                    Outcome::ForgetPermissions(None)
+                }
+            }
+            SettingsAction::ForgetPermission(i) => {
+                if i < self.site_permissions.len() {
+                    let (origin, kind, _) = self.site_permissions.remove(i);
+                    Outcome::ForgetPermissions(Some((origin, kind)))
+                } else {
+                    Outcome::Nothing
                 }
             }
             SettingsAction::RemoveSiteData(i) => {
@@ -3961,6 +4094,12 @@ mod tests {
             SettingsAction::ClearBrowsingData,
             SettingsAction::RemoveAllSiteData,
             SettingsAction::RemoveSiteData(99),
+            SettingsAction::PermissionDefault(0, PermissionDefault::Ask),
+            SettingsAction::PermissionDefault(6, PermissionDefault::Block),
+            SettingsAction::ResetPermissions,
+            SettingsAction::ForgetPermission(0),
+            SettingsAction::ForgetPermission(PERMISSION_SITE_LIMIT - 1),
+            SettingsAction::RemoveTrustedSite(399),
             SettingsAction::Category(Category::Passwords),
             SettingsAction::ExportPasswords,
             SettingsAction::RestorePasswords,
@@ -3972,7 +4111,6 @@ mod tests {
             SettingsAction::SaveAccountName,
             SettingsAction::DeleteAccount,
             SettingsAction::SetPassword,
-            SettingsAction::RemoveTrustedSite(600),
             SettingsAction::NoBackground,
             SettingsAction::ChooseBackground,
             SettingsAction::AddBackgroundPath,

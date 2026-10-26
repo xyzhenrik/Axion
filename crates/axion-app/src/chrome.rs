@@ -67,6 +67,9 @@ const BOOKMARK_GAP: f32 = 2.0;
 const BOOKMARKS_BAR_PADDING: f32 = 5.0;
 const BOOKMARK_FAVICON: f32 = 16.0;
 
+/// The recording dot of a tab row (logical px).
+const CAPTURE_DOT: f32 = 8.0;
+
 /// What a click in the chrome means.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChromeAction {
@@ -89,6 +92,8 @@ pub enum ChromeAction {
     ClosePanel,
     /// The speaker in the address field: mutes or unmutes the active tab.
     MuteTab,
+    /// The recording indicator in the address field: what the tab records, with Stop.
+    Capture,
     /// The Now Playing card: open its tab.
     NowPlaying,
     /// The bookmarks bar's chevron: the bookmarks that don't fit, as a menu.
@@ -187,7 +192,7 @@ const GROUP_BASE: u32 = 11_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 33] = [
+    const SIMPLE: [ChromeAction; 34] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -221,6 +226,7 @@ impl ChromeAction {
         ChromeAction::Home,
         ChromeAction::Playlist,
         ChromeAction::PlaylistButton,
+        ChromeAction::Capture,
     ];
 
     pub fn id(self) -> ActionId {
@@ -450,6 +456,9 @@ pub struct Chrome {
     address_icon_override: Option<Option<String>>,
     audio_button: NodeId,
     audio_icon: NodeId,
+    /// The recording indicator (microphone, camera, screen) and its glyph.
+    capture_button: NodeId,
+    capture_icon: NodeId,
     /// The Playlist button in the address field, and its glyph.
     playlist_button: NodeId,
     playlist_icon: NodeId,
@@ -1157,6 +1166,12 @@ impl Chrome {
         );
         tip(ui, audio_button, tr("Mute or Unmute Tab"), None);
         ui.set_visible(audio_button, false);
+        // While the tab records the microphone, camera or screen (coloured like the desktop's
+        // own indicators); a click lists what it records, with Stop.
+        let (capture_button, capture_icon) =
+            icon_button(ui, address, ChromeAction::Capture, Widget::icon(Icon::Microphone, 18.0), 30.0);
+        tip(ui, capture_button, tr("Recording: Stop…"), None);
+        ui.set_visible(capture_button, false);
         // Pages with a video: save it for later (Playlist).
         let (playlist_button, playlist_icon) = icon_button(
             ui,
@@ -1376,6 +1391,8 @@ impl Chrome {
             address_icon_override: None,
             audio_button,
             audio_icon,
+            capture_button,
+            capture_icon,
             playlist_button,
             playlist_icon,
             actions,
@@ -2325,6 +2342,23 @@ impl Chrome {
     }
 
     /// Green while Shields protect the page, grey when they are off for its site.
+    /// The address field's recording indicator: shown while the active tab records.
+    pub fn set_capture(&self, ui: &mut Ui, capture: crate::permissions::Capture) {
+        let shown = crate::permission_prompt::capture_icon(capture).filter(|_| !self.locked);
+        ui.set_visible(self.capture_button, shown.is_some());
+        if let Some((icon, color)) = shown {
+            ui.set_icon(self.capture_icon, icon);
+            if let Some(w) = ui.widget_mut(self.capture_icon) {
+                w.set_paint(Paint::Fixed(color));
+            }
+        }
+    }
+
+    /// Where the recording indicator is (the capture popover's anchor).
+    pub fn capture_frame(&self, ui: &Ui) -> Frame {
+        ui.frame(self.capture_button)
+    }
+
     pub fn set_shield_active(&self, ui: &mut Ui, active: bool) {
         if let Some(w) = ui.widget_mut(self.shield_glyph) {
             w.set_paint(if active { Paint::Shield } else { Paint::Secondary });
@@ -2546,6 +2580,7 @@ impl Chrome {
                 let label = ui.add_label(pill, &tab.label(), style, shrinking_label());
                 self.tab_widths.hideable.push(label);
             }
+            capture_dot(ui, pill, tab);
             if separate {
                 // A hairline before every tab but the first (shown by `update_separators`).
                 let separator = (!order.is_empty()).then(|| {
@@ -2777,10 +2812,22 @@ fn sidebar_tab_row(
     let mut layout = ui.style(label);
     layout.margin = Rect { left: length(6.0), right: length(0.0), top: length(0.0), bottom: length(0.0) };
     ui.set_style(label, layout);
+    capture_dot(ui, row_node, tab);
     if tab.pinned {
         ui.add(row_node, Widget::icon(Icon::Pin, 14.0).with_paint(Paint::Secondary), Style::default());
     }
     row_node
+}
+
+/// The recording indicator of a tab in the tab bar and the sidebar: a small dot in the colour
+/// of what it records (screen, camera, microphone), nothing while it records nothing.
+fn capture_dot(ui: &mut Ui, parent: NodeId, tab: &Tab) {
+    let Some((_, color)) = crate::permission_prompt::capture_icon(tab.capture) else { return };
+    ui.add(
+        parent,
+        Widget::container().with_background(Background::Fill(Paint::Fixed(color), 1.0)).with_radius(CAPSULE),
+        Style { size: square(CAPTURE_DOT), flex_shrink: 0.0, ..Default::default() },
+    );
 }
 
 impl BookmarkRow {
