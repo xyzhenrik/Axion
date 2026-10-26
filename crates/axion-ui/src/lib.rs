@@ -440,6 +440,11 @@ impl Ui {
     }
 
     pub fn set_style(&mut self, node: NodeId, style: Style) {
+        // Callers re-apply styles every frame (positions that follow other boxes); an unchanged
+        // one must not dirty the tree, or every frame lays everything out again.
+        if self.tree.style(node).is_ok_and(|s| *s == style) {
+            return;
+        }
         let _ = self.tree.set_style(node, style);
         self.needs_layout = true;
     }
