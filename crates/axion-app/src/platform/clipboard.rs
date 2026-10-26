@@ -25,22 +25,28 @@ const IMAGE_TYPES: &[(&str, &str)] = &[
 const URI_LIST: &str = "text/uri-list";
 const HTML: &str = "text/html";
 
-/// Pending clipboard reads, one per paste.
-#[derive(Default)]
-pub struct ClipboardReader {
-    pending: Vec<Receiver<(ViewId, PasteData)>>,
+/// Pending clipboard reads, one per paste, each for a target `T`: a page (`ViewId`) or a field
+/// of the chrome (its node).
+pub struct ClipboardReader<T = ViewId> {
+    pending: Vec<Receiver<(T, PasteData)>>,
 }
 
-impl ClipboardReader {
-    /// Starts reading the clipboard for a paste into `view`; the result comes from
+impl<T> Default for ClipboardReader<T> {
+    fn default() -> Self {
+        Self { pending: Vec::new() }
+    }
+}
+
+impl<T: Send + 'static> ClipboardReader<T> {
+    /// Starts reading the clipboard for a paste into `target`; the result comes from
     /// [`ClipboardReader::poll`]. `plain` reads only the text. Images and files over
     /// `max_bytes` are left out.
-    pub fn read(&mut self, view: ViewId, plain: bool, max_bytes: u64) {
+    pub fn read(&mut self, target: T, plain: bool, max_bytes: u64) {
         let (tx, rx) = channel();
         let spawned = std::thread::Builder::new().name("clipboard".into()).spawn(move || {
             let data = read_clipboard(plain, max_bytes);
             // The browser may be gone by now; nothing to do then.
-            let _ = tx.send((view, data));
+            let _ = tx.send((target, data));
         });
         match spawned {
             Ok(_) => self.pending.push(rx),
@@ -49,7 +55,7 @@ impl ClipboardReader {
     }
 
     /// A finished read, in the order they were started.
-    pub fn poll(&mut self) -> Option<(ViewId, PasteData)> {
+    pub fn poll(&mut self) -> Option<(T, PasteData)> {
         let first = self.pending.first()?;
         match first.try_recv() {
             Ok(result) => {

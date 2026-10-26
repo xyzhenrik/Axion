@@ -278,6 +278,9 @@ pub struct Browser {
     file_drag_at: Option<Vec2>,
     /// Clipboard reads for pastes into pages (where the engine can't read it itself).
     clipboard_reader: ClipboardReader,
+    /// Pastes into the chrome's text fields (the address, searches), read off the main thread
+    /// like the page's: the app owning the clipboard may take long to send it.
+    field_paste: ClipboardReader<axion_ui::taffy::NodeId>,
     player: PlayerOverlay,
     /// The Playlist: its videos, and its page, popover and thumbnails.
     playlist: crate::playlist::Playlist,
@@ -747,6 +750,7 @@ impl Browser {
             pointer_probe: None,
             file_drag_at: None,
             clipboard_reader: ClipboardReader::default(),
+            field_paste: ClipboardReader::default(),
             player,
             playlist,
             playlist_ui,
@@ -3222,6 +3226,7 @@ impl Browser {
     }
 
     fn handle_ui_events(&mut self, events: Vec<UiEvent>) {
+        let _op = crate::stall::op("chrome events");
         for event in events {
             match event {
                 UiEvent::Clicked { action, .. } if crate::eye::owns(action) => {
@@ -3639,11 +3644,10 @@ impl Browser {
                         let _ = clipboard.set_text(text);
                     }
                 }
-                UiEvent::PasteRequested { .. } => {
-                    let text = self.clipboard.as_mut().and_then(|c| c.get_text().ok());
-                    if let Some(text) = text {
-                        self.ui.paste(&text);
-                    }
+                UiEvent::PasteRequested { node } => {
+                    // The text arrives a moment later (see `take_field_pastes`).
+                    let max = u64::from(self.config.clipboard.max_paste_mb) * 1024 * 1024;
+                    self.field_paste.read(node, true, max);
                 }
                 _ => {}
             }
@@ -3654,6 +3658,7 @@ impl Browser {
 
     /// Runs the engine and applies what happened. Call often (every loop iteration).
     pub fn pump(&mut self) {
+        let _op = crate::stall::op("pump");
         let started = Instant::now();
         self.pump_engine();
         let page_frames = self.engine.counters().page_frames;
@@ -3751,6 +3756,15 @@ impl Browser {
         Ok(())
     }
 
+    /// Clipboard text read for a chrome field: pasted if that field still has the focus.
+    fn take_field_pastes(&mut self) {
+        while let Some((node, data)) = self.field_paste.poll() {
+            if let Some(text) = data.text.filter(|_| self.ui.focused() == Some(node)) {
+                self.ui.paste(&text);
+            }
+        }
+    }
+
     fn pump_engine(&mut self) {
         self.watch_refresh_rate();
         // The desktop switched light/dark (winit doesn't report it on most Linux desktops).
@@ -3761,6 +3775,7 @@ impl Browser {
                 self.apply_theme();
             }
         }
+        self.take_field_pastes();
         while let Some((view, data)) = self.clipboard_reader.poll() {
             // Only into the page that is still shown (and not locked away meanwhile).
             if Some(view) == self.active_view() && !self.is_locked() {
@@ -3774,7 +3789,11 @@ impl Browser {
         }
         self.update_file_drop();
         let mut downloads_changed = false;
-        let events = self.engine.pump();
+        let events = {
+            let _op = crate::stall::op("chromium pump");
+            self.engine.pump()
+        };
+        let _op = crate::stall::op("engine events");
         let started = Instant::now();
         let count = events.len() as u32;
         if count > 0 {
@@ -4040,6 +4059,7 @@ impl Browser {
     }
 
     fn settings_outcome(&mut self, outcome: Outcome) {
+        let _op = crate::stall::op("settings apply");
         match outcome {
             Outcome::Nothing => {}
             Outcome::Changed => {
@@ -4881,6 +4901,16 @@ impl Browser {
 
     /// Returns `false` when the window should close.
     pub fn window_event(&mut self, event: WindowEvent) -> Result<bool> {
+        let _op = crate::stall::op(match &event {
+            WindowEvent::RedrawRequested => "frame",
+            WindowEvent::MouseInput { .. }
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseWheel { .. } => "input: pointer",
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => "input: keyboard",
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => "window resize",
+            WindowEvent::Focused(_) => "window focus",
+            _ => "window event",
+        });
         if !matches!(event, WindowEvent::RedrawRequested) {
             // Input: the next frame runs at once.
             self.idle_redraw_at = None;
@@ -5508,6 +5538,7 @@ impl Browser {
     fn redraw_frame(&mut self) -> Result<()> {
         self.apply_window_size();
         if self.logical_size() != self.layout_size {
+            let _op = crate::stall::op("frame: layout");
             let started = Instant::now();
             self.update_layout();
             self.frame_times.layout += ms_since(started);
@@ -5962,10 +5993,24 @@ impl Browser {
                     }
                 }
                 "paste" => self.run(Action::Paste),
+                // Capture aid: Ctrl+V in the focused chrome field.
+                "ui-paste" => {
+                    if let Some(node) = self.ui.focused() {
+                        self.handle_ui_events(vec![UiEvent::PasteRequested { node }]);
+                    }
+                }
                 // Capture aid: audits the next frame of a flat-mode window for glass or anything
                 // that imitates it (a glass pass, a rim, a knocked-out or heavy shadow) and logs
                 // every finding ("flat-audit: ...").
                 "flat-audit" => self.flat_audit = true,
+                // Capture aid: blocks the main thread for MS milliseconds ("stall:MS"), to check
+                // the stall watchdog (`AXION_STALL_LOG`).
+                ms if ms.starts_with("stall:") => {
+                    if let Ok(ms) = ms["stall:".len()..].parse::<u64>() {
+                        let _op = crate::stall::op("capture aid: stall");
+                        std::thread::sleep(Duration::from_millis(ms));
+                    }
+                }
                 // Capture aid: switches the tab bar live, the way Settings > Appearance does
                 // ("tabbar:separate" / "tabbar:compact").
                 style if style.starts_with("tabbar:") => {
@@ -6547,6 +6592,7 @@ impl Browser {
             self.shown_layers = layers;
         }
         let started = Instant::now();
+        let _op = crate::stall::op("frame: acquire and render");
         let acquired = self.surface.get_current_texture();
         self.frame_times.acquire = ms_since(started);
         let surface = match acquired {

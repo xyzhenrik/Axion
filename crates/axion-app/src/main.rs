@@ -64,6 +64,7 @@ mod resize_bench;
 mod settings;
 mod shields;
 mod shields_popover;
+mod stall;
 mod suggestions;
 mod svg_icons;
 mod tabdrag;
@@ -101,6 +102,7 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|_| "info,wgpu_core=warn,wgpu_hal=warn".into()),
         )
         .init();
+    stall::start_from_env();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--check-update") {
@@ -173,6 +175,7 @@ struct App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let Some(options) = self.options.take() else { return };
+        let _op = stall::op("startup");
         match Browser::new(event_loop, options) {
             Ok(browser) => self.browser = Some(browser),
             Err(e) => {
@@ -180,6 +183,10 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
         }
+    }
+
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, _cause: winit::event::StartCause) {
+        stall::busy();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -209,8 +216,14 @@ impl ApplicationHandler for App {
                 event_loop.exit();
                 return;
             }
-            browser.tick_probe();
-            browser.sync_windows(event_loop);
+            {
+                let _op = stall::op("typing probe");
+                browser.tick_probe();
+            }
+            {
+                let _op = stall::op("window sync (PiP)");
+                browser.sync_windows(event_loop);
+            }
             browser.pump();
             // Sleep until the next frame (requested below; the compositor's frame callback
             // wakes us), input, or Chromium's next work, whichever comes first. After a frame
@@ -223,6 +236,8 @@ impl ApplicationHandler for App {
                 browser.request_redraw();
             }
         }
+        // The loop sleeps now (until the next event, frame or Chromium wakeup).
+        stall::idle();
     }
 }
 
