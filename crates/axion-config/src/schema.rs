@@ -89,15 +89,29 @@ pub struct Home {
     pub top_sites_pages: u32,
     /// Trackers & ads blocked, bandwidth and time saved.
     pub show_stats: bool,
-    /// Show the background image chosen on the page (kept in the profile); otherwise the
+    /// The selected background image: a file name in the account's backgrounds directory
+    /// (`<profile>/home/backgrounds/`, where added images are copied). Empty: none, the
     /// background is plain white or black with the theme.
-    pub show_background_image: bool,
+    pub background: String,
+    /// At most this many backgrounds are kept (adding more is refused).
+    pub max_backgrounds: u32,
     /// Darkens the background image for legibility (0–1).
     pub background_dim: f32,
     /// Blurs the background image (CSS px).
     pub background_blur: f32,
     /// An open start page refreshes its Shields numbers at most this often.
     pub stats_refresh_seconds: f32,
+    /// Older setting (one background image, shown or not), replaced by `background`; accepted
+    /// so old files load, and read once to migrate the old image.
+    #[serde(skip_serializing)]
+    show_background_image: Option<bool>,
+}
+
+impl Home {
+    /// Whether an old config showed its single background image (see `background`).
+    pub fn legacy_background_shown(&self) -> bool {
+        self.show_background_image.unwrap_or(false)
+    }
 }
 
 impl Default for Home {
@@ -112,10 +126,12 @@ impl Default for Home {
             top_sites_rows: 2,
             top_sites_pages: 3,
             show_stats: true,
-            show_background_image: false,
+            background: String::new(),
+            max_backgrounds: 24,
             background_dim: 0.2,
             background_blur: 0.0,
             stats_refresh_seconds: 2.0,
+            show_background_image: None,
         }
     }
 }
@@ -815,6 +831,15 @@ mod tests {
         let c: Config = toml::from_str("[layout]\nhide_bar_on_scroll = true").unwrap();
         assert_eq!(c.layout.tab_bar, TabBarStyle::Compact);
         assert!(!toml::to_string(&c).unwrap().contains("hide_bar_on_scroll"));
+    }
+
+    #[test]
+    fn old_background_toggle_still_loads() {
+        let c: Config = toml::from_str("[home]\nshow_background_image = true").unwrap();
+        assert!(c.home.legacy_background_shown());
+        assert!(c.home.background.is_empty());
+        assert!(!toml::to_string(&c).unwrap().contains("show_background_image"));
+        assert!(!Config::default().home.legacy_background_shown());
     }
 
     #[test]

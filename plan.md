@@ -22,8 +22,10 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   overlay) and *narrow* (bottom-ish compact bar) by window width.
 - **Start page** (`axion://home/`, default homepage and new tab page): clock + greeting,
   search field with engine picker, top sites (most visited, pinned/edited/removed, pages with
-  dots), Shields stats (blocked, ≈ bandwidth and time saved), background image (dim/blur),
-  each toggled from a glass gear panel on the page; private tabs get a dark private variant.
+  dots), Shields stats (blocked, ≈ bandwidth and time saved), background images (several,
+  copied into `<profile>/home/backgrounds/`, picked from thumbnails in the gear panel and in
+  Settings › General, dim/blur), each toggled from a glass gear panel on the page; controls
+  use Axion's accent colour; private tabs get a dark private variant.
 
 ### 2.2 Liquid Glass
 - SDF-based shapes (rounded rects, capsules, circles) with lens-profile refraction.

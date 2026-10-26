@@ -127,17 +127,55 @@ pub const INDEX: &[Entry] = &[
             "startseite",
         ],
     ),
-    control(
+    page(
         C::General,
-        S::HomeBackground,
+        "Start page background",
         &[
-            "start page",
+            "background image",
             "wallpaper",
             "picture",
             "photo",
+            "image",
+            "add image",
+            "remove image",
             "hintergrund",
             "hintergrundbild",
             "bild",
+            "foto",
+            "bild hinzufügen",
+            "bild entfernen",
+            "startseite",
+        ],
+    ),
+    control(
+        C::General,
+        S::HomeDim,
+        &[
+            "start page",
+            "wallpaper",
+            "darken",
+            "darker",
+            "dimming",
+            "abdunkeln",
+            "dunkler",
+            "hintergrund",
+            "hintergrundbild",
+            "startseite",
+        ],
+    ),
+    control(
+        C::General,
+        S::HomeBlur,
+        &[
+            "start page",
+            "wallpaper",
+            "blurry",
+            "soft",
+            "unschärfe",
+            "unscharf",
+            "weichzeichnen",
+            "hintergrund",
+            "hintergrundbild",
             "startseite",
         ],
     ),
@@ -382,7 +420,9 @@ mod tests {
         assert!(titles("konto löschen").contains(&"Delete account"));
         assert!(titles("lesezeichenleiste").contains(&"Bookmarks bar"));
         assert!(titles("favoriten").contains(&"Bookmarks bar"));
-        assert!(titles("hintergrundbild").contains(&"Background image"));
+        assert!(titles("hintergrundbild").contains(&"Start page background"));
+        assert!(titles("abdunkeln").contains(&"Dim background image"));
+        assert!(titles("hintergrundbild unschärfe").contains(&"Blur background image"));
         assert!(titles("meistbesucht").contains(&"Top sites"));
         assert!(titles("uhrzeit").contains(&"Clock"));
     }
