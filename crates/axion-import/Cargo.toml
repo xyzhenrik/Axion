@@ -1,0 +1,18 @@
+[package]
+name = "axion-import"
+description = "Reads bookmarks and history of other browsers (Chromium and Firefox families, exported files) and imports them into the store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+axion-store.workspace = true
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde_json = "1"
+tempfile = "3"
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

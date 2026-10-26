@@ -503,6 +503,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "axion-import"
+version = "0.0.1"
+dependencies = [
+ "axion-store",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "axion-media"
 version = "0.0.1"
 dependencies = [

@@ -1,0 +1,13 @@
+{"guid":"root________","title":"","index":0,"dateAdded":1650000000000000,"typeCode":2,"type":"text/x-moz-place-container","root":"placesRoot","children":[
+ {"guid":"menu________","title":"menu","typeCode":2,"type":"text/x-moz-place-container","root":"bookmarksMenuFolder","children":[
+   {"guid":"aaaaaaaaaaaa","title":"Menu entry","dateAdded":1650000000000000,"typeCode":1,"type":"text/x-moz-place","uri":"https://menu.example/"}]},
+ {"guid":"toolbar_____","title":"toolbar","typeCode":2,"type":"text/x-moz-place-container","root":"toolbarFolder","children":[
+   {"guid":"bbbbbbbbbbbb","title":"Bar entry","dateAdded":1650000000000000,"typeCode":1,"type":"text/x-moz-place","uri":"https://bar.example/"},
+   {"guid":"cccccccccccc","title":"Sub","typeCode":2,"type":"text/x-moz-place-container","children":[
+     {"guid":"dddddddddddd","title":"In sub","typeCode":1,"type":"text/x-moz-place","uri":"https://sub.example/"},
+     {"guid":"eeeeeeeeeeee","title":"Smart","typeCode":1,"type":"text/x-moz-place","uri":"place:sort=8"}]}]},
+ {"guid":"unfiled_____","title":"unfiled","typeCode":2,"type":"text/x-moz-place-container","children":[]},
+ {"guid":"tags________","title":"tags","typeCode":2,"type":"text/x-moz-place-container","children":[
+   {"guid":"ffffffffffff","title":"a tag","typeCode":2,"type":"text/x-moz-place-container","children":[
+     {"guid":"gggggggggggg","title":"Tagged","typeCode":1,"type":"text/x-moz-place","uri":"https://tagged.example/"}]}]}
+]}
