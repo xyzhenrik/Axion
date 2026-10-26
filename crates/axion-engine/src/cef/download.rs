@@ -14,6 +14,9 @@ use crate::download::{DownloadInfo, DownloadOptions, DownloadState, unique_path}
 #[derive(Default)]
 pub(super) struct Downloads {
     pub options: RefCell<Option<DownloadOptions>>,
+    /// Folders for downloads started with `start_download`, by address: the file goes there
+    /// without asking.
+    pub targets: RefCell<HashMap<String, std::path::PathBuf>>,
     /// Updates since the last pump.
     pub updates: RefCell<Vec<DownloadInfo>>,
     /// The latest control callback of each running download.
@@ -63,6 +66,7 @@ fn info(item: &DownloadItem) -> DownloadInfo {
     DownloadInfo {
         id: item.id(),
         url: string(&item.url()),
+        original_url: string(&item.original_url()),
         path,
         file_name,
         mime_type: string(&item.mime_type()),
@@ -96,7 +100,15 @@ wrap_download_handler! {
             callback: Option<&mut BeforeDownloadCallback>,
         ) -> ::std::os::raw::c_int {
             let (Some(item), Some(callback)) = (download_item, callback) else { return 0 };
-            let options = self.downloads.options.borrow().clone();
+            let mut options = self.downloads.options.borrow().clone();
+            // Started by the browser for a folder of its own (the Playlist): no dialog.
+            let target = {
+                let mut targets = self.downloads.targets.borrow_mut();
+                targets.remove(&string(&item.original_url())).or_else(|| targets.remove(&string(&item.url())))
+            };
+            if let Some(directory) = target {
+                options = Some(DownloadOptions { directory, ask: false });
+            }
             let Some(options) = options else {
                 // Not configured: let CEF decide (its default directory).
                 callback.cont(None, 0);

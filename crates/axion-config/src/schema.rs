@@ -1049,6 +1049,16 @@ pub struct Playlist {
     pub resume_rewind_seconds: f32,
     /// Thumbnails decoded onto the GPU per frame while the page fills in.
     pub thumbnails_per_frame: u32,
+    /// Name of the list new videos go to.
+    pub list_name: String,
+    /// The sleep timer's choices (minutes); "Off" and "End of video" are always offered.
+    pub sleep_timer_minutes: Vec<u32>,
+    /// A video that was on its page for this long (seconds) gets its picture taken for the
+    /// thumbnail when none comes with the page.
+    pub thumbnail_frame_after_seconds: f32,
+    /// The video area of the Playlist page can be clicked (consent walls, play buttons of
+    /// site players): clicks reach the page inside it.
+    pub forward_clicks: bool,
 }
 
 impl Default for Playlist {
@@ -1068,6 +1078,10 @@ impl Default for Playlist {
             min_resume_seconds: 5.0,
             resume_rewind_seconds: 2.0,
             thumbnails_per_frame: 3,
+            list_name: "Play Later".to_owned(),
+            sleep_timer_minutes: vec![15, 30, 45, 60],
+            thumbnail_frame_after_seconds: 1.0,
+            forward_clicks: true,
         }
     }
 }

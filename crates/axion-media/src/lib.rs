@@ -195,12 +195,6 @@ pub enum Message {
     /// A player's loading state, asked for by [`Action::Probe`] (a debugging aid): its frame,
     /// source, ready/network state, error, and the frame's codec support, as JSON.
     Probe(String),
-    /// The frame asked for by [`Action::Snapshot`] as a `data:image/jpeg` URL (empty when the
-    /// page's cross-origin rules forbid reading the video).
-    Snapshot {
-        id: String,
-        data: String,
-    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -224,8 +218,6 @@ struct WireEvent {
     e: String,
     #[serde(default)]
     id: String,
-    #[serde(default)]
-    data: String,
 }
 
 /// Parses a console message; [`ParseError::NotBridge`] for the page's own messages.
@@ -234,9 +226,6 @@ pub fn parse(console_message: &str) -> Result<Option<Message>, ParseError> {
     Ok(match serde_json::from_str::<Wire>(json)? {
         Wire::State(state) => Some(Message::State(state)),
         Wire::Event { event } if event.e == "dblclick" => Some(Message::DoubleClick { id: event.id }),
-        Wire::Event { event } if event.e == "snapshot" => {
-            Some(Message::Snapshot { id: event.id, data: event.data })
-        }
         Wire::Event { .. } => None,
         Wire::Probe(fields) => Some(Message::Probe(serde_json::Value::Object(fields).to_string())),
     })
@@ -263,9 +252,6 @@ pub enum Action {
     Takeover(bool),
     /// Log the element's loading state from its own frame (debugging).
     Probe,
-    /// Reply with a JPEG of the current frame, scaled to at most this many pixels on the long
-    /// side ([`Message::Snapshot`]).
-    Snapshot(u32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -283,7 +269,7 @@ impl Command {
     /// sound are refused otherwise. Commands come from the user's clicks and keys, so this
     /// only passes their gesture on.
     pub fn needs_gesture(&self) -> bool {
-        !matches!(self.action, Action::Takeover(_) | Action::Pause | Action::Probe | Action::Snapshot(_))
+        !matches!(self.action, Action::Takeover(_) | Action::Pause | Action::Probe)
     }
 
     /// JavaScript for the top frame.
@@ -301,7 +287,6 @@ impl Command {
             Action::Fullscreen(on) => ("fullscreen", on.into()),
             Action::Takeover(on) => ("takeover", on.into()),
             Action::Probe => ("probe", serde_json::Value::Null),
-            Action::Snapshot(max) => ("snapshot", max.into()),
         };
         let command = serde_json::json!({ "id": self.player, "action": name, "value": value });
         format!("window.__axionMedia && window.__axionMedia.cmd({command});")
@@ -358,14 +343,6 @@ mod tests {
         assert!(p.is_audible() && p.native);
         assert_eq!(p.captions[0].label, "English");
         assert_eq!(state.session.unwrap().title, "Song");
-        let shot = format!(
-            "{MARKER}{}",
-            r#"{"t":"event","event":{"e":"snapshot","id":"a:1","data":"data:image/jpeg;base64,AA"}}"#
-        );
-        assert_eq!(
-            parse(&shot).unwrap(),
-            Some(Message::Snapshot { id: "a:1".into(), data: "data:image/jpeg;base64,AA".into() })
-        );
         let dbl = format!("{MARKER}{}", r#"{"t":"event","event":{"e":"dblclick","id":"a:1"}}"#);
         assert_eq!(parse(&dbl).unwrap(), Some(Message::DoubleClick { id: "a:1".into() }));
         assert!(matches!(parse("hello"), Err(ParseError::NotBridge)));

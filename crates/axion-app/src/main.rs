@@ -38,6 +38,7 @@ mod passwords;
 mod pip;
 mod platform;
 mod player;
+mod playlist;
 mod popover;
 mod private;
 mod settings;

@@ -500,7 +500,7 @@ pub fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
 }
 
 /// Opens a file or folder in its default application.
-fn open_path(path: &Path) {
+pub(crate) fn open_path(path: &Path) {
     let path = path.to_path_buf();
     spawn("xdg-open", move || match std::process::Command::new("xdg-open").arg(&path).status() {
         Ok(status) if !status.success() => {
@@ -512,7 +512,7 @@ fn open_path(path: &Path) {
 }
 
 /// Shows the file selected in the file manager, or at least opens its folder.
-fn show_in_folder(path: &Path) {
+pub(crate) fn show_in_folder(path: &Path) {
     let path = path.to_path_buf();
     spawn("show-in-folder", move || {
         let shown = Connection::session().and_then(|c| {

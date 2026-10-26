@@ -25,6 +25,8 @@ pub struct DownloadInfo {
     /// Unique for the engine's lifetime.
     pub id: u32,
     pub url: String,
+    /// The address the download was started with (before redirects).
+    pub original_url: String,
     /// Where the file is (or will be) saved; empty until decided.
     pub path: PathBuf,
     pub file_name: String,

@@ -475,6 +475,12 @@ impl Engine for CefEngine {
         }
     }
 
+    fn start_download(&mut self, view: ViewId, url: &str, directory: std::path::PathBuf) {
+        let Some(host) = self.host(view) else { return };
+        self.shared.downloads.targets.borrow_mut().insert(url.to_owned(), directory);
+        host.start_download(Some(&url.into()));
+    }
+
     fn clear_data(&mut self, what: &crate::ClearData) {
         let Some(context) = request_context_get_global_context() else { return };
         if what.cache {
