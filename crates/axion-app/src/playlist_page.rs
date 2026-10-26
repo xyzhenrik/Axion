@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use axion_compositor::{Icon, IconWeight, Rect as Frame};
 use axion_config::{Color, Config};
+use axion_i18n::{tr, tr_fmt};
 use axion_media::format_time;
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
@@ -398,7 +399,7 @@ impl PlaylistPage {
                 .with_action(PageAction::PlayAll.id())
                 .with_radius(CAPSULE)
                 .with_background(Background::TintedGlass(GlassLevel::Thin, Paint::Accent))
-                .with_tooltip("Play All", None),
+                .with_tooltip(tr("Play All"), None),
             Style {
                 size: square(PLAY_ALL),
                 flex_shrink: 0.0,
@@ -431,7 +432,7 @@ impl PlaylistPage {
                 .with_action(PageAction::Sort.id())
                 .with_radius(CAPSULE)
                 .with_background(Background::Fill(Paint::Label, 0.08))
-                .with_tooltip("Sort", None),
+                .with_tooltip(tr("Sort"), None),
             Style {
                 size: square(34.0),
                 flex_shrink: 0.0,
@@ -450,7 +451,7 @@ impl PlaylistPage {
                 ..row(0.0)
             },
         );
-        let edit_label = ui.add_label(edit, "Edit", TextStyle::BodyEmphasis, Style::default());
+        let edit_label = ui.add_label(edit, tr("Edit"), TextStyle::BodyEmphasis, Style::default());
         if let Some(w) = ui.widget_mut(edit_label) {
             w.set_paint(Paint::Accent);
         }
@@ -466,9 +467,9 @@ impl PlaylistPage {
                 ..row(8.0)
             },
         );
-        capsule(ui, edit_bar, PageAction::SelectAll, Icon::Check, "All", false);
-        capsule(ui, edit_bar, PageAction::DownloadSelected, Icon::Download, "Download", false);
-        let delete = capsule(ui, edit_bar, PageAction::DeleteSelected, Icon::Trash, "Remove", true);
+        capsule(ui, edit_bar, PageAction::SelectAll, Icon::Check, tr("All"), false);
+        capsule(ui, edit_bar, PageAction::DownloadSelected, Icon::Download, tr("Download"), false);
+        let delete = capsule(ui, edit_bar, PageAction::DeleteSelected, Icon::Trash, tr("Remove"), true);
         let delete_label = ui.children(delete).get(1).copied().unwrap_or(delete);
         ui.set_visible(edit_bar, false);
 
@@ -522,7 +523,7 @@ impl PlaylistPage {
             Icon::PictureInPicture,
             TOP_BUTTON,
             20.0,
-            "Picture in Picture",
+            tr("Picture in Picture"),
         );
         let search_box = ui.add(
             top,
@@ -530,7 +531,7 @@ impl PlaylistPage {
                 .with_background(Background::Glass(GlassLevel::Thin))
                 .with_radius(CAPSULE)
                 .with_action(PageAction::Search.id())
-                .with_tooltip("Search Videos", None)
+                .with_tooltip(tr("Search Videos"), None)
                 .with_clip(),
             Style {
                 size: Size { width: length(TOP_BUTTON), height: length(TOP_BUTTON) },
@@ -546,7 +547,7 @@ impl PlaylistPage {
         );
         let search_field = ui.add_text_field(
             search_box,
-            "Search",
+            tr("Search"),
             TextStyle::Body,
             Style {
                 flex_grow: 1.0,
@@ -554,7 +555,7 @@ impl PlaylistPage {
                 ..Default::default()
             },
         );
-        glass_circle(ui, top, PageAction::Close, Icon::Close, TOP_BUTTON, 18.0, "Close Playlist");
+        glass_circle(ui, top, PageAction::Close, Icon::Close, TOP_BUTTON, 18.0, tr("Close Playlist"));
 
         let video_box = ui.add(
             player_col,
@@ -585,7 +586,8 @@ impl PlaylistPage {
         if let Some(w) = ui.widget_mut(video_note) {
             w.set_paint(Paint::Fixed(Color::rgb(0x8E8E93)));
         }
-        let open_page_button = capsule(ui, note_box, PageAction::OpenPage, Icon::Globe, "Open page", false);
+        let open_page_button =
+            capsule(ui, note_box, PageAction::OpenPage, Icon::Globe, tr("Open page"), false);
         ui.set_visible(open_page_button, false);
 
         let info = ui.add(
@@ -630,9 +632,24 @@ impl PlaylistPage {
                 ..row(22.0)
             },
         );
-        let (_, shuffle_icon) =
-            plain_button(ui, transport, PageAction::Shuffle, Icon::Shuffle, CONTROL_SMALL, 22.0, "Shuffle");
-        plain_button(ui, transport, PageAction::Previous, Icon::Previous, CONTROL_MEDIUM, 26.0, "Previous");
+        let (_, shuffle_icon) = plain_button(
+            ui,
+            transport,
+            PageAction::Shuffle,
+            Icon::Shuffle,
+            CONTROL_SMALL,
+            22.0,
+            tr("Shuffle"),
+        );
+        plain_button(
+            ui,
+            transport,
+            PageAction::Previous,
+            Icon::Previous,
+            CONTROL_MEDIUM,
+            26.0,
+            tr("Previous"),
+        );
         let (_, play_icon) = glass_circle(
             ui,
             transport,
@@ -640,11 +657,11 @@ impl PlaylistPage {
             Icon::Play,
             CONTROL_BIG,
             30.0,
-            "Play or Pause",
+            tr("Play or Pause"),
         );
-        plain_button(ui, transport, PageAction::Next, Icon::Next, CONTROL_MEDIUM, 26.0, "Next");
+        plain_button(ui, transport, PageAction::Next, Icon::Next, CONTROL_MEDIUM, 26.0, tr("Next"));
         let (repeat_button, repeat_icon) =
-            plain_button(ui, transport, PageAction::Repeat, Icon::Repeat, CONTROL_SMALL, 22.0, "Repeat");
+            plain_button(ui, transport, PageAction::Repeat, Icon::Repeat, CONTROL_SMALL, 22.0, tr("Repeat"));
         let repeat_one = ui.add_label(
             repeat_button,
             "1",
@@ -700,7 +717,7 @@ impl PlaylistPage {
                 .with_action(PageAction::Speed.id())
                 .with_radius(CAPSULE)
                 .with_background(Background::Glass(GlassLevel::Thin))
-                .with_tooltip("Playback Speed", None),
+                .with_tooltip(tr("Playback Speed"), None),
             Style {
                 size: Size { width: length(BOTTOM_BUTTON + 14.0), height: length(BOTTOM_BUTTON) },
                 justify_content: JustifyContent::CENTER,
@@ -731,7 +748,7 @@ impl PlaylistPage {
             Widget::container()
                 .with_action(PageAction::Mute.id())
                 .with_radius(CAPSULE)
-                .with_tooltip("Mute", None),
+                .with_tooltip(tr("Mute"), None),
             Style {
                 size: square(BOTTOM_BUTTON - 4.0),
                 flex_shrink: 0.0,
@@ -749,8 +766,15 @@ impl PlaylistPage {
                 ..Default::default()
             },
         );
-        let (_, sleep_icon) =
-            glass_circle(ui, middle_slot, PageAction::Sleep, Icon::Moon, BOTTOM_BUTTON, 20.0, "Sleep Timer");
+        let (_, sleep_icon) = glass_circle(
+            ui,
+            middle_slot,
+            PageAction::Sleep,
+            Icon::Moon,
+            BOTTOM_BUTTON,
+            20.0,
+            tr("Sleep Timer"),
+        );
         glass_circle(
             ui,
             right_slot,
@@ -758,7 +782,7 @@ impl PlaylistPage {
             Icon::Fullscreen,
             BOTTOM_BUTTON,
             20.0,
-            "Fullscreen",
+            tr("Fullscreen"),
         );
 
         // The menu of the rows, the speeds and the sleep timer: after
@@ -926,9 +950,13 @@ impl PlaylistPage {
     pub fn set_header(&mut self, ui: &mut Ui, name: &str, summary: &str, editing: bool, selected: usize) {
         ui.set_text(self.header_name, name);
         ui.set_text(self.header_count, summary);
-        ui.set_text(self.edit_label, if editing { "Done" } else { "Edit" });
+        ui.set_text(self.edit_label, if editing { tr("Done") } else { tr("Edit") });
         ui.set_visible(self.edit_bar, editing);
-        let text = if selected > 0 { format!("Remove ({selected})") } else { "Remove".to_owned() };
+        let text = if selected > 0 {
+            tr_fmt!("Remove ({count})", count = selected)
+        } else {
+            tr("Remove").to_owned()
+        };
         ui.set_text(self.delete_label, &text);
     }
 
@@ -1146,7 +1174,7 @@ impl PlaylistPage {
                 Widget::container()
                     .with_action(PageAction::RowMenu(i).id())
                     .with_radius(CAPSULE)
-                    .with_tooltip("More", None),
+                    .with_tooltip(tr("More"), None),
                 Style {
                     size: square(MENU_BUTTON),
                     flex_shrink: 0.0,
@@ -1350,7 +1378,7 @@ impl PlaylistPage {
                 self.shown_aspect = 0.0;
                 ui.set_text(
                     self.video_note,
-                    note.unwrap_or(if self.list_empty { "No Videos" } else { "Choose a video" }),
+                    note.unwrap_or(if self.list_empty { tr("No Videos") } else { tr("Choose a video") }),
                 );
                 ui.set_visible(self.open_page_button, m.open_page);
                 if let Some(parent) = ui.parent(self.video_note) {

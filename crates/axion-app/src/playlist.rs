@@ -40,7 +40,9 @@ pub fn classify(media_url: &str) -> Source {
     }
     let scheme_ok = url.starts_with("http://") || url.starts_with("https://");
     if !scheme_ok {
-        return Source::Streaming(tr_mark("The page streams this video itself, so it can only be watched online."));
+        return Source::Streaming(tr_mark(
+            "The page streams this video itself, so it can only be watched online.",
+        ));
     }
     let path = url.split(['?', '#']).next().unwrap_or_default().to_ascii_lowercase();
     if path.ends_with(".m3u8") || path.ends_with(".m3u") {
@@ -275,10 +277,15 @@ pub fn download_update(info: &DownloadInfo) -> (&'static str, String, i64, Strin
     match info.state {
         DownloadState::InProgress | DownloadState::Paused => (dl::DOWNLOADING, path, size, String::new()),
         DownloadState::Complete => (dl::DONE, path, size, String::new()),
-        DownloadState::Cancelled => (dl::NONE, String::new(), 0, tr_mark("The download was cancelled.").to_owned()),
-        DownloadState::Failed => {
-            (dl::FAILED, String::new(), 0, tr_mark("The download failed. The site may not allow it.").to_owned())
+        DownloadState::Cancelled => {
+            (dl::NONE, String::new(), 0, tr_mark("The download was cancelled.").to_owned())
         }
+        DownloadState::Failed => (
+            dl::FAILED,
+            String::new(),
+            0,
+            tr_mark("The download failed. The site may not allow it.").to_owned(),
+        ),
     }
 }
 

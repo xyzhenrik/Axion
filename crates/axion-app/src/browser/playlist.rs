@@ -395,7 +395,8 @@ impl Browser {
                 }
             }
             Added::Full => {
-                let text = tr_fmt!("Playlist is full ({count} videos)", count = self.config.playlist.max_items);
+                let text =
+                    tr_fmt!("Playlist is full ({count} videos)", count = self.config.playlist.max_items);
                 self.show_toast(Icon::Playlist, &text);
             }
             Added::Failed => self.show_toast(Icon::Playlist, tr("Couldn’t save to the Playlist")),
@@ -1591,7 +1592,8 @@ impl Browser {
                 let items = playlist::SORTS
                     .iter()
                     .map(|&(sort, name, icon)| {
-                        let mut item = MenuItem::new(icon, tr(name), MenuAction::Playlist(Command::Sort(sort)));
+                        let mut item =
+                            MenuItem::new(icon, tr(name), MenuAction::Playlist(Command::Sort(sort)));
                         item.checked = self.config.playlist.sort == sort;
                         item
                     })
@@ -1789,7 +1791,8 @@ impl Browser {
             }
         }
         items.push(
-            MenuItem::new(Icon::Globe, tr("Open Page"), MenuAction::Playlist(Command::OpenPage(id))).separated(),
+            MenuItem::new(Icon::Globe, tr("Open Page"), MenuAction::Playlist(Command::OpenPage(id)))
+                .separated(),
         );
         items.push(MenuItem::new(Icon::Close, tr("Remove"), MenuAction::Playlist(Command::Remove(id))));
         let window = self.logical_size();
