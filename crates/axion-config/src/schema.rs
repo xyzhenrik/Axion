@@ -123,10 +123,16 @@ pub struct Home {
     pub show_search: bool,
     /// Most visited sites (and pinned ones) as tiles.
     pub show_top_sites: bool,
-    /// Tiles per row, rows per page, and pages (with dots to switch) at most.
+    /// How many tiles at most: pinned sites first, then the most visited domains.
+    pub top_sites_count: u32,
+    /// Only visits within this many days count towards the ranking.
+    pub top_sites_window_days: u32,
+    /// Tiles per row and rows per page; more tiles than fit page with dots.
     pub top_sites_columns: u32,
     pub top_sites_rows: u32,
-    pub top_sites_pages: u32,
+    /// Removed (`top_sites_count` limits the tiles now); still accepted in old files.
+    #[serde(skip_serializing)]
+    top_sites_pages: Option<u32>,
     /// Trackers & ads blocked, bandwidth and time saved.
     pub show_stats: bool,
     /// The selected background image: a file name in the account's backgrounds directory
@@ -168,9 +174,11 @@ impl Default for Home {
             show_greeting: true,
             show_search: true,
             show_top_sites: true,
+            top_sites_count: 5,
+            top_sites_window_days: 90,
             top_sites_columns: 6,
             top_sites_rows: 2,
-            top_sites_pages: 3,
+            top_sites_pages: None,
             show_stats: true,
             background: String::new(),
             max_backgrounds: 24,
@@ -1210,6 +1218,15 @@ mod tests {
         let c: Config = toml::from_str("[layout]\nhide_bar_on_scroll = true").unwrap();
         assert_eq!(c.layout.tab_bar, TabBarStyle::Compact);
         assert!(!toml::to_string(&c).unwrap().contains("hide_bar_on_scroll"));
+    }
+
+    #[test]
+    fn top_sites_defaults_and_old_pages_key() {
+        let d = Config::default().home;
+        assert_eq!((d.top_sites_count, d.top_sites_window_days), (5, 90));
+        let c: Config = toml::from_str("[home]\ntop_sites_pages = 3").unwrap();
+        assert_eq!(c.home.top_sites_count, 5);
+        assert!(!toml::to_string(&c).unwrap().contains("top_sites_pages"));
     }
 
     #[test]

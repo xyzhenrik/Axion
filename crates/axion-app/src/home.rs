@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use axion_config::{ClockFormat, Color, Config, Home, START_PAGE_URL};
 use axion_engine::internal::split_internal_url;
 use axion_engine::{InternalPages, InternalRequest, InternalResponse};
-use axion_store::{Store, site_host};
+use axion_store::{Store, registrable_domain, site_host};
 use serde_json::{Value, json};
 
 pub use backgrounds::{Arrived, Image, Textures};
@@ -132,12 +132,29 @@ impl InternalPages for HomeService {
                     crate::favicons::cache_file(dir, &host, served.dark),
                     crate::favicons::cache_file(dir, &host, !served.dark),
                 ];
-                let bytes = files.iter().find_map(|f| std::fs::read(f).ok())?;
+                let bytes = files
+                    .iter()
+                    .find_map(|f| std::fs::read(f).ok())
+                    .or_else(|| subdomain_icon(dir, &host, served.dark))?;
                 InternalResponse::ok("image/png", bytes)
             }
             _ => return None,
         })
     }
+}
+
+/// An icon cached for a subdomain of `domain` (a site only visited as `gist.github.com` still
+/// gets its tile icon), preferring the current colour scheme.
+fn subdomain_icon(dir: &Path, domain: &str, dark: bool) -> Option<Vec<u8>> {
+    let (own, other) = (if dark { ".dark.png" } else { ".png" }, if dark { ".png" } else { ".dark.png" });
+    let suffix = format!(".{domain}");
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| [own, other].iter().any(|e| n.strip_suffix(e).is_some_and(|h| h.ends_with(&suffix))))
+        .collect();
+    names.sort_by_key(|n| (!n.ends_with(own) || (!dark && n.ends_with(".dark.png")), n.clone()));
+    names.iter().find_map(|n| std::fs::read(dir.join(n)).ok())
 }
 
 /// The decoded value of `key` in a URL query.
@@ -607,7 +624,7 @@ fn edit_top_sites(
     text: &dyn Fn(&str) -> String,
     search_url: &str,
 ) -> axion_store::Result<()> {
-    let host_of = |url: &str| site_host(url);
+    let host_of = |url: &str| registrable_domain(url);
     match kind {
         "removeSite" => {
             if let Some(host) = host_of(&text("url")) {
@@ -651,8 +668,8 @@ pub struct Site {
 }
 
 /// The start page's sites: pinned ones in their order, then the most visited (without removed
-/// and pinned hosts), `limit` at most. Also returns how many sites were removed.
-pub fn top_sites(store: &Store, limit: usize, now: i64) -> (Vec<Site>, usize) {
+/// and pinned domains), `limit` at most. Sites are registrable domains. Also returns how many sites were removed.
+pub fn top_sites(store: &Store, limit: usize, window_days: u32, now: i64) -> (Vec<Site>, usize) {
     let overrides = store.top_site_overrides().unwrap_or_else(|e| {
         tracing::warn!("reading the top sites failed: {e}");
         Vec::new()
@@ -664,7 +681,7 @@ pub fn top_sites(store: &Store, limit: usize, now: i64) -> (Vec<Site>, usize) {
         .map(|o| Site { url: o.url.clone(), title: o.title.clone(), host: o.host.clone(), pinned: true })
         .collect();
     let skip = |host: &str| overrides.iter().any(|o| o.host == host);
-    let visited = store.top_sites(limit + overrides.len(), now).unwrap_or_default();
+    let visited = store.top_sites(limit + overrides.len(), now, window_days).unwrap_or_default();
     for site in visited {
         if sites.len() >= limit {
             break;
@@ -719,10 +736,9 @@ fn state_json(
         .map(|(name, url)| json!({ "name": name, "host": site_host(url).unwrap_or_default() }))
         .collect();
     let custom_host = site_host(&config.general.search_url).unwrap_or_default();
-    let limit =
-        (home.top_sites_columns.max(1) * home.top_sites_rows.max(1) * home.top_sites_pages.max(1)) as usize;
+    let limit = home.top_sites_count as usize;
     let (sites, hidden) = match store {
-        Some(store) if !private => top_sites(store, limit, now),
+        Some(store) if !private => top_sites(store, limit, home.top_sites_window_days, now),
         _ => (Vec::new(), 0),
     };
     let sites: Vec<Value> = sites
@@ -747,6 +763,7 @@ fn state_json(
             "show": home.show_top_sites && !private,
             "columns": home.top_sites_columns.max(1),
             "rows": home.top_sites_rows.max(1),
+            "count": home.top_sites_count,
             "sites": sites,
             "hidden": hidden,
         },
@@ -831,7 +848,7 @@ mod tests {
             &mut config,
             Some(&store),
         );
-        let (sites, hidden) = top_sites(&store, 10, now);
+        let (sites, hidden) = top_sites(&store, 10, 90, now);
         let hosts: Vec<(&str, bool)> = sites.iter().map(|s| (s.host.as_str(), s.pinned)).collect();
         assert_eq!(hosts, [("pinned.example", true), ("often.example", false)]);
         assert_eq!(sites[0].url, "https://pinned.example");
@@ -842,10 +859,10 @@ mod tests {
             &mut config,
             Some(&store),
         );
-        assert_eq!(top_sites(&store, 10, now).0.len(), 2);
+        assert_eq!(top_sites(&store, 10, 90, now).0.len(), 2);
         page.handle(&msg(json!({"type": "restoreSites"})), &mut config, Some(&store));
-        assert_eq!(top_sites(&store, 10, now).0.len(), 3);
-        assert_eq!(top_sites(&store, 1, now).0.len(), 1);
+        assert_eq!(top_sites(&store, 10, 90, now).0.len(), 3);
+        assert_eq!(top_sites(&store, 1, 90, now).0.len(), 1);
     }
 
     #[test]

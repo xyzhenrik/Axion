@@ -292,7 +292,8 @@
     const cols = columns();
     const perPage = cols * t.rows;
     const items = t.sites.map(tile);
-    items.push(addTile());
+    // Room left in the count: a tile to add a site.
+    if (t.sites.length < (t.count || t.sites.length + 1)) items.push(addTile());
     const pages = Math.max(1, Math.ceil(items.length / perPage));
     page = Math.min(page, pages - 1);
     const container = $("pages");
@@ -300,7 +301,7 @@
     const track = el("div", "pages-track");
     for (let p = 0; p < pages; p++) {
       const grid = el("div", "page");
-      grid.style.setProperty("--columns", cols);
+      grid.style.setProperty("--columns", pages === 1 ? Math.max(1, Math.min(cols, items.length)) : cols);
       items.slice(p * perPage, (p + 1) * perPage).forEach((item) => grid.appendChild(item));
       track.appendChild(grid);
     }
