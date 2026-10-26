@@ -156,6 +156,15 @@ impl Theme {
         }
     }
 
+    /// The tint strength of a glass button (see `Glass::button_opacity`).
+    pub fn glass_button_opacity(&self) -> f32 {
+        if self.config.glass.reduce_transparency {
+            REDUCED_TRANSPARENCY_OPACITY
+        } else {
+            self.config.glass.button_opacity.clamp(0.0, 1.0)
+        }
+    }
+
     /// Glass parameters for `level`, in physical pixels at `scale`.
     pub fn glass(&self, level: GlassLevel, scale: f32) -> GlassParams {
         let glass = &self.config.glass;
