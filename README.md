@@ -239,6 +239,7 @@ and quits - handy for screenshots and visual regression checks without touching 
 | `AXION_MONITOR=HDMI-A-1` | Open the window on that monitor (X11/XWayland only: run with `env -u WAYLAND_DISPLAY`). |
 | `AXION_CHROMIUM_SWITCHES=a=b,c` | Extra Chromium command-line switches, comma-separated. |
 | `AXION_NO_SANDBOX=1` | Disable Chromium's sandbox (for containers and test runs). |
+| `AXION_STALL_LOG=1` | Log every freeze of the main thread over 150 ms (or `=<ms>`) with what it was doing; `AXION_STALL_STACK=1` adds its stack (see [Troubleshooting](docs/troubleshooting.md#axion-freezes-for-a-moment)). |
 
 For throwaway test runs, point `AXION_CONFIG_DIR`, `AXION_PROFILE_DIR` and `AXION_DEVICE_KEY_DIR` at
 temporary directories so your real profile and vault key are never touched.
