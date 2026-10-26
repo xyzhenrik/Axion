@@ -9,3 +9,5 @@ design-prompts.md
 plan.md
 *.md
 !README.md
+!docs/
+!docs/**/*.md

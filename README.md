@@ -17,6 +17,7 @@
 [Features](#features) ·
 [Screenshots](#screenshots) ·
 [Build and run](#build-and-run) ·
+[Documentation](#documentation) ·
 [Configuration](#configuration) ·
 [Shortcuts](#keyboard-shortcuts) ·
 [Architecture](#architecture) ·
@@ -148,6 +149,17 @@ genuinely refracts whatever is underneath it.
 </table>
 
 <sub>The screenshots show a local demo page and generated wallpapers.</sub>
+
+## Documentation
+
+User documentation lives in [`docs/`](docs/README.md):
+
+- [Getting started](docs/getting-started.md) - first launch, tabs, sidebar, start page, private tabs.
+- [Settings reference](docs/settings.md) - every setting, with defaults and config keys.
+- [Keyboard shortcuts](docs/keyboard-shortcuts.md) - defaults and how to remap them.
+- [Features](docs/README.md#features) - Shields, tabs and memory, accounts and privacy, passwords,
+  media and Playlist, appearance, hardware acceleration, updates.
+- [Configuration files](docs/configuration.md) and [Troubleshooting](docs/troubleshooting.md).
 
 ## Requirements
 
