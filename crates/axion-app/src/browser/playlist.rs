@@ -210,7 +210,7 @@ impl Browser {
     // ---- the Add button ----
 
     /// Candidates for `tab`: nothing in private tabs or on pages without a video.
-    fn tab_candidates(&self, tab: &Tab) -> Vec<Candidate> {
+    pub(super) fn tab_candidates(&self, tab: &Tab) -> Vec<Candidate> {
         if tab.private {
             return Vec::new();
         }
@@ -368,7 +368,7 @@ impl Browser {
 
     /// Saves a video. `download` (or `playlist.auto_download`) also fetches the file when it
     /// is a plain one.
-    fn add_to_playlist(&mut self, view: ViewId, c: Candidate, download: bool) {
+    pub(super) fn add_to_playlist(&mut self, view: ViewId, c: Candidate, download: bool) {
         let Some(store) = &self.store else { return };
         if find_tab(&self.tabs, &self.parked, view).is_some_and(|t| t.private) {
             return;

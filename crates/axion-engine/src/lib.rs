@@ -7,12 +7,14 @@
 //! engine (e.g. Servo) can be added behind the same trait.
 
 pub mod cef;
+mod context_menu;
 pub mod download;
 mod input;
 pub mod internal;
 mod policy;
 mod transfer;
 
+pub use context_menu::{ContextCommand, ContextMedia, ContextMenuParams, EditFlags};
 pub use download::{ClearData, DownloadAction, DownloadInfo, DownloadOptions, DownloadState};
 pub use input::{CursorKind, InputEvent, Modifiers, MouseButton};
 pub use internal::{INTERNAL_SCHEME, InternalPages, InternalRequest, InternalResponse};
@@ -207,6 +209,25 @@ pub enum EngineEvent {
         count: u32,
         final_update: bool,
     },
+    /// The page was right-clicked (and didn't handle `contextmenu` itself). Chromium has no
+    /// menu of its own off-screen: the browser draws one for these parameters.
+    ContextMenu {
+        view: ViewId,
+        params: ContextMenuParams,
+    },
+    /// An image requested with [`Engine::fetch_image`] arrived (RGBA, straight alpha).
+    ImageReady {
+        view: ViewId,
+        url: String,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
+    /// An image requested with [`Engine::fetch_image`] couldn't be loaded or decoded.
+    ImageFailed {
+        view: ViewId,
+        url: String,
+    },
     /// The view is gone (after [`Engine::close_view`], or the engine had to drop it).
     Closed {
         view: ViewId,
@@ -328,6 +349,14 @@ pub trait Engine {
     /// Downloads and decodes a favicon through the view's network stack (cache, cookies,
     /// blocking rules apply). Arrives as [`EngineEvent::FaviconReady`].
     fn fetch_favicon(&mut self, view: ViewId, url: &str, max_size: u32);
+
+    /// Downloads and decodes an image of the page (for copying it) through the view's network
+    /// stack, with the page's cookies; images over `max_px` on a side are scaled down. Arrives
+    /// as [`EngineEvent::ImageReady`] or [`EngineEvent::ImageFailed`].
+    fn fetch_image(&mut self, view: ViewId, url: &str, max_px: u32);
+
+    /// Runs an editing command of the page's context menu in the view's focused frame.
+    fn context_command(&mut self, view: ViewId, command: ContextCommand);
 
     /// Makes `view` a media view (see [`MediaViewOptions`]); `None` turns it back into an
     /// ordinary one. Applies to the view's requests from now on.

@@ -880,8 +880,40 @@ impl Engine for CefEngine {
             ctx: state.ctx.clone(),
             browser_id: state.browser_id,
             scale: state.ctx.geometry.scale.get(),
+            page_image: false,
         });
         host.download_image(Some(&url.into()), 1, max_size, 0, Some(&mut callback));
+    }
+
+    fn fetch_image(&mut self, view: ViewId, url: &str, max_px: u32) {
+        let Some(state) = self.views.get(&view).filter(|v| !v.closing) else { return };
+        let Some(host) = state.browser.as_ref().and_then(|b| b.host()) else { return };
+        let mut callback = favicon_callback(FaviconRequest {
+            ctx: state.ctx.clone(),
+            browser_id: state.browser_id,
+            // Pixels as the image has them, not as the display would scale them.
+            scale: 1.0,
+            page_image: true,
+        });
+        // Not a favicon: the page's cookies go along (an image behind a login).
+        host.download_image(Some(&url.into()), 0, max_px, 0, Some(&mut callback));
+    }
+
+    fn context_command(&mut self, view: ViewId, command: crate::ContextCommand) {
+        use crate::ContextCommand as C;
+        let Some(frame) = self.browser(view).and_then(|b| b.focused_frame().or_else(|| b.main_frame()))
+        else {
+            return;
+        };
+        match command {
+            C::Undo => frame.undo(),
+            C::Redo => frame.redo(),
+            C::Cut => frame.cut(),
+            C::Copy => frame.copy(),
+            C::Paste => frame.paste(),
+            C::Delete => frame.del(),
+            C::SelectAll => frame.select_all(),
+        }
     }
 
     fn set_request_policy(&mut self, policy: Option<Arc<dyn RequestPolicy>>) {
@@ -956,6 +988,9 @@ impl Engine for CefEngine {
                 | EngineEvent::InternalMessage { view, .. }
                 | EngineEvent::FaviconReady { view, .. }
                 | EngineEvent::FaviconFailed { view, .. }
+                | EngineEvent::ContextMenu { view, .. }
+                | EngineEvent::ImageReady { view, .. }
+                | EngineEvent::ImageFailed { view, .. }
                 | EngineEvent::CursorChanged { view, .. }
                 | EngineEvent::FullscreenRequested { view, .. }
                 | EngineEvent::PageMessage { view, .. }

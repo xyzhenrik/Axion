@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 ureq = "3"
 anyhow.workspace = true
-arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+arboard = { version = "3", default-features = false, features = ["wayland-data-control", "image-data"] }
 axion-accounts.workspace = true
 axion-compositor.workspace = true
 axion-config.workspace = true

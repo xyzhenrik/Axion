@@ -471,6 +471,13 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. â
 
 ### Phase 7 â€” v0.1 polish
 - [ ] Downloads, find-in-page, zoom, context menus, permissions prompts (all glass).
+- [x] Page context menu (`page_menu.rs`, `browser/page_context.rs`): off-screen CEF has no native
+      menu, so `ContextMenuHandler::run_context_menu` reports `EngineEvent::ContextMenu` and
+      cancels; the glass menu drips out of the pointer (`Placement::Over`, flips up/left near
+      edges, widens for the search row). Link, image, video/audio, selection, editable field and
+      plain page rows, dimmed when they don't apply; Copy Image through `Engine::fetch_image` +
+      arboard; Save* through `start_download`. Keys `ui.page_context_menu_*`, `ui.copy_image_max_px`.
+      Not done: Print, Loop, keyboard navigation in the menu.
 - [x] Find on Page: glass bar dripping out of the address field (Ctrl+F, page menu), search as
       you type, "3 of 17", Enter / Shift+Enter / Ctrl+G, case toggle; closes on tab switch and
       new page. Files dragged in from the desktop (X11/XWayland) and in-page drag and drop.

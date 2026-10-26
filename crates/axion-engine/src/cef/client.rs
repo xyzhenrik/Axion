@@ -787,6 +787,8 @@ pub(super) struct FaviconRequest {
     pub ctx: ViewContext,
     pub browser_id: i32,
     pub scale: f32,
+    /// An image of the page (for copying it), not a favicon: reported as `ImageReady`.
+    pub page_image: bool,
 }
 
 wrap_download_image_callback! {
@@ -805,11 +807,14 @@ wrap_download_image_callback! {
 
             let ctx = &self.request.ctx;
             let url = image_url.map(|u| u.to_string()).unwrap_or_default();
+            let page_image = self.request.page_image;
             let failed = || {
-                ctx.shared
-                    .events
-                    .borrow_mut()
-                    .push((self.request.browser_id, EngineEvent::FaviconFailed { view: ctx.view, url: url.clone() }));
+                let event = if page_image {
+                    EngineEvent::ImageFailed { view: ctx.view, url: url.clone() }
+                } else {
+                    EngineEvent::FaviconFailed { view: ctx.view, url: url.clone() }
+                };
+                ctx.shared.events.borrow_mut().push((self.request.browser_id, event));
             };
             let Some(image) = image else { return failed() };
             let (mut width, mut height) = (0, 0);
@@ -830,16 +835,13 @@ wrap_download_image_callback! {
             if rgba.len() != width as usize * height as usize * 4 {
                 return failed();
             }
-            ctx.shared.events.borrow_mut().push((
-                self.request.browser_id,
-                EngineEvent::FaviconReady {
-                    view: ctx.view,
-                    url,
-                    width: width as u32,
-                    height: height as u32,
-                    rgba,
-                },
-            ));
+            let (view, width, height) = (ctx.view, width as u32, height as u32);
+            let event = if page_image {
+                EngineEvent::ImageReady { view, url, width, height, rgba }
+            } else {
+                EngineEvent::FaviconReady { view, url, width, height, rgba }
+            };
+            ctx.shared.events.borrow_mut().push((self.request.browser_id, event));
         }
     }
 }
@@ -942,6 +944,67 @@ wrap_permission_handler! {
     }
 }
 
+// Off-screen Chromium has no native context menu (it logs "Window handle is required" and
+// cancels): the click is reported and Axion's own glass menu takes over.
+wrap_context_menu_handler! {
+    pub(super) struct ContextMenuHandlerBuilder {
+        ctx: ViewContext,
+    }
+
+    impl ContextMenuHandler {
+        fn run_context_menu(
+            &self,
+            browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            params: Option<&mut ContextMenuParams>,
+            _model: Option<&mut MenuModel>,
+            callback: Option<&mut RunContextMenuCallback>,
+        ) -> ::std::os::raw::c_int {
+            use cef::sys::cef_context_menu_edit_state_flags_t as edit;
+            use cef::sys::cef_context_menu_media_type_t as media_type;
+
+            let Some(params) = params else { return 0 };
+            let text = |s: CefStringUserfree| CefString::from(&s).to_string();
+            let media = match *params.media_type().as_ref() {
+                media_type::CM_MEDIATYPE_IMAGE => crate::ContextMedia::Image,
+                media_type::CM_MEDIATYPE_VIDEO => crate::ContextMedia::Video,
+                media_type::CM_MEDIATYPE_AUDIO => crate::ContextMedia::Audio,
+                media_type::CM_MEDIATYPE_CANVAS => crate::ContextMedia::Canvas,
+                media_type::CM_MEDIATYPE_NONE => crate::ContextMedia::None,
+                _ => crate::ContextMedia::Other,
+            };
+            let flags = params.edit_state_flags().as_ref().0;
+            let has = |flag: edit| flags & flag.0 != 0;
+            let event = crate::ContextMenuParams {
+                pos: Vec2::new(params.xcoord() as f32, params.ycoord() as f32),
+                media,
+                source_url: text(params.source_url()),
+                has_image_contents: params.has_image_contents() != 0,
+                link_url: text(params.unfiltered_link_url()),
+                selection_text: text(params.selection_text()),
+                editable: params.is_editable() != 0,
+                edit: crate::EditFlags {
+                    undo: has(edit::CM_EDITFLAG_CAN_UNDO),
+                    redo: has(edit::CM_EDITFLAG_CAN_REDO),
+                    cut: has(edit::CM_EDITFLAG_CAN_CUT),
+                    copy: has(edit::CM_EDITFLAG_CAN_COPY),
+                    paste: has(edit::CM_EDITFLAG_CAN_PASTE),
+                    delete: has(edit::CM_EDITFLAG_CAN_DELETE),
+                    select_all: has(edit::CM_EDITFLAG_CAN_SELECT_ALL),
+                },
+                page_url: text(params.page_url()),
+                frame_url: text(params.frame_url()),
+            };
+            self.ctx.emit(browser, EngineEvent::ContextMenu { view: self.ctx.view, params: event });
+            // Ours to answer: nothing to run natively.
+            if let Some(callback) = callback {
+                callback.cancel();
+            }
+            1
+        }
+    }
+}
+
 wrap_client! {
     pub(super) struct ClientBuilder {
         render: RenderHandler,
@@ -951,10 +1014,15 @@ wrap_client! {
         // What the network stack asks of the browser: requests and permissions.
         request: (RequestHandler, PermissionHandler),
         download: DownloadHandler,
-        find: FindHandler,
+        // Find in page, and the page's context menu (reported, not shown).
+        find: (FindHandler, ContextMenuHandler),
     }
 
     impl Client {
+        fn context_menu_handler(&self) -> Option<ContextMenuHandler> {
+            Some(self.find.1.clone())
+        }
+
         fn render_handler(&self) -> Option<RenderHandler> {
             Some(self.render.clone())
         }
@@ -984,7 +1052,7 @@ wrap_client! {
         }
 
         fn find_handler(&self) -> Option<FindHandler> {
-            Some(self.find.clone())
+            Some(self.find.0.clone())
         }
     }
 }
@@ -1000,7 +1068,7 @@ pub(super) fn build_client(ctx: &ViewContext) -> Client {
             PermissionHandlerBuilder::new(Arc::clone(&ctx.net), ctx.view),
         ),
         super::download::build_download_handler(&ctx.shared.downloads),
-        FindHandlerBuilder::new(ctx.clone()),
+        (FindHandlerBuilder::new(ctx.clone()), ContextMenuHandlerBuilder::new(ctx.clone())),
     )
 }
 

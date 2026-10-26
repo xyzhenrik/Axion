@@ -54,7 +54,7 @@ impl Browser {
         false
     }
 
-    fn close_other_menus(&mut self) {
+    pub(super) fn close_other_menus(&mut self) {
         self.menu.close(&mut self.ui, &self.config);
         self.account_menu.close(&mut self.ui, &self.config);
     }

@@ -21,7 +21,7 @@ pub const PAGE_MENU_BASE: u32 = 6000;
 pub const ACCOUNT_MENU_BASE: u32 = 6050;
 /// Clickable things a menu can have, its submenus' included (the next menu's ids start after).
 pub const MAX_ITEMS: usize = 50;
-const WIDTH: f32 = 280.0;
+pub const WIDTH: f32 = 280.0;
 /// Characters a row's label and its detail (shortcut, value) may take together at `WIDTH`.
 const MAX_LABEL_AND_DETAIL: usize = 24;
 const SUBMENU_WIDTH: f32 = 200.0;
@@ -37,7 +37,7 @@ const BEYOND_ANCHOR: f32 = 12.0;
 /// Between a menu and its submenu (the bridge joins them across it).
 const SUBMENU_GAP: f32 = 12.0;
 /// Kept free at the window's edges.
-const WINDOW_MARGIN: f32 = 8.0;
+pub const WINDOW_MARGIN: f32 = 8.0;
 const RADIUS: f32 = 22.0;
 /// The plate's distance from the glass's edge, and the blur of its own edge (logical px).
 const PLATE_INSET: f32 = 14.0;
@@ -45,6 +45,8 @@ const PLATE_BLUR: f32 = 26.0;
 const AVATAR: f32 = 26.0;
 /// The row whose submenu is open stays highlighted (label colour at this opacity).
 const OPEN_ROW_HIGHLIGHT: f32 = 0.08;
+/// Rows that don't apply right now (a context menu's Back without history) are dimmed to this.
+const DISABLED_OPACITY: f32 = 0.38;
 
 /// What a menu entry does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +76,8 @@ pub enum MenuAction {
     Bookmark(crate::context_menu::BookmarkCommand),
     /// The Playlist page's menus and the page menu's Playlist rows.
     Playlist(crate::playlist::Command),
+    /// The page's context menu (right click inside the page; see `page_menu`).
+    Page(crate::page_menu::PageCommand),
 }
 
 /// Where a menu opens relative to its button.
@@ -123,6 +127,8 @@ pub struct MenuItem {
     pub checked: bool,
     /// A hairline above the row.
     pub separated: bool,
+    /// The row does nothing (dimmed, no hover, not clickable).
+    pub disabled: bool,
     /// A grey section caption above the row.
     pub caption: Option<String>,
     /// Rows of a submenu that opens beside the menu (the row gets a chevron).
@@ -141,6 +147,7 @@ impl MenuItem {
             detail: None,
             checked: false,
             separated: false,
+            disabled: false,
             caption: None,
             submenu: Vec::new(),
             controls: Vec::new(),
@@ -188,6 +195,12 @@ impl MenuItem {
 
     pub fn separated(mut self) -> Self {
         self.separated = true;
+        self
+    }
+
+    /// Dims the row and makes it inert unless `enabled`.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.disabled = !enabled;
         self
     }
 
@@ -261,6 +274,8 @@ pub struct Menu {
     parent_labels: usize,
     open_sub: Option<Open>,
     window: Vec2,
+    /// The menu is at least this wide (logical px; for rows with long labels).
+    min_width: f32,
 }
 
 impl Menu {
@@ -287,7 +302,13 @@ impl Menu {
             parent_labels: 0,
             open_sub: None,
             window: Vec2::ZERO,
+            min_width: 0.0,
         }
+    }
+
+    /// The least width of the next opened menu (0: the usual).
+    pub fn set_min_width(&mut self, width: f32) {
+        self.min_width = width;
     }
 
     /// Where the next `open` places the menu.
@@ -349,7 +370,8 @@ impl Menu {
             // As wide as the row it covers, so none of the row pokes out at the sides.
             Placement::Over | Placement::OverCentered => anchor.size.x.max(WIDTH),
             Placement::Above => anchor.size.x.max(WIDTH * 0.75),
-        };
+        }
+        .max(self.min_width);
         let max_left = (window.x - width - WINDOW_MARGIN).max(WINDOW_MARGIN);
         let target = match self.placement {
             Placement::Below => {
@@ -441,9 +463,14 @@ impl Menu {
         } else {
             submenu
         };
+        let container = if item.disabled {
+            Widget::container().with_radius(CAPSULE)
+        } else {
+            Widget::container().with_action(self.slot(slot)).with_radius(CAPSULE)
+        };
         let row = ui.add(
             panel,
-            Widget::container().with_action(self.slot(slot)).with_radius(CAPSULE),
+            container,
             Style {
                 size: Size { width: auto(), height: length(ROW_HEIGHT) },
                 flex_shrink: 0.0,
@@ -500,6 +527,9 @@ impl Menu {
                 Widget::icon(Icon::ChevronRight, 14.0).with_paint(Paint::Secondary),
                 Style::default(),
             );
+        }
+        if item.disabled {
+            ui.set_opacity(row, DISABLED_OPACITY);
         }
         row
     }

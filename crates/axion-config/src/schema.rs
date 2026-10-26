@@ -929,11 +929,23 @@ impl Default for Sidebar {
 pub struct Ui {
     /// How long the pointer must rest on a button before its tooltip appears (milliseconds).
     pub tooltip_delay_ms: u32,
+    /// The page context menu's "Search … for “text”" row shows at most this many characters of
+    /// the selection (cut with an ellipsis).
+    pub page_context_menu_label_chars: u32,
+    /// The most characters of a selection the context menu searches for.
+    pub page_context_menu_query_chars: u32,
+    /// "Copy Image" scales images larger than this down (pixels on the long side).
+    pub copy_image_max_px: u32,
 }
 
 impl Default for Ui {
     fn default() -> Self {
-        Self { tooltip_delay_ms: 700 }
+        Self {
+            tooltip_delay_ms: 700,
+            page_context_menu_label_chars: 14,
+            page_context_menu_query_chars: 400,
+            copy_image_max_px: 8192,
+        }
     }
 }
 

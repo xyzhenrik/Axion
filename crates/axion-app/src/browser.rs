@@ -71,6 +71,7 @@ use crate::url::display_host;
 use crate::url::resolve_input;
 
 mod context;
+mod page_context;
 mod playlist;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
@@ -324,6 +325,10 @@ pub struct Browser {
     /// Right-click menus of tabs and bookmarks, and the tab (view, private) one was opened for.
     context_menus: ContextMenus,
     context_tab: Option<(ViewId, bool)>,
+    /// What the open page menu (right click inside the page) is about.
+    page_context: Option<page_context::PageContext>,
+    /// The view whose "Copy Image" is waiting for its picture.
+    copy_image: Option<ViewId>,
     /// The tab row the open context menu flows out of (view, private, surface).
     context_row: Option<(ViewId, bool, crate::chrome::Surface)>,
     /// The bookmarks bar's bookmarks (id, url, title), reloaded when `bookmarks_changed`.
@@ -571,6 +576,7 @@ impl Browser {
         let context_menus = ContextMenus::build(
             &mut ui,
             &[chrome.bar_node(), chrome.tab_strip_node(), chrome.sidebar_node(), chrome.bookmarks_bar_node()],
+            chrome.bar_node(),
         );
         let tooltip_parent = ui.root();
         let tooltip = Tooltip::build(&mut ui, tooltip_parent);
@@ -670,6 +676,8 @@ impl Browser {
             tab_drag,
             context_menus,
             context_tab: None,
+            page_context: None,
+            copy_image: None,
             context_row: None,
             bar_bookmarks: Vec::new(),
             bookmarks_changed: true,
@@ -2666,6 +2674,7 @@ impl Browser {
             MenuAction::Tab(command) => return self.tab_command(command),
             MenuAction::Bookmark(command) => return self.bookmark_command(command),
             MenuAction::Playlist(command) => return self.playlist_command(command),
+            MenuAction::Page(command) => return self.page_command(command),
             _ => {}
         }
         let Some(tab) = self.tabs.active() else { return };
@@ -2726,6 +2735,7 @@ impl Browser {
             | MenuAction::LockAccount
             | MenuAction::Tab(_)
             | MenuAction::Playlist(_)
+            | MenuAction::Page(_)
             | MenuAction::Bookmark(_) => {}
         }
     }
@@ -3586,6 +3596,11 @@ impl Browser {
                 EngineEvent::InternalMessage { view, host, message } => {
                     self.internal_message(view, &host, &message);
                 }
+                EngineEvent::ContextMenu { view, params } => self.show_page_menu(view, params),
+                EngineEvent::ImageReady { view, width, height, rgba, .. } => {
+                    self.image_fetched(view, width, height, rgba);
+                }
+                EngineEvent::ImageFailed { view, .. } => self.image_failed(view),
                 EngineEvent::FaviconFailed { view, url } if self.playlist_thumbnail_failed(view, &url) => {}
                 EngineEvent::FaviconReady { view, url, width, height, rgba }
                     if self.playlist_thumbnail_ready(view, &url, (width, height), &rgba) => {}
@@ -4249,6 +4264,10 @@ impl Browser {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.tooltip.cancel(&mut self.ui);
+                if self.context_menus.page_open() {
+                    // Scrolling the page puts its menu away.
+                    self.context_menus.close(&mut self.ui, &self.config);
+                }
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(x, y) => Vec2::new(x, y) * LINE_SCROLL,
                     MouseScrollDelta::PixelDelta(p) => Vec2::new(p.x as f32, p.y as f32) / self.scale(),
@@ -5411,6 +5430,7 @@ impl Browser {
                 .map(|i| i.node);
             self.context_menus.cover_row(&mut self.ui, row);
         }
+        self.sync_page_menu();
         self.context_menus.animate(&mut self.ui, &self.config, dt);
         self.add_account.animate(&mut self.ui, dt);
         self.shields_popover.animate(&mut self.ui, dt);
@@ -6206,7 +6226,7 @@ mod tests {
                 LockScreen::is_lock_action(id),
                 SettingsAction::from_id(id).is_some(),
                 PlayerControl::from_id(id).is_some(),
-                (CONTEXT_MENU_BASE..CONTEXT_MENU_BASE + 4 * MAX_ITEMS as u32).contains(&id.0),
+                (CONTEXT_MENU_BASE..CONTEXT_MENU_BASE + 5 * MAX_ITEMS as u32).contains(&id.0),
                 (PAGE_MENU_BASE..ACCOUNT_MENU_BASE + MAX_ITEMS as u32).contains(&id.0),
                 crate::playlist_page::PageAction::owns(id),
                 (crate::playlist_page::MENU_BASE..crate::playlist_page::MENU_BASE + 2 * MAX_ITEMS as u32)
