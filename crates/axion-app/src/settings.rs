@@ -26,6 +26,9 @@ const SHEET_MARGIN: f32 = 32.0;
 const SHEET_RADIUS: f32 = 30.0;
 const NAV_WIDTH: f32 = 230.0;
 const ROW_HEIGHT: f32 = 46.0;
+/// How many lines a row's label and a note may wrap onto before they end in an ellipsis.
+const LABEL_LINES: usize = 2;
+const NOTE_LINES: usize = 4;
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 /// Width of the value label beside a slider.
 const VALUE_WIDTH: f32 = 150.0;
@@ -87,7 +90,7 @@ pub enum Category {
 }
 
 impl Category {
-    const ALL: [Category; 11] = [
+    pub const ALL: [Category; 11] = [
         Category::Account,
         Category::General,
         Category::Appearance,
@@ -1768,7 +1771,7 @@ impl SettingsSheet {
                 let row_node = self.row(ui, tr("Password"));
                 self.passwords_secret =
                     Some(text_field(ui, row_node, tr("For exports and restoring"), 260.0, true));
-                let row_node = self.row(ui, "");
+                let row_node = self.button_row(ui);
                 pill_button(ui, row_node, tr("Import CSV"), SettingsAction::ImportPasswords, false);
                 pill_button(
                     ui,
@@ -2363,9 +2366,27 @@ impl SettingsSheet {
                 ..Default::default()
             },
         );
+        ui.set_label_lines(label, NOTE_LINES);
         if let Some(w) = ui.widget_mut(label) {
             w.set_paint(Paint::Secondary);
         }
+    }
+
+    /// A row of buttons that wraps onto more lines when they don't fit, right-aligned.
+    fn button_row(&mut self, ui: &mut Ui) -> NodeId {
+        let parent = self.group_for_row(ui);
+        ui.add(
+            parent,
+            Widget::container(),
+            Style {
+                flex_wrap: FlexWrap::Wrap,
+                justify_content: JustifyContent::FLEX_END,
+                padding: padding(0.0, 5.0),
+                flex_shrink: 0.0,
+                gap: Size { width: length(8.0), height: length(8.0) },
+                ..row(8.0)
+            },
+        )
     }
 
     /// The card the next row goes in (with a separator above it if the card has rows).
@@ -2407,12 +2428,19 @@ impl SettingsSheet {
 
     fn row_with_height(&mut self, ui: &mut Ui, label: &str, height: f32) -> NodeId {
         let parent = self.group_for_row(ui);
+        // At least `height` tall, taller when a long label wraps.
         let row_node = ui.add(
             parent,
             Widget::container(),
-            Style { size: Size { width: auto(), height: length(height) }, flex_shrink: 0.0, ..row(10.0) },
+            Style {
+                min_size: Size { width: auto(), height: length(height) },
+                padding: padding(0.0, 6.0),
+                flex_shrink: 0.0,
+                ..row(10.0)
+            },
         );
-        ui.add_label(row_node, label, TextStyle::Body, grow_label());
+        let label = ui.add_label(row_node, label, TextStyle::Body, grow_label());
+        ui.set_label_lines(label, LABEL_LINES);
         row_node
     }
 
@@ -2441,7 +2469,7 @@ impl SettingsSheet {
                 &setting.display(config),
                 TextStyle::Footnote,
                 Style {
-                    size: Size { width: length(VALUE_WIDTH), height: auto() },
+                    min_size: Size { width: length(VALUE_WIDTH), height: auto() },
                     flex_shrink: 0.0,
                     ..Default::default()
                 },
@@ -2927,6 +2955,10 @@ pub fn picture_fill(ui: &mut Ui, circle: NodeId, picture: &Image, side: f32) -> 
 pub fn segmented(ui: &mut Ui, parent: NodeId, options: &[(&str, ActionId)], current: Option<usize>) {
     let style = Style {
         size: Size { width: auto(), height: length(SEGMENTED_HEIGHT) },
+        // Squeezed, the segments' labels end in an ellipsis instead of running out of the pill.
+        min_size: Size { width: length(0.0), height: auto() },
+        // Gives way after the row's label, which wraps instead.
+        flex_shrink: 0.25,
         padding: padding(SEGMENTED_INSET, SEGMENTED_INSET),
         ..row(2.0)
     };
@@ -2944,12 +2976,18 @@ pub fn segmented(ui: &mut Ui, parent: NodeId, options: &[(&str, ActionId)], curr
             Widget::container().with_action(*action).with_radius(CAPSULE),
             Style {
                 size: Size { width: auto(), height: length(SEGMENTED_HEIGHT - 2.0 * SEGMENTED_INSET) },
+                min_size: Size { width: length(0.0), height: auto() },
                 padding: padding(14.0, 0.0),
                 ..row(0.0)
             },
         );
         let style = if Some(i) == current { TextStyle::BodyEmphasis } else { TextStyle::Body };
-        ui.add_label(segment, label, style, Style::default());
+        ui.add_label(
+            segment,
+            label,
+            style,
+            Style { min_size: Size { width: length(0.0), height: auto() }, ..Default::default() },
+        );
     }
 }
 

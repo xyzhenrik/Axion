@@ -95,6 +95,7 @@ fn glass_button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str) -> No
 
 fn secondary(ui: &mut Ui, parent: NodeId, text: &str) {
     let label = ui.add_label(parent, text, TextStyle::Footnote, Style::default());
+    ui.set_label_lines(label, 3);
     if let Some(w) = ui.widget_mut(label) {
         w.set_paint(Paint::Secondary);
     }

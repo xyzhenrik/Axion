@@ -28,7 +28,7 @@ pub use editor::Editor;
 use knob::Knob;
 pub use theme::{FLAT_BORDER, FlatPaint, GlassLevel, Paint, TextStyle, Theme};
 pub use widget::{ActionId, Align, Background, CAPSULE, FlatRole, Shadow, Tooltip, Widget, WidgetKind};
-use widget::{caret_x, index_at, measure, new_buffer, set_buffer_text};
+use widget::{break_lines, caret_x, index_at, layout_wrapped, measure, new_buffer, set_buffer_text};
 
 const CARET_BLINK: Duration = Duration::from_millis(530);
 const CARET_WIDTH: f32 = 1.5;
@@ -483,6 +483,20 @@ impl Ui {
         }
     }
 
+    /// Lets a label wrap onto up to `lines` lines (ellipsis after the last) instead of staying
+    /// on one line. The label should be allowed to shrink (`min_size.width: 0`).
+    pub fn set_label_lines(&mut self, node: NodeId, lines: usize) {
+        let lines = lines.max(1);
+        if let Some(Widget { kind: WidgetKind::Label(label), .. }) = self.tree.get_node_context_mut(node)
+            && label.max_lines != lines
+        {
+            label.max_lines = lines;
+            label.buffer.set_ellipsize(glyphon::cosmic_text::Ellipsize::None);
+            let _ = self.tree.mark_dirty(node);
+            self.needs_layout = true;
+        }
+    }
+
     pub fn set_label_align(&mut self, node: NodeId, align: Align) {
         let family = self.theme.font_family().to_owned();
         if let Some(Widget { kind: WidgetKind::Label(label), .. }) = self.tree.get_node_context_mut(node)
@@ -651,6 +665,72 @@ impl Ui {
         self.update_frames(self.root, Vec2::ZERO);
     }
 
+    /// Debug aid for translations: every visible label whose text does not fit its box (cut by
+    /// an ellipsis or the box's edge) and every text field whose placeholder is wider than the
+    /// field, as `(text, box width, text width)` in logical px. Lays out first.
+    pub fn clipped_texts(&mut self) -> Vec<(String, f32, f32)> {
+        use glyphon::cosmic_text::{Ellipsize, EllipsizeHeightLimit};
+        self.layout();
+        let scale = self.scale;
+        let mut out = Vec::new();
+        let mut nodes = vec![self.root];
+        let mut i = 0;
+        while i < nodes.len() {
+            let n = nodes[i];
+            i += 1;
+            if self.style(n).display == Display::None {
+                continue;
+            }
+            nodes.extend(self.tree.children(n).unwrap_or_default());
+            let fonts = self.fonts.get_mut();
+            let Some(widget) = self.tree.get_node_context_mut(n) else { continue };
+            let frame = widget.frame;
+            if frame.size.x <= 0.0 || widget.opacity <= 0.0 {
+                continue;
+            }
+            match &mut widget.kind {
+                WidgetKind::Label(label) => {
+                    if label.max_lines > 1 {
+                        let family = self.theme.font_family();
+                        let width = frame.size.x * scale + 1.0;
+                        let (style, align) = (label.style, label.align);
+                        let broken =
+                            break_lines(&mut label.buffer, fonts, family, (&label.text, style, align), width);
+                        if broken.len() > label.max_lines {
+                            out.push((label.text.clone(), frame.size.x, frame.size.x * broken.len() as f32));
+                        }
+                        // Lines enough, but maybe a word wider than the box.
+                        let ((w, _), _) = layout_wrapped(label, fonts, family, Some(width));
+                        if w > width && broken.len() <= label.max_lines {
+                            out.push((label.text.clone(), frame.size.x, w / scale));
+                        }
+                    } else {
+                        label.buffer.set_ellipsize(Ellipsize::None);
+                        label.buffer.set_size(None, None);
+                        label.buffer.shape_until_scroll(fonts, false);
+                        let (w, _) = measure(&label.buffer);
+                        if w > frame.size.x * scale + 1.0 {
+                            out.push((label.text.clone(), frame.size.x, w / scale));
+                        }
+                        label.buffer.set_ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)));
+                        label.buffer.set_size(Some(frame.size.x * scale + 1.0), Some(frame.size.y * scale));
+                        label.buffer.shape_until_scroll(fonts, false);
+                    }
+                }
+                WidgetKind::TextField(field)
+                    if field.editor.text().is_empty() && !field.placeholder_text.is_empty() =>
+                {
+                    let (w, _) = measure(&field.placeholder);
+                    if w / scale > frame.size.x + 1.0 {
+                        out.push((field.placeholder_text.clone(), frame.size.x, w / scale));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
     /// Taffy records the absolutely positioned boxes of a containing block while it lays that
     /// block out, but a hidden block (`display: none` itself or below a hidden node) is not laid
     /// out, so a box removed from it stays in its list and the next layout panics ("invalid
@@ -693,6 +773,7 @@ impl Ui {
             width: AvailableSpace::Definite(self.size.x),
             height: AvailableSpace::Definite(self.size.y),
         };
+        let family = self.theme.font_family().to_owned();
         let fonts = self.fonts.get_mut();
         let _ =
             self.tree.compute_layout_with_measure(self.root, available, |input, _node, widget, _style| {
@@ -703,7 +784,16 @@ impl Ui {
                         // (e.g. to 0 while hidden).
                         label.buffer.set_size(None, None);
                         label.buffer.shape_until_scroll(fonts, false);
-                        let (w, h) = measure(&label.buffer);
+                        let (mut w, mut h) = measure(&label.buffer);
+                        if label.max_lines > 1 {
+                            // A wrapping label takes the width it is given (or that is left) and
+                            // grows taller instead of wider.
+                            let limit = known.width.or(match input.available_space.width {
+                                AvailableSpace::Definite(a) => Some(a),
+                                _ => None,
+                            });
+                            ((w, h), _) = layout_wrapped(label, fonts, &family, limit.map(|l| l * scale));
+                        }
                         Size {
                             width: known.width.unwrap_or(w / scale),
                             height: known.height.unwrap_or(h / scale),
@@ -741,7 +831,13 @@ impl Ui {
             widget.frame = frame;
             match &mut widget.kind {
                 WidgetKind::Label(label) => {
-                    label.buffer.set_size(Some(frame.size.x * scale), Some(frame.size.y * scale));
+                    // A little slack so rounding never ellipsizes a label that fits.
+                    if label.max_lines > 1 {
+                        let family = self.theme.font_family();
+                        layout_wrapped(label, self.fonts.get_mut(), family, Some(frame.size.x * scale + 1.0));
+                    }
+                    let height = (label.max_lines <= 1).then_some(frame.size.y * scale);
+                    label.buffer.set_size(Some(frame.size.x * scale + 1.0), height);
                     label.buffer.shape_until_scroll(self.fonts.get_mut(), false);
                 }
                 WidgetKind::TextField(field) => {
@@ -2340,6 +2436,37 @@ mod tests {
         let mut ui = Ui::new(Theme::new(&axion_config::Config::default(), false), 1.0);
         ui.set_viewport(Vec2::new(800.0, 600.0), 1.0);
         ui
+    }
+
+    #[test]
+    fn long_labels_wrap_and_clipped_ones_are_reported() {
+        let mut ui = ui();
+        let root = ui.root();
+        let column = ui.add(
+            root,
+            Widget::container(),
+            Style {
+                flex_direction: FlexDirection::Column,
+                size: Size { width: length(120.0), height: auto() },
+                ..Default::default()
+            },
+        );
+        let text = "Zwischenablage nach dem Kopieren leeren";
+        let wrapping = ui.add_label(column, text, TextStyle::Body, Style::default());
+        ui.set_label_lines(wrapping, 3);
+        let _single = ui.add_label(column, text, TextStyle::Body, Style::default());
+        ui.layout();
+        let line = ui.widget(wrapping).unwrap().frame().size.y;
+        assert!(line > 30.0, "the wrapping label grows taller: {line}");
+        let WidgetKind::Label(l) = &ui.widget(wrapping).unwrap().kind else { unreachable!() };
+        let lines: Vec<String> = l
+            .buffer
+            .layout_runs()
+            .map(|r| r.glyphs.iter().map(|g| &r.text[g.start..g.end]).collect())
+            .collect();
+        assert_eq!(lines, ["Zwischenablage", "nach dem", "Kopieren leeren"]);
+        assert!(ui.clipped_texts().iter().any(|(t, ..)| t == text), "the one-line copy is clipped");
+        assert_eq!(ui.clipped_texts().len(), 1, "the wrapping one is not");
     }
 
     /// Linear-light relative luminance of an sRGB colour (WCAG).

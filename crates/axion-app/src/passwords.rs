@@ -439,7 +439,9 @@ fn painted(ui: &mut Ui, parent: NodeId, text: &str, style: TextStyle, paint: Pai
 }
 
 fn secondary(ui: &mut Ui, parent: NodeId, text: &str, style: TextStyle) -> NodeId {
-    painted(ui, parent, text, style, Paint::Secondary)
+    let label = painted(ui, parent, text, style, Paint::Secondary);
+    ui.set_label_lines(label, 3);
+    label
 }
 
 fn capsule_button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, primary: bool) -> NodeId {

@@ -5156,6 +5156,26 @@ impl Browser {
                     }
                 }
                 "paste" => self.run(Action::Paste),
+                // Capture aid: logs every text of the visible chrome that does not fit its box
+                // (a translation too long for its layout).
+                "i18n-overflow" => {
+                    let clipped = self.ui.clipped_texts();
+                    tracing::info!("i18n-overflow: {} clipped texts", clipped.len());
+                    for (text, width, wanted) in clipped {
+                        tracing::warn!("i18n-overflow: {text:?} needs {wanted:.0} px, box is {width:.0} px");
+                    }
+                }
+                // Capture aid: open Settings on page N (0 = Account … 10 = Passwords).
+                page if page.starts_with("settings-page:") => {
+                    if let Some(category) = page["settings-page:".len()..]
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|i| Category::ALL.get(i).copied())
+                    {
+                        self.settings.set_category(category);
+                        self.run(Action::OpenSettings);
+                    }
+                }
                 "settings-scroll" => self.settings.scroll_by(&mut self.ui, -400.0),
                 "player-speed" => {
                     let _ = self.player.click(&mut self.ui, PlayerControl::Speed, &self.config);
