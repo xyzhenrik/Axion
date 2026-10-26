@@ -742,13 +742,20 @@ impl Ui {
     /// block out, but a hidden block (`display: none` itself or below a hidden node) is not laid
     /// out, so a box removed from it stays in its list and the next layout panics ("invalid
     /// SlotMap key"). Such blocks are shown for one layout pass so the list is rebuilt.
+    /// A block left without children is laid out as a leaf, which keeps its old list too (even
+    /// when shown): it gets a stand-in child for that pass.
     fn refresh_stale_hoists(&mut self) {
         let blocks = std::mem::take(&mut self.stale_hoists);
         let mut hidden = Vec::new();
+        let mut stand_ins = Vec::new();
         for block in blocks {
-            // Gone with the removed subtree, or not hidden (the ordinary layout refreshes it).
+            // Gone with the removed subtree (a shown block with children is refreshed by the
+            // ordinary layout).
             if self.tree.get_node_context(block).is_none() {
                 continue;
+            }
+            if self.tree.child_count(block) == 0 {
+                stand_ins.push(self.add(block, Widget::container(), Style::default()));
             }
             let mut node = Some(block);
             while let Some(n) = node {
@@ -758,7 +765,9 @@ impl Ui {
                 node = self.tree.parent(n);
             }
         }
-        if hidden.is_empty() {
+        // A shown block with children: the ordinary layout refreshes it.
+        let shown_with_children = hidden.is_empty() && stand_ins.is_empty();
+        if shown_with_children {
             return;
         }
         for &n in &hidden {
@@ -771,6 +780,9 @@ impl Ui {
             let mut style = self.style(n);
             style.display = Display::None;
             self.set_style(n, style);
+        }
+        for n in stand_ins {
+            self.remove(n);
         }
     }
 
@@ -2915,6 +2927,54 @@ mod tests {
         grab(&mut ui);
         ui.remove(slider);
         assert!(!ui.is_holding());
+    }
+
+    #[test]
+    fn removing_the_last_child_of_a_block_with_absolute_boxes_does_not_break_the_next_layout() {
+        // The separate tab strip: every tab has an absolute hairline; switching to the compact
+        // bar removes all tabs, and the empty strip (laid out as a leaf) kept the hairlines in
+        // its list of absolute boxes, shown or hidden.
+        for hide in [false, true] {
+            let mut ui = ui();
+            let root = ui.root();
+            let strip = ui.add(
+                root,
+                Widget::container(),
+                Style {
+                    position: Position::Absolute,
+                    size: Size { width: length(400.0), height: length(40.0) },
+                    ..Default::default()
+                },
+            );
+            let mut tabs = Vec::new();
+            for _ in 0..3 {
+                let tab = ui.add(
+                    strip,
+                    Widget::container(),
+                    Style { size: Size { width: length(100.0), height: length(30.0) }, ..Default::default() },
+                );
+                ui.add(
+                    tab,
+                    Widget::container(),
+                    Style {
+                        position: Position::Absolute,
+                        size: Size { width: length(1.0), height: length(16.0) },
+                        ..Default::default()
+                    },
+                );
+                tabs.push(tab);
+            }
+            ui.layout();
+            ui.set_visible(strip, !hide);
+            for tab in tabs {
+                ui.remove(tab);
+            }
+            ui.layout();
+            assert!(ui.children(strip).is_empty(), "the stand-in child is gone again");
+            ui.set_visible(strip, true);
+            ui.layout();
+            assert_eq!(ui.frame(strip).size.x, 400.0);
+        }
     }
 
     #[test]
