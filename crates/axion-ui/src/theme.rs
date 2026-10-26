@@ -84,6 +84,10 @@ fn pick_level(l: axion_config::Levels, level: GlassLevel) -> f32 {
     }
 }
 
+/// Limits of the icon stroke multiplier.
+const MIN_ICON_STROKE: f32 = 0.5;
+const MAX_ICON_STROKE: f32 = 2.0;
+
 #[derive(Clone, Debug)]
 pub struct Theme {
     pub dark: bool,
@@ -120,6 +124,13 @@ impl Theme {
 
     pub fn text_scale(&self) -> f32 {
         self.config.appearance.text_scale
+    }
+
+    /// Multiplier on icon strokes for this scheme (`appearance.icon_stroke_light` / `_dark`).
+    pub fn icon_stroke(&self) -> f32 {
+        let a = &self.config.appearance;
+        let v = if self.dark { a.icon_stroke_dark } else { a.icon_stroke_light };
+        if v.is_finite() { v.clamp(MIN_ICON_STROKE, MAX_ICON_STROKE) } else { 1.0 }
     }
 
     fn material(&self) -> &GlassMaterial {
@@ -210,5 +221,25 @@ impl Theme {
             shadow: m.shadow,
             light_dir: Vec2::new(-0.55, -0.85),
         }
+    }
+}
+
+#[cfg(test)]
+mod icon_stroke_tests {
+    use super::*;
+
+    #[test]
+    fn each_scheme_uses_its_own_icon_stroke() {
+        let mut config = Config::default();
+        assert_eq!(Theme::new(&config, true).icon_stroke(), 1.0, "dark stays as designed");
+        assert_eq!(Theme::new(&config, false).icon_stroke(), 1.2);
+        config.appearance.icon_stroke_light = 1.4;
+        config.appearance.icon_stroke_dark = 1.15;
+        assert_eq!(Theme::new(&config, false).icon_stroke(), 1.4);
+        assert_eq!(Theme::new(&config, true).icon_stroke(), 1.15);
+        config.appearance.icon_stroke_light = f32::NAN;
+        assert_eq!(Theme::new(&config, false).icon_stroke(), 1.0);
+        config.appearance.icon_stroke_light = 9.0;
+        assert_eq!(Theme::new(&config, false).icon_stroke(), 2.0);
     }
 }

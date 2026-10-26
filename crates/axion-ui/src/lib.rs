@@ -1798,6 +1798,7 @@ impl Ui {
                 content.icons.push(IconDraw {
                     icon: *icon,
                     weight: *weight,
+                    stroke: theme.icon_stroke(),
                     rect: Rect { origin, size: Vec2::splat(side) },
                     color,
                     rotation: widget.rotation,

@@ -504,6 +504,8 @@ pub enum SettingsAction {
     Close,
     Category(Category),
     Theme(ThemeMode),
+    /// Index into `ICON_WEIGHTS`.
+    IconWeight(usize),
     SearchEngine(usize),
     Accent(usize),
     ClearHistory,
@@ -585,6 +587,24 @@ const CLOSE_AFTER: [(&str, u32); 4] =
 const BOOKMARKS_BAR: [(&str, BookmarksBar); 3] =
     [("Always", BookmarksBar::Always), ("On Home Page", BookmarksBar::Home), ("Never", BookmarksBar::Never)];
 
+/// Icon weight presets: (name, `appearance.icon_stroke_light`, `appearance.icon_stroke_dark`).
+const ICON_WEIGHTS: [(&str, f32, f32); 3] =
+    [("Regular", 1.0, 1.0), ("Medium", 1.2, 1.0), ("Bold", 1.4, 1.15)];
+
+/// The preset the config's two multipliers match, if any (custom values match none).
+fn icon_weight_preset(c: &Config) -> Option<usize> {
+    let close = |a: f32, b: f32| (a - b).abs() < 0.005;
+    ICON_WEIGHTS.iter().position(|&(_, light, dark)| {
+        close(c.appearance.icon_stroke_light, light) && close(c.appearance.icon_stroke_dark, dark)
+    })
+}
+
+fn set_icon_weight(config: &mut Config, preset: usize) {
+    let (_, light, dark) = ICON_WEIGHTS[preset];
+    config.appearance.icon_stroke_light = light;
+    config.appearance.icon_stroke_dark = dark;
+}
+
 const SHIELD_LEVELS: [(&str, ShieldLevel); 3] =
     [("Off", ShieldLevel::Off), ("Standard", ShieldLevel::Standard), ("Aggressive", ShieldLevel::Aggressive)];
 
@@ -607,6 +627,7 @@ impl SettingsAction {
                     SettingsAction::SaveAccountName => 52,
                     SettingsAction::DeleteAccount => 53,
                     SettingsAction::AccountColor(i) => 54 + i as u32,
+                    SettingsAction::IconWeight(i) => 66 + i as u32,
                     SettingsAction::ChooseAccountPhoto => 64,
                     SettingsAction::RemoveAccountPhoto => 65,
                     SettingsAction::ShieldLevel(level) => {
@@ -673,6 +694,7 @@ impl SettingsAction {
             60..=62 => SettingsAction::ShieldLevel(SHIELD_LEVELS[(n - 60) as usize].1),
             63 => SettingsAction::UpdateFilterLists,
             64 => SettingsAction::ChooseAccountPhoto,
+            66..=68 => SettingsAction::IconWeight((n - 66) as usize),
             65 => SettingsAction::RemoveAccountPhoto,
             70 => SettingsAction::TabBar(TabBarStyle::Separate),
             71 => SettingsAction::TabBar(TabBarStyle::Compact),
@@ -1351,6 +1373,13 @@ impl SettingsSheet {
                 segmented(ui, row_node, &themes, current);
                 let row_node = self.row(ui, "Accent colour");
                 swatches(ui, row_node, config.appearance.accent, SettingsAction::Accent);
+                let row_node = self.row(ui, "Icon weight");
+                let weights: Vec<(&str, ActionId)> = ICON_WEIGHTS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(name, ..))| (name, SettingsAction::IconWeight(i).id()))
+                    .collect();
+                segmented(ui, row_node, &weights, icon_weight_preset(config));
                 for setting in
                     [Setting::AdaptToPage, Setting::TextScale, Setting::PageCorner, Setting::FloatSidebar]
                 {
@@ -2407,6 +2436,10 @@ impl SettingsSheet {
                 config.appearance.theme = mode;
                 Outcome::Changed
             }
+            SettingsAction::IconWeight(i) => {
+                set_icon_weight(config, i);
+                Outcome::Changed
+            }
             SettingsAction::SearchEngine(i) => {
                 config.general.search_url = SEARCH_ENGINES[i].1.to_owned();
                 Outcome::Changed
@@ -2930,11 +2963,30 @@ mod tests {
     }
 
     #[test]
+    fn icon_weight_presets_set_both_multipliers() {
+        let mut config = Config::default();
+        // The default is the Medium preset; dark stays as designed.
+        assert_eq!(icon_weight_preset(&config), Some(1));
+        assert_eq!(config.appearance.icon_stroke_dark, 1.0);
+        for (i, &(_, light, dark)) in ICON_WEIGHTS.iter().enumerate() {
+            set_icon_weight(&mut config, i);
+            assert_eq!(
+                (config.appearance.icon_stroke_light, config.appearance.icon_stroke_dark),
+                (light, dark)
+            );
+            assert_eq!(icon_weight_preset(&config), Some(i));
+        }
+        config.appearance.icon_stroke_light = 1.33;
+        assert_eq!(icon_weight_preset(&config), None);
+    }
+
+    #[test]
     fn action_ids_round_trip() {
         for action in [
             SettingsAction::Close,
             SettingsAction::Category(Category::Privacy),
             SettingsAction::Theme(ThemeMode::Dark),
+            SettingsAction::IconWeight(2),
             SettingsAction::SearchEngine(4),
             SettingsAction::Accent(5),
             SettingsAction::ClearHistory,

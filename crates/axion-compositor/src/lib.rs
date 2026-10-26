@@ -77,6 +77,8 @@ impl Quad {
 pub struct IconDraw {
     pub icon: Icon,
     pub weight: IconWeight,
+    /// Multiplier on the weight's stroke (the chrome appearance's `icon_stroke_*`); 1.0 = as designed.
+    pub stroke: f32,
     pub rect: Rect,
     pub color: [f32; 4],
     /// Clockwise degrees about the centre (quantized).
@@ -442,7 +444,7 @@ impl Compositor {
             .icons
             .iter()
             .map(|i| CustomGlyph {
-                id: icons::glyph_id(i.icon, i.weight, i.rotation),
+                id: icons::glyph_id(i.icon, i.weight, i.stroke, i.rotation),
                 left: i.rect.origin.x,
                 top: i.rect.origin.y,
                 width: i.rect.size.x,

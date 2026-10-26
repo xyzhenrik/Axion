@@ -117,28 +117,86 @@ const ROTATION_STEP: f32 = 4.0;
 const ROTATION_LIMIT: f32 = 180.0;
 const ROTATION_STEPS: usize = (2.0 * ROTATION_LIMIT / ROTATION_STEP) as usize + 1;
 
-/// Packs icon, weight and rotation (degrees, clockwise) into glyphon's custom glyph id.
-pub(crate) fn glyph_id(icon: Icon, weight: IconWeight, rotation: f32) -> u16 {
-    let i = Icon::ALL.iter().position(|&x| x == icon).unwrap_or(0);
-    let w = IconWeight::ALL.iter().position(|&x| x == weight).unwrap_or(0);
-    let r =
-        ((rotation.clamp(-ROTATION_LIMIT, ROTATION_LIMIT) + ROTATION_LIMIT) / ROTATION_STEP).round() as usize;
-    ((r * Icon::ALL.len() + i) * IconWeight::ALL.len() + w) as u16
+/// Stroke multipliers are rasterized in steps of 1/100 (the cache key), within these limits.
+const STROKE_MIN: f32 = 0.5;
+const STROKE_MAX: f32 = 2.0;
+
+/// The stroke multiplier as its cache-key step (hundredths); 1.0 -> 100.
+pub(crate) fn stroke_key(multiplier: f32) -> u16 {
+    let m = if multiplier.is_finite() { multiplier } else { 1.0 };
+    (m.clamp(STROKE_MIN, STROKE_MAX) * 100.0).round() as u16
 }
 
-fn from_glyph_id(id: u16) -> Option<(Icon, IconWeight, f32)> {
-    let id = id as usize;
-    let (rest, w) = (id / IconWeight::ALL.len(), id % IconWeight::ALL.len());
-    let (r, i) = (rest / Icon::ALL.len(), rest % Icon::ALL.len());
-    if r >= ROTATION_STEPS {
+/// Stroke width in the 24-unit box for a weight and a multiplier key (see [`stroke_key`]).
+pub(crate) fn stroke_width(weight: IconWeight, key: u16) -> f32 {
+    weight.stroke() * (key as f32 / 100.0)
+}
+
+/// What a glyphon custom glyph id stands for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct GlyphKey {
+    icon: u16,
+    weight: u8,
+    stroke: u16,
+    rotation: u16,
+}
+
+/// glyphon's glyph ids are 16 bits, too few to pack icon x weight x stroke x rotation, so ids are
+/// handed out on first use and live as long as the process (the atlas cache is keyed by them,
+/// so a changed stroke multiplier gets a new id and is rasterized afresh).
+#[derive(Default)]
+struct Registry {
+    keys: Vec<GlyphKey>,
+    ids: std::collections::HashMap<GlyphKey, u16>,
+}
+
+static REGISTRY: std::sync::Mutex<Option<Registry>> = std::sync::Mutex::new(None);
+
+fn with_registry<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
+    let mut guard = REGISTRY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(guard.get_or_insert_with(Registry::default))
+}
+
+/// A glyph id for icon, weight, stroke multiplier and rotation (degrees, clockwise).
+pub(crate) fn glyph_id(icon: Icon, weight: IconWeight, stroke: f32, rotation: f32) -> u16 {
+    let key = GlyphKey {
+        icon: Icon::ALL.iter().position(|&x| x == icon).unwrap_or(0) as u16,
+        weight: IconWeight::ALL.iter().position(|&x| x == weight).unwrap_or(0) as u8,
+        stroke: stroke_key(stroke),
+        rotation: ((rotation.clamp(-ROTATION_LIMIT, ROTATION_LIMIT) + ROTATION_LIMIT) / ROTATION_STEP).round()
+            as u16,
+    };
+    with_registry(|r| {
+        if let Some(&id) = r.ids.get(&key) {
+            return id;
+        }
+        let Ok(id) = u16::try_from(r.keys.len()) else {
+            // Every id is taken (tens of thousands of distinct icon variants): reuse the first.
+            return 0;
+        };
+        r.keys.push(key);
+        r.ids.insert(key, id);
+        id
+    })
+}
+
+/// The icon, weight, stroke multiplier key and rotation behind a glyph id.
+fn from_glyph_id(id: u16) -> Option<(Icon, IconWeight, u16, f32)> {
+    let key = with_registry(|r| r.keys.get(id as usize).copied())?;
+    if key.rotation as usize >= ROTATION_STEPS {
         return None;
     }
-    Some((*Icon::ALL.get(i)?, IconWeight::ALL[w], r as f32 * ROTATION_STEP - ROTATION_LIMIT))
+    Some((
+        *Icon::ALL.get(key.icon as usize)?,
+        *IconWeight::ALL.get(key.weight as usize)?,
+        key.stroke,
+        key.rotation as f32 * ROTATION_STEP - ROTATION_LIMIT,
+    ))
 }
 
 /// glyphon's rasterizer callback: strokes the icon into an alpha mask.
 pub(crate) fn rasterize(request: RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph> {
-    let (icon, weight, rotation) = from_glyph_id(request.id)?;
+    let (icon, weight, stroke_key, rotation) = from_glyph_id(request.id)?;
     let (w, h) = (request.width as u32, request.height as u32);
     let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
     let path = kurbo::BezPath::from_svg(icon.path()).ok()?;
@@ -172,7 +230,7 @@ pub(crate) fn rasterize(request: RasterizeCustomGlyphRequest) -> Option<Rasteriz
     paint.set_color_rgba8(255, 255, 255, 255);
     paint.anti_alias = true;
     let stroke = tiny_skia::Stroke {
-        width: weight.stroke() * scale as f32,
+        width: stroke_width(weight, stroke_key) * scale as f32,
         line_cap: tiny_skia::LineCap::Round,
         line_join: tiny_skia::LineJoin::Round,
         ..Default::default()
@@ -200,7 +258,7 @@ mod tests {
 
     fn mask(icon: Icon, w: u16, h: u16) -> Vec<u8> {
         let request = RasterizeCustomGlyphRequest {
-            id: glyph_id(icon, IconWeight::Regular, 0.0),
+            id: glyph_id(icon, IconWeight::Regular, 1.0, 0.0),
             width: w,
             height: h,
             x_bin: glyphon::cosmic_text::SubpixelBin::Zero,
@@ -241,8 +299,8 @@ mod tests {
     fn every_icon_rasterizes() {
         for &icon in Icon::ALL {
             for weight in IconWeight::ALL {
-                let id = glyph_id(icon, weight, 0.0);
-                assert_eq!(from_glyph_id(id), Some((icon, weight, 0.0)));
+                let id = glyph_id(icon, weight, 1.0, 0.0);
+                assert_eq!(from_glyph_id(id), Some((icon, weight, 100, 0.0)));
                 let request = RasterizeCustomGlyphRequest {
                     id,
                     width: 32,
@@ -256,5 +314,49 @@ mod tests {
                 assert!(glyph.data.iter().any(|&a| a > 128), "{icon:?} is empty");
             }
         }
+    }
+
+    fn mask_with(stroke: f32, size: u16) -> Vec<u8> {
+        let request = RasterizeCustomGlyphRequest {
+            id: glyph_id(Icon::Back, IconWeight::Regular, stroke, 0.0),
+            width: size,
+            height: size,
+            x_bin: glyphon::cosmic_text::SubpixelBin::Zero,
+            y_bin: glyphon::cosmic_text::SubpixelBin::Zero,
+            scale: 1.0,
+        };
+        rasterize(request).expect("rasterizes").data
+    }
+
+    #[test]
+    fn stroke_multiplier_scales_the_stroke_width() {
+        assert_eq!(stroke_key(1.0), 100);
+        assert_eq!(stroke_width(IconWeight::Regular, stroke_key(1.0)), 1.75);
+        assert!((stroke_width(IconWeight::Regular, stroke_key(1.2)) - 2.1).abs() < 1e-5);
+        assert!((stroke_width(IconWeight::Heavy, stroke_key(1.2)) - 3.12).abs() < 1e-5);
+        // Out-of-range and non-finite values are limited.
+        assert_eq!(stroke_key(0.0), 50);
+        assert_eq!(stroke_key(9.0), 200);
+        assert_eq!(stroke_key(f32::NAN), 100);
+    }
+
+    #[test]
+    fn the_cache_key_includes_the_stroke_weight() {
+        let regular = glyph_id(Icon::Plus, IconWeight::Regular, 1.0, 0.0);
+        let medium = glyph_id(Icon::Plus, IconWeight::Regular, 1.2, 0.0);
+        assert_ne!(regular, medium);
+        assert_eq!(regular, glyph_id(Icon::Plus, IconWeight::Regular, 1.0, 0.0));
+        // Steps finer than 1/100 share a key; coarser ones don't.
+        assert_eq!(medium, glyph_id(Icon::Plus, IconWeight::Regular, 1.201, 0.0));
+        assert_ne!(medium, glyph_id(Icon::Plus, IconWeight::Regular, 1.25, 0.0));
+        // A heavier stroke inks more of the mask.
+        let ink = |m: &[u8]| m.iter().map(|&a| a as u32).sum::<u32>();
+        assert!(ink(&mask_with(1.2, 24)) > ink(&mask_with(1.0, 24)) * 11 / 10);
+    }
+
+    /// A multiplier of 1.0 (the dark default) draws exactly the original stroke.
+    #[test]
+    fn a_unit_multiplier_keeps_the_original_rasterization() {
+        assert_eq!(mask(Icon::Back, 24, 24), mask_with(1.0, 24));
     }
 }

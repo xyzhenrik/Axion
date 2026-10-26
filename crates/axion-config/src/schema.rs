@@ -249,6 +249,13 @@ pub struct Appearance {
     pub text_scale: f32,
     /// Switch the chrome between light and dark to stay legible over the page behind it.
     pub adapt_to_page: bool,
+    /// Icon stroke weight in the light chrome, as a multiple of the design's base stroke
+    /// (1.75 in a 24-unit box). Dark-on-light icons look thinner than light-on-dark ones, so
+    /// light defaults a little heavier. Clamped to 0.5-2.0 when used. Only the stroke changes;
+    /// icons are never grid-snapped.
+    pub icon_stroke_light: f32,
+    /// Icon stroke weight in the dark chrome (multiple of the base stroke, 1.0 = the design).
+    pub icon_stroke_dark: f32,
     /// Give the window around the page a colour of the page (like Safari), measured once per
     /// page (see `tint_mode`).
     pub tint_from_page: bool,
@@ -275,6 +282,8 @@ impl Default for Appearance {
             font_family: "Inter".into(),
             text_scale: 1.0,
             adapt_to_page: true,
+            icon_stroke_light: 1.2,
+            icon_stroke_dark: 1.0,
             tint_from_page: true,
             page_color_delay_ms: 350.0,
             tint_mode: TintMode::Extreme,

@@ -222,6 +222,11 @@ pub const INDEX: &[Entry] = &[
         &["dark mode", "light mode", "theme", "night", "dunkel", "hell", "design"],
     ),
     page(C::Appearance, "Accent colour", &["color", "accent", "highlight", "akzentfarbe", "farbe", "tint"]),
+    page(
+        C::Appearance,
+        "Icon weight",
+        &["icons", "stroke", "bold", "thick", "thin", "line", "symbole", "strichstärke", "dicke", "fett"],
+    ),
     control(C::Appearance, S::AdaptToPage, &["dark", "light", "page colour", "adapt", "anpassen"]),
     control(
         C::Appearance,
