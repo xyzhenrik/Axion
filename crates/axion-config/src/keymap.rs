@@ -8,7 +8,13 @@
 //! tab_overview = []          # unbind
 //! ```
 //!
-//! An action listed there replaces its default bindings; actions not listed keep theirs.
+//! An action listed there replaces its default bindings; actions not listed keep theirs,
+//! except that a chord the user bound explicitly is taken away from the defaults of other
+//! actions (so an old `keymap.toml` never collides with newer defaults).
+//!
+//! Default scheme: everything about tabs is `Alt+key` (or an F key); browser and system
+//! things (address bar, reload, sidebar, bookmarks, history, passwords, find, zoom) are
+//! `Ctrl+key`. `Alt+Left/Right` stay back/forward.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -34,6 +40,13 @@ pub enum Action {
     Forward,
     ToggleSidebar,
     TabOverview,
+    /// Pin or unpin the current tab.
+    PinTab,
+    /// Bookmark the current page (or remove its bookmark).
+    BookmarkPage,
+    ShowBookmarks,
+    ShowHistory,
+    OpenPasswords,
     Find,
     FindNext,
     FindPrevious,
@@ -95,6 +108,11 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::Forward, "forward"),
     (Action::ToggleSidebar, "toggle_sidebar"),
     (Action::TabOverview, "tab_overview"),
+    (Action::PinTab, "pin_tab"),
+    (Action::BookmarkPage, "bookmark_page"),
+    (Action::ShowBookmarks, "show_bookmarks"),
+    (Action::ShowHistory, "show_history"),
+    (Action::OpenPasswords, "open_passwords"),
     (Action::Find, "find"),
     (Action::FindNext, "find_next"),
     (Action::FindPrevious, "find_previous"),
@@ -288,10 +306,19 @@ impl Keymap {
     /// Merges user overrides (`action name → chords`) over the defaults.
     pub fn with_overrides(overrides: &BTreeMap<String, Vec<String>>) -> Result<Self, ConfigError> {
         let mut bindings = default_bindings();
+        let mut explicit: Vec<Action> = Vec::new();
         for (name, chords) in overrides {
             let action: Action = name.parse()?;
             let chords = chords.iter().map(|c| c.parse()).collect::<Result<Vec<Chord>, _>>()?;
             bindings.insert(action, chords);
+            explicit.push(action);
+        }
+        // Explicit user chords win over the defaults of actions the user didn't touch.
+        let taken: Vec<Chord> = explicit.iter().flat_map(|a| bindings[a].clone()).collect();
+        for (action, chords) in &mut bindings {
+            if !explicit.contains(action) {
+                chords.retain(|c| !taken.contains(c));
+            }
         }
         Ok(Self::from_bindings(bindings))
     }
@@ -327,7 +354,7 @@ impl Keymap {
     }
 }
 
-/// Safari's shortcuts with Ctrl in place of Command, plus Linux browser conventions.
+/// Defaults: tabs on `Alt` / F keys, browser and system things on `Ctrl`.
 fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     let mut map = BTreeMap::new();
     let mut bind = |action: Action, chords: &[&str]| {
@@ -335,22 +362,27 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         map.insert(action, parsed);
     };
     bind(Action::FocusAddressBar, &["Ctrl+L", "Alt+D", "F6"]);
-    bind(Action::NewTab, &["Ctrl+T"]);
-    bind(Action::CloseTab, &["Ctrl+W", "Ctrl+F4"]);
-    bind(Action::ReopenClosedTab, &["Ctrl+Shift+T"]);
-    bind(Action::NextTab, &["Ctrl+Tab", "Ctrl+PageDown"]);
-    bind(Action::PreviousTab, &["Ctrl+Shift+Tab", "Ctrl+PageUp"]);
+    bind(Action::NewTab, &["Alt+T"]);
+    bind(Action::CloseTab, &["Alt+Q"]);
+    bind(Action::ReopenClosedTab, &["Alt+Shift+T"]);
+    bind(Action::NextTab, &["Alt+Down", "Alt+PageDown"]);
+    bind(Action::PreviousTab, &["Alt+Up", "Alt+PageUp"]);
     for n in 1..=8u8 {
-        let chord = format!("Ctrl+{n}");
+        let chord = format!("Alt+{n}");
         bind(Action::SelectTab(n), &[chord.as_str()]);
     }
-    bind(Action::SelectLastTab, &["Ctrl+9"]);
+    bind(Action::SelectLastTab, &["Alt+9"]);
+    bind(Action::PinTab, &["Alt+P"]);
     bind(Action::Reload, &["Ctrl+R", "F5"]);
     bind(Action::HardReload, &["Ctrl+Shift+R", "Ctrl+F5"]);
     bind(Action::Back, &["Alt+Left", "Ctrl+["]);
     bind(Action::Forward, &["Alt+Right", "Ctrl+]"]);
     bind(Action::ToggleSidebar, &["Ctrl+Shift+L"]);
-    bind(Action::TabOverview, &["Ctrl+Shift+\\"]);
+    bind(Action::TabOverview, &["Alt+O", "F9"]);
+    bind(Action::BookmarkPage, &["Ctrl+D"]);
+    bind(Action::ShowBookmarks, &["Ctrl+B"]);
+    bind(Action::ShowHistory, &["Ctrl+H"]);
+    bind(Action::OpenPasswords, &["Ctrl+P"]);
     bind(Action::Find, &["Ctrl+F"]);
     bind(Action::FindNext, &["Ctrl+G", "F3"]);
     bind(Action::FindPrevious, &["Ctrl+Shift+G", "Shift+F3"]);
@@ -423,14 +455,45 @@ mod tests {
         let keymap = Keymap::default();
         assert!(keymap.conflicts().is_empty(), "{:?}", keymap.conflicts());
         assert_eq!(keymap.action_for(&chord("Ctrl+L")), Some(Action::FocusAddressBar));
-        assert_eq!(keymap.action_for(&chord("Ctrl+3")), Some(Action::SelectTab(3)));
+        assert_eq!(keymap.action_for(&chord("Alt+3")), Some(Action::SelectTab(3)));
+        assert_eq!(keymap.action_for(&chord("Alt+T")), Some(Action::NewTab));
+        assert_eq!(keymap.action_for(&chord("Alt+Q")), Some(Action::CloseTab));
+        assert_eq!(keymap.action_for(&chord("Ctrl+P")), Some(Action::OpenPasswords));
+        assert_eq!(keymap.action_for(&chord("Ctrl+F")), Some(Action::Find));
+        assert_eq!(keymap.action_for(&chord("Alt+Left")), Some(Action::Back));
+    }
+
+    #[test]
+    fn tab_actions_use_alt_and_browser_actions_use_ctrl() {
+        let keymap = Keymap::default();
+        let tab_actions = [Action::NewTab, Action::CloseTab, Action::ReopenClosedTab, Action::NextTab]
+            .into_iter()
+            .chain([Action::PreviousTab, Action::PinTab, Action::TabOverview, Action::SelectTab(2)]);
+        for action in tab_actions {
+            assert!(keymap.chords_for(action).iter().any(|c| c.modifiers.alt), "{action}");
+        }
+        for action in [Action::OpenPasswords, Action::ShowHistory, Action::ShowBookmarks, Action::Find] {
+            assert!(keymap.chords_for(action).iter().all(|c| c.modifiers.ctrl), "{action}");
+        }
+    }
+
+    #[test]
+    fn explicit_user_chords_win_over_new_defaults() {
+        // An old keymap.toml that put Find on Alt+T: the untouched NewTab default yields.
+        let mut overrides = BTreeMap::new();
+        overrides.insert("find".to_owned(), vec!["Alt+T".to_owned()]);
+        let keymap = Keymap::with_overrides(&overrides).unwrap();
+        assert_eq!(keymap.action_for(&chord("Alt+T")), Some(Action::Find));
+        assert!(keymap.conflicts().is_empty(), "{:?}", keymap.conflicts());
+        assert!(keymap.chords_for(Action::NewTab).is_empty());
     }
 
     #[test]
     fn overrides_replace_and_report_conflicts() {
         let mut overrides = BTreeMap::new();
         overrides.insert("toggle_sidebar".to_owned(), vec!["Ctrl+B".to_owned()]);
-        overrides.insert("find".to_owned(), vec!["Ctrl+T".to_owned()]);
+        overrides.insert("find".to_owned(), vec!["Alt+T".to_owned()]);
+        overrides.insert("new_tab".to_owned(), vec!["Alt+T".to_owned()]);
         overrides.insert("tab_overview".to_owned(), vec![]);
         let keymap = Keymap::with_overrides(&overrides).unwrap();
         assert_eq!(keymap.action_for(&chord("Ctrl+B")), Some(Action::ToggleSidebar));

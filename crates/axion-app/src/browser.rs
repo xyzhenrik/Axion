@@ -853,6 +853,42 @@ impl Browser {
                     self.handle_ui_events(events);
                 }
             }
+            Action::PinTab => {
+                if let Some(tab) = self.tabs.active() {
+                    let command = if tab.pinned {
+                        crate::context_menu::TabCommand::Unpin
+                    } else {
+                        crate::context_menu::TabCommand::Pin
+                    };
+                    self.context_tab = Some((tab.view, self.private_mode));
+                    self.tab_command(command);
+                }
+            }
+            Action::BookmarkPage => {
+                if let Some(tab) = self.tabs.active()
+                    && let Some(store) = &self.store
+                {
+                    let (url, title) = (tab.url.clone(), tab.label());
+                    let result = match store.bookmark_for(&url) {
+                        Ok(Some(id)) => store.remove_bookmark(id),
+                        Ok(None) => store.add_bookmark(&url, &title, unix_now()).map(|_| ()),
+                        Err(e) => Err(e),
+                    };
+                    if let Err(e) = result {
+                        tracing::error!("toggling the bookmark failed: {e}");
+                    }
+                    self.bookmarks_changed = true;
+                }
+            }
+            Action::ShowBookmarks | Action::ShowHistory => {
+                if !self.chrome.sidebar_open() {
+                    self.chrome.toggle_sidebar();
+                    self.update_layout();
+                }
+                let panel = if action == Action::ShowBookmarks { Panel::Bookmarks } else { Panel::History };
+                self.show_panel(panel);
+            }
+            Action::OpenPasswords => self.open_passwords(),
             Action::Find => self.open_find(),
             Action::FindNext | Action::FindPrevious => {
                 if self.find.is_open() {

@@ -74,9 +74,9 @@ pub fn tab_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
         item(Icon::Reload, "Reload", TabCommand::Reload, Some(Action::Reload)).separated(),
         item(Icon::Copy, "Duplicate", TabCommand::Duplicate, None),
         if info.pinned {
-            item(Icon::Pin, "Unpin", TabCommand::Unpin, None)
+            item(Icon::Pin, "Unpin", TabCommand::Unpin, Some(Action::PinTab))
         } else {
-            item(Icon::Pin, "Pin", TabCommand::Pin, None)
+            item(Icon::Pin, "Pin", TabCommand::Pin, Some(Action::PinTab))
         },
         if info.muted {
             item(Icon::Volume, "Unmute Tab", TabCommand::Unmute, None)
@@ -242,7 +242,7 @@ mod tests {
     fn shortcuts_come_from_the_keymap() {
         let items = tab_items(TabMenuInfo::default(), &Keymap::default());
         let close = items.iter().find(|i| i.label == "Close Tab").and_then(|i| i.detail.clone());
-        assert_eq!(close.as_deref(), Some("Ctrl+W"));
+        assert_eq!(close.as_deref(), Some("Alt+Q"));
         assert!(items.iter().find(|i| i.label == "Duplicate").is_some_and(|i| i.detail.is_none()));
     }
 }

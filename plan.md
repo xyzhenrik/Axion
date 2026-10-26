@@ -81,8 +81,13 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
 - Session restore on startup.
 
 ### 2.6 Input
-- Keyboard: Safari-like defaults mapped to Ctrl on Linux (Ctrl+T, Ctrl+L, Ctrl+Shift+\ for
-  overview, Ctrl+Shift+L for sidebar, Ctrl+1…9, …). Fully remappable in `keymap.toml`
+- Keyboard (decision 2026-10-26): tabs are `Alt` + key (Alt+T new, Alt+Q close, Alt+Shift+T
+  reopen, Alt+Up/Down or Alt+PageUp/PageDown prev/next, Alt+1…8/9 select, Alt+P pin, Alt+O or
+  F9 overview); browser/system things are `Ctrl` + key (Ctrl+L address, Ctrl+R reload,
+  Ctrl+Shift+L sidebar, Ctrl+B bookmarks, Ctrl+H history, Ctrl+D bookmark page, Ctrl+P
+  passwords, Ctrl+F find, Ctrl+G next match). Alt+Left/Right stay back/forward; Ctrl+W/T/Tab
+  are free for pages. Only defaults changed: explicit `keymap.toml` entries still win, and
+  their chords are removed from other actions' defaults. Fully remappable in `keymap.toml`
   and the settings UI; conflict detection.
 - Touchpad: two-finger swipe back/forward with physics preview, pinch for tab overview,
   smooth scrolling forwarded to the page.
@@ -435,6 +440,10 @@ Windows/macOS, touchscreen-first mode.
   - Text fields: click places the caret, drag selects, double click selects a word (URL
     punctuation ends words) and dragging then extends by words, triple click selects all.
   - In small windows the floating sidebar lies above the toolbar.
+- 2026-10-26: Default keybinds redesigned (see 2.6): tabs on `Alt`/F keys, browser and system
+  things on `Ctrl`. New bound actions: `pin_tab`, `bookmark_page`, `show_bookmarks`,
+  `show_history`, `open_passwords`. Explicit `keymap.toml` chords win over other actions'
+  new defaults, so old files never collide.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)
