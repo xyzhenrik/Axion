@@ -127,7 +127,7 @@ How tabs look and how Axion saves memory. See [Tabs and memory](features/tabs-an
 
 | Setting | What it does | Default | Config key |
 |---|---|---|---|
-| Tab bar picture (**Separate** / **Compact**) | **Separate** puts tabs in their own row below the address bar. **Compact** uses one row where the current tab holds the address. | Separate | `layout.tab_bar` (`separate`, `compact`) |
+| Tab bar picture (**Separate** / **Compact**) | **Separate** puts tabs in their own row below the address bar. **Compact** uses one row where all tabs are the same width and the current tab holds the address; the address field widens while you type (`layout.compact_address_width`). | Separate | `layout.tab_bar` (`separate`, `compact`) |
 | **Colour in tab bar** | Tints the window around the page with a colour taken from the page, like Safari. | Off | `appearance.tint_from_page` |
 | **Page colour** (**Extreme** / **Dominant**) | Shown when **Colour in tab bar** is on. **Extreme** takes the darkest or lightest prominent colour. **Dominant** takes the main colour, evened out. Turning the colour on switches from neutral to **Extreme**. | Neutral (page colour off) | `appearance.tint_mode` (`neutral`, `extreme`, `dominant`) |
 | **Open new tabs in background** | Tabs opened from links do not take over the screen. | On | `tabs.open_links_in_background` |

@@ -70,7 +70,7 @@ so it stays readable on any colour. Six colours are offered. You can use any col
 ## Layout
 
 - **Tab bar** (Tabs & Memory): **Separate** puts tabs in their own row below the address bar.
-  **Compact** puts them in one row where the current tab holds the address.
+  **Compact** puts them in one row where all tabs have the same width and the current tab holds the address, which widens while you edit it.
 - **Float sidebar over the page** (Appearance): the sidebar always floats over the page as a glass
   card. Off, it docks beside the page in wide windows and floats in narrow ones.
 - **Bookmarks bar** (Tabs & Memory): **Always**, **On Home Page** or **Never**.
