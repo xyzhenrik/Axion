@@ -2953,10 +2953,6 @@ impl Browser {
                     let outcome = self.settings.action(&mut self.ui, action, &mut self.config, &self.keymap);
                     self.settings_outcome(outcome);
                 }
-                UiEvent::Submitted { node, text } if Some(node) == self.settings.playlist_name_field() => {
-                    self.rename_playlist(&text);
-                    self.settings_outcome(Outcome::Changed);
-                }
                 UiEvent::Submitted { node, text } if Some(node) == self.settings.homepage_field() => {
                     self.config.general.set_homepage(&text);
                     self.settings_outcome(Outcome::Changed);
@@ -4506,7 +4502,6 @@ impl Browser {
                 "playlist-edit" => self.playlist_action(crate::playlist_page::PageAction::Edit),
                 "playlist-speed" => self.playlist_action(crate::playlist_page::PageAction::Speed),
                 "playlist-sleep" => self.playlist_action(crate::playlist_page::PageAction::Sleep),
-                "playlist-list" => self.playlist_action(crate::playlist_page::PageAction::ListMenu),
                 "playlist-popout" => self.playlist_action(crate::playlist_page::PageAction::Fullscreen),
                 "playlist-pip" => self.playlist_action(crate::playlist_page::PageAction::PictureInPicture),
                 "playlist-open-page" => self.playlist_action(crate::playlist_page::PageAction::OpenPage),

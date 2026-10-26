@@ -36,7 +36,6 @@ pub const MENU_BASE: u32 = ROW_BASE + ROW_KINDS * MAX_ROWS as u32 + 100;
 pub enum PageAction {
     Close,
     PlayAll,
-    ListMenu,
     Edit,
     Search,
     PictureInPicture,
@@ -61,10 +60,9 @@ pub enum PageAction {
     RowDown(usize),
 }
 
-const SIMPLE: [PageAction; 18] = [
+const SIMPLE: [PageAction; 17] = [
     PageAction::Close,
     PageAction::PlayAll,
-    PageAction::ListMenu,
     PageAction::Edit,
     PageAction::Search,
     PageAction::PictureInPicture,
@@ -311,7 +309,6 @@ pub struct PlaylistPage {
     player_col: NodeId,
     header: NodeId,
     header_name: NodeId,
-    header_chevron: NodeId,
     header_count: NodeId,
     edit_label: NodeId,
     edit_bar: NodeId,
@@ -408,17 +405,7 @@ impl PlaylistPage {
                 ..column(0.0)
             },
         );
-        let name_row = ui.add(
-            titles,
-            Widget::container().with_action(PageAction::ListMenu.id()).with_radius(10.0),
-            Style { size: Size { width: auto(), height: length(26.0) }, ..row(4.0) },
-        );
-        let header_name = ui.add_label(name_row, "", TextStyle::Title2, shrinking());
-        let header_chevron = ui.add(
-            name_row,
-            Widget::icon(Icon::ChevronDown, 16.0).with_paint(Paint::Secondary),
-            Style::default(),
-        );
+        let header_name = ui.add_label(titles, "", TextStyle::Title2, shrinking());
         let header_count = dim_label(ui, titles, "", TextStyle::Footnote);
         let edit = ui.add(
             header,
@@ -692,7 +679,7 @@ impl PlaylistPage {
             "Fullscreen",
         );
 
-        // The menu of the rows, the list's name, the speeds and the sleep timer: after
+        // The menu of the rows, the speeds and the sleep timer: after
         // everything, so it lies above.
         let menu = Menu::build(ui, root, MENU_BASE, Placement::BelowStart);
 
@@ -703,7 +690,6 @@ impl PlaylistPage {
             player_col,
             header,
             header_name,
-            header_chevron,
             header_count,
             edit_label,
             edit_bar,
@@ -848,7 +834,6 @@ impl PlaylistPage {
         ui.set_visible(self.edit_bar, editing);
         let text = if selected > 0 { format!("Remove ({selected})") } else { "Remove".to_owned() };
         ui.set_text(self.delete_label, &text);
-        let _ = self.header_chevron;
     }
 
     /// Replaces the rows. `playing_index` is the row to keep in view is not needed: the
@@ -1109,11 +1094,6 @@ impl PlaylistPage {
         (Placement::Over, self.rows.get(i).map(|r| ui.children(r.row)).unwrap_or_default())
     }
 
-    /// The header's list name, for anchoring the lists menu.
-    pub fn name_frame(&self, ui: &Ui) -> Frame {
-        ui.parent(self.header_name).map_or_else(|| ui.frame(self.header_name), |n| ui.frame(n))
-    }
-
     pub fn frame_of(&self, ui: &Ui, action: PageAction) -> Frame {
         let node = match action {
             PageAction::Speed => ui.parent(self.speed_label),
@@ -1195,10 +1175,6 @@ impl PlaylistPage {
                     transport.map(|t| ui.children(t).into_iter().take(2).collect()).unwrap_or_default();
                 nodes.extend(parent(self.speed_label));
                 (Placement::Over, nodes)
-            }
-            PageAction::ListMenu => {
-                let name_row = parent(self.header_name);
-                (Placement::Over, name_row.map(|n| ui.children(n)).unwrap_or_default())
             }
             _ => (Placement::BelowStart, Vec::new()),
         }

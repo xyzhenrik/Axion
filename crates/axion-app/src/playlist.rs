@@ -279,16 +279,32 @@ pub fn download_update(info: &DownloadInfo) -> (&'static str, String, i64, Strin
     }
 }
 
-/// The folder downloads go to: `playlist.directory`, else "Axion Playlist" in the download
-/// folder.
-pub fn download_directory(config: &Config) -> PathBuf {
+/// The folder downloads go to: `playlist.directory`, else `default_dir` (the account's own
+/// `<profile>/playlist`, never the Downloads folder).
+pub fn download_directory(config: &Config, default_dir: &Path) -> PathBuf {
     let configured = config.playlist.directory.trim();
     if configured.is_empty() {
-        return crate::downloads::download_dir(config).join("Axion Playlist");
+        return default_dir.to_path_buf();
     }
     match (configured.strip_prefix("~/"), directories::BaseDirs::new()) {
         (Some(rest), Some(dirs)) => dirs.home_dir().join(rest),
         _ => PathBuf::from(configured),
+    }
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use super::*;
+
+    #[test]
+    fn download_directory_defaults_to_the_profile() {
+        let mut config = Config::default();
+        let default = Path::new("/profiles/a/playlist");
+        assert_eq!(download_directory(&config, default), default);
+        config.playlist.directory = "  ".into();
+        assert_eq!(download_directory(&config, default), default);
+        config.playlist.directory = "/mnt/videos".into();
+        assert_eq!(download_directory(&config, default), Path::new("/mnt/videos"));
     }
 }
 
@@ -510,8 +526,6 @@ pub enum Command {
     SleepEnd,
     /// The timer `sleep_timer_minutes[i]`.
     SleepAfter(usize),
-    /// Switch to the list at this index of the lists menu.
-    List(usize),
     /// Add the page's video (the page menu).
     Add,
     /// Open the Playlist page (the page menu).
@@ -617,6 +631,8 @@ pub struct Playlist {
     rng: u64,
     /// `<profile>/playlist/thumbs`.
     pub thumb_dir: PathBuf,
+    /// `<profile>/playlist`: where downloads go unless `playlist.directory` says otherwise.
+    pub download_dir: PathBuf,
 }
 
 impl Playlist {
@@ -645,6 +661,7 @@ impl Playlist {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(1, |d| d.as_nanos() as u64),
             thumb_dir: profile.join("playlist").join("thumbs"),
+            download_dir: profile.join("playlist"),
         }
     }
 
@@ -754,7 +771,7 @@ mod tests {
     fn item(id: i64, media: Option<&str>, page: &str) -> PlaylistItem {
         PlaylistItem {
             id,
-            list: "Play Later".into(),
+            list: "Playlist".into(),
             sort: 0,
             title: format!("Video {id}"),
             page_url: page.into(),
