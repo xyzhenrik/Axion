@@ -24,6 +24,14 @@ use axion_ui::{Paint, Ui, Widget};
 
 use crate::url::display_host;
 
+/// 64 px PNG of the app icon: the site icon of every `axion://` page (start page, settings, ...).
+pub(crate) static APP_ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/hicolor/64x64/apps/axion.png");
+
+/// Whether `url` is one of Axion's own pages, which show the app icon instead of a site icon.
+pub fn is_internal(url: &str) -> bool {
+    url.starts_with("axion://")
+}
+
 /// Requested icon size in pixels (shown at 16–18 px logical, crisp up to 3× scale).
 pub const FETCH_SIZE: u32 = 64;
 /// Complete passes over the candidates per site and session (the second after loading).
@@ -127,6 +135,8 @@ pub struct Favicons {
     searches: HashMap<Key, Search>,
     links: HashMap<String, SiteLinks>,
     scheme: Scheme,
+    /// The app icon, the icon of all `axion://` pages.
+    app_icon: Option<SiteIcon>,
 }
 
 impl Favicons {
@@ -136,7 +146,7 @@ impl Favicons {
         {
             tracing::warn!("favicon cache unavailable: {e}");
         }
-        Self {
+        let mut this = Self {
             device,
             queue,
             dir,
@@ -145,7 +155,16 @@ impl Favicons {
             searches: HashMap::new(),
             links: HashMap::new(),
             scheme: Scheme::Light,
-        }
+            app_icon: None,
+        };
+        this.app_icon = image::load_from_memory_with_format(APP_ICON_PNG, image::ImageFormat::Png)
+            .inspect_err(|e| tracing::warn!("app icon as site icon: {e}"))
+            .ok()
+            .map(|img| {
+                let img = img.into_rgba8();
+                this.upload(img.width(), img.height(), img.as_raw())
+            });
+        this
     }
 
     /// Where the icons are cached (`None`: nowhere, they live in memory only).
@@ -165,6 +184,9 @@ impl Favicons {
     /// The icon for `page_url`'s site in the current scheme (else the other one's), if known
     /// (in memory or cached on disk).
     pub fn get(&self, page_url: &str) -> Option<SiteIcon> {
+        if is_internal(page_url) {
+            return self.app_icon.clone();
+        }
         let host = display_host(page_url);
         if host.is_empty() {
             return None;
@@ -207,6 +229,9 @@ impl Favicons {
     /// Chromium reported the page's icon URLs (without media queries): returns the next URL to
     /// fetch, if any.
     pub fn icon_urls(&mut self, page_url: &str, urls: &[String]) -> Option<String> {
+        if is_internal(page_url) {
+            return None;
+        }
         let host = display_host(page_url);
         if host.is_empty() {
             return None;
@@ -229,6 +254,9 @@ impl Favicons {
     /// The page reported its icon links with their media queries (the engine's page meta):
     /// returns the next URL to fetch, if any.
     pub fn icon_links(&mut self, page_url: &str, links: &[IconLink]) -> Option<String> {
+        if is_internal(page_url) {
+            return None;
+        }
         let host = display_host(page_url);
         if host.is_empty() {
             return None;
@@ -240,6 +268,9 @@ impl Favicons {
     /// Checks `page_url`'s site against the links its pages reported, for the current scheme:
     /// returns a URL to fetch when the site has no icon for it yet, or its best link changed.
     pub fn resolve(&mut self, page_url: &str) -> Option<String> {
+        if is_internal(page_url) {
+            return None;
+        }
         let host = display_host(page_url);
         if host.is_empty() {
             return None;
@@ -296,6 +327,9 @@ impl Favicons {
 
     /// The page finished loading: if its site still has no icon, searches once more.
     pub fn page_loaded(&mut self, page_url: &str) -> Option<String> {
+        if is_internal(page_url) {
+            return None;
+        }
         let host = display_host(page_url);
         if host.is_empty() {
             return None;
@@ -336,6 +370,9 @@ impl Favicons {
     /// The icon from `url` arrived for `page_url`'s site: shown from now on (in the scheme it
     /// was fetched for), and cached on disk if `persist`.
     pub fn insert(&mut self, page_url: &str, url: &str, width: u32, height: u32, rgba: &[u8], persist: bool) {
+        if is_internal(page_url) {
+            return;
+        }
         let host = display_host(page_url);
         if host.is_empty() {
             return;
@@ -468,6 +505,16 @@ pub fn favicon_or(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn internal_pages_are_recognised() {
+        assert!(is_internal("axion://home/"));
+        assert!(is_internal("axion://settings/#general"));
+        assert!(!is_internal("https://axion.example/"));
+        assert!(!is_internal("about:blank"));
+        let img = image::load_from_memory_with_format(APP_ICON_PNG, image::ImageFormat::Png).unwrap();
+        assert_eq!((img.width(), img.height()), (64, 64));
+    }
 
     #[test]
     fn fallback_icon_locations() {

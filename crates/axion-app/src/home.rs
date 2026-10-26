@@ -91,6 +91,8 @@ impl InternalPages for HomeService {
         Some(match request.path {
             "/" | "/index.html" => InternalResponse::ok("text/html", PAGE_HTML),
             "/home.css" => InternalResponse::ok("text/css", PAGE_CSS),
+            // The page's own icon: the app icon (also what `Favicons::get` shows for it).
+            "/icon.png" => InternalResponse::ok("image/png", crate::favicons::APP_ICON_PNG),
             "/home.js" => InternalResponse::ok("text/javascript", PAGE_JS),
             "/api/state" => InternalResponse::ok(
                 "application/json",
