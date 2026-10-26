@@ -629,7 +629,7 @@
 "Glass" = "Glas"
 
 # crates/axion-app/src/settings.rs
-"Developer" = ""
-"Developer console" = ""
-"Developer tools" = ""
-"View source" = ""
+"Developer" = "Entwickler"
+"Developer console" = "Entwicklerkonsole"
+"Developer tools" = "Entwicklertools"
+"View source" = "Quelltext anzeigen"
