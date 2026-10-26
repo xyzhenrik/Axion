@@ -342,6 +342,19 @@
     $("blocked").textContent = formatCount(s.blocked);
     $("bandwidth").textContent = `≈ ${formatBytes(s.bytes)}`;
     $("time").textContent = `≈ ${formatSeconds(s.seconds)}`;
+    fitStats();
+  }
+
+  // The stats row is pinned to the viewport bottom; hide it if the content reaches into it.
+  function fitStats() {
+    const el = $("stats");
+    el.classList.remove("crowded");
+    if (el.hidden) return;
+    const top = el.getBoundingClientRect().top - 12;
+    const last = [...document.querySelectorAll("main > *")]
+      .filter((n) => n !== el && !n.hidden && n.offsetParent !== null)
+      .reduce((m, n) => Math.max(m, n.getBoundingClientRect().bottom), 0);
+    el.classList.toggle("crowded", last > top);
   }
 
   // ---- background ----
@@ -584,7 +597,7 @@
   let resizeTimer = 0;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => state && renderSites(), 120);
+    resizeTimer = setTimeout(() => { if (state) { renderSites(); fitStats(); } }, 120);
   });
 
   refresh().then(startClock);

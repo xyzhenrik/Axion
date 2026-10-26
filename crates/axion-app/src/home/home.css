@@ -538,29 +538,31 @@ main {
 .dots button { width: 8px; height: 8px; border-radius: 50%; background: var(--secondary); opacity: 0.3; transition: opacity 0.2s, width 0.3s; }
 .dots button[aria-selected="true"] { opacity: 1; width: 20px; border-radius: 4px; background: var(--accent); }
 
+/* Lean Shields row, pinned to the viewport bottom regardless of content height. */
 .stats {
-  width: min(600px, 100%);
-  display: grid;
-  grid-template-columns: 1.6fr 1fr 1fr;
-  gap: 14px;
-  align-items: center;
-  text-shadow: none;
-}
-.stat .value { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-.stat .label { font-size: 12.5px; color: var(--secondary); }
-.main-stat { display: flex; align-items: center; gap: 12px; }
-.main-stat .value { font-size: 28px; font-weight: 800; }
-.shield {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
   justify-content: center;
-  color: var(--shield);
-  background: color-mix(in srgb, var(--shield) 16%, transparent);
-  flex-shrink: 0;
+  gap: 4px 28px;
+  z-index: 1;
+  pointer-events: none;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 0 12px rgba(0, 0, 0, 0.25);
 }
+body:not(.has-image):not(.private) .stats { text-shadow: none; }
+.stat { display: flex; align-items: baseline; gap: 7px; white-space: nowrap; }
+.stat .value { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.stat .label { font-size: 12.5px; color: var(--secondary); }
+.s-blocked .value { color: var(--accent); }
+.s-bandwidth .value { color: #8c8bff; }
+.s-time .value { color: var(--label); }
+/* Hidden (by home.js) when it would overlap the content above. */
+.stats[hidden] { display: none; }
+.stats.crowded { visibility: hidden; }
 
 dialog {
   border: 0;
@@ -574,11 +576,6 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 12px; font-weight: 600; color: var(--secondary); }
 .field input { height: 38px; border-radius: 12px; border: 0; outline: 0; padding: 0 12px; background: var(--field); font-size: 15px; color: var(--label); }
 .field input:focus { box-shadow: var(--focus-ring); }
-
-@media (max-width: 640px) {
-  .stats { grid-template-columns: 1fr 1fr; }
-  .main-stat { grid-column: span 2; }
-}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
