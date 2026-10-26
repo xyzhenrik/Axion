@@ -961,6 +961,18 @@ pub struct Media {
     pub pip_min_target: f32,
     /// Narrowest the PiP window can be made (logical px).
     pub pip_min_width: f32,
+    /// Side (logical px) of the artwork tile of the sidebar's Now Playing card.
+    pub now_playing_artwork_size: f32,
+    /// Gap (logical px) between the Now Playing card and the account button below it (and the
+    /// account menu, which pushes the card up as it opens).
+    pub now_playing_gap: f32,
+    /// Fetch the artwork the page offers (media session artwork, poster, preview image) for the
+    /// Now Playing card; otherwise (and for private tabs) it shows the site's icon.
+    pub now_playing_artwork: bool,
+    /// Scroll a title that is too long for the Now Playing card (otherwise it is cut off).
+    pub now_playing_marquee: bool,
+    /// Scroll speed of that title (logical px per second).
+    pub now_playing_marquee_speed: f32,
 }
 
 impl Media {
@@ -1017,6 +1029,11 @@ impl Default for Media {
             pip_resize_border: 6.0,
             pip_min_target: 36.0,
             pip_min_width: 272.0,
+            now_playing_artwork_size: 52.0,
+            now_playing_gap: 10.0,
+            now_playing_artwork: true,
+            now_playing_marquee: true,
+            now_playing_marquee_speed: 28.0,
         }
     }
 }

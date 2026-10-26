@@ -290,9 +290,9 @@ impl Menu {
         self.popover.anchor()
     }
 
-    /// See [`Popover::set_covered`].
-    pub fn set_covered(&mut self, ui: &mut Ui, node: Option<NodeId>) {
-        self.popover.set_covered(ui, node);
+    /// See [`Popover::top`].
+    pub fn top(&self) -> Option<f32> {
+        self.popover.top()
     }
 
     /// See [`Popover::set_covered_nodes`].

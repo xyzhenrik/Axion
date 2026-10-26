@@ -19,6 +19,8 @@ pub enum MprisCommand {
     Play,
     Pause,
     PlayPause,
+    Next,
+    Previous,
     /// Relative, seconds.
     Seek(f64),
     /// Absolute, seconds.
@@ -40,6 +42,9 @@ pub struct Track {
     pub position: f64,
     pub volume: f64,
     pub rate: f64,
+    /// The page handles next/previous track (previous restarts the track otherwise).
+    pub can_next: bool,
+    pub can_previous: bool,
 }
 
 struct Root {
@@ -123,9 +128,13 @@ impl PlayerIface {
         self.send(MprisCommand::Pause);
     }
 
-    fn next(&self) {}
+    fn next(&self) {
+        self.send(MprisCommand::Next);
+    }
 
-    fn previous(&self) {}
+    fn previous(&self) {
+        self.send(MprisCommand::Previous);
+    }
 
     fn seek(&self, offset: i64) {
         self.send(MprisCommand::Seek(offset as f64 / 1_000_000.0));
@@ -217,12 +226,12 @@ impl PlayerIface {
 
     #[zbus(property)]
     fn can_go_next(&self) -> bool {
-        false
+        self.track.as_ref().is_some_and(|t| t.can_next)
     }
 
     #[zbus(property)]
     fn can_go_previous(&self) -> bool {
-        false
+        self.track.as_ref().is_some_and(|t| t.can_previous)
     }
 
     #[zbus(property)]
@@ -289,6 +298,10 @@ impl Mpris {
         };
         let result = block_on(async {
             let player = iface.get();
+            if changed(&previous, &track, |t| (t.can_next, t.can_previous.to_string())) {
+                player.can_go_next_changed(emitter).await?;
+                player.can_go_previous_changed(emitter).await?;
+            }
             if changed(&previous, &track, |t| (t.playing, String::new())) {
                 player.playback_status_changed(emitter).await?;
                 player.can_play_changed(emitter).await?;

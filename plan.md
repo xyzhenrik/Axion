@@ -349,7 +349,11 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
       *Open:* raising renderer OS priority (no tab → process mapping in CEF).
 - [x] MPRIS (`org.mpris.MediaPlayer2.axion.instance<pid>`, zbus): status, metadata from
       `navigator.mediaSession`, position, seek, volume, rate — media keys work through it.
-      Now Playing card at the bottom of the sidebar. Private tabs stay off the desktop.
+      Now Playing card at the bottom of the sidebar: a compact player (artwork from the page's
+      media session / poster / og:image, else the site icon; scrolling title; seekable progress
+      bar; previous / play / next via the page's `previoustrack` / `nexttrack` handlers and
+      MPRIS Next/Previous). Its glass is its own pass (never merges with the account button);
+      the account menu lifts it out of the way. Private tabs stay off the desktop.
       *Open:* captions rendered by sites (not text tracks) are hidden by the fullscreen
       takeover (trusting the site in Settings › Media keeps them).
 

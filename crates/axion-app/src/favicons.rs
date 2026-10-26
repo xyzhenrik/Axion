@@ -362,7 +362,7 @@ impl Favicons {
         }
     }
 
-    fn upload(&self, width: u32, height: u32, rgba: &[u8]) -> SiteIcon {
+    pub(crate) fn upload(&self, width: u32, height: u32, rgba: &[u8]) -> SiteIcon {
         let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("favicon"),
