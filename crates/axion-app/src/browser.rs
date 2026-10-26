@@ -40,7 +40,7 @@ use crate::menu::{
 use crate::morph::Origin;
 use crate::mpris::{Mpris, MprisCommand, Track};
 use crate::overview::{Overview, OverviewAction};
-use crate::page_color::{PageTint, lightness};
+use crate::page_color::{PageTint, TintParams, lightness};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
 use crate::pip::{PipControl, PipOutcome, PipWindow};
 use crate::platform::clipboard::ClipboardReader;
@@ -3389,8 +3389,9 @@ impl Browser {
     /// chrome light/dark to stay legible on it. The colour is one per page (see `page_color`),
     /// measured on the frame once after loading, so scrolling never changes it.
     fn adapt_appearance(&mut self, page: Option<&wgpu::TextureView>, dt: f32) {
+        let params = TintParams::from_config(&self.config.appearance);
         if let Some(cells) = self.compositor.take_palette() {
-            self.page_colors.measured(&cells);
+            self.page_colors.measured(&cells, &params);
         }
         let appearance = &self.config.appearance;
         let adapt = appearance.adapt_to_page && appearance.theme == ThemeMode::Auto;
@@ -3402,7 +3403,7 @@ impl Browser {
         {
             self.page_colors.measuring(view);
         }
-        let color = view.and_then(|v| self.page_colors.color(v));
+        let color = view.and_then(|v| self.page_colors.color(v, &params));
         let spring = crate::drip::spring(&self.config, self.config.motion.smooth);
         let tint = color.filter(|_| self.config.appearance.tint_from_page);
         self.window_tint = self.page_colors.step(tint, spring, dt);

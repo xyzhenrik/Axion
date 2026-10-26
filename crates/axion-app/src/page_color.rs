@@ -1,16 +1,20 @@
 //! One stable colour per page for the window around it (`appearance.tint_from_page`, Safari's
 //! "colour in tab bar") and for flipping the chrome light or dark (`appearance.adapt_to_page`).
 //!
-//! The colour is the page's `theme-color` (the one for the current colour scheme) if it has
-//! one; otherwise the colour most of the page shows, from a histogram over a small grid of the
-//! frame measured on the GPU once the page has loaded. Either way it is evened out into a calm
-//! light or dark tone so the chrome on it stays legible. It is worked out again only when the
+//! In `extreme` mode (`appearance.tint_mode`, the default) the colour is the page's darkest
+//! prominent colour on a dark page and its lightest on a light page, taken from the top region
+//! of the page (next to the bar). In `dominant` mode it is the page's `theme-color` if it has
+//! one, else the colour most of the page shows, evened out into a calm light or dark tone.
+//! Both come from a histogram over a small grid of the frame measured on the GPU once the page
+//! has loaded (`extreme` uses `theme-color` only with `tint_prefer_theme_color`). It is worked
+//! out again only when the
 //! page loads, its theme colours change or the colour scheme switches — never while scrolling —
 //! and the window colour follows changes on a spring.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use axion_config::{Appearance, TintMode};
 use axion_engine::{ThemeColor, ViewId};
 use axion_physics::{Animated, Spring};
 
@@ -24,12 +28,41 @@ const DARK_MAX: f32 = 0.20;
 /// The colour's saturation is capped here, so the window never turns garish.
 const MAX_SATURATION: f32 = 0.55;
 
+/// The tint settings (`appearance.tint_*`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TintParams {
+    pub mode: TintMode,
+    pub top_region: f32,
+    pub min_coverage: f32,
+    pub prefer_theme_color: bool,
+}
+
+impl TintParams {
+    pub fn from_config(a: &Appearance) -> Self {
+        Self {
+            mode: a.tint_mode,
+            top_region: a.tint_top_region,
+            min_coverage: a.tint_min_coverage,
+            prefer_theme_color: a.tint_prefer_theme_color,
+        }
+    }
+}
+
+/// What a frame measurement found.
+#[derive(Clone, Copy)]
+struct Measured {
+    /// The colour most of the page shows.
+    dominant: [u8; 3],
+    /// The page's darkest or lightest prominent colour (per the page's brightness side).
+    extreme: [u8; 3],
+}
+
 #[derive(Default)]
 struct PageColor {
     /// The page's theme colours (all of them, with their media queries).
     theme: Vec<ThemeColor>,
-    /// The measured dominant colour.
-    measured: Option<[u8; 3]>,
+    /// The measured colours.
+    measured: Option<Measured>,
     /// When to measure the page's frame.
     measure_at: Option<Instant>,
 }
@@ -114,18 +147,26 @@ impl PageTint {
     }
 
     /// The measurement finished: the frame's colours, row by row (top first).
-    pub fn measured(&mut self, cells: &[[u8; 3]]) {
+    pub fn measured(&mut self, cells: &[[u8; 3]], params: &TintParams) {
         let Some(view) = self.measuring.take() else { return };
-        if let Some(color) = dominant_color(cells) {
-            self.pages.entry(view).or_default().measured = Some(color);
+        if let Some(dominant) = dominant_color(cells) {
+            let extreme = extreme_color(cells, params.top_region, params.min_coverage).unwrap_or(dominant);
+            self.pages.entry(view).or_default().measured = Some(Measured { dominant, extreme });
         }
     }
 
-    /// The colour of `view`'s page (sRGB 0–1), evened out for legibility.
-    pub fn color(&self, view: ViewId) -> Option<[f32; 3]> {
+    /// The colour of `view`'s page (sRGB 0–1): in `extreme` mode the page's darkest/lightest
+    /// prominent colour (saturation capped), in `dominant` mode a calm tone of the scheme.
+    pub fn color(&self, view: ViewId, params: &TintParams) -> Option<[f32; 3]> {
         let page = self.pages.get(&view)?;
-        let raw = theme_color(&page.theme, self.dark).or(page.measured)?;
-        Some(in_scheme(raw, self.dark))
+        let theme = theme_color(&page.theme, self.dark);
+        match params.mode {
+            TintMode::Dominant => Some(in_scheme(theme.or(page.measured.map(|m| m.dominant))?, self.dark)),
+            TintMode::Extreme => {
+                let theme = theme.filter(|_| params.prefer_theme_color);
+                Some(cap_saturation(theme.or(page.measured.map(|m| m.extreme))?))
+            }
+        }
     }
 
     /// Moves the window tint towards `target` on `spring` (`None`: no tint; it snaps when it
@@ -188,6 +229,51 @@ pub fn dominant_color(cells: &[[u8; 3]]) -> Option<[u8; 3]> {
     Some(sum.map(|s| (s / weight).round().clamp(0.0, 255.0) as u8))
 }
 
+/// The darkest prominent colour of the page's top region if the page is dark overall (its
+/// dominant colour is darker than mid grey), else the lightest. A colour is prominent when its
+/// histogram bin holds at least `min_coverage` of the region's cells, so a few stray pixels
+/// (a logo, an antialiased edge) never decide it. `top_region` is the share of the page's
+/// height, from the top, that is looked at.
+pub fn extreme_color(cells: &[[u8; 3]], top_region: f32, min_coverage: f32) -> Option<[u8; 3]> {
+    if cells.is_empty() {
+        return None;
+    }
+    let side = (cells.len() as f32).sqrt().max(1.0) as usize;
+    let rows = ((side as f32 * top_region.clamp(0.0, 1.0)).ceil() as usize).clamp(1, side);
+    let region = &cells[..(rows * side).min(cells.len())];
+    let dark_page = lightness(dominant_color(cells)?.map(|c| f32::from(c) / 255.0)) < 0.5;
+    let shift = 8 - HISTOGRAM_BITS;
+    let mut bins: HashMap<u32, (usize, [u32; 3])> = HashMap::new();
+    for c in region {
+        let key = (u32::from(c[0]) >> shift) << (2 * HISTOGRAM_BITS)
+            | (u32::from(c[1]) >> shift) << HISTOGRAM_BITS
+            | u32::from(c[2]) >> shift;
+        let bin = bins.entry(key).or_insert((0, [0; 3]));
+        bin.0 += 1;
+        for (sum, channel) in bin.1.iter_mut().zip(c) {
+            *sum += u32::from(*channel);
+        }
+    }
+    let needed = ((region.len() as f32 * min_coverage.clamp(0.0, 1.0)).ceil() as usize).max(1);
+    let luma = |c: &[u8; 3]| lightness(c.map(|v| f32::from(v) / 255.0));
+    let prominent = bins
+        .into_iter()
+        .filter(|(_, (count, _))| *count >= needed)
+        .map(|(key, (count, sum))| (key, sum.map(|s| (s as f32 / count as f32).round() as u8)));
+    let best = if dark_page {
+        prominent.min_by(|a, b| luma(&a.1).total_cmp(&luma(&b.1)).then(a.0.cmp(&b.0)))
+    } else {
+        prominent.max_by(|a, b| luma(&a.1).total_cmp(&luma(&b.1)).then(b.0.cmp(&a.0)))
+    };
+    best.map(|(_, color)| color)
+}
+
+/// `rgb` with its saturation capped, so the window never turns garish.
+pub fn cap_saturation(rgb: [u8; 3]) -> [f32; 3] {
+    let (h, s, l) = to_hsl(rgb.map(|c| f32::from(c) / 255.0));
+    from_hsl(h, s.min(MAX_SATURATION), l)
+}
+
 /// `rgb` as a calm tone of the current scheme: the page's hue, light in light mode and dark
 /// in dark mode, so switching the mode switches the tint with it.
 pub fn in_scheme(rgb: [u8; 3], dark: bool) -> [f32; 3] {
@@ -239,6 +325,75 @@ fn from_hsl(h: f32, s: f32, l: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const DOM: TintParams = TintParams {
+        mode: TintMode::Dominant,
+        top_region: 0.25,
+        min_coverage: 0.03,
+        prefer_theme_color: false,
+    };
+    const EXT: TintParams = TintParams { mode: TintMode::Extreme, ..DOM };
+
+    /// A 32x32 frame of `body`, its top `rows` rows `top`, with `n` cells of `accent` in the body.
+    fn frame(body: [u8; 3], top: [u8; 3], rows: usize, accent: [u8; 3], n: usize) -> Vec<[u8; 3]> {
+        let mut cells = vec![body; 32 * 32];
+        cells[..rows * 32].fill(top);
+        for c in cells.iter_mut().skip(32 * 20).take(n) {
+            *c = accent;
+        }
+        cells
+    }
+
+    #[test]
+    fn dark_page_gives_its_darkest_prominent_colour() {
+        // Dark grey body, a slightly lighter header band across the top, a few near-black specks.
+        let mut cells = frame([30, 32, 36], [48, 50, 56], 8, [255, 255, 255], 100);
+        cells[2] = [0, 0, 0];
+        cells[40] = [0, 0, 0];
+        // The top region is mostly the header band; the black specks are not prominent.
+        let c = extreme_color(&cells, 0.25, 0.03).unwrap();
+        assert!(c.iter().zip([48, 50, 56]).all(|(a, b)| a.abs_diff(b) <= 8), "{c:?}");
+        // With the whole page as region the darker body colour wins.
+        let c = extreme_color(&cells, 1.0, 0.03).unwrap();
+        assert!(c.iter().zip([30, 32, 36]).all(|(a, b)| a.abs_diff(b) <= 8), "{c:?}");
+    }
+
+    #[test]
+    fn light_page_gives_its_lightest_prominent_colour() {
+        // Light grey body with a pure white header band and a dark text strip.
+        let cells = frame([236, 236, 240], [255, 255, 255], 5, [20, 20, 20], 300);
+        let c = extreme_color(&cells, 0.25, 0.03).unwrap();
+        assert!(c.iter().all(|&v| v >= 250), "{c:?}");
+    }
+
+    #[test]
+    fn colourful_page_ignores_the_accent() {
+        // A white page with a big saturated hero below the header: the tint is white, not the hero.
+        let cells = frame([250, 250, 250], [250, 250, 250], 4, [230, 40, 90], 300);
+        let c = extreme_color(&cells, 0.25, 0.03).unwrap();
+        assert!(c.iter().all(|&v| v >= 240), "{c:?}");
+        // A single tiny accent in the top region is not prominent either.
+        let mut cells = cells;
+        cells[5] = [0, 0, 0];
+        assert!(extreme_color(&cells, 0.25, 0.03).unwrap().iter().all(|&v| v >= 240));
+        assert_eq!(extreme_color(&[], 0.25, 0.03), None);
+    }
+
+    #[test]
+    fn extreme_mode_keeps_the_page_colour_and_theme_is_opt_in() {
+        let view = ViewId(2);
+        let mut tint = PageTint::new(false);
+        tint.page_loaded(view, Duration::ZERO);
+        tint.measuring(view);
+        tint.measured(&frame([20, 24, 40], [20, 24, 40], 8, [255, 255, 255], 50), &EXT);
+        let c = tint.color(view, &EXT).unwrap();
+        // Dark page, light scheme: still dark (the chrome flips instead of the tint).
+        assert!(lightness(c) < 0.2, "{c:?}");
+        tint.theme_colors(view, &[ThemeColor { rgb: [200, 30, 30], media: String::new() }], Duration::ZERO);
+        assert_eq!(tint.color(view, &EXT), Some(c), "theme-color ignored by default");
+        let themed = tint.color(view, &TintParams { prefer_theme_color: true, ..EXT }).unwrap();
+        assert!(themed[0] > 0.6, "{themed:?}");
+    }
 
     #[test]
     fn the_prevalent_colour_wins_over_a_brighter_minority() {
@@ -293,12 +448,12 @@ mod tests {
         assert!(tint.wants_measure(view));
         tint.measuring(view);
         assert!(!tint.wants_measure(view), "no second measurement while one runs");
-        tint.measured(&[[255, 255, 255]; 4]);
+        tint.measured(&[[255, 255, 255]; 4], &DOM);
         assert!(!tint.wants_measure(view), "and none after it: scrolling changes nothing");
-        let measured = tint.color(view).unwrap();
+        let measured = tint.color(view, &DOM).unwrap();
         // A theme colour takes precedence (its hue, in the light scheme's tone).
         tint.theme_colors(view, &[ThemeColor { rgb: [200, 30, 30], media: String::new() }], Duration::ZERO);
-        let themed = tint.color(view).unwrap();
+        let themed = tint.color(view, &DOM).unwrap();
         assert!(themed[0] > themed[2] && themed != measured, "{themed:?}");
         // The scheme switch measures again.
         tint.set_dark(true, Some(view), Duration::ZERO);

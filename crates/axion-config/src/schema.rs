@@ -146,6 +146,17 @@ pub enum ThemeMode {
     Auto,
 }
 
+/// How the window tint is picked from the page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TintMode {
+    /// The page's darkest (dark pages) or lightest (light pages) prominent colour.
+    #[default]
+    Extreme,
+    /// The colour most of the page shows, evened out into a calm light or dark tone.
+    Dominant,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Appearance {
@@ -160,12 +171,21 @@ pub struct Appearance {
     pub text_scale: f32,
     /// Switch the chrome between light and dark to stay legible over the page behind it.
     pub adapt_to_page: bool,
-    /// Give the window around the page the page's own background colour (like Safari): its
-    /// `theme-color`, else the colour most of the page shows, measured once per page.
+    /// Give the window around the page a colour of the page (like Safari), measured once per
+    /// page (see `tint_mode`).
     pub tint_from_page: bool,
     /// The page's colour is measured this long after it finished loading (ms), so late
     /// styles and images are in.
     pub page_color_delay_ms: f32,
+    /// How the tint is picked: `extreme` (darkest/lightest prominent colour of the page's top
+    /// region, on the side of the page's overall brightness) or `dominant` (calmed main colour).
+    pub tint_mode: TintMode,
+    /// `extreme` mode: the top part of the page (0-1 of its height) the colour is taken from.
+    pub tint_top_region: f32,
+    /// `extreme` mode: a colour is prominent when it covers at least this share (0-1) of that region.
+    pub tint_min_coverage: f32,
+    /// `extreme` mode: use the page's `theme-color` when it has one, instead of the measured colour.
+    pub tint_prefer_theme_color: bool,
 }
 
 impl Default for Appearance {
@@ -179,6 +199,10 @@ impl Default for Appearance {
             adapt_to_page: true,
             tint_from_page: true,
             page_color_delay_ms: 350.0,
+            tint_mode: TintMode::Extreme,
+            tint_top_region: 0.25,
+            tint_min_coverage: 0.03,
+            tint_prefer_theme_color: false,
         }
     }
 }
