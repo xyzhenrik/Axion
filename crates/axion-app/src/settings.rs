@@ -1210,11 +1210,11 @@ impl SettingsSheet {
                 );
                 let field = ui.add_text_field(
                     field_box,
-                    "https://…",
+                    "Axion Home",
                     TextStyle::Body,
                     Style { size: Size { width: length(320.0), height: length(22.0) }, ..Default::default() },
                 );
-                ui.set_field_text(field, &config.general.homepage);
+                ui.set_field_text(field, config.general.homepage_field_text());
                 self.homepage = Some(field);
                 let row_node = self.row(ui, "Search engine");
                 let current = SEARCH_ENGINES.iter().position(|(_, url)| *url == config.general.search_url);

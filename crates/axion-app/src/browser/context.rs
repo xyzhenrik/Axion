@@ -14,7 +14,7 @@ pub(crate) fn is_home_url(url: &str, config: &Config) -> bool {
     let url = trim(url);
     url.is_empty()
         || OWN_HOME_PAGES.iter().any(|home| url == *home)
-        || (!config.general.homepage.trim().is_empty() && url == trim(&config.general.homepage))
+        || url == trim(config.general.effective_homepage())
 }
 
 impl Browser {
@@ -208,7 +208,7 @@ impl Browser {
         match command {
             TabCommand::NewTabToTheRight => {
                 self.show_group(private);
-                let home = self.config.general.homepage.clone();
+                let home = self.config.general.effective_homepage().to_owned();
                 self.open_tab_at(&home, index + 1, true);
                 self.edit_address();
             }
