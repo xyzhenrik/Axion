@@ -620,3 +620,10 @@
 "Addresses" = ""
 "Cards" = ""
 "Secure Notes" = ""
+
+# crates/axion-app/src/settings.rs
+"Flat" = ""
+"Flat: solid cards, no refraction, blur or bounce. Skips the glass work (fast on weak GPUs)." = ""
+
+# crates/axion-app/src/settings/search.rs
+"Glass" = ""
