@@ -4,12 +4,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use cef::sys::{cef_resource_type_t, cef_return_value_t, cef_transition_type_t};
+use cef::sys::{cef_referrer_policy_t, cef_resource_type_t, cef_return_value_t, cef_transition_type_t};
 use cef::*;
 
 use crate::{
-    EngineEvent, INTERNAL_SCHEME, InternalPages, NavigationRequest, RequestPolicy, RequestVerdict,
-    ResourceKind, ResourceRequest, ViewId,
+    EngineEvent, INTERNAL_SCHEME, InternalPages, MediaViewOptions, NavigationRequest, RequestPolicy,
+    RequestVerdict, ResourceKind, ResourceRequest, ViewId,
 };
 
 /// State shared by every view's network hooks.
@@ -22,6 +22,8 @@ pub(super) struct Network {
     pub internal: RwLock<Option<Arc<dyn InternalPages>>>,
     /// The view of each live CEF browser (by its identifier).
     pub browsers: Mutex<HashMap<i32, ViewId>>,
+    /// The views that only play one captured source (the Playlist's).
+    pub media_views: RwLock<HashMap<ViewId, MediaViewOptions>>,
 }
 
 impl Network {
@@ -31,6 +33,18 @@ impl Network {
 
     pub fn internal_pages(&self) -> Option<Arc<dyn InternalPages>> {
         self.internal.read().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    pub fn set_media_view(&self, view: ViewId, options: Option<MediaViewOptions>) {
+        let mut views = self.media_views.write().unwrap_or_else(PoisonError::into_inner);
+        match options {
+            Some(options) => views.insert(view, options),
+            None => views.remove(&view),
+        };
+    }
+
+    pub fn media_view(&self, view: ViewId) -> Option<MediaViewOptions> {
+        self.media_views.read().unwrap_or_else(PoisonError::into_inner).get(&view).cloned()
     }
 
     pub fn view_of(&self, browser_id: i32) -> Option<ViewId> {
@@ -107,6 +121,25 @@ wrap_cookie_access_filter! {
     }
 }
 
+fn is_internal_url(url: &str) -> bool {
+    url.strip_prefix(INTERNAL_SCHEME).is_some_and(|r| r.starts_with(':'))
+}
+
+/// Sets headers on a request (the Referer through its own call, which the header map ignores).
+fn apply_headers(request: &mut Request, headers: &[(String, String)]) {
+    for (name, value) in headers {
+        if name.eq_ignore_ascii_case("referer") {
+            let policy = cef_referrer_policy_t::REFERRER_POLICY_NEVER_CLEAR_REFERRER.into();
+            request.set_referrer(Some(&value.as_str().into()), policy);
+        } else if name.eq_ignore_ascii_case("origin") {
+            // Chromium's network stack refuses a request whose Origin was replaced
+            // (ERR_INVALID_ARGUMENT).
+        } else {
+            request.set_header_by_name(Some(&name.as_str().into()), Some(&value.as_str().into()), 1);
+        }
+    }
+}
+
 wrap_resource_request_handler! {
     pub(super) struct ResourceRequestHandlerBuilder {
         net: Arc<Network>,
@@ -115,6 +148,56 @@ wrap_resource_request_handler! {
     }
 
     impl ResourceRequestHandler {
+        fn on_resource_response(
+            &self,
+            browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            response: Option<&mut Response>,
+        ) -> ::std::os::raw::c_int {
+            // Media views play what they were given; everything else is looked at for the
+            // Playlist (the real video behind `blob:` players).
+            if self.net.media_view(self.view).is_none()
+                && let (Some(request), Some(response)) = (request, response)
+            {
+                let url = CefString::from(&request.url()).to_string();
+                let mime = CefString::from(&response.mime_type()).to_string();
+                if response.status() / 100 == 2 && axion_media::classify_response(&url, &mime).is_some() {
+                    let referer = CefString::from(&request.referrer_url()).to_string();
+                    self.net.emit(browser.map(|b| &*b), EngineEvent::MediaSniffed {
+                        view: self.view,
+                        url,
+                        mime,
+                        referer,
+                    });
+                }
+            }
+            0
+        }
+
+        fn on_resource_load_complete(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            response: Option<&mut Response>,
+            status: UrlrequestStatus,
+            received_content_length: i64,
+        ) {
+            if self.net.media_view(self.view).is_some()
+                && let (Some(request), Some(response)) = (request, response)
+            {
+                tracing::debug!(
+                    url = %CefString::from(&request.url()).to_string(),
+                    status = ?status.as_ref(),
+                    http = response.status(),
+                    error = ?response.error().as_ref(),
+                    bytes = received_content_length,
+                    "media view response"
+                );
+            }
+        }
+
         fn cookie_access_filter(
             &self,
             browser: Option<&mut Browser>,
@@ -125,7 +208,10 @@ wrap_resource_request_handler! {
             let url = CefString::from(&request.url()).to_string();
             let page_url = match resource_kind(request.resource_type()) {
                 ResourceKind::Document => url.clone(),
-                _ => main_frame_url(browser.map(|b| &*b)),
+                _ => match self.net.media_view(self.view) {
+                    Some(media) => media.page_url,
+                    None => main_frame_url(browser.map(|b| &*b)),
+                },
             };
             (!policy.allow_cookies(&url, &page_url)).then(|| self.deny_cookies.clone())
         }
@@ -142,8 +228,21 @@ wrap_resource_request_handler! {
             let browser = browser.map(|b| &*b);
             let url = CefString::from(&request.url()).to_string();
             let kind = resource_kind(request.resource_type());
-            let page_url = if kind == ResourceKind::Document { url.clone() } else { main_frame_url(browser) };
-            match policy.check_request(&ResourceRequest { url: &url, page_url: &page_url, kind }) {
+            let media_view = self.net.media_view(self.view);
+            let page_url = match (&media_view, kind) {
+                (_, ResourceKind::Document) => url.clone(),
+                (Some(media), _) => media.page_url.clone(),
+                (None, _) => main_frame_url(browser),
+            };
+            // A media view's requests carry what the video's host expects to see.
+            if let Some(media) = media_view.as_ref().filter(|_| !is_internal_url(&url)) {
+                apply_headers(request, &media.headers);
+            }
+            let verdict = policy.check_request(&ResourceRequest { url: &url, page_url: &page_url, kind });
+            if media_view.is_some() {
+                tracing::debug!(%url, %page_url, ?kind, ?verdict, "media view request");
+            }
+            match verdict {
                 RequestVerdict::Allow => proceed,
                 RequestVerdict::Redirect(to) => {
                     request.set_url(Some(&to.as_str().into()));
@@ -194,6 +293,16 @@ wrap_request_handler! {
             let (Some(frame), Some(request)) = (frame, request) else { return 0 };
             if refuse_internal_navigation(frame, request) {
                 return 1;
+            }
+            if frame.is_main() == 1
+                && let Some(media) = self.net.media_view(self.view)
+            {
+                let to = CefString::from(&request.url()).to_string();
+                if !to.starts_with(&media.allow_prefix) {
+                    tracing::info!(%to, "a media view may not navigate");
+                    self.net.emit(browser.map(|b| &*b), EngineEvent::NavigationBlocked { view: self.view, url: to });
+                    return 1;
+                }
             }
             let Some(policy) = self.net.policy() else { return 0 };
             if frame.is_main() == 0 {

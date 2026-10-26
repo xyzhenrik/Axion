@@ -130,7 +130,7 @@
       volume: el.volume, muted: el.muted, rate: el.playbackRate, buffered: buffered,
       captions: captions, caption: caption, native: !!el.__axNative,
       trusted: TRUSTED,
-      src: el.currentSrc || el.src || '', poster: el.poster || '',
+      src: el.currentSrc || el.src || '', poster: el.poster || '', frame: location.href,
       fullscreen: !!document.fullscreenElement &&
         (document.fullscreenElement === el || document.fullscreenElement.contains(el)) || (takeover && takeover.el === el) || false
     };

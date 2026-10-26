@@ -63,3 +63,17 @@ pub trait RequestPolicy: Send + Sync {
     /// JavaScript to run in each document of `url` as it starts loading (main thread).
     fn page_script(&self, url: &str) -> Option<String>;
 }
+
+/// How a *media view* (a view that only plays one captured video source, Axion's Playlist)
+/// differs from a tab: it may not navigate away, its requests carry the headers the source
+/// needs (Referer, Origin), and Shields judge them as if made from the original page.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MediaViewOptions {
+    /// Sent with every request except the view's own page (replacing the view's).
+    pub headers: Vec<(String, String)>,
+    /// What Shields see as the page of those requests (the video's original page).
+    pub page_url: String,
+    /// The main frame may only be at addresses starting with this (its own page, or the local
+    /// file it plays); anything else is refused.
+    pub allow_prefix: String,
+}
