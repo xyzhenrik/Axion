@@ -23,6 +23,7 @@ axion-tabs = { path = "crates/axion-tabs" }
 axion-media = { path = "crates/axion-media" }
 axion-store = { path = "crates/axion-store" }
 axion-ui = { path = "crates/axion-ui" }
+axion-update = { path = "crates/axion-update" }
 axion-vault = { path = "crates/axion-vault", default-features = false }
 
 anyhow = "1"
