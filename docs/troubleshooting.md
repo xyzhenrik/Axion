@@ -40,6 +40,41 @@ the setting. See [Hardware acceleration](features/hardware-acceleration.md).
   Pick **Dedicated** if you have one.
 - Turn on **Reduce transparency** and **Reduce motion** on the **Liquid Glass** page.
 - Lower the memory budget or the freeze time (see [Tabs and memory](features/tabs-and-memory.md)).
+- On a high refresh rate monitor, pages draw at most 120 frames per second (`tabs.max_frame_rate_cap`
+  in [Configuration files](configuration.md)). Heavy pages such as chat apps get smoother with a lower
+  cap or a fixed `tabs.max_frame_rate`, for example 60.
+
+If it stays slow, record a performance log (next section) and send it with your report.
+
+## Performance logging
+
+Axion can write one line per second about how it draws: how many frames the window showed, how
+many frames the page delivered, how long each step took on the CPU and on the graphics card, the
+window size, the monitor and its refresh rate, fullscreen, and how busy Axion and Chromium are.
+
+1. Close Axion.
+2. Start it from a terminal with the log turned on, and keep the output in a file:
+
+   ```bash
+   AXION_PERF_LOG=1 axion 2>&1 | tee axion-perf.log
+   ```
+
+3. Do what is slow: open the page, go fullscreen (**F11**), open the menu that lags. Keep at it for
+   about 20 seconds, then a few seconds more after leaving fullscreen.
+4. Quit Axion and attach `axion-perf.log` to your report, with what you did and when (for example
+   "0-10 s windowed, then F11, at 20 s left fullscreen").
+
+The lines to look at are marked `perf`. The most telling values:
+
+| Value | Meaning |
+|---|---|
+| `presented_fps` | Frames the window showed per second. |
+| `page_fps` / `chromium_paints_per_s` | Page frames shown / frames the page drew. Far apart means frames are dropped on the way. |
+| `page_rate` | The frame rate Chromium was asked for. |
+| `redraw_requests_per_s` / `redraws_per_s` | Frames asked for / frames the desktop let Axion draw. |
+| `acquire_max_ms`, `present_max_ms`, `gpu_ms` | Waiting for the screen, and the graphics card's time per frame. |
+| `monitor`, `refresh_hz`, `surface`, `fullscreen` | Where the window is and how big. |
+| `cpu_main_pct`, `cpu_chromium_pct` | CPU use of Axion and of its Chromium processes (100 = one core). |
 
 ## The window has no icon on Wayland
 
