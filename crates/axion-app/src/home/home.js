@@ -70,6 +70,14 @@
     plus: ["M12 5v14M5 12h14"],
   };
 
+  // A range input's filled part (the accent-coloured track left of the thumb).
+  const paintRange = (input) => {
+    const min = Number(input.min) || 0;
+    const max = Number(input.max) || 1;
+    const p = ((Number(input.value) - min) / (max - min || 1)) * 100;
+    input.style.setProperty("--p", `${Math.max(0, Math.min(100, p))}%`);
+  };
+
   // A stable, pleasant colour per host for monograms.
   const hue = (text) => {
     let h = 0;
@@ -341,6 +349,71 @@
   // A look slider (dim, blur) is being dragged.
   let lookHeld = false;
 
+  // The mini picker: "none", a thumbnail per background, "add". Rebuilt only when the list
+  // or the selection changed, so the thumbnails don't reload.
+  let pickerKey = "";
+
+  function selectBackground(name) {
+    if (state.background.selected === name) return;
+    state.background.selected = name;
+    state.background.show = !!name;
+    renderBackground();
+    post({ type: "selectBackground", name });
+  }
+
+  function renderPicker() {
+    const b = state.background;
+    const key = JSON.stringify([b.list, b.selected, b.canAdd]);
+    if (key === pickerKey) return;
+    pickerKey = key;
+    const picker = $("bg-picker");
+    picker.textContent = "";
+    const swatch = (name, label) => {
+      const item = el("div", "bg-item");
+      const button = el("button", name ? "bg-swatch" : "bg-swatch none");
+      button.type = "button";
+      button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", String(b.selected === name));
+      button.setAttribute("aria-label", label);
+      button.title = label;
+      if (name) {
+        const img = new Image();
+        img.alt = "";
+        img.decoding = "async";
+        img.src = `/api/thumb?name=${encodeURIComponent(name)}`;
+        button.appendChild(img);
+      } else {
+        button.appendChild(el("span", "none-mark"));
+      }
+      button.addEventListener("click", () => selectBackground(name));
+      item.appendChild(button);
+      if (name) {
+        const remove = el("button", "bg-remove");
+        remove.type = "button";
+        remove.setAttribute("aria-label", "Remove background");
+        remove.title = "Remove";
+        remove.appendChild(svg(ICON.close, 10));
+        remove.addEventListener("click", (e) => {
+          e.stopPropagation();
+          post({ type: "removeBackground", name });
+        });
+        item.appendChild(remove);
+      }
+      return item;
+    };
+    picker.appendChild(swatch("", "No background"));
+    b.list.forEach((name, i) => picker.appendChild(swatch(name, `Background ${i + 1}`)));
+    if (b.canAdd) {
+      const add = el("button", "bg-swatch add");
+      add.type = "button";
+      add.setAttribute("aria-label", "Add background image");
+      add.title = "Add Image…";
+      add.appendChild(svg(ICON.plus, 18));
+      add.addEventListener("click", () => post({ type: "chooseBackground" }));
+      picker.appendChild(add);
+    }
+  }
+
   function renderBackground() {
     const b = state.background;
     const backdrop = $("backdrop");
@@ -350,7 +423,8 @@
       document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => meta.remove());
     }
     if (b.show) {
-      const url = `url("/api/background?v=${b.version}")`;
+      // File names are unique and never reused, so the name is the cache key.
+      const url = `url("/api/background?v=${encodeURIComponent(b.selected)}")`;
       if (backdrop.style.backgroundImage !== url) backdrop.style.backgroundImage = url;
       // While a slider is held, its live preview wins over the saved look.
       if (!lookHeld) {
@@ -364,8 +438,10 @@
       $("dim").value = b.dim;
       $("blur").value = b.blur;
     }
-    $("background-rows").hidden = false;
-    $("clear-background").hidden = !b.has;
+    paintRange($("dim"));
+    paintRange($("blur"));
+    $("look-rows").hidden = !b.show;
+    renderPicker();
   }
 
   // ---- settings panel ----
@@ -377,7 +453,6 @@
       search: state.search.show,
       topSites: state.topSites.show,
       stats: state.stats.show,
-      background: state.background.enabled,
     };
     document.querySelectorAll("[data-widget]").forEach((input) => {
       input.checked = !!widgets[input.dataset.widget];
@@ -407,17 +482,19 @@
     b.addEventListener("click", () => post({ type: "clockFormat", format: b.dataset.format })),
   );
   $("restore").addEventListener("click", () => post({ type: "restoreSites" }));
-  $("choose").addEventListener("click", () => post({ type: "chooseBackground" }));
-  $("clear-background").addEventListener("click", () => post({ type: "clearBackground" }));
   $("path-form").addEventListener("submit", (e) => {
     e.preventDefault();
     const path = $("path").value.trim();
-    if (path) post({ type: "backgroundPath", path });
+    if (path) {
+      post({ type: "backgroundPath", path });
+      $("path").value = "";
+    }
   });
   // Live preview while dragging (one style change per frame), saved once on release, so the
   // page never re-renders under the thumb.
   let lookFrame = 0;
-  const previewLook = () => {
+  const previewLook = (e) => {
+    if (e && e.target) paintRange(e.target);
     if (lookFrame) return;
     lookFrame = requestAnimationFrame(() => {
       lookFrame = 0;
@@ -445,6 +522,8 @@
 
   function render() {
     if (!state) return;
+    // Axion's accent colour, live (controls, focus rings, selection).
+    if (state.accent) document.documentElement.style.setProperty("--accent", state.accent);
     document.body.classList.toggle("private", state.private);
     if (state.private) {
       // The window around the page takes the page's theme colour: black, like the page.
@@ -484,8 +563,10 @@
   });
 
   document.addEventListener("click", (e) => {
-    if (!$("engine-menu").hidden && !$("engine-menu").contains(e.target)) closeMenu();
-    if (!$("panel").hidden && !$("panel").contains(e.target)) togglePanel(false);
+    // The path as dispatched: a click may have rebuilt (detached) its own target meanwhile.
+    const path = e.composedPath();
+    if (!$("engine-menu").hidden && !path.includes($("engine-menu"))) closeMenu();
+    if (!$("panel").hidden && !path.includes($("panel"))) togglePanel(false);
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {

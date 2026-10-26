@@ -291,6 +291,10 @@ pub struct Browser {
     page_colors: PageTint,
     /// The start page (`axion://home/`).
     home: HomePage,
+    /// Settings has asked for the start page backgrounds' thumbnails (textures are made from
+    /// then on), and the backgrounds generation it last listed.
+    home_thumbnails: bool,
+    backgrounds_listed: Option<u64>,
     /// When to open the overview for a `--capture --overview` screenshot.
     overview_at: Option<Instant>,
     address_at: Option<(Instant, String)>,
@@ -324,7 +328,7 @@ impl Browser {
         let account_name = accounts.get(&account_id).map(|a| a.name.clone()).unwrap_or_default();
         tracing::info!(account = %account_id, profile = %account_paths.profile.display(), "opening account");
         let paths = ConfigPaths::in_dir(account_paths.config.clone());
-        let config = axion_config::load_config(&paths).unwrap_or_else(|e| {
+        let mut config = axion_config::load_config(&paths).unwrap_or_else(|e| {
             tracing::error!("{e}; using defaults");
             Config::default()
         });
@@ -446,7 +450,9 @@ impl Browser {
         let lock = PrivateLock::new();
         let mut favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         favicons.set_dark(dark);
-        let home = HomePage::new(&profile, favicons.dir().map(Into::into));
+        let mut home = HomePage::new(&profile, favicons.dir().map(Into::into));
+        // The single background image of older versions moves into the backgrounds directory.
+        let migrated = home.migrate(&mut config);
         engine.set_internal_pages(Some(home.service()));
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
@@ -506,7 +512,7 @@ impl Browser {
             session_changed: Instant::now(),
             settings,
             passwords,
-            config_dirty_since: None,
+            config_dirty_since: migrated.then(Instant::now),
             last_saved_config: None,
             panel_urls: Vec::new(),
             panel: None,
@@ -519,6 +525,8 @@ impl Browser {
             last_tint_step: Instant::now(),
             page_colors: PageTint::new(dark),
             home,
+            home_thumbnails: false,
+            backgrounds_listed: None,
             tabs: Tabs::default(),
             parked: Tabs::default(),
             private_mode: false,
@@ -2045,7 +2053,8 @@ impl Browser {
         self.menu.close(&mut self.ui, &self.config);
         let anchor = self.chrome.address_frame(&self.ui);
         let width = self.logical_size().x;
-        self.find.open(&mut self.ui, &self.config, anchor, width, view);
+        let top = self.page_rect().origin.y;
+        self.find.open(&mut self.ui, &self.config, anchor, width, top, view);
         let events = self.ui.focus(self.find.field());
         self.handle_ui_events(events);
     }
@@ -3121,6 +3130,27 @@ impl Browser {
                 self.engine.request_site_data();
             }
             Outcome::ChooseDownloadFolder => self.downloads.choose_folder(),
+            Outcome::ChooseBackground => self.home.choose_background(),
+            Outcome::AddBackground(path) => {
+                if self.home.add_background(&path, &mut self.config) {
+                    self.settings.set_background_status(None);
+                    if let Some(field) = self.settings.background_path_field() {
+                        self.ui.set_field_text(field, "");
+                    }
+                    self.settings_outcome(Outcome::Changed);
+                } else {
+                    let status = "That file isn't an image Axion can use as a background, or there are \
+                                  too many backgrounds already.";
+                    self.settings.set_background_status(Some(status.to_owned()));
+                }
+                self.sync_backgrounds();
+            }
+            Outcome::RemoveBackground(name) => {
+                if self.home.remove_background(&name, &mut self.config) {
+                    self.settings_outcome(Outcome::Changed);
+                }
+                self.sync_backgrounds();
+            }
             Outcome::ClearBrowsingData => {
                 downloads::clear_browsing_data(
                     &self.config,
@@ -3275,12 +3305,47 @@ impl Browser {
     fn update_home(&mut self) {
         if self.home.poll_chooser(&mut self.config) {
             self.config_dirty_since.get_or_insert(Instant::now());
+            self.refresh_settings();
         }
+        self.update_background_picker();
         let name = self.account().map(|a| a.name.clone()).unwrap_or_default();
         let dark = is_dark(&self.config, &self.window, self.desktop_theme.dark());
         if self.home.update(&self.config, self.store.as_ref(), self.shields.total(), &name, dark) {
             self.refresh_home_pages();
         }
+    }
+
+    /// Keeps Settings' background picker current: its cards (once their thumbnails arrive,
+    /// or when backgrounds were added or removed) and the selected one's blurred preview.
+    fn update_background_picker(&mut self) {
+        let arrived = self.home.poll_thumbnails();
+        if !self.settings.is_open() {
+            return;
+        }
+        if !self.home_thumbnails {
+            // Textures only once Settings shows them.
+            self.home_thumbnails = true;
+            self.home.set_gpu(crate::home::Textures::new(self.device.clone(), self.queue.clone()));
+        }
+        let generation = self.home.backgrounds_generation();
+        if arrived.thumbs || self.backgrounds_listed != Some(generation) {
+            self.sync_backgrounds();
+            return;
+        }
+        // Asks for a new preview when the blur or the selection changed.
+        let preview = self.home.background_preview(&self.config, self.logical_size().x);
+        if arrived.preview {
+            self.settings.set_background_preview(&mut self.ui, preview);
+        }
+    }
+
+    /// Lists the backgrounds in Settings again and rebuilds its page.
+    fn sync_backgrounds(&mut self) {
+        self.backgrounds_listed = Some(self.home.backgrounds_generation());
+        self.settings.set_backgrounds(self.home.background_cards());
+        let preview = self.home.background_preview(&self.config, self.logical_size().x);
+        self.settings.set_background_preview(&mut self.ui, preview);
+        self.refresh_settings();
     }
 
     fn refresh_home_pages(&mut self) {
@@ -3639,6 +3704,11 @@ impl Browser {
             let _ = self.ui.blur();
             return false;
         }
+        // Escape closes Find on Page wherever the focus is (the page after a click on it too).
+        if pressed && self.find.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.close_find();
+            return false;
+        }
         if pressed
             && self.settings.is_open()
             && self.ui.focused().is_none()
@@ -3858,6 +3928,25 @@ impl Browser {
                 }
                 "bookmarks" => self.show_panel(Panel::Bookmarks),
                 "settings" => self.run(Action::OpenSettings),
+                // Capture aid: what the start page's path field sends ("home-background:PATH"),
+                // and picking a background in its gear panel ("home-select:N", 0: none).
+                path if path.starts_with("home-background:") => {
+                    let message = serde_json::json!({ "type": "backgroundPath", "path": &path["home-background:".len()..] });
+                    if let Some(view) = self.active_view() {
+                        self.internal_message(view, "home", &message.to_string());
+                    }
+                }
+                pick if pick.starts_with("home-select:") => {
+                    let index = pick["home-select:".len()..].parse::<usize>().unwrap_or(0);
+                    let name = index
+                        .checked_sub(1)
+                        .and_then(|i| self.home.background_cards().get(i).map(|c| c.name.clone()));
+                    let message =
+                        serde_json::json!({ "type": "selectBackground", "name": name.unwrap_or_default() });
+                    if let Some(view) = self.active_view() {
+                        self.internal_message(view, "home", &message.to_string());
+                    }
+                }
                 // Capture aids: switch the theme while running.
                 "theme-dark" | "theme-light" => {
                     self.config.appearance.theme =
@@ -4292,7 +4381,8 @@ impl Browser {
         self.downloads_popover.animate(&mut self.ui, dt);
         let width = self.logical_size().x;
         let address = self.chrome.address_frame(&self.ui);
-        self.find.follow(&mut self.ui, address, width);
+        let top = self.page_rect().origin.y;
+        self.find.follow(&mut self.ui, address, width, top);
         self.find.animate(&mut self.ui, dt, &mut self.engine);
         self.lock_screen.animate(&mut self.ui, dt);
         self.settings.animate(&mut self.ui, dt);

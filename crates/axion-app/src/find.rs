@@ -26,7 +26,9 @@ const INSET: f32 = 10.0;
 const GAP: f32 = 6.0;
 const BUTTON: f32 = 34.0;
 const COUNT_WIDTH: f32 = 82.0;
-const GAP_BELOW_ANCHOR: f32 = 14.0;
+const GAP_BELOW_ANCHOR: f32 = 26.0;
+/// The bar floats this far inside the page's top edge (below the tab strip and bookmarks).
+const PAGE_INSET: f32 = 10.0;
 /// Kept free at the window's edges.
 const WINDOW_MARGIN: f32 = 8.0;
 /// The case toggle's fill while on (accent at this opacity) and off (label colour).
@@ -78,7 +80,8 @@ impl FindBar {
                 },
                 ..Default::default()
             },
-        );
+        )
+        .detached();
         let plate = popover.root();
         ui.add(
             plate,
@@ -157,7 +160,17 @@ impl FindBar {
 
     /// Drips out of `anchor` (the address field) to search `view`. The field keeps the last
     /// search, which runs again on this page.
-    pub fn open(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, window_width: f32, view: ViewId) {
+    /// `page_top`: where the page starts (logical px); the bar floats just inside it, under
+    /// the tab strip and bookmarks bar.
+    pub fn open(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        anchor: Frame,
+        window_width: f32,
+        page_top: f32,
+        view: ViewId,
+    ) {
         if self.view != Some(view) || !self.is_open() {
             // Searched again (below) on the page it now belongs to.
             self.query.clear();
@@ -166,15 +179,15 @@ impl FindBar {
         self.view = Some(view);
         self.match_case = config.find.match_case;
         self.show_match_case(ui);
-        let target = target(anchor, window_width);
+        let target = target(anchor, window_width, page_top);
         self.target = Some(target);
         self.popover.open(ui, config, anchor, target);
     }
 
     /// Glides along when the address field moved (the window or the bar changed); call every
     /// frame.
-    pub fn follow(&mut self, ui: &mut Ui, anchor: Frame, window_width: f32) {
-        let target = target(anchor, window_width);
+    pub fn follow(&mut self, ui: &mut Ui, anchor: Frame, window_width: f32, page_top: f32) {
+        let target = target(anchor, window_width, page_top);
         if self.is_open() && self.target != Some(target) {
             self.target = Some(target);
             self.popover.retarget(ui, target);
@@ -268,11 +281,12 @@ impl FindBar {
 }
 
 /// Below the address field, right-aligned with it, inside the window.
-fn target(anchor: Frame, window_width: f32) -> Frame {
+fn target(anchor: Frame, window_width: f32, page_top: f32) -> Frame {
     let right = anchor.origin.x + anchor.size.x;
     let left =
         (right - WIDTH).clamp(WINDOW_MARGIN, (window_width - WIDTH - WINDOW_MARGIN).max(WINDOW_MARGIN));
-    Frame::new(left, anchor.origin.y + anchor.size.y + GAP_BELOW_ANCHOR, WIDTH, HEIGHT)
+    let top = (anchor.origin.y + anchor.size.y + GAP_BELOW_ANCHOR).max(page_top + PAGE_INSET);
+    Frame::new(left, top, WIDTH, HEIGHT)
 }
 
 fn button(ui: &mut Ui, parent: NodeId, action: ActionId, fill: f32) -> NodeId {
@@ -300,11 +314,13 @@ mod tests {
     #[test]
     fn bar_stays_inside_the_window_below_the_field() {
         let field = Frame::new(400.0, 16.0, 600.0, 36.0);
-        let t = target(field, 1440.0);
+        let t = target(field, 1440.0, 0.0);
         assert_eq!(t.origin.x + t.size.x, 1000.0);
         assert_eq!(t.origin.y, 16.0 + 36.0 + GAP_BELOW_ANCHOR);
+        // Under the tab strip and bookmarks bar when they push the page down.
+        assert_eq!(target(Frame::new(400.0, 16.0, 600.0, 36.0), 1440.0, 150.0).origin.y, 160.0);
         // A narrow window: pushed in from the left edge.
-        let t = target(Frame::new(10.0, 16.0, 200.0, 36.0), 600.0);
+        let t = target(Frame::new(10.0, 16.0, 200.0, 36.0), 600.0, 0.0);
         assert_eq!(t.origin.x, WINDOW_MARGIN);
     }
 
