@@ -664,9 +664,15 @@ pub struct Layout {
     pub wide_from: f32,
     /// Below this window width, tabs collapse into a single compact capsule.
     pub narrow_below: f32,
-    /// Preferred width of a tab in the separate tab bar and of the other tabs' segments in the
-    /// compact one; all tabs share it, and they shrink equally when they don't fit.
+    /// Preferred width of a tab in the separate tab bar; all tabs share it, and they shrink
+    /// equally when they don't fit.
     pub tab_width: f32,
+    /// Compact tab bar: the widest a tab segment gets (all segments, the open one with the
+    /// address included, are equally wide); 0 = they fill the capsule.
+    pub compact_tab_max_width: f32,
+    /// Compact tab bar: while the address is being edited, the open segment grows to this width
+    /// (at most the capsule's room); the others shrink equally to make space.
+    pub compact_address_width: f32,
     /// Below this width a tab drops its title (and close button) and shows only its favicon.
     pub tab_min_width: f32,
     /// Tabs shrink no further than this (icon only, logical px); beyond it they overflow.
@@ -726,6 +732,8 @@ impl Default for Layout {
             wide_from: 1280.0,
             narrow_below: 800.0,
             tab_width: 260.0,
+            compact_tab_max_width: 0.0,
+            compact_address_width: 480.0,
             tab_min_width: 72.0,
             tab_icon_width: 36.0,
             pinned_tab_width: 0.0,

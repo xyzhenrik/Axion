@@ -391,6 +391,12 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. â
   `layout.tab_min_width`, below which titles hide and tabs shrink on to icon-only squares of
   `layout.tab_icon_width`, then overflowing; `distribute_tab_widths`), springing to new widths; hairline separators in
   the separate tab bar (hidden beside the open and the hovered tab).
+- [x] Compact tab bar: every segment, the open one (it hosts the address) included, is equally
+  wide (they fill the capsule, `layout.compact_tab_max_width` caps it; `distribute_compact_widths`).
+  The open segment shows what fits (`address_fit`: close, reload, shield, host text dropped in
+  that order, icon only at the floor); the page menu lives in the actions group. Focusing the
+  address springs the segment to `layout.compact_address_width` (clamped to the capsule; the
+  others shrink equally, never under the icon floor) and back when editing ends.
 - [x] Tab context menu (right click on tab bar, compact segments, sidebar rows; glass menu
   flowing out of the tab, shortcuts from the keymap; sidebar rows are covered by their menu
   (`Placement::Over`), top-bar tabs get the menu dripping out *below* the tab (`BelowStart`, left edges
