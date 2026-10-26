@@ -557,6 +557,8 @@ pub enum SettingsAction {
     TintMode(TintMode),
     PlaylistSort(PlaylistSort),
     Language(UiLanguage),
+    /// Runs the first-run introduction again.
+    ShowWelcomeTour,
     CloseAfter(u32),
     AddTrustedSite,
     /// Index into `media.trusted_player_sites`.
@@ -676,6 +678,7 @@ impl SettingsAction {
                     }
                     SettingsAction::GlassStyle(GlassStyle::Liquid) => 26,
                     SettingsAction::GlassStyle(GlassStyle::Flat) => 27,
+                    SettingsAction::ShowWelcomeTour => 28,
                     SettingsAction::SearchEngine(i) => 30 + i as u32,
                     SettingsAction::Accent(i) => 40 + i as u32,
                     SettingsAction::ClearHistory => 50,
@@ -748,6 +751,7 @@ impl SettingsAction {
             23..=25 => SettingsAction::Language(LANGUAGES[(n - 23) as usize].1),
             26 => SettingsAction::GlassStyle(GlassStyle::Liquid),
             27 => SettingsAction::GlassStyle(GlassStyle::Flat),
+            28 => SettingsAction::ShowWelcomeTour,
             30..=39 if ((n - 30) as usize) < SEARCH_ENGINES.len() => {
                 SettingsAction::SearchEngine((n - 30) as usize)
             }
@@ -804,6 +808,8 @@ impl SettingsAction {
 /// What the browser should do after a click or edit in the sheet.
 pub enum Outcome {
     Nothing,
+    /// Close Settings and run the first-run introduction.
+    ShowWelcomeTour,
     /// The configuration changed; save and apply it.
     Changed,
     Close,
@@ -1395,6 +1401,8 @@ impl SettingsSheet {
                 let current = LANGUAGES.iter().position(|&(_, l)| l == config.general.language);
                 segmented(ui, row_node, &languages, current);
                 self.note(ui, tr("Applies after restarting Axion."));
+                let row_node = self.row(ui, tr("Welcome tour"));
+                glass_pill(ui, row_node, tr("Show Welcome Tour"), SettingsAction::ShowWelcomeTour);
                 self.control(ui, config, Setting::HomeButton);
                 self.section(ui, tr("Start page"));
                 for setting in [
@@ -2605,6 +2613,7 @@ impl SettingsSheet {
                 config.glass.style = style;
                 Outcome::Changed
             }
+            SettingsAction::ShowWelcomeTour => return Outcome::ShowWelcomeTour,
             SettingsAction::IconWeight(i) => {
                 set_icon_weight(config, i);
                 Outcome::Changed

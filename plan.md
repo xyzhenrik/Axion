@@ -491,7 +491,16 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
       or our own `wl_data_device`); copying *from* pages on native Wayland doesn't reach the
       desktop clipboard yet (same cause); the find bar can cover the selected match.
 - [ ] Packaging: AUR / Flatpak / AppImage.
-- [ ] Crash handling, logging, first-run onboarding.
+- [ ] Crash handling, logging.
+- [x] First-run onboarding (2026-10-26): five steps (Welcome + language, Appearance + accent, Tabs and
+      sidebar, Glass or flat, Account) as tiles of glass with mini-window pictures, step dots, Back /
+      Continue / Skip, directly on a veil of the theme's ground colour (`ui.onboarding_dim`; no panel).
+      Choices apply live (config diff-save path); language switches the sheet at once, the rest
+      relaunches at the end only if it changed. Shows once on a fresh install (`general.onboarding_done`;
+      existing accounts/config/history are marked done; an unfinished tour returns); Settings > General
+      "Show Welcome Tour", `--onboarding`. Keyboard: Tab/arrows, Enter, Space, Esc = Back. Glass options
+      sit `merge_distance + 3` px apart (never bridged at rest). No bookmark importer exists, so none is
+      offered. Capture aids `onboarding-step:N`, `onb-theme|lang|glass|tabs|sidebar|accent|name|password|next|back|tab:…`.
 
 ### Safari parity pass (2026-10-25, from the user's recordings — docs/reference/safari-ipados26.md)
 - [x] Liquid Glass switch/slider knobs: lens while held, rubber band, frost back.

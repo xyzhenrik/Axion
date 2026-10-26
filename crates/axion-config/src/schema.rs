@@ -62,6 +62,10 @@ pub struct General {
     pub search_url: String,
     /// Language of Axion's own interface (applied when Axion starts).
     pub language: UiLanguage,
+    /// The first-run introduction has been finished or skipped (false on a fresh install: it
+    /// shows once; Settings › General › Show Welcome Tour runs it again). Accounts that
+    /// existed before the tour was added count as done.
+    pub onboarding_done: bool,
 }
 
 /// Which language the interface is shown in.
@@ -113,6 +117,7 @@ impl Default for General {
             homepage: START_PAGE_URL.into(),
             search_url: "https://duckduckgo.com/?q={}".into(),
             language: UiLanguage::System,
+            onboarding_done: false,
         }
     }
 }
@@ -959,6 +964,13 @@ pub struct Ui {
     pub page_context_menu_query_chars: u32,
     /// "Copy Image" scales images larger than this down (pixels on the long side).
     pub copy_image_max_px: u32,
+    /// The first-run introduction's card is at most this wide (logical px); it shrinks with
+    /// the window.
+    pub onboarding_max_width: f32,
+    /// ...and at most this high.
+    pub onboarding_max_height: f32,
+    /// How strongly the window behind the introduction is veiled with the theme's ground colour (0-1); the steps sit directly on it, with no panel of their own.
+    pub onboarding_dim: f32,
 }
 
 impl Default for Ui {
@@ -968,6 +980,9 @@ impl Default for Ui {
             page_context_menu_label_chars: 14,
             page_context_menu_query_chars: 400,
             copy_image_max_px: 8192,
+            onboarding_max_width: 880.0,
+            onboarding_max_height: 640.0,
+            onboarding_dim: 0.84,
         }
     }
 }

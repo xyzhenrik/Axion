@@ -681,3 +681,31 @@
 
 # crates/axion-vault/src/item.rs
 "Login" = "Login"
+
+# crates/axion-app/src/onboarding.rs
+"A fast, private browser made of Liquid Glass. A few quick choices and you're ready." = "Ein schneller, privater Browser aus Liquid Glass. Ein paar Entscheidungen, dann kann es losgehen."
+"Beside the page" = "Neben der Seite"
+"Choose where your tabs live and how the sidebar sits next to the page." = "Wähle, wo deine Tabs liegen und wie die Seitenleiste neben der Seite steht."
+"Choose your look" = "Wähle dein Aussehen"
+"Docked" = "Angedockt"
+"Floating" = "Schwebend"
+"Glass or flat" = "Glas oder flach"
+"Liquid Glass bends and blurs what is behind it. Flat is plainer and easier on weaker graphics hardware." = "Liquid Glass bricht und verwischt, was dahinter liegt. Flach ist schlichter und schont schwächere Grafikhardware."
+"Optional password: locks private tabs and protects your saved passwords." = "Optionales Passwort: sperrt private Tabs und schützt deine gespeicherten Passwörter."
+"Over the page" = "Über der Seite"
+"Pick a theme and an accent colour. You can change both any time in Settings." = "Wähle ein Erscheinungsbild und eine Akzentfarbe. Beides lässt sich jederzeit in den Einstellungen ändern."
+"Sidebar" = "Seitenleiste"
+"Skip" = "Überspringen"
+"Start Browsing" = "Los geht’s"
+"Tab bar" = "Tab-Leiste"
+"Tabs and sidebar" = "Tabs und Seitenleiste"
+"Tabs in the address bar" = "Tabs in der Adressleiste"
+"Tabs in their own row" = "Tabs in eigener Zeile"
+"Tabs, history and passwords stay on this device, in an account of their own." = "Tabs, Verlauf und Passwörter bleiben auf diesem Gerät, in einem eigenen Account."
+"This account already has a password." = "Dieser Account hat bereits ein Passwort."
+"Welcome to Axion" = "Willkommen bei Axion"
+"Your account" = "Dein Account"
+
+# crates/axion-app/src/settings.rs
+"Show Welcome Tour" = "Willkommens-Tour zeigen"
+"Welcome tour" = "Willkommens-Tour"

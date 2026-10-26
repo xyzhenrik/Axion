@@ -10,7 +10,8 @@ use axion_accounts::{Accounts, Bases};
 use axion_compositor::Icon;
 use axion_compositor::{Compositor, ImageDraw, Layer, Rect, Scene};
 use axion_config::{
-    Action, Config, ConfigPaths, ConfigWatcher, Key, Keymap, Modifiers, SidebarSlideResize, ThemeMode,
+    Action, Config, ConfigPaths, ConfigWatcher, GlassStyle, Key, Keymap, Modifiers, SidebarSlideResize,
+    TabBarStyle, ThemeMode, UiLanguage,
 };
 use axion_engine::cef::{CefEngine, CefOptions};
 use axion_engine::{
@@ -47,6 +48,7 @@ use crate::menu::{
 use crate::morph::Origin;
 use crate::mpris::{Mpris, MprisCommand, Track};
 use crate::now_playing::{Art, ArtStore, first_web_url};
+use crate::onboarding::Onboarding;
 use crate::overview::{Overview, OverviewAction};
 use crate::page_color::{PageTint, TintParams, lightness};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
@@ -71,6 +73,7 @@ use crate::url::display_host;
 use crate::url::resolve_input;
 
 mod context;
+mod onboarding;
 mod page_context;
 mod playlist;
 
@@ -217,6 +220,8 @@ pub struct Options {
     pub maximized: bool,
     /// The account to open (`--account=ID`); the last one used otherwise.
     pub account: Option<String>,
+    /// Show the first-run introduction (`--onboarding`), whatever the profile says.
+    pub onboarding: bool,
     /// Wakes the event loop when the engine has work.
     pub waker: Option<axion_engine::cef::Waker>,
 }
@@ -303,6 +308,10 @@ pub struct Browser {
     account_id: String,
     account_menu: Menu,
     add_account: AddAccountSheet,
+    /// The first-run introduction (see `crate::onboarding`), and the interface language this
+    /// run started in (a different one at the end relaunches Axion).
+    onboarding: Onboarding,
+    start_language: axion_i18n::Language,
     /// Profile pictures as textures, and the file chooser to pick one.
     avatars: Avatars,
     photo_chooser: PhotoChooser,
@@ -411,17 +420,21 @@ pub struct Browser {
 
 impl Browser {
     pub fn new(event_loop: &ActiveEventLoop, options: Options) -> Result<Self> {
-        let mut accounts = Accounts::load(Bases::discover()?, unix_now())?;
+        let bases = Bases::discover()?;
+        let accounts_file = bases.config.join(axion_accounts::ACCOUNTS_FILE).exists();
+        let mut accounts = Accounts::load(bases, unix_now())?;
         let account_id = accounts.select(options.account.as_deref())?;
         let account_paths = accounts.paths(&account_id)?;
         let account_name = accounts.get(&account_id).map(|a| a.name.clone()).unwrap_or_default();
         tracing::info!(account = %account_id, profile = %account_paths.profile.display(), "opening account");
         let paths = ConfigPaths::in_dir(account_paths.config.clone());
+        let config_file = paths.config.exists();
         let mut config = axion_config::load_config(&paths).unwrap_or_else(|e| {
             tracing::error!("{e}; using defaults");
             Config::default()
         });
         crate::locale::apply(config.general.language);
+        let start_language = axion_i18n::language();
         let keymap = load_keymap(&paths);
         let watcher = ConfigWatcher::new(&paths)
             .inspect_err(|e| tracing::warn!("live config reload unavailable: {e}"))
@@ -571,6 +584,7 @@ impl Browser {
         let playlist_ui =
             playlist::PlaylistUi::build(&mut ui, &config, chrome.bar_node(), device.clone(), queue.clone());
         let add_account = AddAccountSheet::build(&mut ui);
+        let onboarding = Onboarding::build(&mut ui);
         // The dragged tab's lens above the chrome, and the lock screen's alert above all.
         let tab_drag = TabDrag::build(&mut ui);
         let context_menus = ContextMenus::build(
@@ -585,6 +599,8 @@ impl Browser {
         let mut planes = ui.children(root);
         planes.retain(|&n| n != alert_plane);
         planes.push(alert_plane);
+        // The introduction covers everything, the lock screen's alert included.
+        planes.push(onboarding.root());
         ui.set_children(root, &planes);
         // Where the sidebar goes back to when the lock screen is gone (see `order_lock_planes`).
         let sidebar_before =
@@ -663,6 +679,8 @@ impl Browser {
             account_id,
             account_menu,
             add_account,
+            onboarding,
+            start_language,
             avatars,
             photo_chooser: PhotoChooser::default(),
             new_account_photo: None,
@@ -735,6 +753,7 @@ impl Browser {
         };
         browser.show_account();
         browser.update_layout();
+        browser.start_onboarding(&options, accounts_file, config_file);
         browser.playlist_start();
         browser.engine.set_color_scheme(browser.dark);
         let mut urls = options.urls;
@@ -779,6 +798,7 @@ impl Browser {
         if self.settings.is_open() {
             self.settings.resize(&mut self.ui, size);
         }
+        self.onboarding.resize(&mut self.ui, &self.config, size);
         let view_size = self.view_size();
         // While the sidebar slides, the shown tab's size is managed by the slide (see
         // `redraw_frame`); resizing it here too would make Chromium render an extra size.
@@ -1209,6 +1229,7 @@ impl Browser {
         self.lock_screen.set_account(&mut self.ui, &info.name);
         self.passwords.set_account_name(&info.name);
         self.settings.set_account(info);
+        self.onboarding_account_changed();
     }
 
     fn toggle_account_menu(&mut self) {
@@ -1319,6 +1340,12 @@ impl Browser {
         if id == self.account_id || self.accounts.get(id).is_none() {
             return;
         }
+        self.relaunch_into(id);
+    }
+
+    /// Closes this window and starts Axion again in account `id` (the current one too: the
+    /// interface language is applied at the start).
+    fn relaunch_into(&mut self, id: &str) {
         let size = self.window.inner_size().to_logical::<f64>(self.window.scale_factor());
         // Capture aid: the relaunched window takes the screenshot this one would have.
         let capture = self.capture.as_ref().map(|(path, _)| {
@@ -1337,7 +1364,7 @@ impl Browser {
         if let Err(e) = self.accounts.select(Some(id)) {
             tracing::warn!("remembering the account failed: {e}");
         }
-        tracing::info!(from = %self.account_id, to = %id, "switching account");
+        tracing::info!(from = %self.account_id, to = %id, "restarting Axion");
     }
 
     /// Whether the window should close (an account switch is under way).
@@ -3014,6 +3041,9 @@ impl Browser {
     fn handle_ui_events(&mut self, events: Vec<UiEvent>) {
         for event in events {
             match event {
+                event if self.onboarding.is_open() && self.onboarding.wants(&event) => {
+                    self.onboarding_event(event);
+                }
                 event if self.passwords.wants(&event) => {
                     let (ui, config, clipboard) = (&mut self.ui, &mut self.config, &mut self.clipboard);
                     let outcome = self.passwords.event(ui, config, clipboard, self.pointer, event);
@@ -3699,6 +3729,7 @@ impl Browser {
                 }
             }
             Outcome::Close => self.close_settings(),
+            Outcome::ShowWelcomeTour => self.open_onboarding(0),
             Outcome::SetAccountPassword { current, new } => {
                 let (ui, config) = (&mut self.ui, &self.config);
                 let (result, done) = match &current {
@@ -3909,6 +3940,7 @@ impl Browser {
             || self.settings.is_open()
             || self.passwords.is_open()
             || self.add_account.is_open()
+            || self.onboarding.is_open()
             || self.lock_screen.is_alert_open()
     }
 
@@ -4046,6 +4078,9 @@ impl Browser {
                     PhotoFor::Current => {
                         self.settings.set_photo_status(Some(text.clone()));
                         self.refresh_settings();
+                        if self.onboarding.is_open() {
+                            self.onboarding.show_error(&mut self.ui, &self.config, &text);
+                        }
                     }
                 }
                 self.show_toast(Icon::Close, &text);
@@ -4562,6 +4597,9 @@ impl Browser {
                 // Esc ends a held drag (slider, button) before it does anything else.
                 self.release_pointer_holds();
             }
+        }
+        if self.onboarding.is_open() {
+            return self.onboarding_key(event);
         }
         if pressed && self.passwords.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.close_passwords();
@@ -5355,6 +5393,7 @@ impl Browser {
                     let events = self.lock_screen.action(&mut self.ui, &self.config, LockScreen::SHOW_ALERT);
                     self.handle_ui_events(events);
                 }
+                onboarding if onboarding.starts_with("onb") && self.onboarding_capture_step(onboarding) => {}
                 other => tracing::warn!("--open={other} is not a known view"),
             }
         }
@@ -5462,6 +5501,7 @@ impl Browser {
         self.find.follow(&mut self.ui, address, width, top);
         self.find.animate(&mut self.ui, dt, &mut self.engine);
         self.lock_screen.animate(&mut self.ui, dt);
+        self.onboarding.animate(&mut self.ui, &self.config, dt);
         self.settings.animate(&mut self.ui, dt);
         let address = self.chrome.address_frame(&self.ui);
         self.passwords.animate(&mut self.ui, &self.config, dt, address);

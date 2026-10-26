@@ -1,7 +1,7 @@
 //! Axion — a Liquid Glass web browser.
 //!
 //! ```bash
-//! axion [url…] [--account=ID] [--capture=out.png] [--size=1440x900] [--position=X,Y] [--maximized] [--overview] [--address=TEXT] [--open=menu|history|bookmarks|settings|private|private-locked|account-menu|…] [--lead=MS]
+//! axion [url…] [--account=ID] [--capture=out.png] [--size=1440x900] [--position=X,Y] [--maximized] [--overview] [--address=TEXT] [--open=menu|history|bookmarks|settings|private|private-locked|account-menu|…] [--lead=MS] [--onboarding]
 //! ```
 //!
 //! Environment: `AXION_GPU=low` uses the integrated GPU, `AXION_OSR=software` disables GPU
@@ -37,6 +37,7 @@ mod menu;
 mod morph;
 mod mpris;
 mod now_playing;
+mod onboarding;
 mod overview;
 mod page_color;
 mod page_menu;
@@ -108,6 +109,7 @@ fn main() -> Result<()> {
         }),
         maximized: args.iter().any(|a| a == "--maximized"),
         account: args.iter().find_map(|a| a.strip_prefix("--account=")).map(str::to_owned),
+        onboarding: args.iter().any(|a| a == "--onboarding"),
         waker: None,
     };
 
