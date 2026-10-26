@@ -38,6 +38,42 @@
 
   window.axionHome = { refresh };
 
+  // ---- translation ----
+
+  // The browser sends the current language's translations of this page's texts with its state
+  // (`state.i18n`, keyed by the English text). Untranslated text stays English.
+  const t = (text, args) => {
+    const known = state && state.i18n && state.i18n[text];
+    let out = typeof known === "string" ? known : text;
+    if (args) out = out.replace(/\{(\w+)\}/g, (m, name) => (name in args ? String(args[name]) : m));
+    return out;
+  };
+
+  const lang = () => (state && state.lang) || "en";
+
+  // Numbers in the page language's format.
+  const num = (value, digits = 0) =>
+    value.toLocaleString(lang(), { minimumFractionDigits: digits, maximumFractionDigits: digits });
+
+  // Static text: elements marked `data-t` (their text) and `data-t-attrs` (attributes whose
+  // values are the English texts).
+  let domTranslated = false;
+  function translateDom() {
+    if (domTranslated || !state) return;
+    domTranslated = true;
+    document.documentElement.lang = lang();
+    if (!state.i18n) return;
+    document.querySelectorAll("[data-t]").forEach((node) => {
+      node.textContent = t(node.textContent.trim());
+    });
+    document.querySelectorAll("[data-t-attrs]").forEach((node) => {
+      for (const attr of node.dataset.tAttrs.split(",")) {
+        const name = attr.trim();
+        if (node.hasAttribute(name)) node.setAttribute(name, t(node.getAttribute(name)));
+      }
+    });
+  }
+
   // ---- helpers ----
 
   const el = (tag, className, text) => {
@@ -139,27 +175,27 @@
     img.src = `/api/favicon?host=${encodeURIComponent(host)}&v=${version}`;
   };
 
-  const formatCount = (n) => Math.round(n).toLocaleString("en-US");
+  const formatCount = (n) => num(Math.round(n));
 
   const formatBytes = (b) => {
-    const units = ["bytes", "KB", "MB", "GB", "TB"];
+    const units = [t("bytes"), "KB", "MB", "GB", "TB"];
     let i = 0;
     while (b >= 1024 && i < units.length - 1) {
       b /= 1024;
       i += 1;
     }
-    return i === 0 ? `${Math.round(b)} ${units[0]}` : `${b < 10 ? b.toFixed(1) : Math.round(b)} ${units[i]}`;
+    return i === 0 ? `${num(Math.round(b))} ${units[0]}` : `${b < 10 ? num(b, 1) : num(Math.round(b))} ${units[i]}`;
   };
 
   const formatSeconds = (s) => {
-    if (s < 60) return `${Math.round(s)} s`;
-    if (s < 3600) return `${Math.round(s / 60)} min`;
+    if (s < 60) return t("{n} s", { n: num(Math.round(s)) });
+    if (s < 3600) return t("{n} min", { n: num(Math.round(s / 60)) });
     if (s < 86400) {
       const h = s / 3600;
-      return `${h < 10 ? h.toFixed(1) : Math.round(h)} h`;
+      return t("{n} h", { n: h < 10 ? num(h, 1) : num(Math.round(h)) });
     }
     const d = s / 86400;
-    return `${d < 10 ? d.toFixed(1) : Math.round(d)} days`;
+    return t("{n} days", { n: d < 10 ? num(d, 1) : num(Math.round(d)) });
   };
 
   // ---- clock and greeting ----
@@ -174,12 +210,15 @@
       clock.textContent = `${String(now.getHours()).padStart(2, "0")}:${minutes}`;
     } else {
       const h = now.getHours() % 12 || 12;
-      clock.append(`${h}:${minutes}`, el("span", "ampm", now.getHours() < 12 ? "AM" : "PM"));
+      clock.append(`${h}:${minutes}`, el("span", "ampm", now.getHours() < 12 ? t("AM") : t("PM")));
     }
     const hour = now.getHours();
-    const part = hour >= 5 && hour < 12 ? "morning" : hour >= 12 && hour < 18 ? "afternoon" : "evening";
     const name = state.greeting.name;
-    $("greeting").textContent = name ? `Good ${part}, ${name}` : `Good ${part}`;
+    let greeting;
+    if (hour >= 5 && hour < 12) greeting = name ? t("Good morning, {name}", { name }) : t("Good morning");
+    else if (hour >= 12 && hour < 18) greeting = name ? t("Good afternoon, {name}", { name }) : t("Good afternoon");
+    else greeting = name ? t("Good evening, {name}", { name }) : t("Good evening");
+    $("greeting").textContent = greeting;
   }
 
   function startClock() {
@@ -192,19 +231,19 @@
 
   function engineName() {
     const s = state.search;
-    return s.current >= 0 ? s.engines[s.current].name : s.customHost || "your search engine";
+    return s.current >= 0 ? s.engines[s.current].name : s.customHost || t("your search engine");
   }
 
   function renderSearch() {
     const s = state.search;
     $("search").hidden = !s.show;
-    $("query").placeholder = `Search with ${engineName()} or enter website`;
+    $("query").placeholder = t("Search with {engine} or enter website", { engine: engineName() });
     const host = s.current >= 0 ? s.engines[s.current].host : s.customHost;
     const icon = $("engine-icon");
     icon.textContent = "";
     icon.style.background = "";
     siteIcon(icon, host, engineName());
-    $("engine").setAttribute("aria-label", `Search engine: ${engineName()}`);
+    $("engine").setAttribute("aria-label", t("Search engine: {name}", { name: engineName() }));
     const menu = $("engine-menu");
     menu.textContent = "";
     s.engines.forEach((engine, index) => {
@@ -263,11 +302,11 @@
       });
       actions.appendChild(b);
     };
-    action(site.pinned ? "Unpin" : "Pin", ICON.pin, () =>
+    action(site.pinned ? t("Unpin") : t("Pin"), ICON.pin, () =>
       post(site.pinned ? { type: "unpinSite", url: site.url } : { type: "pinSite", url: site.url, title: site.title }),
     );
-    action("Edit", ICON.edit, () => openEditor(site));
-    action("Remove", ICON.close, () => post({ type: "removeSite", url: site.url }));
+    action(t("Edit"), ICON.edit, () => openEditor(site));
+    action(t("Remove"), ICON.close, () => post({ type: "removeSite", url: site.url }));
     a.appendChild(actions);
     return a;
   }
@@ -277,23 +316,24 @@
     b.type = "button";
     const face = el("span", "face glass");
     face.appendChild(svg(ICON.plus, 26));
-    b.append(face, el("span", "name", "Add Site"));
+    b.append(face, el("span", "name", t("Add Site")));
     b.addEventListener("click", () => openEditor(null));
     return b;
   }
 
   function renderSites() {
-    const t = state.topSites;
-    $("sites").hidden = !t.show;
+    const top = state.topSites;
+    $("sites").hidden = !top.show;
     const restore = $("restore-row");
-    restore.hidden = !(t.hidden > 0);
-    $("restore-label").textContent = `${t.hidden} removed site${t.hidden === 1 ? "" : "s"}`;
-    if (!t.show) return;
+    restore.hidden = !(top.hidden > 0);
+    $("restore-label").textContent =
+      top.hidden === 1 ? t("{n} removed site", { n: top.hidden }) : t("{n} removed sites", { n: top.hidden });
+    if (!top.show) return;
     const cols = columns();
-    const perPage = cols * t.rows;
-    const items = t.sites.map(tile);
+    const perPage = cols * top.rows;
+    const items = top.sites.map(tile);
     // Room left in the count: a tile to add a site.
-    if (t.sites.length < (t.count || t.sites.length + 1)) items.push(addTile());
+    if (top.sites.length < (top.count || top.sites.length + 1)) items.push(addTile());
     const pages = Math.max(1, Math.ceil(items.length / perPage));
     page = Math.min(page, pages - 1);
     const container = $("pages");
@@ -314,7 +354,7 @@
       const dot = el("button");
       dot.type = "button";
       dot.setAttribute("role", "tab");
-      dot.setAttribute("aria-label", `Page ${p + 1}`);
+      dot.setAttribute("aria-label", t("Page {n}", { n: p + 1 }));
       dot.setAttribute("aria-selected", String(p === page));
       dot.addEventListener("click", () => showPage(p));
       dots.appendChild(dot);
@@ -352,7 +392,7 @@
 
   function openEditor(site) {
     editing = site || {};
-    $("edit-title").textContent = site ? "Edit Site" : "Add Site";
+    $("edit-title").textContent = site ? t("Edit Site") : t("Add Site");
     $("edit-name").value = site ? site.title || "" : "";
     $("edit-url").value = site ? site.url : "";
     $("edit").showModal();
@@ -374,8 +414,8 @@
     const s = state.stats;
     $("stats").hidden = !s.show;
     $("blocked").textContent = formatCount(s.blocked);
-    $("bandwidth").textContent = `≈ ${formatBytes(s.bytes)}`;
-    $("time").textContent = `≈ ${formatSeconds(s.seconds)}`;
+    $("bandwidth").textContent = t("≈ {value}", { value: formatBytes(s.bytes) });
+    $("time").textContent = t("≈ {value}", { value: formatSeconds(s.seconds) });
     fitStats();
   }
 
@@ -439,7 +479,7 @@
           const badge = el("span", "live-badge");
           badge.appendChild(svg(ICON.play, 8));
           button.appendChild(badge);
-          button.title = `${label} (${kind === "video" ? "video" : "animated"})`;
+          button.title = kind === "video" ? t("{label} (video)", { label }) : t("{label} (animated)", { label });
         }
       } else {
         button.appendChild(el("span", "none-mark"));
@@ -449,8 +489,8 @@
       if (name) {
         const remove = el("button", "bg-remove");
         remove.type = "button";
-        remove.setAttribute("aria-label", "Remove background");
-        remove.title = "Remove";
+        remove.setAttribute("aria-label", t("Remove background"));
+        remove.title = t("Remove");
         remove.appendChild(svg(ICON.close, 10));
         remove.addEventListener("click", (e) => {
           e.stopPropagation();
@@ -460,13 +500,13 @@
       }
       return item;
     };
-    picker.appendChild(swatch("", "No background"));
-    b.list.forEach((name, i) => picker.appendChild(swatch(name, `Background ${i + 1}`)));
+    picker.appendChild(swatch("", t("No background")));
+    b.list.forEach((name, i) => picker.appendChild(swatch(name, t("Background {n}", { n: i + 1 }))));
     if (b.canAdd) {
       const add = el("button", "bg-swatch add");
       add.type = "button";
-      add.setAttribute("aria-label", "Add background image");
-      add.title = "Add Image…";
+      add.setAttribute("aria-label", t("Add background image"));
+      add.title = t("Add Image…");
       add.appendChild(svg(ICON.plus, 18));
       add.addEventListener("click", () => post({ type: "chooseBackground" }));
       picker.appendChild(add);
@@ -566,15 +606,15 @@
     wallpaper = video;
     if (!video.canPlayType(mime)) {
       wallpaperFailed(name, mime === "video/mp4"
-        ? "This build of Axion can't play H.264 video. WebM videos always play."
-        : "This video format can't be played here.");
+        ? t("This build of Axion can't play H.264 video. WebM videos always play.")
+        : t("This video format can't be played here."));
       return;
     }
     fetchBlobUrl(name)
       .then((url) => {
         if (wallpaper !== video) return URL.revokeObjectURL(url);
         video.addEventListener("error", () =>
-          wallpaperFailed(name, "This video can't be played here (its codec, e.g. HEVC or AV1 in MP4, isn't supported). Use H.264 MP4 or WebM."));
+          wallpaperFailed(name, t("This video can't be played here (its codec, e.g. HEVC or AV1 in MP4, isn't supported). Use H.264 MP4 or WebM.")));
         video.addEventListener("loadeddata", () => {
           $("backdrop").style.backgroundImage = "";
           setNote("");
@@ -583,7 +623,7 @@
         $("backdrop").insertBefore(video, $("backdrop").firstChild);
         syncPlayback();
       })
-      .catch(() => wallpaperFailed(name, "The video file could not be read."));
+      .catch(() => wallpaperFailed(name, t("The video file could not be read.")));
   }
 
   // The first frame of an animated image, as a still (a CSS background would keep playing).
@@ -679,7 +719,7 @@
         }
       }
       if (kind !== "image" && !b.live) {
-        const text = b.liveSetting ? "Reduce Motion is on, so the wallpaper shows a still frame." : "";
+        const text = b.liveSetting ? t("Reduce Motion is on, so the wallpaper shows a still frame.") : "";
         setNote(text);
         // Said when the user picks it, not on every new tab (Reduce Motion is a choice).
         if (text && shownSelected !== undefined && shownSelected !== b.selected) showHint(text);
@@ -785,6 +825,7 @@
 
   function render() {
     if (!state) return;
+    translateDom();
     // Axion's accent colour, live (controls, focus rings, selection).
     if (state.accent) document.documentElement.style.setProperty("--accent", state.accent);
     document.body.classList.toggle("private", state.private);

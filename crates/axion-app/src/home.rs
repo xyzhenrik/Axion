@@ -39,7 +39,7 @@ use crate::url::{is_address, resolve_input};
 #[allow(dead_code, reason = "the one place other code names the start page by")]
 pub const HOME_URL: &str = START_PAGE_URL;
 /// What the address bar shows on the start page instead of its address.
-pub const ADDRESS_PLACEHOLDER: &str = "Search or enter website";
+pub const ADDRESS_PLACEHOLDER: &str = axion_i18n::tr_mark("Search or enter website");
 /// Its host under the `axion://` scheme.
 const HOST: &str = "home";
 
@@ -387,10 +387,12 @@ impl HomePage {
     /// Opens the desktop's file chooser for a new background (taken by [`Self::poll_chooser`]).
     pub fn choose_background(&self) {
         let chosen = Arc::clone(&self.chosen);
-        spawn("choose-background", move || match choose_portal("Background", Choose::Image) {
-            Ok(Some(path)) => *chosen.lock().unwrap_or_else(PoisonError::into_inner) = Some(path),
-            Ok(None) => {}
-            Err(e) => tracing::warn!("file chooser unavailable: {e}"),
+        spawn("choose-background", move || {
+            match choose_portal(axion_i18n::tr("Background"), Choose::Image) {
+                Ok(Some(path)) => *chosen.lock().unwrap_or_else(PoisonError::into_inner) = Some(path),
+                Ok(None) => {}
+                Err(e) => tracing::warn!("file chooser unavailable: {e}"),
+            }
         });
     }
 
@@ -743,6 +745,26 @@ fn uses_12h(locale: &str) -> bool {
     .contains(&region)
 }
 
+/// The current language's translations of the texts the page uses (empty for English); rebuilt
+/// only when the language changes.
+fn page_translations() -> Value {
+    static CACHE: Mutex<Option<(u32, Value)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+    let generation = axion_i18n::generation();
+    if let Some((cached, value)) = cache.as_ref()
+        && *cached == generation
+    {
+        return value.clone();
+    }
+    let map = axion_i18n::page_catalog(&[
+        (PAGE_HTML, axion_i18n::scan::Dialect::Html),
+        (PAGE_JS, axion_i18n::scan::Dialect::Script),
+    ]);
+    let value = json!(map);
+    *cache = Some((generation, value.clone()));
+    value
+}
+
 /// `/api/state`: everything the page shows.
 #[allow(clippy::too_many_arguments)]
 fn state_json(
@@ -779,6 +801,8 @@ fn state_json(
     let first_name = name.split_whitespace().next().unwrap_or_default();
     json!({
         "private": private,
+        "lang": axion_i18n::language().tag(),
+        "i18n": page_translations(),
         "icons": icons_version,
         "accent": css_color(config.appearance.accent),
         "clock": { "show": home.show_clock, "h24": h24, "format": match home.clock_format {
@@ -963,6 +987,19 @@ mod tests {
         assert_eq!(state["topSites"]["sites"][0]["host"], "often.example");
         assert_eq!(state["stats"]["bytes"], 7 * BYTES_PER_BLOCKED_REQUEST);
         assert_eq!(state["greeting"]["name"], "Ada");
+        assert!(state["lang"].is_string(), "the page learns the language");
+        assert!(state["i18n"].is_object(), "and gets its translations (none for English)");
+    }
+
+    #[test]
+    fn page_texts_are_found_by_the_scanner() {
+        use axion_i18n::scan::{Dialect, keys};
+        let found = |text: &str, dialect| keys(text, dialect).into_iter().map(|k| k.key).collect::<Vec<_>>();
+        let html = found(PAGE_HTML, Dialect::Html);
+        assert!(html.iter().any(|k| k == "trackers & ads blocked"), "{html:?}");
+        assert!(html.iter().any(|k| k == "Customize start page"), "{html:?}");
+        let script = found(PAGE_JS, Dialect::Script);
+        assert!(script.iter().any(|k| k == "Good morning, {name}"), "{script:?}");
     }
 
     #[test]
