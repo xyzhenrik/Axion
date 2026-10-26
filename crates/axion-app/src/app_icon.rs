@@ -4,7 +4,7 @@
 
 use winit::window::Icon;
 
-/// 256 px PNG of the default icon (sources: `assets/icons/axion-v2.svg`, see plan.md "App icon").
+/// 256 px PNG of the default icon (the user's glass-compass artwork, `assets/icons/axion-user.png`; see plan.md "App icon").
 static ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/hicolor/256x256/apps/axion.png");
 
 /// The window icon, or `None` if the embedded PNG cannot be decoded.

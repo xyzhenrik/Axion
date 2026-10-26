@@ -533,16 +533,22 @@ Windows/macOS, touchscreen-first mode.
   Translator instructions and glossary: `crates/axion-i18n/locales/GLOSSARY.md`. Known gaps:
   library `thiserror` messages shown verbatim (vault/accounts), weekday/month names in history
   headings, PiP window title (matched by a KWin script).
-- 2026-10-26: **App icon.** Default is **v2 "lens A"** (`assets/icons/axion-v2.svg`: white axis-built
-  "A" with an orange glass droplet on a blue squircle): the most legible at 16-32 px and the
-  least compass-like. Sources are hand-written SVGs in `assets/icons/`; `axion-small.svg` is the
-  shadow-free 16/24/32 px variant; `preview.png` is the contact sheet (render with
-  `rsvg-convert`). Installable set: `assets/icons/hicolor/<n>x<n>/apps/axion.png` +
-  `scalable/apps/axion.svg`, and `assets/axion.desktop`. The window icon embeds the 256 px PNG
-  (`app_icon.rs`); the app id is `axion`. **To swap:** copy the chosen `axion-vN.svg` over
-  `hicolor/scalable/apps/axion.svg` and re-export the PNGs (`rsvg-convert -w N`); no code change.
-  Alternatives for the user to choose from: **v1** compass (navy tile, glass ring, orange/blue
-  needle) and **v3** orb (glass globe with axis rod and orange orbit ring, dark tile).
+- 2026-10-26: **App icon (updated).** Default is now the **user's own generated glass-compass icon**
+  (glass squircle tile with a blue compass; made by the user with an image generator and chosen by
+  them as Axion's icon: the artwork and its use are their choice and responsibility). Original kept
+  untouched at `assets/icons/source/axion-user-icon.png` (1465x1073 RGBA with a white glow halo).
+  Processing (ImageMagick): alpha channel thresholded at 90 % to find the tile, morphological
+  open/close + 1 px blur as a clean soft-edged mask (drops the noisy glow, keeps the glass
+  translucency and highlights), cropped to the tile, Lanczos-resized to 880 px, subtle drop shadow
+  added, centred on a 1024x1024 transparent canvas (~7 % padding) -> `assets/icons/axion-user.png`.
+  `hicolor/<n>x<n>/apps/axion.png` (16..512) are Lanczos downscales of it (16/24/32 px lightly
+  unsharp-masked); `hicolor/scalable/apps/axion.svg` embeds the 512 px PNG as a base64 data: URI.
+  `preview.png` is the contact sheet (256 px + small sizes on light/dark, 4x zoom of 16-32 px).
+  The window icon still embeds the 256 px PNG (`app_icon.rs`); the app id is `axion`.
+  The earlier SVG variants stay as alternatives: **v2** "lens A" (`axion-v2.svg`, former default,
+  most legible at 16-32 px; `axion-small.svg` is its shadow-free small variant), **v1** compass and
+  **v3** orb. **To swap back:** copy the chosen `axion-vN.svg` over `hicolor/scalable/apps/axion.svg`
+  and re-export the PNGs (`rsvg-convert -w N`); no code change.
 - 2026-10-25: The page starts **below** the floating bar and **ends there**, like in any
   browser: nothing of the page shows or refracts behind the bar (user decision; an earlier
   "edge extension" that stretched the page's top row behind the bar was removed).
