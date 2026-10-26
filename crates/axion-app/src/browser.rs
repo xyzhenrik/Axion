@@ -1262,6 +1262,12 @@ impl Browser {
 
     fn media_command(&mut self, view: ViewId, command: &axion_media::Command) {
         tracing::debug!(?view, ?command, "media command");
+        // Every volume control of a Playlist video sets the Playlist's one shared volume.
+        if self.is_playback_view(view)
+            && crate::playlist::remember_volume(&mut self.config.playlist, &command.action)
+        {
+            self.config_dirty_since.get_or_insert(Instant::now());
+        }
         // Axion's fullscreen player on the Playlist's playback is the app's own state.
         if let axion_media::Action::Fullscreen(on) = command.action
             && self.is_playback_view(view)
@@ -1457,6 +1463,26 @@ impl Browser {
         self.passwords.close(&mut self.ui, &self.config, fallback);
     }
 
+    /// Capture aid: one log line per video Axion has state for.
+    fn log_media_state(&self) {
+        let tab = self.active_view().and_then(|v| self.primary_player(v));
+        let playback = self.playlist.playback.as_ref().and_then(|p| p.player());
+        let line = |p: Option<&axion_media::Player>| match p {
+            Some(p) => format!(
+                "time={:.2} duration={:.2} volume={:.2} muted={} paused={}",
+                p.time, p.duration, p.volume, p.muted, p.paused
+            ),
+            None => "none".to_owned(),
+        };
+        tracing::info!(
+            tab = %line(tab),
+            playlist = %line(playback),
+            playlist_volume = self.config.playlist.volume,
+            playlist_muted = self.config.playlist.muted,
+            "media state"
+        );
+    }
+
     fn primary_player(&self, view: ViewId) -> Option<&axion_media::Player> {
         find_tab(&self.tabs, &self.parked, view)?.media.as_ref()?.primary()
     }
@@ -1645,6 +1671,11 @@ impl Browser {
     fn pip_outcome(&mut self, outcome: Option<PipOutcome>) {
         match outcome {
             Some(PipOutcome::Command(view, command)) => self.media_command(view, &command),
+            Some(PipOutcome::Commands(view, commands)) => {
+                for command in commands {
+                    self.media_command(view, &command);
+                }
+            }
             Some(PipOutcome::Close(view, id)) => self.end_pip(view, Some(&id), false),
             Some(PipOutcome::BackToTab(view)) => {
                 self.end_pip(view, None, true);
@@ -2856,6 +2887,9 @@ impl Browser {
                 UiEvent::ValueChanged { node, value } if node == self.playlist_ui.page.scrubber() => {
                     self.playlist_seek(value);
                 }
+                UiEvent::ValueChanged { node, value } if node == self.playlist_ui.page.volume() => {
+                    self.playlist_set_volume(value);
+                }
                 UiEvent::Clicked { action, .. } if OverviewAction::from_id(action).is_some() => {
                     if let Some(action) = OverviewAction::from_id(action) {
                         self.overview_action(action);
@@ -2935,8 +2969,10 @@ impl Browser {
                     }
                 }
                 UiEvent::ValueChanged { node, value } if node == self.player.volume() => {
-                    if let Some((view, command)) = self.player.volume_command(value) {
-                        self.media_command(view, &command);
+                    if let Some((view, commands)) = self.player.volume_command(value) {
+                        for command in commands {
+                            self.media_command(view, &command);
+                        }
                     }
                 }
                 UiEvent::ValueChanged { node, value } => {
@@ -4058,6 +4094,9 @@ impl Browser {
             self.leave_page();
             return;
         }
+        // Fullscreen controls that faded out come back before the pointer reaches them, so a
+        // press right after the move already hits them.
+        self.player.reveal(&mut self.ui);
         let (over_ui, events) = self.ui.handle(UiInput::PointerMove(p));
         self.handle_ui_events(events);
         if self.playlist_open() {
@@ -4886,6 +4925,9 @@ impl Browser {
                         }
                     }
                 }
+                // Capture aid: logs the media state of the active tab, the Playlist playback and
+                // the PiP video ("media-log"), to check what seeks and volume changes did.
+                "media-log" => self.log_media_state(),
                 "shields-settings" => {
                     self.settings.set_category(Category::Shields);
                     self.run(Action::OpenSettings);

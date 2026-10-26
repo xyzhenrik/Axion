@@ -46,6 +46,8 @@ pub enum PageAction {
     Next,
     Repeat,
     Speed,
+    /// The speaker button of the volume control: mutes and unmutes.
+    Mute,
     Sleep,
     SelectAll,
     DeleteSelected,
@@ -60,7 +62,7 @@ pub enum PageAction {
     RowDown(usize),
 }
 
-const SIMPLE: [PageAction; 17] = [
+const SIMPLE: [PageAction; 18] = [
     PageAction::Close,
     PageAction::PlayAll,
     PageAction::Edit,
@@ -73,6 +75,7 @@ const SIMPLE: [PageAction; 17] = [
     PageAction::Next,
     PageAction::Repeat,
     PageAction::Speed,
+    PageAction::Mute,
     PageAction::Sleep,
     PageAction::SelectAll,
     PageAction::DeleteSelected,
@@ -145,6 +148,11 @@ const CONTROL_SMALL: f32 = 40.0;
 const CONTROL_MEDIUM: f32 = 48.0;
 const CONTROL_BIG: f32 = 68.0;
 const BOTTOM_BUTTON: f32 = 42.0;
+/// The volume capsule beside the speed button (at most; it shrinks in a narrow player).
+const VOLUME_WIDTH: f32 = 184.0;
+/// Space between the speed button and the volume capsule: just over `glass.merge_distance` (20), so
+/// their glass stays two shapes.
+const VOLUME_GAP: f32 = 24.0;
 const SCRUB_SETTLE: Duration = Duration::from_millis(600);
 const SEARCH_SPRING: (f32, f32) = (0.3, 0.8);
 const SEARCH_SETTLED: f32 = 0.5;
@@ -289,6 +297,9 @@ pub struct PlayerModel<'a> {
     pub repeat: Repeat,
     pub rate: f64,
     pub sleep: bool,
+    /// The Playlist's shared volume (0–1) and mute state.
+    pub volume: f32,
+    pub muted: bool,
     /// Text over the black area instead of a picture (nothing chosen, loading, …).
     pub note: Option<&'a str>,
     /// The note comes with an *Open page* button.
@@ -336,6 +347,10 @@ pub struct PlaylistPage {
     repeat_icon: NodeId,
     repeat_one: NodeId,
     speed_label: NodeId,
+    volume: NodeId,
+    volume_icon: NodeId,
+    /// The volume slider was moved by the user a moment ago.
+    volume_set_at: Option<Instant>,
     sleep_icon: NodeId,
     rows: Vec<RowNodes>,
     scroll: f32,
@@ -568,18 +583,20 @@ impl PlaylistPage {
         let title = ui.add_label(info, "", TextStyle::Title2, shrinking());
         let site = dim_label(ui, info, "", TextStyle::Footnote);
 
+        // The thick progress bar's grab area is as tall as its row.
+        let hit = config.media.progress_hit_height.max(crate::player::MIN_HIT_HEIGHT);
         let scrub = ui.add(
             player_col,
             Widget::container(),
-            Style { size: Size { width: percent(1.0), height: length(24.0) }, flex_shrink: 0.0, ..row(10.0) },
+            Style { size: Size { width: percent(1.0), height: length(hit) }, flex_shrink: 0.0, ..row(10.0) },
         );
         let elapsed = dim_label(ui, scrub, "0:00", TextStyle::Caption);
         let scrubber = ui.add(
             scrub,
-            Widget::line_slider(0.0),
+            Widget::line_slider(0.0).with_track(config.media.progress_thickness),
             Style {
                 flex_grow: 1.0,
-                min_size: Size { width: length(40.0), height: auto() },
+                min_size: Size { width: length(40.0), height: length(hit) },
                 ..Default::default()
             },
         );
@@ -652,6 +669,13 @@ impl PlaylistPage {
             slot(ui, JustifyContent::CENTER),
             slot(ui, JustifyContent::END),
         );
+        // The sleep button's slot is only as wide as the button: the side slots (equal, so it
+        // stays under the play button) get all the rest, room for the longer volume control.
+        let mut middle = ui.style(middle_slot);
+        middle.flex_grow = 0.0;
+        middle.flex_basis = auto();
+        middle.size.width = length(BOTTOM_BUTTON);
+        ui.set_style(middle_slot, middle);
         let speed = ui.add(
             left_slot,
             Widget::container()
@@ -667,6 +691,46 @@ impl PlaylistPage {
         );
         let speed_label = ui.add_label(speed, "1×", TextStyle::BodyEmphasis, Style::default());
         ui.set_label_align(speed_label, Align::Center);
+        // The volume: a glass capsule with the speaker (mute) and a slider, right of the speed.
+        let volume_capsule = ui.add(
+            left_slot,
+            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
+            Style {
+                size: Size { width: length(VOLUME_WIDTH), height: length(BOTTOM_BUTTON) },
+                flex_shrink: 1.0,
+                margin: Rect {
+                    left: length(VOLUME_GAP),
+                    right: length(0.0),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
+                padding: pad(2.0, 16.0, 0.0, 0.0),
+                ..row(4.0)
+            },
+        );
+        let volume_button = ui.add(
+            volume_capsule,
+            Widget::container()
+                .with_action(PageAction::Mute.id())
+                .with_radius(CAPSULE)
+                .with_tooltip("Mute", None),
+            Style {
+                size: square(BOTTOM_BUTTON - 4.0),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                ..row(0.0)
+            },
+        );
+        let volume_icon = ui.add(volume_button, Widget::icon(Icon::Volume, 20.0), Style::default());
+        let volume = ui.add(
+            volume_capsule,
+            Widget::line_slider(1.0).with_track(config.media.progress_thickness),
+            Style {
+                flex_grow: 1.0,
+                min_size: Size { width: length(24.0), height: length(hit) },
+                ..Default::default()
+            },
+        );
         let (_, sleep_icon) =
             glass_circle(ui, middle_slot, PageAction::Sleep, Icon::Moon, BOTTOM_BUTTON, 20.0, "Sleep Timer");
         glass_circle(
@@ -719,6 +783,9 @@ impl PlaylistPage {
             repeat_icon,
             repeat_one,
             speed_label,
+            volume,
+            volume_icon,
+            volume_set_at: None,
             sleep_icon,
             rows: Vec::new(),
             scroll: 0.0,
@@ -745,6 +812,16 @@ impl PlaylistPage {
 
     pub fn scrubber(&self) -> NodeId {
         self.scrubber
+    }
+
+    /// The volume slider's node.
+    pub fn volume(&self) -> NodeId {
+        self.volume
+    }
+
+    /// The volume slider was moved by the user.
+    pub fn volume_adjusted(&mut self) {
+        self.volume_set_at = Some(Instant::now());
     }
 
     pub fn rect(&self) -> Frame {
@@ -1214,6 +1291,12 @@ impl PlaylistPage {
         ui.set_visible(self.repeat_one, m.repeat == Repeat::One);
         let rate = format!("{}×", trim_rate(m.rate));
         ui.set_text(self.speed_label, &rate);
+        let adjusting = ui.dragging() == Some(self.volume)
+            || self.volume_set_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
+        if !adjusting {
+            ui.set_value(self.volume, if m.muted { 0.0 } else { m.volume });
+        }
+        ui.set_icon(self.volume_icon, if m.muted || m.volume <= 0.0 { Icon::Muted } else { Icon::Volume });
 
         match (&m.video, m.note) {
             (Some(video), _) => {

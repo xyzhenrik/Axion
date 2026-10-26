@@ -129,6 +129,22 @@ mod tests {
     }
 
     #[test]
+    fn the_playlist_volume_is_saved_and_loaded() {
+        let paths = ConfigPaths::in_dir(temp_dir("playlist-volume"));
+        let mut config = Config::default();
+        assert_eq!(config.playlist.volume, 1.0);
+        assert!(!config.playlist.muted);
+        config.playlist.volume = 0.3;
+        config.playlist.muted = true;
+        save_config(&paths, &config).unwrap();
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(text.contains("volume") && text.contains("muted"), "{text}");
+        let loaded = load_config(&paths).unwrap();
+        assert!((loaded.playlist.volume - 0.3).abs() < 1e-6 && loaded.playlist.muted);
+        std::fs::remove_dir_all(&paths.dir).unwrap();
+    }
+
+    #[test]
     fn saves_only_changes() {
         let paths = ConfigPaths::in_dir(temp_dir("diff"));
         let mut config = Config::default();
