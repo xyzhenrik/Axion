@@ -800,6 +800,8 @@ pub struct SettingsSheet {
     preview_node: Option<NodeId>,
     background_path: Option<NodeId>,
     background_status: Option<String>,
+    /// The start page's last "could not add" message that `background_status` followed.
+    background_error: Option<String>,
 }
 
 fn row(gap: f32) -> Style {
@@ -985,6 +987,7 @@ impl SettingsSheet {
             preview_node: None,
             background_path: None,
             background_status: None,
+            background_error: None,
         }
     }
 
@@ -1003,6 +1006,14 @@ impl SettingsSheet {
     }
 
     /// Shows why the last background could not be added (or nothing).
+    /// Follows the start page's "could not add" message when it changes (a success clears it).
+    pub fn sync_background_status(&mut self, error: Option<String>) {
+        if self.background_error != error {
+            self.background_status.clone_from(&error);
+            self.background_error = error;
+        }
+    }
+
     pub fn set_background_status(&mut self, status: Option<String>) {
         self.background_status = status;
     }
@@ -1287,6 +1298,13 @@ impl SettingsSheet {
                         .to_owned(),
                 };
                 self.note(ui, &note);
+                if config.glass.reduce_motion && config.home.live_wallpapers {
+                    self.note(
+                        ui,
+                        "Reduce Motion is on (Appearance), so animated wallpapers and videos show a still \
+                         frame.",
+                    );
+                }
             }
             Category::Appearance => {
                 let row_node = self.row(ui, "Appearance");

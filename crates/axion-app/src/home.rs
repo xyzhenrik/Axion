@@ -213,6 +213,8 @@ pub struct HomePage {
     generation: u64,
     /// A background picked in the desktop's file chooser, waiting to be taken.
     chosen: Arc<Mutex<Option<PathBuf>>>,
+    /// Why the last background could not be added (shown on the page and in Settings).
+    add_error: Option<String>,
     /// The top sites or the backgrounds changed: rebuild at the next update.
     stale: bool,
     /// Bumped when site icons arrive (the page's icon URLs change with it).
@@ -237,6 +239,7 @@ impl HomePage {
             thumbs,
             generation: 1,
             chosen: Arc::default(),
+            add_error: None,
             stale: true,
             icons_version: 1,
         }
@@ -321,7 +324,16 @@ impl HomePage {
     pub fn add_background(&mut self, path: &Path, config: &mut Config) -> bool {
         let max = (config.home.max_backgrounds as usize).min(BACKGROUND_SLOTS);
         let max_bytes = u64::from(config.home.max_background_mb) * 1024 * 1024;
-        let Some(name) = self.library.add(path, max, max_bytes) else { return false };
+        let name = match self.library.add(path, max, max_bytes) {
+            Ok(name) => name,
+            Err(e) => {
+                // The page and Settings say why (a file that is too big used to fail silently).
+                self.add_error = Some(e.to_string());
+                self.stale = true;
+                return false;
+            }
+        };
+        self.add_error = None;
         self.backgrounds_changed();
         config.home.background = name;
         true
@@ -348,6 +360,11 @@ impl HomePage {
         }
         config.home.background = name.to_owned();
         true
+    }
+
+    /// Why the last attempt to add a background failed (cleared by the next success).
+    pub fn add_error(&self) -> Option<&str> {
+        self.add_error.as_deref()
     }
 
     /// Opens the desktop's file chooser for a new background (taken by [`Self::poll_chooser`]).
@@ -408,6 +425,7 @@ impl HomePage {
             needs_thumb: &needs_thumb,
             live: config.home.live_wallpapers && !config.glass.reduce_motion,
             live_setting: config.home.live_wallpapers,
+            error: self.add_error.as_deref().unwrap_or_default(),
         };
         let state = state_json(
             self.icons_version,
@@ -556,6 +574,8 @@ struct Backgrounds<'a> {
     live: bool,
     /// The `home.live_wallpapers` setting itself (`live` is also off with Reduce Motion).
     live_setting: bool,
+    /// Why the last file could not be added (empty: nothing to report).
+    error: &'a str,
 }
 
 impl Backgrounds<'_> {
@@ -568,6 +588,7 @@ impl Backgrounds<'_> {
         needs_thumb: &[],
         live: false,
         live_setting: false,
+        error: "",
     };
 }
 
@@ -763,6 +784,7 @@ fn state_json(
             "kinds": backgrounds.kinds,
             "mimes": backgrounds.mimes,
             "liveSetting": backgrounds.live_setting,
+            "error": backgrounds.error,
             "needsThumb": backgrounds.needs_thumb,
             "live": backgrounds.live,
             "canAdd": backgrounds.names.len() < (home.max_backgrounds as usize).min(BACKGROUND_SLOTS),
@@ -880,6 +902,7 @@ mod tests {
             needs_thumb: &[],
             live: true,
             live_setting: true,
+            error: "",
         };
         let state = state_json(1, &config, Some(&store), 7, "Ada Lovelace", true, &Backgrounds::PRIVATE, 100);
         assert_eq!(state["topSites"]["sites"].as_array().map(Vec::len), Some(0));

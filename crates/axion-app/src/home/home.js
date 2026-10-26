@@ -494,6 +494,24 @@
     $("bg-note").hidden = !text;
   }
 
+  // A short message on the page itself: the panel with the note is usually closed, and a
+  // wallpaper that silently stays still looks broken.
+  let hintTimer = 0;
+  const hinted = new Set();
+  function showHint(text) {
+    const hint = $("bg-hint");
+    hint.textContent = text;
+    hint.hidden = false;
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => { hint.hidden = true; }, 9000);
+  }
+  // Once per page load and message.
+  function hintOnce(text) {
+    if (hinted.has(text)) return;
+    hinted.add(text);
+    showHint(text);
+  }
+
   function removeWallpaper() {
     if (!wallpaper) return;
     wallpaper.pause();
@@ -523,6 +541,7 @@
     const backdrop = $("backdrop");
     backdrop.style.backgroundImage = `url("/api/thumb?name=${encodeURIComponent(name)}")`;
     setNote(why);
+    hintOnce(why);
   }
 
   function showVideo(name) {
@@ -546,7 +565,7 @@
     wallpaper = video;
     if (!video.canPlayType(mime)) {
       wallpaperFailed(name, mime === "video/mp4"
-        ? "This build of Axion can't play H.264, so the video shows its first frame only. WebM videos always play."
+        ? "This build of Axion can't play H.264 video. WebM videos always play."
         : "This video format can't be played here.");
       return;
     }
@@ -554,7 +573,7 @@
       .then((url) => {
         if (wallpaper !== video) return URL.revokeObjectURL(url);
         video.addEventListener("error", () =>
-          wallpaperFailed(name, "This video can't be played (unsupported codec); it shows its first frame only."));
+          wallpaperFailed(name, "This video can't be played here (its codec, e.g. HEVC or AV1 in MP4, isn't supported). Use H.264 MP4 or WebM."));
         video.addEventListener("loadeddata", () => {
           $("backdrop").style.backgroundImage = "";
           setNote("");
@@ -624,8 +643,17 @@
     }).catch(done);
   }
 
+  // The last "could not add" message, shown when it changes (not for one from before this load).
+  let shownError;
+  let shownSelected;
+  function reportAddError(error) {
+    if (shownError !== undefined && error && error !== shownError) showHint(error);
+    shownError = error;
+  }
+
   function renderBackground() {
     const b = state.background;
+    reportAddError(b.error || "");
     const backdrop = $("backdrop");
     const kind = b.show ? b.kinds[b.list.indexOf(b.selected)] || "image" : "image";
     $("live-row").hidden = !b.show || kind === "image";
@@ -650,8 +678,12 @@
         }
       }
       if (kind !== "image" && !b.live) {
-        setNote(b.liveSetting ? "Reduce Motion is on, so the wallpaper shows its first frame." : "");
+        const text = b.liveSetting ? "Reduce Motion is on, so the wallpaper shows a still frame." : "";
+        setNote(text);
+        // Said when the user picks it, not on every new tab (Reduce Motion is a choice).
+        if (text && shownSelected !== undefined && shownSelected !== b.selected) showHint(text);
       }
+      shownSelected = b.selected;
       // While a slider is held, its live preview wins over the saved look.
       if (!lookHeld) {
         backdrop.style.filter = b.blur > 0 ? `blur(${b.blur}px)` : "";
