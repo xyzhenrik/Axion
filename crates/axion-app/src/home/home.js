@@ -209,7 +209,7 @@
   function tile(site) {
     const a = el("a", "tile");
     a.href = site.url;
-    a.title = site.title ? `${site.title} — ${site.host}` : site.host;
+    a.title = site.title ? `${site.title} - ${site.host}` : site.host;
     const face = el("span", "face glass");
     const icon = el("span", "icon");
     siteIcon(icon, site.host, site.title);

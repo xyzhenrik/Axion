@@ -365,8 +365,8 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::NewTab, &["Alt+T"]);
     bind(Action::CloseTab, &["Alt+Q"]);
     bind(Action::ReopenClosedTab, &["Alt+Shift+T"]);
-    bind(Action::NextTab, &["Alt+Down", "Alt+PageDown"]);
-    bind(Action::PreviousTab, &["Alt+Up", "Alt+PageUp"]);
+    bind(Action::NextTab, &["Alt+Down", "Alt+PageDown", "Ctrl+Tab"]);
+    bind(Action::PreviousTab, &["Alt+Up", "Alt+PageUp", "Ctrl+Shift+Tab"]);
     for n in 1..=8u8 {
         let chord = format!("Alt+{n}");
         bind(Action::SelectTab(n), &[chord.as_str()]);
@@ -391,7 +391,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::ZoomIn, &["Ctrl++", "Ctrl+="]);
     bind(Action::ZoomOut, &["Ctrl+-"]);
     bind(Action::ZoomReset, &["Ctrl+0"]);
-    bind(Action::OpenSettings, &["Ctrl+,"]);
+    bind(Action::OpenSettings, &["Ctrl+S", "Ctrl+,"]);
     bind(Action::ToggleFullscreen, &["F11"]);
     bind(Action::Quit, &["Ctrl+Q"]);
     bind(Action::MediaPlayPause, &["Space", "K"]);
@@ -466,6 +466,10 @@ mod tests {
             ("Ctrl+B", Action::ShowBookmarks),
             ("Ctrl+D", Action::BookmarkPage),
             ("Alt+P", Action::PinTab),
+            ("Ctrl+Tab", Action::NextTab),
+            ("Ctrl+Shift+Tab", Action::PreviousTab),
+            ("Ctrl+S", Action::OpenSettings),
+            ("Ctrl+,", Action::OpenSettings),
         ] {
             assert_eq!(keymap.action_for(&chord(keys)), Some(action), "{keys}");
         }

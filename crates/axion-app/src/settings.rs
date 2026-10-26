@@ -726,6 +726,10 @@ pub struct SettingsSheet {
     /// The card rows are added to; a new one starts with the next row after `section`.
     group: Option<NodeId>,
     homepage: Option<NodeId>,
+    /// Keyboard page: its filter field, the list below it, and the filter text it was built with.
+    key_search: Option<NodeId>,
+    key_list: Option<NodeId>,
+    key_query: String,
     /// The "add a trusted player site" field (Media page).
     trusted_site: Option<NodeId>,
     /// The account password fields (current, new, confirm) where shown.
@@ -919,6 +923,9 @@ impl SettingsSheet {
             controls: Vec::new(),
             values: Vec::new(),
             homepage: None,
+            key_search: None,
+            key_list: None,
+            key_query: String::new(),
             trusted_site: None,
             password_fields: None,
             account_name: None,
@@ -1008,6 +1015,11 @@ impl SettingsSheet {
         self.trusted_site
     }
 
+    /// The Keyboard page's shortcut filter field (while that page is shown).
+    pub fn key_search_field(&self) -> Option<NodeId> {
+        self.key_search
+    }
+
     pub fn homepage_field(&self) -> Option<NodeId> {
         self.homepage
     }
@@ -1083,6 +1095,15 @@ impl SettingsSheet {
         if !self.open {
             return;
         }
+        if self.query.is_empty()
+            && let (Some(field), Some(list)) = (self.key_search, self.key_list)
+        {
+            let text = ui.field_text(field).unwrap_or_default().trim().to_owned();
+            if text != self.key_query {
+                self.key_query = text;
+                self.fill_shortcuts(ui, list, keymap);
+            }
+        }
         let text = ui.field_text(self.search).unwrap_or_default().trim().to_owned();
         if text != self.query {
             self.query = text;
@@ -1103,6 +1124,7 @@ impl SettingsSheet {
         }
         self.open = false;
         self.query.clear();
+        self.key_query.clear();
         ui.set_field_text(self.search, "");
         self.confirm_clear = false;
         self.confirm_clear_data = false;
@@ -1145,6 +1167,8 @@ impl SettingsSheet {
             self.set_scroll(ui, 0.0);
         }
         self.homepage = None;
+        self.key_search = None;
+        self.key_list = None;
         self.trusted_site = None;
         self.password_fields = None;
         self.account_name = None;
@@ -1263,7 +1287,7 @@ impl SettingsSheet {
             Category::Keyboard => {
                 let note = ui.add_label(
                     self.content,
-                    "Change shortcuts in ~/.config/axion/keymap.toml — edits apply immediately.",
+                    "Change shortcuts in ~/.config/axion/keymap.toml - edits apply immediately.",
                     TextStyle::Footnote,
                     Style {
                         margin: Rect {
@@ -1278,16 +1302,30 @@ impl SettingsSheet {
                 if let Some(w) = ui.widget_mut(note) {
                     w.set_paint(Paint::Secondary);
                 }
-                for action in shortcut_actions() {
-                    let chords: Vec<String> =
-                        keymap.chords_for(action).iter().map(ToString::to_string).collect();
-                    let row_node = self.row_with_height(ui, &humanize(&action.to_string()), 34.0);
-                    let label =
-                        ui.add_label(row_node, &chords.join("   "), TextStyle::Callout, Style::default());
-                    if let Some(w) = ui.widget_mut(label) {
-                        w.set_paint(Paint::Secondary);
-                    }
-                }
+                let row_node = ui.add(
+                    self.content,
+                    Widget::container(),
+                    Style {
+                        flex_shrink: 0.0,
+                        margin: Rect {
+                            left: length(0.0),
+                            right: length(0.0),
+                            top: length(0.0),
+                            bottom: length(4.0),
+                        },
+                        ..row(0.0)
+                    },
+                );
+                let field = text_field(ui, row_node, "Search shortcuts", 320.0, false);
+                ui.set_field_text(field, &self.key_query);
+                self.key_search = Some(field);
+                let list = ui.add(
+                    self.content,
+                    Widget::container(),
+                    Style { flex_direction: FlexDirection::Column, flex_shrink: 0.0, ..Default::default() },
+                );
+                self.key_list = Some(list);
+                self.fill_shortcuts(ui, list, keymap);
             }
             Category::Tabs => {
                 self.tab_bar_choice(ui, config);
@@ -1957,6 +1995,42 @@ impl SettingsSheet {
         }
     }
 
+    /// (Re)builds the shortcut rows in `list`, grouped by area, keeping those whose name or
+    /// chords contain every word of the filter.
+    fn fill_shortcuts(&mut self, ui: &mut Ui, list: NodeId, keymap: &Keymap) {
+        ui.clear_children(list);
+        let words: Vec<String> =
+            self.key_query.to_lowercase().split_whitespace().map(str::to_owned).collect();
+        let content = std::mem::replace(&mut self.content, list);
+        self.group = None;
+        let mut shown = 0;
+        let mut last_group = "";
+        for action in shortcut_actions() {
+            let name = humanize(&action.to_string());
+            let chords: Vec<String> = keymap.chords_for(action).iter().map(ToString::to_string).collect();
+            let haystack = format!("{name} {}", chords.join(" ")).to_lowercase();
+            if !words.iter().all(|w| haystack.contains(w.as_str())) {
+                continue;
+            }
+            let group = shortcut_group(action);
+            if group != last_group {
+                last_group = group;
+                self.section(ui, group);
+            }
+            let row_node = self.row_with_height(ui, &name, 34.0);
+            let label = ui.add_label(row_node, &chords.join("   "), TextStyle::Callout, Style::default());
+            if let Some(w) = ui.widget_mut(label) {
+                w.set_paint(Paint::Secondary);
+            }
+            shown += 1;
+        }
+        if shown == 0 {
+            self.note(ui, "No shortcuts match.");
+        }
+        self.group = None;
+        self.content = content;
+    }
+
     /// Starts a new group of rows, with a small grey title above it (empty: none).
     fn section(&mut self, ui: &mut Ui, title: &str) {
         self.group = None;
@@ -2515,29 +2589,29 @@ const SEGMENTED_INSET: f32 = 3.0;
 fn shortcut_actions() -> Vec<KeyAction> {
     use KeyAction::*;
     vec![
-        FocusAddressBar,
         NewTab,
         CloseTab,
         ReopenClosedTab,
         NextTab,
         PreviousTab,
-        Reload,
-        HardReload,
+        PinTab,
+        TabOverview,
+        FocusAddressBar,
         Back,
         Forward,
-        ToggleSidebar,
-        TabOverview,
-        PinTab,
-        BookmarkPage,
-        ShowBookmarks,
-        ShowHistory,
-        OpenPasswords,
+        Reload,
+        HardReload,
         Find,
         FindNext,
         FindPrevious,
         ZoomIn,
         ZoomOut,
         ZoomReset,
+        BookmarkPage,
+        ShowBookmarks,
+        ShowHistory,
+        OpenPasswords,
+        ToggleSidebar,
         OpenSettings,
         ToggleFullscreen,
         Quit,
@@ -2552,6 +2626,21 @@ fn shortcut_actions() -> Vec<KeyAction> {
         MediaSlower,
         MediaFaster,
     ]
+}
+
+/// The heading a shortcut is listed under on the Keyboard page; consecutive actions in
+/// `shortcut_actions` with the same heading share one section.
+fn shortcut_group(action: KeyAction) -> &'static str {
+    use KeyAction::*;
+    match action {
+        NewTab | CloseTab | ReopenClosedTab | NextTab | PreviousTab | PinTab | TabOverview | SelectTab(_)
+        | SelectLastTab => "Tabs",
+        FocusAddressBar | Back | Forward | Reload | HardReload => "Navigation",
+        Find | FindNext | FindPrevious | ZoomIn | ZoomOut | ZoomReset | Paste | PastePlainText => "Page",
+        BookmarkPage | ShowBookmarks | ShowHistory | OpenPasswords | ToggleSidebar => "Panels",
+        OpenSettings | ToggleFullscreen | Quit => "Window",
+        _ => "Media (fullscreen video)",
+    }
 }
 
 /// "focus_address_bar" → "Focus address bar".
@@ -2699,5 +2788,14 @@ mod tests {
             (crop.size.x - 0.5).abs() < 1e-4 && (crop.origin.x - 0.25).abs() < 1e-4 && crop.size.y == 1.0
         );
         assert_eq!(humanize("focus_address_bar"), "Focus address bar");
+        // Same-group actions are contiguous, so every heading appears once.
+        let mut seen = Vec::new();
+        for action in shortcut_actions() {
+            let group = shortcut_group(action);
+            if seen.last() != Some(&group) {
+                assert!(!seen.contains(&group), "{group} split");
+                seen.push(group);
+            }
+        }
     }
 }

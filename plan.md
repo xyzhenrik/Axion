@@ -85,7 +85,8 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   reopen, Alt+Up/Down or Alt+PageUp/PageDown prev/next, Alt+1…8/9 select, Alt+P pin, Alt+O or
   F9 overview); browser/system things are `Ctrl` + key (Ctrl+L address, Ctrl+R reload,
   Ctrl+Shift+L sidebar, Ctrl+B bookmarks, Ctrl+H history, Ctrl+D bookmark page, Ctrl+P
-  passwords, Ctrl+F find, Ctrl+G next match). Alt+Left/Right stay back/forward; Ctrl+W/T/Tab
+  passwords, Ctrl+F find, Ctrl+G next match, Ctrl+S or Ctrl+, settings). Ctrl+Tab /
+  Ctrl+Shift+Tab also cycle tabs (wrapping). Alt+Left/Right stay back/forward; Ctrl+W/T
   are free for pages. Only defaults changed: explicit `keymap.toml` entries still win, and
   their chords are removed from other actions' defaults. Fully remappable in `keymap.toml`
   and the settings UI; conflict detection.
