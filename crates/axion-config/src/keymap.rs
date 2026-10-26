@@ -461,6 +461,14 @@ mod tests {
         assert_eq!(keymap.action_for(&chord("Ctrl+P")), Some(Action::OpenPasswords));
         assert_eq!(keymap.action_for(&chord("Ctrl+F")), Some(Action::Find));
         assert_eq!(keymap.action_for(&chord("Alt+Left")), Some(Action::Back));
+        for (keys, action) in [
+            ("Ctrl+H", Action::ShowHistory),
+            ("Ctrl+B", Action::ShowBookmarks),
+            ("Ctrl+D", Action::BookmarkPage),
+            ("Alt+P", Action::PinTab),
+        ] {
+            assert_eq!(keymap.action_for(&chord(keys)), Some(action), "{keys}");
+        }
     }
 
     #[test]

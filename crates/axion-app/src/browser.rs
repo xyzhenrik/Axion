@@ -4348,6 +4348,10 @@ impl Browser {
                     self.settings.set_category(Category::Shields);
                     self.run(Action::OpenSettings);
                 }
+                "appearance-settings" => {
+                    self.settings.set_category(Category::Appearance);
+                    self.run(Action::OpenSettings);
+                }
                 "tabs-settings" => {
                     self.settings.set_category(Category::Tabs);
                     self.run(Action::OpenSettings);
