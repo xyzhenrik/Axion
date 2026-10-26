@@ -78,29 +78,105 @@ impl ClickCounter {
     }
 }
 
-/// A physical key event for the page (key down/up with Windows key code).
-pub fn page_key(event: &KeyEvent, modifiers: Modifiers) -> Option<InputEvent> {
-    let PhysicalKey::Code(code) = event.physical_key else { return None };
-    let key_code = windows_key_code(code)?;
-    let native_code = event.physical_key.to_scancode().map_or(0, |s| s + XKB_KEYCODE_OFFSET) as i32;
-    Some(InputEvent::Key {
-        pressed: event.state.is_pressed(),
-        key_code,
-        native_code,
-        modifiers: engine_modifiers(modifiers),
-    })
+/// The events a key press or release sends to the page.
+pub fn page_key_events(event: &KeyEvent, modifiers: Modifiers) -> Vec<InputEvent> {
+    key_events(event.physical_key, event.text.as_deref(), event.state.is_pressed(), modifiers)
 }
 
-/// Text a key press types into the page, unless it's a shortcut chord.
-pub fn page_text(event: &KeyEvent, modifiers: Modifiers) -> Option<InputEvent> {
-    if !event.state.is_pressed() || modifiers.ctrl || modifiers.logo {
-        return None;
-    }
-    let text = match event.physical_key {
-        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => "\r".to_owned(),
-        _ => event.text.as_ref()?.to_string(),
+/// The events a key sends to the page: the key itself (down/up, with its Windows key code)
+/// and, on a press, the text it types, unless it's a shortcut chord.
+fn key_events(
+    physical: PhysicalKey,
+    text: Option<&str>,
+    pressed: bool,
+    modifiers: Modifiers,
+) -> Vec<InputEvent> {
+    let mut events = Vec::with_capacity(2);
+    let key = match physical {
+        PhysicalKey::Code(code) => windows_key_code(code),
+        PhysicalKey::Unidentified(_) => None,
     };
-    Some(InputEvent::Text { text, modifiers: engine_modifiers(modifiers) })
+    let native_code = physical.to_scancode().map_or(0, |s| s + XKB_KEYCODE_OFFSET) as i32;
+    if let Some(key_code) = key {
+        events.push(InputEvent::Key {
+            pressed,
+            key_code,
+            native_code,
+            modifiers: engine_modifiers(modifiers),
+        });
+    }
+    if pressed && !modifiers.ctrl && !modifiers.logo {
+        let text = match physical {
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => Some("\r"),
+            _ => text,
+        };
+        if let Some(text) = text.filter(|t| !t.is_empty()) {
+            events.push(InputEvent::Text {
+                text: text.to_owned(),
+                key_code: key.unwrap_or(0),
+                native_code,
+                modifiers: engine_modifiers(modifiers),
+            });
+        }
+    }
+    events
+}
+
+/// The key events of typing `text` on a US layout, as a keyboard sends them (a test aid).
+pub fn typed_keys(text: &str) -> Vec<InputEvent> {
+    let shift = Modifiers { shift: true, ..Default::default() };
+    let mut events = Vec::new();
+    for c in text.chars() {
+        let Some((code, shifted)) = us_key(c) else { continue };
+        let modifiers = if shifted { shift } else { Modifiers::default() };
+        if shifted {
+            events.extend(key_events(PhysicalKey::Code(KeyCode::ShiftLeft), None, true, shift));
+        }
+        let typed = c.to_string();
+        events.extend(key_events(PhysicalKey::Code(code), Some(&typed), true, modifiers));
+        events.extend(key_events(PhysicalKey::Code(code), None, false, modifiers));
+        if shifted {
+            events.extend(key_events(
+                PhysicalKey::Code(KeyCode::ShiftLeft),
+                None,
+                false,
+                Modifiers::default(),
+            ));
+        }
+    }
+    events
+}
+
+/// The key that types `c` on a US layout, and whether Shift is held for it.
+fn us_key(c: char) -> Option<(KeyCode, bool)> {
+    use KeyCode::*;
+    let letters = [
+        KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN, KeyO, KeyP, KeyQ,
+        KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
+    ];
+    let digits = [Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9];
+    Some(match c {
+        'a'..='z' => (letters[c as usize - 'a' as usize], false),
+        'A'..='Z' => (letters[c as usize - 'A' as usize], true),
+        '0'..='9' => (digits[c as usize - '0' as usize], false),
+        '.' => (Period, false),
+        ',' => (Comma, false),
+        '-' => (Minus, false),
+        '/' => (Slash, false),
+        ';' => (Semicolon, false),
+        '\'' => (Quote, false),
+        ' ' => (Space, false),
+        '@' => (Digit2, true),
+        '#' => (Digit3, true),
+        '$' => (Digit4, true),
+        '%' => (Digit5, true),
+        '&' => (Digit7, true),
+        '(' => (Digit9, true),
+        ')' => (Digit0, true),
+        '!' => (Digit1, true),
+        '\x08' => (Backspace, false),
+        _ => return None,
+    })
 }
 
 /// The key events of Ctrl+<letter> as a keyboard sends them to the page (a test aid).
@@ -207,4 +283,61 @@ fn windows_key_code(code: KeyCode) -> Option<i32> {
         IntlBackslash => 0xE2,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn press(code: KeyCode, text: Option<&str>, modifiers: Modifiers) -> Vec<InputEvent> {
+        key_events(PhysicalKey::Code(code), text, true, modifiers)
+    }
+
+    #[test]
+    fn typed_character_carries_its_key() {
+        let events = press(KeyCode::Period, Some("."), Modifiers::default());
+        let [
+            InputEvent::Key { pressed: true, key_code: 0xBE, native_code, .. },
+            InputEvent::Text { text, key_code, native_code: text_native, .. },
+        ] = &events[..]
+        else {
+            panic!("expected key then text, got {events:?}");
+        };
+        assert_eq!(text, ".");
+        // Not the character's own code (0x2E, the Delete key).
+        assert_eq!(*key_code, 0xBE);
+        assert_eq!(text_native, native_code);
+    }
+
+    #[test]
+    fn release_and_chords_type_nothing() {
+        let release = key_events(PhysicalKey::Code(KeyCode::KeyA), Some("a"), false, Modifiers::default());
+        assert!(matches!(&release[..], [InputEvent::Key { pressed: false, key_code: 0x41, .. }]));
+        let ctrl = press(KeyCode::KeyV, Some("v"), Modifiers { ctrl: true, ..Default::default() });
+        assert!(matches!(&ctrl[..], [InputEvent::Key { pressed: true, .. }]));
+    }
+
+    #[test]
+    fn enter_types_carriage_return() {
+        let events = press(KeyCode::Enter, Some("\n"), Modifiers::default());
+        assert!(matches!(
+            &events[..],
+            [InputEvent::Key { .. }, InputEvent::Text { text, key_code: 0x0D, .. }] if text == "\r"
+        ));
+    }
+
+    #[test]
+    fn typing_holds_shift_around_shifted_characters() {
+        let kinds: Vec<String> = typed_keys("a@")
+            .iter()
+            .map(|e| match e {
+                InputEvent::Key { pressed, key_code, .. } => {
+                    format!("{}{key_code:x}", if *pressed { "+" } else { "-" })
+                }
+                InputEvent::Text { text, .. } => text.clone(),
+                _ => "?".into(),
+            })
+            .collect();
+        assert_eq!(kinds, ["+41", "a", "-41", "+10", "+32", "@", "-32", "-10"]);
+    }
 }

@@ -58,12 +58,18 @@ impl InputState {
                     ..Default::default()
                 }));
             }
-            InputEvent::Text { text, modifiers } => {
+            InputEvent::Text { text, key_code, native_code, modifiers } => {
                 for unit in text.encode_utf16() {
+                    // A typed character carries the key that typed it, as in Chromium's own
+                    // key events: CEF takes `windows_key_code` as the key of the `keypress`.
+                    // With the character there instead, "." arrived as the Delete key (0x2E),
+                    // "h" as Numpad 8, and pages that act on `keypress` keys misbehaved.
+                    let from_key = *key_code != 0;
                     host.send_key_event(Some(&KeyEvent {
                         type_: cef_key_event_type_t::KEYEVENT_CHAR.into(),
                         modifiers: self.flags(*modifiers),
-                        windows_key_code: unit as i32,
+                        windows_key_code: if from_key { *key_code } else { i32::from(unit) },
+                        native_key_code: if from_key { *native_code } else { 0 },
                         character: unit,
                         unmodified_character: unit,
                         ..Default::default()

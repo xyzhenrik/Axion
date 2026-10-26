@@ -3769,11 +3769,8 @@ impl Browser {
 
         // A locked page gets no keys.
         if let Some(view) = self.active_view().filter(|_| !self.is_locked()) {
-            if let Some(key) = input::page_key(event, self.modifiers) {
+            for key in input::page_key_events(event, self.modifiers) {
                 self.engine.send_input(view, &key);
-            }
-            if let Some(text) = input::page_text(event, self.modifiers) {
-                self.engine.send_input(view, &text);
             }
         }
         false
@@ -4010,6 +4007,15 @@ impl Browser {
                     let n: Vec<f32> = sweep.split(':').skip(1).filter_map(|v| v.parse().ok()).collect();
                     if let [x1, y1, x2, y2, steps] = n[..] {
                         self.sweep = Some((Vec2::new(x1, y1), Vec2::new(x2, y2), steps.max(1.0) as u32, 0));
+                    }
+                }
+                // Test aid: "keys:TEXT" types TEXT into the page as the keyboard does ("\\b" is
+                // Backspace).
+                keys if keys.starts_with("keys:") => {
+                    if let Some(view) = self.active_view() {
+                        for key in input::typed_keys(&keys["keys:".len()..].replace("\\b", "\x08")) {
+                            self.engine.send_input(view, &key);
+                        }
                     }
                 }
                 wheel if wheel.starts_with("wheel:") => {

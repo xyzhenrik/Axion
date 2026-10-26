@@ -47,9 +47,12 @@ pub enum InputEvent {
         native_code: i32,
         modifiers: Modifiers,
     },
-    /// Text produced by a key press or an input method.
+    /// Text produced by a key press (whose key codes are given, as in `Key`) or an input
+    /// method (key codes 0).
     Text {
         text: String,
+        key_code: i32,
+        native_code: i32,
         modifiers: Modifiers,
     },
 }
