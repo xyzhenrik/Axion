@@ -516,7 +516,7 @@ fn running_detail(d: &DownloadInfo) -> String {
 pub fn human_size(bytes: i64) -> String {
     let b = bytes.max(0) as f64;
     match b {
-        b if b < 1000.0 => format!("{b:.0} bytes"),
+        b if b < 1000.0 => tr_fmt!("{n} bytes", n = format!("{b:.0}")),
         b if b < 1000.0 * 1024.0 => format!("{:.1} KB", b / 1024.0),
         b if b < 1000.0 * 1024.0 * 1024.0 => format!("{:.1} MB", b / (1024.0 * 1024.0)),
         b => format!("{:.2} GB", b / (1024.0 * 1024.0 * 1024.0)),

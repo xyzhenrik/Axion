@@ -1414,12 +1414,12 @@ impl SettingsSheet {
                          frame."),
                     );
                 }
-                self.section(ui, "Developer");
+                self.section(ui, tr("Developer"));
                 self.control(ui, config, Setting::DevTools);
                 self.note(
                     ui,
-                    "Chromium's own developer tools (F12, Ctrl+Shift+I) open in a window of their own; \
-                     Ctrl+U shows the page source. Off, none of these shortcuts do anything.",
+                    tr("Chromium's own developer tools (F12, Ctrl+Shift+I) open in a window of their own; \
+                     Ctrl+U shows the page source. Off, none of these shortcuts do anything."),
                 );
             }
             Category::Appearance => {
