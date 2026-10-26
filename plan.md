@@ -25,7 +25,10 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   dots), Shields stats (blocked, ≈ bandwidth and time saved), background images (several,
   copied into `<profile>/home/backgrounds/`, picked from thumbnails in the gear panel and in
   Settings › General, dim/blur), each toggled from a glass gear panel on the page; controls
-  use Axion's accent colour; private tabs get a dark private variant.
+  use Axion's accent colour; private tabs get a dark private variant. **Live wallpapers**:
+  animated GIF/WebP/APNG and muted looping videos (webm, mp4 with H.264) as backgrounds
+  (`home.live_wallpapers`, `home.max_background_mb`); paused while hidden/frozen, still frame
+  with Reduce Motion; the media bridge ignores them (no media tab, no audio icon, no MPRIS).
 
 ### 2.2 Liquid Glass
 - SDF-based shapes (rounded rects, capsules, circles) with lens-profile refraction.

@@ -68,6 +68,7 @@
     pin: ["M9 4h6l-1 6 3 3H7l3-3zM12 13v7"],
     edit: ["M4 20h4L19 9l-4-4L4 16zM14 6l4 4"],
     plus: ["M12 5v14M5 12h14"],
+    play: ["M8 5l11 7-11 7z"],
   };
 
   // A range input's filled part (the accent-coloured track left of the thumb).
@@ -363,7 +364,7 @@
 
   function renderPicker() {
     const b = state.background;
-    const key = JSON.stringify([b.list, b.selected, b.canAdd]);
+    const key = JSON.stringify([b.list, b.kinds, b.needsThumb, b.selected, b.canAdd]);
     if (key === pickerKey) return;
     pickerKey = key;
     const picker = $("bg-picker");
@@ -377,11 +378,23 @@
       button.setAttribute("aria-label", label);
       button.title = label;
       if (name) {
-        const img = new Image();
-        img.alt = "";
-        img.decoding = "async";
-        img.src = `/api/thumb?name=${encodeURIComponent(name)}`;
-        button.appendChild(img);
+        const kind = b.kinds[b.list.indexOf(name)] || "image";
+        // A video's thumbnail is its first frame, made by this page (see makeVideoThumbs).
+        if (b.needsThumb.includes(name)) {
+          button.classList.add("pending");
+        } else {
+          const img = new Image();
+          img.alt = "";
+          img.decoding = "async";
+          img.src = `/api/thumb?name=${encodeURIComponent(name)}`;
+          button.appendChild(img);
+        }
+        if (kind !== "image") {
+          const badge = el("span", "live-badge");
+          badge.appendChild(svg(ICON.play, 8));
+          button.appendChild(badge);
+          button.title = `${label} (${kind === "video" ? "video" : "animated"})`;
+        }
       } else {
         button.appendChild(el("span", "none-mark"));
       }
@@ -414,9 +427,164 @@
     }
   }
 
+  // ---- live wallpapers ----
+
+  // The wallpaper video, and which background it was made for.
+  let wallpaper = null;
+  let wallpaperName = "";
+  // Blob URLs of first frames of animated images (shown while live wallpapers are off).
+  const stills = new Map();
+  let frozen = false;
+
+  const mediaUrl = (name) => `/api/background?name=${encodeURIComponent(name)}`;
+
+  function fetchBlobUrl(name) {
+    return fetch(mediaUrl(name))
+      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error("missing"))))
+      .then((blob) => URL.createObjectURL(blob));
+  }
+
+  function setNote(text) {
+    $("bg-note").textContent = text;
+    $("bg-note").hidden = !text;
+  }
+
+  function removeWallpaper() {
+    if (!wallpaper) return;
+    wallpaper.pause();
+    URL.revokeObjectURL(wallpaper.src);
+    wallpaper.removeAttribute("src");
+    wallpaper.load();
+    wallpaper.remove();
+    wallpaper = null;
+    wallpaperName = "";
+  }
+
+  // Plays the wallpaper video only while it can be seen and may move.
+  function syncPlayback() {
+    if (!wallpaper) return;
+    const run = state.background.live && document.visibilityState === "visible" && !frozen;
+    if (run && wallpaper.paused) wallpaper.play().catch(() => {});
+    else if (!run && !wallpaper.paused) wallpaper.pause();
+  }
+  document.addEventListener("visibilitychange", () => syncPlayback());
+  document.addEventListener("freeze", () => { frozen = true; syncPlayback(); });
+  document.addEventListener("resume", () => { frozen = false; syncPlayback(); });
+
+  // The video could not be shown (e.g. mp4 with H.264 in a build without proprietary codecs):
+  // its thumbnail stands in, and a note says why.
+  function wallpaperFailed(name, why) {
+    removeWallpaper();
+    const backdrop = $("backdrop");
+    backdrop.style.backgroundImage = `url("/api/thumb?name=${encodeURIComponent(name)}")`;
+    setNote(why);
+  }
+
+  function showVideo(name) {
+    if (wallpaperName === name && wallpaper) {
+      syncPlayback();
+      return;
+    }
+    removeWallpaper();
+    wallpaperName = name;
+    const mime = state.background.mimes[state.background.list.indexOf(name)] || "video/mp4";
+    const video = document.createElement("video");
+    video.id = "wallpaper";
+    // The media bridge ignores it: a wallpaper is not media (no audio icon, no Now Playing).
+    video.setAttribute("data-axion-wallpaper", "");
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.disablePictureInPicture = true;
+    video.controls = false;
+    video.preload = "auto";
+    wallpaper = video;
+    if (!video.canPlayType(mime)) {
+      wallpaperFailed(name, mime === "video/mp4"
+        ? "This build of Axion can't play H.264, so the video shows its first frame only. WebM videos always play."
+        : "This video format can't be played here.");
+      return;
+    }
+    fetchBlobUrl(name)
+      .then((url) => {
+        if (wallpaper !== video) return URL.revokeObjectURL(url);
+        video.addEventListener("error", () =>
+          wallpaperFailed(name, "This video can't be played (unsupported codec); it shows its first frame only."));
+        video.addEventListener("loadeddata", () => {
+          $("backdrop").style.backgroundImage = "";
+          setNote("");
+        });
+        video.src = url;
+        $("backdrop").insertBefore(video, $("backdrop").firstChild);
+        syncPlayback();
+      })
+      .catch(() => wallpaperFailed(name, "The video file could not be read."));
+  }
+
+  // The first frame of an animated image, as a still (a CSS background would keep playing).
+  function showStill(name) {
+    const apply = (url) => {
+      if (state.background.selected === name) $("backdrop").style.backgroundImage = `url("${url}")`;
+    };
+    if (stills.has(name)) return apply(stills.get(name));
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      canvas.getContext("2d").drawImage(img, 0, 0);
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        stills.set(name, url);
+        apply(url);
+      });
+    };
+    img.src = `/api/background?v=${encodeURIComponent(name)}`;
+  }
+
+  // Videos without a thumbnail get one from their first frame, posted back (a small JPEG).
+  const thumbTried = new Set();
+  let thumbBusy = false;
+  function makeVideoThumbs() {
+    const b = state.background;
+    if (thumbBusy || state.private) return;
+    const name = b.needsThumb.find((n) => !thumbTried.has(n));
+    if (!name) return;
+    thumbBusy = true;
+    thumbTried.add(name);
+    const done = () => { thumbBusy = false; makeVideoThumbs(); };
+    fetchBlobUrl(name).then((url) => {
+      const video = document.createElement("video");
+      video.muted = true;
+      video.preload = "auto";
+      video.setAttribute("data-axion-wallpaper", "");
+      const finish = () => { URL.revokeObjectURL(url); video.removeAttribute("src"); video.load(); done(); };
+      video.addEventListener("error", finish);
+      video.addEventListener("loadeddata", () => {
+        video.currentTime = Math.min(0.5, (video.duration || 1) / 4);
+      });
+      video.addEventListener("seeked", () => {
+        const w = 320;
+        const h = Math.max(1, Math.round((w * video.videoHeight) / Math.max(1, video.videoWidth)));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").drawImage(video, 0, 0, w, h);
+        const data = canvas.toDataURL("image/jpeg", 0.7);
+        if (data.length < 60000) post({ type: "backgroundThumb", name, data });
+        finish();
+      }, { once: true });
+      video.src = url;
+    }).catch(done);
+  }
+
   function renderBackground() {
     const b = state.background;
     const backdrop = $("backdrop");
+    const kind = b.show ? b.kinds[b.list.indexOf(b.selected)] || "image" : "image";
+    $("live-row").hidden = !b.show || kind === "image";
+    $("live-row").querySelector("input").checked = !!b.liveSetting;
     document.body.classList.toggle("has-image", b.show);
     if (b.show && !state.private) {
       // The window around the page takes the image's colour (measured), not plain white/black.
@@ -424,14 +592,29 @@
     }
     if (b.show) {
       // File names are unique and never reused, so the name is the cache key.
-      const url = `url("/api/background?v=${encodeURIComponent(b.selected)}")`;
-      if (backdrop.style.backgroundImage !== url) backdrop.style.backgroundImage = url;
+      if (kind === "video") {
+        showVideo(b.selected);
+      } else {
+        removeWallpaper();
+        setNote("");
+        if (kind === "animated" && !b.live) {
+          showStill(b.selected);
+        } else {
+          const url = `url("/api/background?v=${encodeURIComponent(b.selected)}")`;
+          if (backdrop.style.backgroundImage !== url) backdrop.style.backgroundImage = url;
+        }
+      }
+      if (kind !== "image" && !b.live) {
+        setNote(b.liveSetting ? "Reduce Motion is on, so the wallpaper shows its first frame." : "");
+      }
       // While a slider is held, its live preview wins over the saved look.
       if (!lookHeld) {
         backdrop.style.filter = b.blur > 0 ? `blur(${b.blur}px)` : "";
         backdrop.style.setProperty("--dim", b.dim);
       }
     } else {
+      removeWallpaper();
+      setNote("");
       backdrop.style.backgroundImage = "";
     }
     if (!lookHeld) {
@@ -442,6 +625,7 @@
     paintRange($("blur"));
     $("look-rows").hidden = !b.show;
     renderPicker();
+    makeVideoThumbs();
   }
 
   // ---- settings panel ----
@@ -453,6 +637,7 @@
       search: state.search.show,
       topSites: state.topSites.show,
       stats: state.stats.show,
+      liveWallpapers: state.background.liveSetting,
     };
     document.querySelectorAll("[data-widget]").forEach((input) => {
       input.checked = !!widgets[input.dataset.widget];

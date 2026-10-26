@@ -61,6 +61,9 @@
   if (!addStyle()) document.addEventListener('DOMContentLoaded', addStyle);
 
   function register(el) {
+    // The start page's live wallpaper is decoration, not media: no player, no "playing" tab,
+    // no Now Playing entry, and it never keeps the tab from freezing.
+    if (el.hasAttribute && el.hasAttribute('data-axion-wallpaper')) return;
     if (media.has(el)) return;
     media.add(el);
     el.__axId = FRAME + ':' + (++seq);
