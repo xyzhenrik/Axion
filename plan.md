@@ -382,6 +382,13 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. â
       (`drag_resize_window`), glass controls on hover. Always on top (X11 window level; KDE
       Wayland via a KWin script â€” untested on Wayland so far). The video keeps playing from
       its hidden tab (takeover, still rendering).
+      Aspect lock (`media.pip_lock_aspect`, default on; was `pip_keep_aspect`): the window is
+      always the video's aspect (no black bars), resizes are only linear: X11 gets the
+      WM_NORMAL_HINTS aspect, everywhere the window is snapped while resizing (`snap_aspect`:
+      dominant axis, every `pip_aspect_live_seconds`, never below `min_window`: `pip_min_width`
+      wide and as tall as the controls need, growing with the aspect kept for 21:9 / 9:16).
+      Wayland has no aspect lock (xdg-toplevel; KWin scripts have no aspect property): snapping
+      only, real WM drags there untested.
 - [x] Playback priority: playing tabs are never frozen/unloaded (bridge state); VA-API
       on by default (`chrome://gpu`: Video Decode hardware accelerated); fullscreen controls
       disappear entirely while hidden, so no glass is drawn over playing video.

@@ -970,12 +970,17 @@ pub struct Media {
     pub hardware_decoding: bool,
     /// Show what plays in the desktop's media controls and take the media keys (MPRIS).
     pub desktop_integration: bool,
-    /// The Picture in Picture window keeps the video's aspect when it is resized (so the
-    /// video fills it without black bars).
-    pub pip_keep_aspect: bool,
+    /// The Picture in Picture window can only be resized with the video's aspect, so the whole
+    /// video is always visible (no black bars, nothing cropped). Off: free resizing.
+    #[serde(alias = "pip_keep_aspect")]
+    pub pip_lock_aspect: bool,
     /// How long after the last resize step of the PiP window it snaps to the video's aspect
-    /// (window managers resize in many small steps).
+    /// (window managers resize in many small steps). Only used when the live snapping
+    /// (`pip_aspect_live_seconds`) is off.
     pub pip_aspect_settle_seconds: f32,
+    /// While the PiP window is being resized it is brought to the video's aspect at most this
+    /// often (seconds); 0 = only after the resize settled.
+    pub pip_aspect_live_seconds: f32,
     /// Size of the PiP window's controls (buttons, icons and the progress bar), as a multiple
     /// of the base size. Shrinks by itself in a small window so everything still fits.
     pub pip_control_scale: f32,
@@ -1054,8 +1059,9 @@ impl Default for Media {
             playback_speeds: vec![1.0, 1.25, 1.5, 2.0, 0.5, 0.75],
             hardware_decoding: true,
             desktop_integration: true,
-            pip_keep_aspect: true,
+            pip_lock_aspect: true,
             pip_aspect_settle_seconds: 0.3,
+            pip_aspect_live_seconds: 0.06,
             pip_control_scale: 1.3,
             pip_resize_border: 6.0,
             pip_min_target: 36.0,

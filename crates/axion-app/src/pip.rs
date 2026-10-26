@@ -2,8 +2,10 @@
 //! It is a plain window of the window manager's (its corners and shadow, if it draws any for
 //! a window without a title bar), just without the title bar: the video fills it, with no
 //! black bars, shape, margin or transparency of ours. The window takes the video's aspect and
-//! snaps back to it after the user resizes it (`media.pip_keep_aspect`); while the aspects
-//! differ the video covers the window (a sliver cropped) rather than being letterboxed.
+//! is locked to it (`media.pip_lock_aspect`): on X11 the window manager is told (WM_NORMAL_HINTS aspect),
+//! everywhere the window is snapped to the aspect while it is resized (dominant axis, rate-limited,
+//! never below the minimum size). While the aspects differ in between the video covers the window
+//! (a sliver cropped) rather than being letterboxed.
 //! Dragging the video moves the window, its thin edge band resizes it (never the controls: they keep clear of it). Glass controls (close, back to
 //! the tab, ±10 s, play/pause, progress) show while the pointer is over it (Safari, iPadOS 26).
 //!
@@ -417,6 +419,8 @@ pub struct PipWindow {
     sizing: Sizing,
     /// The narrowest window (logical px).
     min_width: f32,
+    /// `media.pip_lock_aspect`.
+    lock_aspect: bool,
     /// The controls' places, for hit-testing (valid once laid out).
     layout: Option<Layout>,
     /// The progress bar is being scrubbed, or was a moment ago.
@@ -437,6 +441,10 @@ pub struct PipWindow {
     /// The window's size when it last had the video's aspect: tells which side the user
     /// dragged.
     fitted: Option<PhysicalSize<u32>>,
+    /// When the window was last brought to the video's aspect (rate limit while resizing).
+    last_fit: Option<Instant>,
+    /// The aspect last told to the window manager (X11 size hint) and the lock state.
+    hinted: Option<Option<f32>>,
     /// The size the window had when its aspect was last corrected: not asked again if the
     /// window manager keeps it there (tiling, size limits).
     asked_at: Option<PhysicalSize<u32>>,
@@ -559,6 +567,7 @@ impl PipWindow {
             laid_out: None,
             sizing: Sizing::new(config),
             min_width: config.media.pip_min_width,
+            lock_aspect: config.media.pip_lock_aspect,
             layout: None,
             scrubbed_at: None,
             synthetic: false,
@@ -569,6 +578,8 @@ impl PipWindow {
             last_size: None,
             fit_at: None,
             fitted: None,
+            last_fit: None,
+            hinted: None,
             asked_at: None,
             last_frame: Instant::now(),
             view: None,
@@ -614,6 +625,7 @@ impl PipWindow {
         if !self.needs_window() {
             return Ok(());
         }
+        let min = self.min_size();
         let size = match self.last_size {
             Some(last) => Vec2::new(last.x, last.x / self.aspect),
             None => {
@@ -621,10 +633,17 @@ impl PipWindow {
                 Vec2::new(height * self.aspect, height)
             }
         };
-        let min =
-            LogicalSize::new(self.min_width, (self.min_width * 9.0 / 16.0).max(self.sizing.min_height()));
-        let output =
-            Output::open(event_loop, instance, adapter, &self.device, LogicalSize::new(size.x, size.y), min)?;
+        // Tall videos: not taller than the default's maximum, but never below the minimum.
+        let size = if size.y > MAX_HEIGHT { size * (MAX_HEIGHT / size.y) } else { size };
+        let size = if self.lock_aspect { fit_minimum(size, self.aspect, min) } else { size };
+        let output = Output::open(
+            event_loop,
+            instance,
+            adapter,
+            &self.device,
+            LogicalSize::new(size.x, size.y),
+            LogicalSize::new(min.x, min.y),
+        )?;
         let format = output.config.format;
         if self.compositor.as_ref().is_none_or(|(_, f)| *f != format) {
             let compositor = Compositor::new(&self.device, &self.queue, format, &mut self.ui.fonts());
@@ -634,6 +653,8 @@ impl PipWindow {
         self.fitted = Some(output.window.inner_size());
         self.fit_at = None;
         self.asked_at = None;
+        self.last_fit = None;
+        self.hinted = None;
         self.last_frame = Instant::now();
         self.output = Some(output);
         Ok(())
@@ -689,6 +710,7 @@ impl PipWindow {
         self.ui.set_theme(Theme::new(config, true));
         self.sizing = Sizing::new(config);
         self.min_width = config.media.pip_min_width;
+        self.lock_aspect = config.media.pip_lock_aspect;
         self.laid_out = None;
     }
 
@@ -765,9 +787,16 @@ impl PipWindow {
             }
             WindowEvent::Resized(size) => {
                 self.resized(size);
-                // Back to the video's aspect once the user stops resizing.
-                let settle = Duration::from_secs_f32(config.media.pip_aspect_settle_seconds.max(0.0));
-                self.fit_at = Some(Instant::now() + settle);
+                // Back to the video's aspect while the user resizes (rate-limited) and once
+                // they stop.
+                let now = Instant::now();
+                let live = config.media.pip_aspect_live_seconds.max(0.0);
+                self.fit_at = Some(if live > 0.0 {
+                    let next = self.last_fit.map_or(now, |t| t + Duration::from_secs_f32(live));
+                    next.max(now)
+                } else {
+                    now + Duration::from_secs_f32(config.media.pip_aspect_settle_seconds.max(0.0))
+                });
             }
             WindowEvent::CursorEntered { .. } => self.hovered = true,
             // The button-up may go to another window (or the window manager's move/resize
@@ -916,8 +945,11 @@ impl PipWindow {
                 self.asked_at = None;
             }
         }
-        if config.media.pip_keep_aspect && self.fit_at.is_some_and(|at| at <= now) {
+        self.lock_aspect = config.media.pip_lock_aspect;
+        self.update_hints();
+        if self.lock_aspect && self.fit_at.is_some_and(|at| at <= now) {
             self.fit_at = None;
+            self.last_fit = Some(now);
             self.fit_window();
         }
         let Some(output) = &self.output else { return };
@@ -995,6 +1027,32 @@ impl PipWindow {
         self.queue.present(frame);
     }
 
+    /// The smallest window (logical px) of the video's aspect: at least `media.pip_min_width`
+    /// wide and as tall as the controls need.
+    fn min_size(&self) -> Vec2 {
+        if self.lock_aspect {
+            min_window(self.aspect, self.min_width, self.sizing.min_height())
+        } else {
+            Vec2::new(self.min_width, self.sizing.min_height())
+        }
+    }
+
+    /// Tells the window manager the aspect (X11 size hint) and the smallest size (for the
+    /// video's aspect) when they changed.
+    fn update_hints(&mut self) {
+        let Some(output) = &self.output else { return };
+        let hint = self.lock_aspect.then_some(self.aspect);
+        let key = hint.map(|a| (a * 1000.0).round() / 1000.0);
+        if self.hinted == Some(key) {
+            return;
+        }
+        self.hinted = Some(key);
+        let min = self.min_size();
+        output.window.set_min_inner_size(Some(LogicalSize::new(min.x, min.y)));
+        #[cfg(target_os = "linux")]
+        set_x11_aspect(&output.window, key);
+    }
+
     /// Resizes the window to the video's aspect, keeping the side the user dragged.
     fn fit_window(&mut self) {
         let Some(output) = &self.output else { return };
@@ -1004,7 +1062,8 @@ impl PipWindow {
         }
         let current = Vec2::new(size.width as f32, size.height as f32);
         let reference = self.fitted.map_or(current, |f| Vec2::new(f.width as f32, f.height as f32));
-        let wanted = aspect_size(current, reference, self.aspect).round();
+        let scale = output.scale();
+        let wanted = snap_aspect(current, reference, self.aspect, self.min_size() * scale).round();
         let wanted = PhysicalSize::new(wanted.x.max(1.0) as u32, wanted.y.max(1.0) as u32);
         self.fitted = Some(wanted);
         if (wanted.width.abs_diff(size.width)).max(wanted.height.abs_diff(size.height)) <= 1 {
@@ -1025,17 +1084,65 @@ impl PipWindow {
 /// Aspects closer than this (relative) count as the same.
 const ASPECT_TOLERANCE: f32 = 0.005;
 
+/// The smallest window of aspect `aspect` (width / height) that is at least `min_width` wide
+/// and `min_height` tall: a very wide or tall video grows the other side rather than being
+/// letterboxed.
+fn min_window(aspect: f32, min_width: f32, min_height: f32) -> Vec2 {
+    let aspect = aspect.max(0.01);
+    let width = min_width.max(min_height * aspect);
+    Vec2::new(width, width / aspect)
+}
+
+/// `size` grown (keeping `aspect`) until it is no smaller than `min`.
+fn fit_minimum(size: Vec2, aspect: f32, min: Vec2) -> Vec2 {
+    let floor = min_window(aspect, min.x, min.y);
+    if size.x < floor.x || size.y < floor.y { floor.max(size) } else { size }
+}
+
 /// The size of aspect `aspect` (width / height) for a window that is now `current` and last
-/// had the aspect at `reference`: the side the user changed more is kept, the other follows.
-fn aspect_size(current: Vec2, reference: Vec2, aspect: f32) -> Vec2 {
+/// had the aspect at `reference`: the side the user changed more (the dominant axis of the
+/// drag) is kept, the other follows. Never smaller than `min` (the minimum rules win: the
+/// result grows with the aspect kept).
+fn snap_aspect(current: Vec2, reference: Vec2, aspect: f32, min: Vec2) -> Vec2 {
     if aspect <= 0.0 || current.x <= 0.0 || current.y <= 0.0 {
         return current;
     }
     let changed = |now: f32, before: f32| if before > 0.0 { (now / before - 1.0).abs() } else { 0.0 };
-    if changed(current.y, reference.y) > changed(current.x, reference.x) {
+    let snapped = if changed(current.y, reference.y) > changed(current.x, reference.x) {
         Vec2::new(current.y * aspect, current.y)
     } else {
         Vec2::new(current.x, current.x / aspect)
+    };
+    fit_minimum(snapped, aspect, min)
+}
+
+/// Sets (or clears) the aspect-ratio size hint of an X11 window: the window manager then only
+/// resizes it with that aspect. Wayland has no such thing (xdg-toplevel cannot lock an aspect,
+/// and KWin's scripting API has no aspect property), so there only the snapping works.
+#[cfg(target_os = "linux")]
+fn set_x11_aspect(window: &Window, aspect: Option<f32>) {
+    use winit::raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+    use x11rb::connection::Connection as _;
+    use x11rb::properties::{AspectRatio, WmSizeHints};
+    let id = match window.window_handle().map(|h| h.as_raw()) {
+        Ok(RawWindowHandle::Xlib(h)) => h.window as u32,
+        Ok(RawWindowHandle::Xcb(h)) => h.window.get(),
+        _ => return,
+    };
+    let result = (|| -> Result<()> {
+        let (conn, _) = x11rb::connect(None)?;
+        let mut hints = WmSizeHints::get_normal_hints(&conn, id)?.reply()?.unwrap_or_default();
+        hints.aspect = aspect.map(|a| {
+            let ratio = AspectRatio::new((a * 1000.0).round().max(1.0) as i32, 1000);
+            (ratio, ratio)
+        });
+        hints.set_normal_hints(&conn, id)?;
+        conn.flush()?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => tracing::debug!(?aspect, "PiP aspect size hint set"),
+        Err(e) => tracing::warn!("could not set the PiP aspect hint: {e}"),
     }
 }
 
@@ -1125,12 +1232,84 @@ mod tests {
     #[test]
     fn resizing_keeps_the_dragged_side() {
         let start = Vec2::new(480.0, 270.0);
+        let min = Vec2::ZERO;
         // Wider: the width stays, the height follows.
-        assert_eq!(aspect_size(Vec2::new(640.0, 280.0), start, 16.0 / 9.0), Vec2::new(640.0, 360.0));
+        assert_eq!(snap_aspect(Vec2::new(640.0, 280.0), start, 16.0 / 9.0, min), Vec2::new(640.0, 360.0));
         // Taller: the height stays.
-        assert_eq!(aspect_size(Vec2::new(490.0, 360.0), start, 16.0 / 9.0), Vec2::new(640.0, 360.0));
+        assert_eq!(snap_aspect(Vec2::new(490.0, 360.0), start, 16.0 / 9.0, min), Vec2::new(640.0, 360.0));
         // A new video's aspect, same size: the width stays.
-        assert_eq!(aspect_size(start, start, 4.0 / 3.0), Vec2::new(480.0, 360.0));
+        assert_eq!(snap_aspect(start, start, 4.0 / 3.0, min), Vec2::new(480.0, 360.0));
+        // Already at the aspect: unchanged.
+        assert_eq!(snap_aspect(start, start, 16.0 / 9.0, min), start);
+    }
+
+    #[test]
+    fn snapping_never_goes_below_the_minimum() {
+        let z = sizing();
+        let m = Config::default().media;
+        for aspect in [21.0 / 9.0, 16.0 / 9.0, 1.0, 9.0 / 16.0, 1.0 / 3.0, 4.0] {
+            let min = min_window(aspect, m.pip_min_width, z.min_height());
+            assert!(min.x >= m.pip_min_width - 0.01 && min.y >= z.min_height() - 0.01, "{aspect}: {min:?}");
+            assert!((min.x / min.y - aspect).abs() < 1e-3, "{aspect}: {min:?}");
+            // A drag far below the minimum from either side lands on the minimum, aspect kept.
+            let start = min * 2.0;
+            for current in [Vec2::new(10.0, start.y), Vec2::new(start.x, 10.0), Vec2::new(1.0, 1.0)] {
+                let out = snap_aspect(current, start, aspect, min);
+                assert!(out.x >= min.x - 0.01 && out.y >= min.y - 0.01, "{aspect}: {out:?}");
+                assert!((out.x / out.y - aspect).abs() < 1e-3, "{aspect}: {out:?}");
+            }
+        }
+        // 21:9 is limited by the width, 9:16 by the controls' height, never letterboxed.
+        assert_eq!(min_window(21.0 / 9.0, 272.0, 100.0).x, 272.0);
+        assert!(min_window(9.0 / 16.0, 272.0, 100.0).y > 272.0);
+        assert!(min_window(4.0, 272.0, 100.0).y >= 100.0 - 0.01);
+    }
+
+    #[test]
+    fn the_dominant_axis_decides_for_corner_drags() {
+        let start = Vec2::new(480.0, 270.0);
+        let a = 16.0 / 9.0;
+        // Mostly wider (+25 % vs. +10 % height): the width wins.
+        let out = snap_aspect(Vec2::new(600.0, 297.0), start, a, Vec2::ZERO);
+        assert_eq!(out.x, 600.0);
+        // Mostly taller: the height wins.
+        let out = snap_aspect(Vec2::new(500.0, 400.0), start, a, Vec2::ZERO);
+        assert_eq!(out.y, 400.0);
+        // The snapped size, used as the next reference, stays put (no feedback loop).
+        let snapped = snap_aspect(Vec2::new(600.0, 297.0), start, a, Vec2::ZERO);
+        assert_eq!(snap_aspect(snapped, snapped, a, Vec2::ZERO), snapped);
+    }
+
+    #[test]
+    fn the_layout_works_at_extreme_aspects() {
+        let z = sizing();
+        let m = Config::default().media;
+        for aspect in [21.0 / 9.0, 2.4, 1.0, 9.0 / 16.0, 0.4] {
+            let min = min_window(aspect, m.pip_min_width, z.min_height());
+            for k in [1.0, 1.5, 2.5] {
+                let size = min * k;
+                let l = layout(size, z);
+                let all: Vec<Frame> = l.rects().collect();
+                for (i, r) in all.iter().enumerate() {
+                    assert!(
+                        r.origin.x >= z.border - 0.01 && r.origin.y >= z.border - 0.01,
+                        "{size:?}: {r:?}"
+                    );
+                    assert!(
+                        r.origin.x + r.size.x <= size.x - z.border + 0.01
+                            && r.origin.y + r.size.y <= size.y - z.border + 0.01,
+                        "{size:?}: {r:?} out of the window"
+                    );
+                    for b in &all[i + 1..] {
+                        let apart = r.origin.x + r.size.x <= b.origin.x + 0.01
+                            || b.origin.x + b.size.x <= r.origin.x + 0.01
+                            || r.origin.y + r.size.y <= b.origin.y + 0.01
+                            || b.origin.y + b.size.y <= r.origin.y + 0.01;
+                        assert!(apart, "{size:?}: {r:?} overlaps {b:?}");
+                    }
+                }
+            }
+        }
     }
 
     fn sizing() -> Sizing {
