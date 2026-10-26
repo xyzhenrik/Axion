@@ -4868,6 +4868,8 @@ impl Browser {
             if self.suggestions.is_visible() {
                 self.suggestions.hide(&mut self.ui, &self.config);
             }
+            let current = self.tabs.active().map(|t| t.url.clone());
+            self.chrome.set_address_icon_override(&mut self.ui, None, current.as_deref(), &self.favicons);
             return;
         }
         let anchor = self.chrome.address_frame(&self.ui);
@@ -4876,6 +4878,13 @@ impl Browser {
             suggest(&text, store, &search_url, unix_now())
         });
         self.suggestions.reposition(&mut self.ui, anchor);
+        let current = self.tabs.active().map(|t| t.url.clone());
+        self.chrome.set_address_icon_override(
+            &mut self.ui,
+            Some(self.suggestions.typing_icon_url()),
+            current.as_deref(),
+            &self.favicons,
+        );
     }
 
     /// Background tabs render until loaded and painted once, then get hidden (throttled).

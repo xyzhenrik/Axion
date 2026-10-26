@@ -406,6 +406,8 @@ pub struct Chrome {
     share: NodeId,
     shield_glyph: NodeId,
     address_favicon: NodeId,
+    /// While typing a new address: `Some(url)` whose icon to show (`None` inside = globe).
+    address_icon_override: Option<Option<String>>,
     audio_button: NodeId,
     audio_icon: NodeId,
     progress: NodeId,
@@ -1234,6 +1236,7 @@ impl Chrome {
             share: share_button,
             shield_glyph,
             address_favicon,
+            address_icon_override: None,
             audio_button,
             audio_icon,
             progress,
@@ -2199,10 +2202,7 @@ impl Chrome {
             w.action = Some(ChromeAction::CloseTab(tabs.active_index()).id());
         }
         ui.set_visible(self.address_close, !separate);
-        ui.clear_children(self.address_favicon);
-        if let Some(tab) = tabs.active() {
-            favicon_node(ui, self.address_favicon, &tab.url, ADDRESS_FAVICON, favicons);
-        }
+        self.rebuild_address_favicon(ui, tabs.active().map(|t| t.url.as_str()), favicons);
         ui.set_visible(self.address_favicon, !self.locked);
 
         // Sidebar: each group's tabs are listed under its row: the normal ones under "N Tabs",
@@ -2286,6 +2286,36 @@ impl Chrome {
             w.set_icon(if tab.loading { Icon::Stop } else { Icon::Reload });
         }
         ui.set_progress(self.progress, if tab.loading { tab.progress.max(0.08) as f32 } else { 1.0 });
+    }
+
+    fn rebuild_address_favicon(&mut self, ui: &mut Ui, current: Option<&str>, favicons: &Favicons) {
+        ui.clear_children(self.address_favicon);
+        let url = match &self.address_icon_override {
+            Some(Some(url)) => Some(url.as_str()),
+            Some(None) => Some(""),
+            None => current,
+        };
+        if let Some(url) = url {
+            favicon_node(ui, self.address_favicon, url, ADDRESS_FAVICON, favicons);
+        }
+    }
+
+    /// While typing a new address the favicon shows the typed/suggested site (`Some(Some(url))`,
+    /// the globe if uncached; `Some(None)` = globe), else (`None`) the current page's. Rebuilds
+    /// only on change.
+    pub fn set_address_icon_override(
+        &mut self,
+        ui: &mut Ui,
+        over: Option<Option<&str>>,
+        current: Option<&str>,
+        favicons: &Favicons,
+    ) {
+        let over = over.map(|o| o.map(str::to_owned));
+        if over == self.address_icon_override {
+            return;
+        }
+        self.address_icon_override = over;
+        self.rebuild_address_favicon(ui, current, favicons);
     }
 
     /// Switches the active segment between showing the host and editing the full URL.
