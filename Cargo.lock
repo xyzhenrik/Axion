@@ -490,6 +490,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "axion-i18n"
+version = "0.0.1"
+dependencies = [
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "axion-media"
 version = "0.0.1"
 dependencies = [

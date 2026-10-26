@@ -1,0 +1,3 @@
+# German catalog: "English source text" = "Deutsche Uebersetzung". An empty value falls back to English.
+# Keep {placeholders} exactly as in the key. See GLOSSARY.md. Regenerate missing keys with
+# `cargo run -p axion-i18n --example extract`.
