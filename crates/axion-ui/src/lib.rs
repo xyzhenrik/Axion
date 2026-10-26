@@ -859,7 +859,9 @@ impl Ui {
                     if caret > field.scroll_x + width - CARET_WIDTH {
                         field.scroll_x = caret - width + CARET_WIDTH;
                     }
-                    if !focused {
+                    if !focused || caret + CARET_WIDTH <= width {
+                        // Unfocused, or the field grew until the caret fits again (the compact
+                        // address expands while it is edited): back to the start.
                         field.scroll_x = 0.0;
                     }
                 }
