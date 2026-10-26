@@ -829,6 +829,7 @@
     // Axion's accent colour, live (controls, focus rings, selection).
     if (state.accent) document.documentElement.style.setProperty("--accent", state.accent);
     document.body.classList.toggle("private", state.private);
+    document.body.classList.toggle("flat", !!state.flat);
     if (state.private) {
       // The window around the page takes the page's theme colour: black, like the page.
       document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => {

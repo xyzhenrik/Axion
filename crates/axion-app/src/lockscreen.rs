@@ -40,8 +40,11 @@ pub struct LockScreen {
 }
 
 fn capsule_button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, primary: bool) -> NodeId {
-    let background =
-        if primary { Background::Fill(Paint::Accent, 1.0) } else { Background::Fill(Paint::Label, 0.08) };
+    let background = if primary {
+        Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
+    } else {
+        Background::Fill(Paint::Label, 0.08)
+    };
     let button = ui.add(
         parent,
         Widget::container().with_action(action).with_radius(CAPSULE).with_background(background),
@@ -56,7 +59,7 @@ fn capsule_button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, pri
     );
     let label = ui.add_label(button, text, TextStyle::BodyEmphasis, Style::default());
     if primary && let Some(w) = ui.widget_mut(label) {
-        w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
+        w.set_paint(Paint::OnAccent);
     }
     button
 }
@@ -103,7 +106,7 @@ impl LockScreen {
             Widget::container()
                 .with_action(SHOW_ALERT)
                 .with_radius(CAPSULE)
-                .with_background(Background::Fill(Paint::Accent, 1.0)),
+                .with_background(Background::TintedGlass(GlassLevel::Thin, Paint::Accent)),
             Style {
                 size: Size { width: auto(), height: length(34.0) },
                 padding: Rect {
@@ -118,7 +121,7 @@ impl LockScreen {
         );
         let label = ui.add_label(unlock, tr("Unlock"), TextStyle::Callout, Style::default());
         if let Some(w) = ui.widget_mut(label) {
-            w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
+            w.set_paint(Paint::OnAccent);
         }
 
         // The alert, centred over the page: its own plane (see `planes`).
