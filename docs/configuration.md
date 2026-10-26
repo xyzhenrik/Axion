@@ -99,6 +99,7 @@ ask_where_to_save = false
 | `colors`, `radii`, `motion` | Fine design values: neutral colours, corner radii, spring timings. |
 | `layout` | Tab bar, sidebar, bookmarks bar, page card, tab widths. |
 | `privacy` | Locking of private tabs. |
+| `permissions` | What sites may ask for (microphone, camera, screen, notifications, …): ask or block. |
 | `shields` | Level, switches, filter lists. |
 | `tabs` | Freezing, unloading, memory budget, session restore, closing old tabs. |
 | `media` | The video player, trusted sites, Picture in Picture, desktop integration. |
@@ -132,6 +133,7 @@ ask_where_to_save = false
 | `passwords.generator_symbols` | Generated passwords include symbols. | `true` |
 | `find.match_case` | Find on page matches upper and lower case exactly. | `false` |
 | `privacy.prompt_unlock_on_open` | Show the password card by itself when locked private tabs open. | `true` |
+| `permissions.stop_reload_after_ms` | After **Stop** in the recording popover, a page that still records this long after is reloaded. | `1500` |
 | `ui.tooltip_delay_ms` | How long before a tooltip appears. | `700` |
 | `toast.duration_seconds` | How long short notices stay. | `2.0` |
 
@@ -166,6 +168,7 @@ and tests.
 | `AXION_MONITOR` | Open the window on this monitor, for example `HDMI-A-1`. Works on X11 and XWayland (start with `env -u WAYLAND_DISPLAY`). |
 | `AXION_CHROMIUM_SWITCHES` | Extra Chromium command-line switches, separated by commas, for example `AXION_CHROMIUM_SWITCHES=autoplay-policy=no-user-gesture-required`. |
 | `AXION_NO_SANDBOX` | Set to `1` to turn off Chromium's sandbox, for containers. Not recommended otherwise. |
+| `AXION_FAKE_MEDIA_DEVICES` | Set to `1` for tests: pages get Chromium's fake camera (a test pattern) and microphone (a beep) instead of your real ones. The permission prompt still asks. |
 
 To try things out safely, point the first three at empty temporary folders. Your real accounts,
 settings and vault key are then not touched.

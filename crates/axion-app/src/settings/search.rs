@@ -464,6 +464,41 @@ pub const INDEX: &[Entry] = &[
         &["clear", "delete", "verlauf", "löschen", "history", "data"],
     ),
     page(
+        C::Privacy,
+        tr_mark("Site Permissions"),
+        &[
+            "permission",
+            "berechtigung",
+            "microphone",
+            "mikrofon",
+            "camera",
+            "kamera",
+            "webcam",
+            "screen",
+            "bildschirm",
+            "share",
+            "teilen",
+            "freigabe",
+            "discord",
+            "notification",
+            "mitteilung",
+            "benachrichtigung",
+            "location",
+            "standort",
+            "clipboard",
+            "zwischenablage",
+            "allow",
+            "erlauben",
+            "block",
+            "blockieren",
+        ],
+    ),
+    page(
+        C::Privacy,
+        tr_mark("Remembered for Sites"),
+        &["permission", "berechtigung", "reset", "zurücksetzen", "forget", "vergessen", "site", "website"],
+    ),
+    page(
         C::Data,
         tr_mark("Download location"),
         &["downloads", "folder", "directory", "save", "speicherort", "ordner", "herunterladen"],
@@ -654,6 +689,8 @@ mod tests {
         assert_eq!(titles("memory budget").first(), Some(&"Memory budget"));
         assert!(titles("dark").contains(&"Appearance"));
         assert!(titles("verlauf").contains(&"Browsing history"));
+        assert!(titles("mikrofon").contains(&"Site Permissions"));
+        assert!(titles("discord").contains(&"Site Permissions"));
         assert!(titles("schriftgroesse").contains(&"Text size"));
         assert!(titles("youtube").contains(&"Sites that keep their own player"));
         assert!(titles("cache").contains(&"Cached images and files"));

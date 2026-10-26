@@ -18,6 +18,7 @@ These pages explain what it can do and, above all, what each setting does.
 | [Shields](features/shields.md) | Blocking ads, trackers, popups and redirects. |
 | [Tabs and memory](features/tabs-and-memory.md) | Freezing and unloading background tabs, the memory budget. |
 | [Accounts and privacy](features/accounts-and-privacy.md) | Local accounts, private tabs, locking, how your data is protected. |
+| [Site permissions](features/site-permissions.md) | Microphone, camera, screen sharing (Discord, Meet), notifications, location; the recording indicator. |
 | [Passwords](features/passwords.md) | Saving, filling, cards, addresses, notes, import and export. |
 | [Media and Playlist](features/media-and-playlist.md) | The video player, Picture in Picture, media keys, the Playlist. |
 | [Start page](features/start-page.md) | Clock, top sites, search, backgrounds and statistics. |
@@ -29,7 +30,7 @@ These pages explain what it can do and, above all, what each setting does.
 ## Reference
 
 - [Configuration files](configuration.md) - where Axion keeps things, `config.toml`, `keymap.toml`, environment variables, backups.
-- [Troubleshooting](troubleshooting.md) - videos that do not play, graphics problems, locked tabs, reporting a bug.
+- [Troubleshooting](troubleshooting.md) - videos that do not play, microphone, camera and screen sharing, graphics problems, locked tabs, reporting a bug.
 
 ## Conventions in these pages
 

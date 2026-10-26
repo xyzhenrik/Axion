@@ -69,6 +69,12 @@ if you have none, the Privacy page lets you create one right there.
 - Locked private tabs show a password card. It opens by itself when you switch to Private. In
   `config.toml`, `privacy.prompt_unlock_on_open = false` turns that off.
 
+## Site permissions
+
+Microphone, camera, screen sharing, notifications and the like are asked for per site; your
+decisions stay in the account's profile (private tabs: in memory only). See
+[Site permissions](site-permissions.md).
+
 ## Clearing your traces
 
 - **Settings > Privacy > Clear History…** deletes the browsing history.

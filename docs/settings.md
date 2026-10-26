@@ -209,6 +209,32 @@ Blocking of ads, trackers, popups and redirects. See [Shields](features/shields.
 | **Lock private tabs with the account password** | Private tabs ask for the account password before they open. Needs an account password; the page offers to create one. | On | `privacy.lock_private_tabs` |
 | **Browsing history** (**Clear History…**) | Deletes your whole browsing history. Click again to confirm. For a time range, use **Clear Browsing Data…** | - | - |
 
+### Site Permissions
+
+What happens when a site asks for your microphone, camera, screen and the like and you have not
+decided for that site yet. **Ask** shows the permission prompt under the address field; **Block**
+refuses without asking. A decision you made for a site wins over these. See
+[Site permissions](features/site-permissions.md).
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| **Microphone** | Calls and voice chat (`getUserMedia` with audio). | Ask | `permissions.microphone` (`ask`, `block`) |
+| **Camera** | Video calls (`getUserMedia` with video). | Ask | `permissions.camera` |
+| **Screen sharing** | Sharing a screen or window (Discord, Meet). Always asks: allowing is never remembered. | Ask | `permissions.screen_sharing` |
+| **Notifications** | Desktop notifications from the site. | Ask | `permissions.notifications` |
+| **Location** | Your position. | Ask | `permissions.location` |
+| **Clipboard** | Reading what you copied (writing to the clipboard needs no permission). | Ask | `permissions.clipboard` |
+| **Other permissions** | MIDI devices, the local network, window placement on all displays, installed fonts, idle detection, pointer and keyboard lock, motion sensors, several downloads at once. | Ask | `permissions.other` |
+
+### Remembered for Sites
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| Decision list (**Reset All**) | Every site decision you made with **Always Allow** or **Don't Allow**: the site, what, and **Allowed** or **Blocked**. Remove one with its cross, or all with **Reset All** (click again to confirm). The site asks again next time. | - | - |
+
+Decisions in private tabs are kept in memory only and are forgotten when Axion quits; they are not
+listed here.
+
 ## Data & Downloads
 
 ### Downloads

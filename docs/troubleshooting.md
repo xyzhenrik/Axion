@@ -19,6 +19,40 @@ This takes **several hours and about 100 GB of disk space**, so start it and let
 `CEF_BUILD_DIR` to choose where it works (default `~/cef-build`). When it is done, point `CEF_PATH`
 at the result before you build or run Axion.
 
+## Microphone, camera or screen sharing do not work
+
+First check the site's permission: click the address field's recording icon or open **Settings >
+Privacy > Remembered for Sites**. A site you once answered with **Don't Allow** is refused without
+asking; remove it there and reload the page. Also check that **Settings > Privacy > Site
+Permissions** is not set to **Block** for it.
+
+**No microphone or camera, or the wrong one.** Axion uses the devices your desktop has, through
+PipeWire (or PulseAudio) for sound and V4L2 for cameras. Check that the device works in another app
+and is the default input (KDE: **System Settings > Sound**; `wpctl status` in a terminal). Pick
+another device in the site's own settings (in Discord: **User Settings > Voice & Video**). Only one
+app can use some cameras at a time: close other video apps.
+
+**Screen sharing shows no picker, or fails at once.** On Wayland it needs PipeWire and the screen cast
+portal of your desktop. Install, for example on Arch:
+
+```bash
+sudo pacman -S pipewire wireplumber xdg-desktop-portal xdg-desktop-portal-kde   # KDE Plasma
+sudo pacman -S pipewire wireplumber xdg-desktop-portal xdg-desktop-portal-gnome # GNOME
+```
+
+(Debian and Ubuntu use the same package names with `apt`, Fedora with `dnf`.) Then log out and in
+again. `systemctl --user status xdg-desktop-portal pipewire` should show both running. Cancelling
+the desktop's picker counts as refusing: the site shows an error, try again.
+
+**Screen sharing shares everything.** Under X11 or XWayland there is no picker; the whole screen is
+shared. Run Axion in a Wayland session to choose a window.
+
+**Others cannot hear my shared screen's sound.** The sound comes from the monitor of your default
+output. Check that the sound you want plays on the default output device.
+
+**The location is never found.** Axion's engine has no location service, so sites get "position
+unavailable" even when allowed. Enter your location on the site instead.
+
 ## The graphics driver crashes on AMD
 
 On AMD graphics with the RADV driver, setting **Page frames** to **Shared GPU memory** can crash the
