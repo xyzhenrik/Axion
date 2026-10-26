@@ -16,7 +16,9 @@ mod transfer;
 pub use download::{ClearData, DownloadAction, DownloadInfo, DownloadOptions, DownloadState};
 pub use input::{CursorKind, InputEvent, Modifiers, MouseButton};
 pub use internal::{INTERNAL_SCHEME, InternalPages, InternalRequest, InternalResponse};
-pub use policy::{NavigationRequest, RequestPolicy, RequestVerdict, ResourceKind, ResourceRequest};
+pub use policy::{
+    MediaViewOptions, NavigationRequest, RequestPolicy, RequestVerdict, ResourceKind, ResourceRequest,
+};
 pub use transfer::{DropData, FindRequest, PasteData, PastedFile};
 
 use glam::Vec2;
@@ -164,6 +166,16 @@ pub enum EngineEvent {
         view: ViewId,
         url: String,
     },
+    /// A response that looks like a video, audio file or stream manifest passed the view's
+    /// network stack (`mime` as the server said it; `referer` is the page or frame that
+    /// asked). Pieces of streams are not reported. For capturing the source behind `blob:`
+    /// players.
+    MediaSniffed {
+        view: ViewId,
+        url: String,
+        mime: String,
+        referer: String,
+    },
     /// A download started, progressed or finished.
     DownloadUpdated(DownloadInfo),
     /// The sites (hosts) that store cookies, with their counts — the answer to
@@ -284,6 +296,10 @@ pub trait Engine {
     /// Downloads and decodes a favicon through the view's network stack (cache, cookies,
     /// blocking rules apply). Arrives as [`EngineEvent::FaviconReady`].
     fn fetch_favicon(&mut self, view: ViewId, url: &str, max_size: u32);
+
+    /// Makes `view` a media view (see [`MediaViewOptions`]); `None` turns it back into an
+    /// ordinary one. Applies to the view's requests from now on.
+    fn set_media_view(&mut self, view: ViewId, options: Option<MediaViewOptions>);
 
     /// Installs what decides which requests and navigations pages may make (Shields). It
     /// applies to every view, also ones created before.

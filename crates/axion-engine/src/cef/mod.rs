@@ -28,8 +28,8 @@ pub use gpu::render_node_for;
 pub use schedule::Waker;
 
 use crate::{
-    DropData, Engine, EngineError, EngineEvent, FindRequest, Frame, InputEvent, Modifiers, PasteData,
-    RequestPolicy, ViewId, ViewSize,
+    DropData, Engine, EngineError, EngineEvent, FindRequest, Frame, InputEvent, MediaViewOptions, Modifiers,
+    PasteData, RequestPolicy, ViewId, ViewSize,
 };
 use client::{FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, build_client, favicon_callback};
 use input::InputState;
@@ -757,6 +757,10 @@ impl Engine for CefEngine {
         *self.net.policy.write().unwrap_or_else(PoisonError::into_inner) = policy;
     }
 
+    fn set_media_view(&mut self, view: ViewId, options: Option<MediaViewOptions>) {
+        self.net.set_media_view(view, options);
+    }
+
     fn request_frame(&mut self, _view: ViewId) {
         // Chromium renders on its own timer (see `create_browser`).
     }
@@ -822,6 +826,7 @@ impl Engine for CefEngine {
                 | EngineEvent::FullscreenRequested { view, .. }
                 | EngineEvent::PageMessage { view, .. }
                 | EngineEvent::RequestBlocked { view, .. }
+                | EngineEvent::MediaSniffed { view, .. }
                 | EngineEvent::NavigationBlocked { view, .. }
                 | EngineEvent::FindResult { view, .. }
                 | EngineEvent::Closed { view } => *view,
@@ -839,6 +844,7 @@ impl Engine for CefEngine {
             match &event {
                 EngineEvent::AddressChanged { url, .. } => state.url.clone_from(url),
                 EngineEvent::Closed { .. } => {
+                    self.net.set_media_view(view, None);
                     self.views.remove(&view);
                 }
                 _ => {}

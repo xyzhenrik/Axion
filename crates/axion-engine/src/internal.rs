@@ -47,19 +47,28 @@ pub struct InternalResponse {
     pub status: u16,
     pub mime: String,
     pub body: Vec<u8>,
+    /// A `Content-Security-Policy` for an HTML page instead of the strict default (own files
+    /// only). For pages that must load media or streams from the network.
+    pub csp: Option<String>,
 }
 
 impl InternalResponse {
     pub fn ok(mime: &str, body: impl Into<Vec<u8>>) -> Self {
-        Self { status: 200, mime: mime.to_owned(), body: body.into() }
+        Self { status: 200, mime: mime.to_owned(), body: body.into(), csp: None }
     }
 
     pub fn not_found() -> Self {
-        Self { status: 404, mime: "text/plain".into(), body: b"Not found".to_vec() }
+        Self { status: 404, mime: "text/plain".into(), body: b"Not found".to_vec(), csp: None }
     }
 
     pub fn forbidden() -> Self {
-        Self { status: 403, mime: "text/plain".into(), body: b"Forbidden".to_vec() }
+        Self { status: 403, mime: "text/plain".into(), body: b"Forbidden".to_vec(), csp: None }
+    }
+
+    /// The page under its own policy.
+    pub fn with_csp(mut self, csp: &str) -> Self {
+        self.csp = Some(csp.to_owned());
+        self
     }
 }
 

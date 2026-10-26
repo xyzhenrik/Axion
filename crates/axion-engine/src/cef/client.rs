@@ -826,13 +826,48 @@ pub(super) fn favicon_callback(request: FaviconRequest) -> DownloadImageCallback
     FaviconCallbackBuilder::new(request)
 }
 
+// A media view may reach the local network and this computer (a video on a home server, a
+// local test page): Chromium asks for that permission, and Alloy style would ignore the ask.
+wrap_permission_handler! {
+    pub(super) struct PermissionHandlerBuilder {
+        net: Arc<Network>,
+        view: ViewId,
+    }
+
+    impl PermissionHandler {
+        fn on_show_permission_prompt(
+            &self,
+            _browser: Option<&mut Browser>,
+            _prompt_id: u64,
+            _requesting_origin: Option<&CefString>,
+            requested_permissions: u32,
+            callback: Option<&mut PermissionPromptCallback>,
+        ) -> ::std::os::raw::c_int {
+            use cef::sys::cef_permission_request_types_t as types;
+            let network = types::CEF_PERMISSION_TYPE_LOCAL_NETWORK as u32
+                | types::CEF_PERMISSION_TYPE_LOOPBACK_NETWORK as u32;
+            if self.net.media_view(self.view).is_none()
+                || requested_permissions == 0
+                || requested_permissions & !network != 0
+            {
+                return 0;
+            }
+            if let Some(callback) = callback {
+                callback.cont(cef::sys::cef_permission_request_result_t::CEF_PERMISSION_RESULT_ACCEPT.into());
+            }
+            1
+        }
+    }
+}
+
 wrap_client! {
     pub(super) struct ClientBuilder {
         render: RenderHandler,
         display: DisplayHandler,
         load: LoadHandler,
         life_span: LifeSpanHandler,
-        request: RequestHandler,
+        // What the network stack asks of the browser: requests and permissions.
+        request: (RequestHandler, PermissionHandler),
         download: DownloadHandler,
         find: FindHandler,
     }
@@ -840,6 +875,10 @@ wrap_client! {
     impl Client {
         fn render_handler(&self) -> Option<RenderHandler> {
             Some(self.render.clone())
+        }
+
+        fn permission_handler(&self) -> Option<PermissionHandler> {
+            Some(self.request.1.clone())
         }
 
         fn display_handler(&self) -> Option<DisplayHandler> {
@@ -855,7 +894,7 @@ wrap_client! {
         }
 
         fn request_handler(&self) -> Option<RequestHandler> {
-            Some(self.request.clone())
+            Some(self.request.0.clone())
         }
 
         fn download_handler(&self) -> Option<DownloadHandler> {
@@ -874,7 +913,10 @@ pub(super) fn build_client(ctx: &ViewContext) -> Client {
         DisplayHandlerBuilder::new(ctx.clone()),
         LoadHandlerBuilder::new(ctx.clone()),
         LifeSpanHandlerBuilder::new(ctx.clone()),
-        build_request_handler(&ctx.net, ctx.view),
+        (
+            build_request_handler(&ctx.net, ctx.view),
+            PermissionHandlerBuilder::new(Arc::clone(&ctx.net), ctx.view),
+        ),
         super::download::build_download_handler(&ctx.shared.downloads),
         FindHandlerBuilder::new(ctx.clone()),
     )

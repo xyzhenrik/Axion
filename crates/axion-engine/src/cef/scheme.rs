@@ -113,7 +113,7 @@ wrap_scheme_handler_factory! {
                 };
                 let message = String::from_utf8_lossy(&body).into_owned();
                 self.net.emit_for(browser_id, EngineEvent::InternalMessage { view, host, message });
-                return Some(handler(InternalResponse { status: 204, mime: "text/plain".into(), body: Vec::new() }));
+                return Some(handler(InternalResponse { status: 204, mime: "text/plain".into(), body: Vec::new(), csp: None }));
             }
             let request = InternalRequest { host: &host, path, query, private: self.private, from_own_page: own };
             let response = self.net.internal_pages().and_then(|pages| pages.serve(&request));
@@ -164,11 +164,10 @@ wrap_resource_handler! {
             response.set_header_by_name(Some(&"X-Content-Type-Options".into()), Some(&"nosniff".into()), 1);
             if r.mime == "text/html" {
                 // Only the page's own files; images also from data: URLs.
-                response.set_header_by_name(
-                    Some(&"Content-Security-Policy".into()),
-                    Some(&"default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'".into()),
-                    1,
+                let csp = r.csp.as_deref().unwrap_or(
+                    "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
                 );
+                response.set_header_by_name(Some(&"Content-Security-Policy".into()), Some(&csp.into()), 1);
             }
             if let Some(length) = response_length {
                 *length = r.body.len() as i64;

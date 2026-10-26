@@ -314,6 +314,8 @@ pub struct Browser {
     page_colors: PageTint,
     /// The start page (`axion://home/`).
     home: HomePage,
+    /// The Playlist's media view page (`axion://media/`) and its sources.
+    media_service: Arc<crate::media_view::MediaService>,
     /// Settings has asked for the start page backgrounds' thumbnails (textures are made from
     /// then on), and the backgrounds generation it last listed.
     home_thumbnails: bool,
@@ -491,7 +493,15 @@ impl Browser {
         let mut home = HomePage::new(&profile, favicons.dir().map(Into::into));
         // The single background image of older versions moves into the backgrounds directory.
         let migrated = home.migrate(&mut config);
-        engine.set_internal_pages(Some(home.service()));
+        let media_service = Arc::new(crate::media_view::MediaService::default());
+        media_service.set_bridge(axion_media::bridge_script(
+            &bridge_secret(),
+            &axion_media::BridgeOptions { own_fullscreen: false, trusted_sites: Vec::new() },
+        ));
+        engine.set_internal_pages(Some(Arc::new(crate::media_view::Chain(vec![
+            home.service(),
+            media_service.clone(),
+        ]))));
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
         let playlist = crate::playlist::Playlist::new(&profile);
@@ -573,6 +583,7 @@ impl Browser {
             last_tint_step: Instant::now(),
             page_colors: PageTint::new(dark),
             home,
+            media_service,
             home_thumbnails: false,
             backgrounds_listed: None,
             tabs: Tabs::default(),
@@ -826,6 +837,15 @@ impl Browser {
 
     fn active_view(&self) -> Option<ViewId> {
         self.tabs.active().map(|t| t.view)
+    }
+
+    /// The view whose picture fills the page area: the active tab's, or the Playlist's
+    /// playback while Axion's fullscreen player shows it.
+    fn display_view(&self) -> Option<ViewId> {
+        match &self.playlist.playback {
+            Some(pb) if self.playlist.fullscreen => Some(pb.view),
+            _ => self.active_view(),
+        }
     }
 
     // ---- commands ----
@@ -1234,6 +1254,13 @@ impl Browser {
 
     fn media_command(&mut self, view: ViewId, command: &axion_media::Command) {
         tracing::debug!(?view, ?command, "media command");
+        // Axion's fullscreen player on the Playlist's playback is the app's own state.
+        if let axion_media::Action::Fullscreen(on) = command.action
+            && self.is_playback_view(view)
+        {
+            self.playlist_set_fullscreen(on);
+            return;
+        }
         if self.click_site_player(view, command) {
             return;
         }
@@ -1354,6 +1381,9 @@ impl Browser {
                 self.update_now_playing();
             }
             axion_media::Message::Probe(state) => tracing::info!(%state, "media probe"),
+            axion_media::Message::Failure { code, message } => {
+                self.playlist_view_failed(view, &code, &message)
+            }
             axion_media::Message::DoubleClick { id } => {
                 let fullscreen = self.player.mode() != PlayerMode::Fullscreen;
                 let command = axion_media::Command::new(&id, axion_media::Action::Fullscreen(fullscreen));
@@ -1571,6 +1601,17 @@ impl Browser {
 
     /// Ends PiP; `pause` with the player's id pauses the video (the × button).
     fn end_pip(&mut self, view: ViewId, pause: Option<&str>, show_tab: bool) {
+        if self.is_playback_view(view) {
+            // The Playlist's playback: no tab to go back to.
+            if let Some(id) = pause {
+                self.media_command(view, &axion_media::Command::new(id, axion_media::Action::Pause));
+            }
+            if let Some(pip) = &mut self.pip {
+                pip.hide();
+            }
+            self.playlist_pip_ended(show_tab);
+            return;
+        }
         let takeover =
             self.pip.as_ref().filter(|p| p.takeover).and_then(|p| p.player.as_ref()).map(|p| p.id.clone());
         if let Some(id) = takeover {
@@ -1594,11 +1635,7 @@ impl Browser {
     fn update_pip(&mut self) {
         let Some(view) = self.pip_view() else { return };
         let id = self.pip.as_ref().and_then(|p| p.player.as_ref()).map(|p| p.id.clone()).unwrap_or_default();
-        let found = find_tab(&self.tabs, &self.parked, view).map(|tab| {
-            let dpr =
-                tab.media.as_ref().map_or(self.scale(), |m| if m.dpr > 0.0 { m.dpr } else { self.scale() });
-            (tab.media.as_ref().and_then(|m| m.get(&id)).cloned(), dpr)
-        });
+        let found = self.media_of(view).map(|(media, dpr)| (media.get(&id).cloned(), dpr));
         let Some((Some(player), dpr)) = found else {
             // The tab closed or its page went away: PiP ends with it.
             if let Some(pip) = &mut self.pip {
@@ -1606,9 +1643,14 @@ impl Browser {
             }
             return;
         };
-        let shown = Some(view) == self.active_view() && !self.overview.is_open();
+        // The Playlist's playback is only the video: nothing to cover, and its view is kept
+        // alive and sized by the Playlist.
+        let own_view = self.is_playback_view(view);
+        let shown = !own_view && Some(view) == self.active_view() && !self.overview.is_open();
         let takeover = self.pip.as_ref().is_some_and(|p| p.takeover);
-        if shown && takeover {
+        if own_view {
+            self.engine.request_frame(view);
+        } else if shown && takeover {
             self.media_command(view, &axion_media::Command::new(&id, axion_media::Action::Takeover(false)));
         } else if !shown && !takeover {
             self.media_command(view, &axion_media::Command::new(&id, axion_media::Action::Takeover(true)));
@@ -1616,7 +1658,7 @@ impl Browser {
             // A hidden-then-shown view only renders again after a resize.
             self.engine.resize(view, self.view_size());
         }
-        if !shown {
+        if !shown && !own_view {
             self.engine.request_frame(view);
         }
         let picture = self.engine.frame(view).map(|frame| {
@@ -1657,9 +1699,14 @@ impl Browser {
         self.update_pip();
         let locked = self.is_locked();
         let tab = self.tabs.active().filter(|_| !self.overview.is_open() && !locked);
+        // Fullscreen from the Playlist: the player is about its playback view.
+        let playback = self.playlist.playback.as_ref().filter(|_| self.playlist.fullscreen);
         let cx = PlayerContext {
-            view: tab.map(|t| t.view),
-            media: tab.and_then(|t| t.media.as_ref()),
+            view: playback.map(|p| p.view).or(tab.map(|t| t.view)),
+            media: match playback {
+                Some(p) => p.media.as_ref(),
+                None => tab.and_then(|t| t.media.as_ref()),
+            },
             page: self.page_rect(),
             pointer: self.pointer,
             page_fullscreen: self.chrome.page_fullscreen(),
@@ -3157,6 +3204,9 @@ impl Browser {
                     }
                 }
                 EngineEvent::LoadingStateChanged { view, loading, can_go_back, can_go_forward } => {
+                    if loading {
+                        self.playlist_forget_sniffed(view);
+                    }
                     if !loading
                         && let (Some(store), Some(tab)) =
                             (&self.store, find_tab(&self.tabs, &self.parked, view).filter(|t| !t.private))
@@ -3233,9 +3283,8 @@ impl Browser {
                         self.update_layout();
                     }
                 }
-                // The Playlist page's own player opens no tabs.
-                EngineEvent::NewViewRequested { opener, .. }
-                    if self.playlist.playback.as_ref().is_some_and(|p| p.view == opener) => {}
+                // The Playlist's own views open no tabs.
+                EngineEvent::NewViewRequested { opener, .. } if self.playlist_owns_view(opener) => {}
                 EngineEvent::NewViewRequested { opener, url, kind, user_gesture, opener_frame } => {
                     let opener_url = find_tab(&self.tabs, &self.parked, opener).map(|t| t.url.clone());
                     // Axion's own pages open only from the browser or from each other.
@@ -3317,7 +3366,13 @@ impl Browser {
                 EngineEvent::FindResult { view, active, count, final_update } => {
                     self.find.set_result(&mut self.ui, &mut self.engine, view, (active, count, final_update));
                 }
-                EngineEvent::Closed { view } => self.page_colors.closed(view),
+                EngineEvent::MediaSniffed { view, url, mime, referer } => {
+                    self.playlist_sniffed(view, url, mime, referer);
+                }
+                EngineEvent::Closed { view } => {
+                    self.playlist.sniffed.remove(&view);
+                    self.page_colors.closed(view);
+                }
                 EngineEvent::DownloadUpdated(info) => {
                     let playlist_download = self.playlist_download_update(&info);
                     self.downloads.update(
@@ -3874,8 +3929,10 @@ impl Browser {
                     && self.pointer.is_some_and(|p| self.playlist_ui.page.list_contains(&self.ui, p))
                 {
                     self.playlist_ui.page.scroll_by(&mut self.ui, delta.y);
-                } else if self.playlist_open() && self.pointer.is_some_and(|p| self.playlist_wheel(p, delta))
+                } else if self.playlist_open()
+                    && self.pointer.is_some_and(|p| self.playlist_ui.page.rect().contains(p))
                 {
+                    // The page below the Playlist rests.
                 } else if self.pointer.is_some_and(|p| self.chrome.panel_contains(&self.ui, p)) {
                     self.chrome.scroll_panel(&mut self.ui, delta.y);
                 } else if self.pointer.is_some_and(|p| self.chrome.sections_contains(&self.ui, p)) {
@@ -4197,6 +4254,10 @@ impl Browser {
             self.set_presentation(false);
             return false;
         }
+        if pressed && self.playlist.fullscreen && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.playlist_set_fullscreen(false);
+            return false;
+        }
         if pressed
             && self.chrome.page_fullscreen()
             && self.player.mode() != PlayerMode::Fullscreen
@@ -4378,6 +4439,18 @@ impl Browser {
                 "playlist-speed" => self.playlist_action(crate::playlist_page::PageAction::Speed),
                 "playlist-sleep" => self.playlist_action(crate::playlist_page::PageAction::Sleep),
                 "playlist-popout" => self.playlist_action(crate::playlist_page::PageAction::Fullscreen),
+                "playlist-pip" => self.playlist_action(crate::playlist_page::PageAction::PictureInPicture),
+                "playlist-open-page" => self.playlist_action(crate::playlist_page::PageAction::OpenPage),
+                // Items saved before sources were captured: forget every captured source.
+                "playlist-forget-source" => {
+                    let ids: Vec<i64> = self.playlist.items.iter().map(|i| i.id).collect();
+                    if let Some(store) = &self.store {
+                        for id in ids {
+                            let _ = store.set_playlist_source(id, "");
+                        }
+                    }
+                    self.playlist.reload(self.store.as_ref(), &self.config);
+                }
                 play if play.starts_with("playlist-play:") => {
                     if let Some(id) = play["playlist-play:".len()..]
                         .parse::<usize>()
@@ -4937,6 +5010,8 @@ impl Browser {
         self.playlist_ui.popover.animate(&mut self.ui, dt);
         if self.playlist_open() {
             self.update_playlist_page(dt);
+        } else if self.playlist.playback.is_some() {
+            self.playlist_background_tick();
         }
         self.suggestions.animate(&mut self.ui, dt);
         if self.overview.is_open() {
@@ -4972,7 +5047,7 @@ impl Browser {
         self.update_tab_drag(dt);
         self.ui.layout();
         self.tab_drag.animate_rows(&mut self.ui, &self.chrome, &self.config, dt);
-        if let Some(view) = self.active_view() {
+        if let Some(view) = self.display_view() {
             self.engine.request_frame(view);
         }
         self.snapshot_background_tabs();
@@ -4989,7 +5064,7 @@ impl Browser {
         let output = surface.texture.create_view(&Default::default());
 
         // Locked private pages aren't drawn at all (the lock screen covers their place).
-        let frame = self.active_view().filter(|_| !self.is_locked()).and_then(|v| self.engine.frame(v));
+        let frame = self.display_view().filter(|_| !self.is_locked()).and_then(|v| self.engine.frame(v));
         let page_view = frame.as_ref().map(|f| f.texture.create_view(&Default::default()));
         let slide_frame = frame.as_ref().and_then(|f| self.slide_page_frame(&f.texture));
         let slide_view = slide_frame.as_ref().map(|t| t.create_view(&Default::default()));

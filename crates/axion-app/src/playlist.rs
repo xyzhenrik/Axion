@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use axion_config::{Config, Playlist as PlaylistConfig};
 use axion_engine::{DownloadInfo, DownloadState, ViewId};
-use axion_media::{Kind, PageMedia, Player, format_time};
+use axion_media::{Capture, Kind, PageMedia, Player, Sniffed, format_time};
 use axion_store::{NewPlaylistItem, PlaylistItem, Store, dl};
 
 use crate::url::display_host;
@@ -67,10 +67,19 @@ pub struct Candidate {
     /// pixel factor.
     pub rect: (f32, f32, f32, f32),
     pub dpr: f32,
+    /// The real media behind the page's player, found by the bridge and the network (what the
+    /// Playlist plays instead of the page).
+    pub capture: Capture,
 }
 
 /// The videos of a page worth saving: every `<video>`, and audio with a known length.
-pub fn candidates(page_url: &str, tab_title: &str, media: &PageMedia, max_title: usize) -> Vec<Candidate> {
+pub fn candidates(
+    page_url: &str,
+    tab_title: &str,
+    media: &PageMedia,
+    sniffed: &[Sniffed],
+    max_title: usize,
+) -> Vec<Candidate> {
     if !(page_url.starts_with("http://")
         || page_url.starts_with("https://")
         || page_url.starts_with("file://"))
@@ -117,6 +126,7 @@ pub fn candidates(page_url: &str, tab_title: &str, media: &PageMedia, max_title:
                 position: p.time,
                 rect: (p.x, p.y, p.w, p.h),
                 dpr: media.dpr,
+                capture: axion_media::capture(&p.src, &p.frame, page_url, sniffed),
             }
         })
         .collect()
@@ -180,6 +190,10 @@ pub fn add(store: &Store, config: &Config, c: &Candidate, now: i64) -> Added {
         dl_path,
         dl_size,
         dl_note,
+        source: match &c.capture {
+            Capture::Found(source) => source.to_json(),
+            _ => String::new(),
+        },
     };
     match store.add_playlist_item(&new, now) {
         Ok((id, true)) => Added::New(id),
@@ -350,6 +364,47 @@ pub fn wrap_title(text: &str, max_chars: usize, max_lines: usize) -> Vec<String>
     lines
 }
 
+/// Remembers a media response of a view's traffic: no repeats (range requests ask for the
+/// same file again and again), at most `limit` kept (the oldest go).
+pub fn remember_sniffed(list: &mut Vec<Sniffed>, new: Sniffed, limit: usize) {
+    if list.iter().any(|s| s.url == new.url) {
+        return;
+    }
+    list.push(new);
+    if list.len() > limit.max(1) {
+        list.remove(0);
+    }
+}
+
+/// The source of a page being resolved: the first of its videos (biggest first) that
+/// yields one; unplayable reasons only count when nothing else was found.
+pub fn resolve_capture(media: Option<&PageMedia>, page_url: &str, sniffed: &[Sniffed]) -> Capture {
+    let mut videos: Vec<&Player> =
+        media.map(|m| m.players.iter().filter(|p| p.kind == Kind::Video).collect()).unwrap_or_default();
+    videos.sort_by(|a, b| b.area().total_cmp(&a.area()));
+    let mut fallback = Capture::Nothing;
+    for p in videos {
+        match axion_media::capture(&p.src, &p.frame, page_url, sniffed) {
+            found @ Capture::Found(_) => return found,
+            unsupported @ Capture::Unsupported(_) => fallback = unsupported,
+            Capture::Nothing => {}
+        }
+    }
+    match axion_media::capture("", "", page_url, sniffed) {
+        found @ Capture::Found(_) => found,
+        _ => fallback,
+    }
+}
+
+/// What the player area says when the media view reported a failure.
+pub fn failure_text(code: &str) -> &'static str {
+    match code {
+        "hls" => "This stream couldn’t be loaded. Its server may refuse playback outside the page.",
+        "source" => "The video’s address is no longer available.",
+        _ => "This video can’t be played outside its page.",
+    }
+}
+
 /// What happens when a video ends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Repeat {
@@ -423,20 +478,10 @@ pub fn sleep_label(minutes: u32) -> String {
     }
 }
 
-/// What to do with a tab opened for a saved video once its player is ready.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Then {
-    Nothing,
-    /// Axion's fullscreen player.
-    Fullscreen,
-    PictureInPicture,
-}
-
-/// A tab opened for a saved video, waiting for its player.
+/// A tab opened for a saved video's page, waiting for its player.
 #[derive(Clone, Copy, Debug)]
 pub struct Pending {
     pub position: f64,
-    pub then: Then,
 }
 
 /// What a row's menu, the lists menu, the speed menu, the sleep timer and the page menu's
@@ -475,8 +520,12 @@ pub struct Playback {
     pub opened: Instant,
     /// The thumbnail was taken from the picture (or didn't need to be).
     pub thumb_done: bool,
-    /// A saved copy plays (a media document), so its picture is the whole view.
+    /// A saved copy plays (a media document, not the media view's page).
     pub local: bool,
+    /// The token `axion://media/` serves the source under.
+    pub token: Option<String>,
+    /// The source was found just now (a saved one may have expired).
+    pub fresh: bool,
     /// The seek, the speed and the autoplay were sent.
     pub started: bool,
     /// When the position was last saved.
@@ -488,6 +537,26 @@ impl Playback {
     pub fn player(&self) -> Option<&Player> {
         self.media.as_ref()?.primary()
     }
+}
+
+/// An item whose video source is being looked for: its page loads hidden (and muted) just
+/// long enough for the bridge and the network to show where the video comes from.
+pub struct Resolving {
+    pub item: i64,
+    /// The hidden view.
+    pub view: ViewId,
+    pub started: Instant,
+    pub media: Option<PageMedia>,
+    /// When the page's players last looked unplayable (`Capture::Unsupported`), and why.
+    pub unsupported: Option<(Instant, &'static str)>,
+    /// When the page's player was last clicked (to start site players), and how often.
+    pub clicked_at: Option<Instant>,
+}
+
+/// Why an item couldn't be played in the Playlist's player.
+pub struct Failure {
+    pub item: i64,
+    pub message: String,
 }
 
 /// A tab showing a saved video, whose position is saved as it plays.
@@ -518,6 +587,14 @@ pub struct Playlist {
     pub thumb_jobs: Vec<ThumbJob>,
     pub tracked: HashMap<ViewId, Tracked>,
     pub playback: Option<Playback>,
+    /// A source being looked for in the background.
+    pub resolving: Option<Resolving>,
+    /// The last item that couldn't play, shown in the player area with *Open page*.
+    pub failure: Option<Failure>,
+    /// Axion's fullscreen player shows the playback.
+    pub fullscreen: bool,
+    /// Media-looking responses of each view's network traffic, oldest first.
+    pub sniffed: HashMap<ViewId, Vec<Sniffed>>,
     pub shuffle: bool,
     pub repeat: Repeat,
     pub sleep: Sleep,
@@ -542,6 +619,10 @@ impl Playlist {
             thumb_jobs: Vec::new(),
             tracked: HashMap::new(),
             playback: None,
+            resolving: None,
+            failure: None,
+            fullscreen: false,
+            sniffed: HashMap::new(),
             shuffle: false,
             repeat: Repeat::Off,
             sleep: Sleep::Off,
@@ -658,7 +739,7 @@ pub fn file_url(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axion_media::SessionInfo;
+    use axion_media::{MediaSource, SessionInfo};
 
     fn item(id: i64, media: Option<&str>, page: &str) -> PlaylistItem {
         PlaylistItem {
@@ -677,6 +758,7 @@ mod tests {
             dl_path: String::new(),
             dl_size: 0,
             dl_note: String::new(),
+            source: String::new(),
         }
     }
 
@@ -721,7 +803,7 @@ mod tests {
             session: Some(SessionInfo { title: "  Song ".into(), ..Default::default() }),
             ..Default::default()
         };
-        let list = candidates("https://x/watch", "Tab title", &media, 200);
+        let list = candidates("https://x/watch", "Tab title", &media, &[], 200);
         assert_eq!(list.len(), 1);
         let c = &list[0];
         assert_eq!(c.title, "Song");
@@ -730,11 +812,11 @@ mod tests {
         assert_eq!(c.position, 30.0);
         // Streams have no file; two videos get numbered titles; internal pages offer nothing.
         let media = PageMedia { players: vec![video, stream], ..Default::default() };
-        let list = candidates("https://x/watch", "Tab title", &media, 200);
+        let list = candidates("https://x/watch", "Tab title", &media, &[], 200);
         assert_eq!(list[0].title, "Tab title (1)");
         assert_eq!(list[1].media_url, None);
         assert!(matches!(list[1].source, Source::Streaming(_)));
-        assert!(candidates("axion://home/", "", &media, 200).is_empty());
+        assert!(candidates("axion://home/", "", &media, &[], 200).is_empty());
         assert_eq!(truncate_chars("abcdefgh", 5), "abcd…");
     }
 
@@ -754,8 +836,17 @@ mod tests {
             position: 3.0,
             rect: (0.0, 0.0, 1.0, 1.0),
             dpr: 1.0,
+            capture: Capture::Nothing,
         };
         let Added::New(a) = add(&store, &config, &c("https://x/1.mp4"), 1) else { panic!() };
+        // A captured source is stored with the item.
+        let mut with_source = c("https://x/0.mp4");
+        with_source.capture =
+            Capture::Found(MediaSource::new("https://x/0.mp4", axion_media::StreamKind::File, "https://x/"));
+        let Added::New(z) = add(&store, &config, &with_source, 0) else { panic!() };
+        let stored = store.playlist_item(z).unwrap().unwrap();
+        assert_eq!(MediaSource::from_json(&stored.source).unwrap().referer, "https://x/");
+        store.remove_playlist_item(z).unwrap();
         assert_eq!(add(&store, &config, &c("https://x/1.mp4"), 2), Added::Existing(a));
         assert!(matches!(add(&store, &config, &c("https://x/2.mp4"), 3), Added::New(_)));
         assert_eq!(add(&store, &config, &c("https://x/3.mp4"), 4), Added::Full);
@@ -823,6 +914,50 @@ mod tests {
         assert_eq!(resume_position(&i, &cfg), 0.0);
         i.position = 60.0;
         assert_eq!(resume_position(&i, &cfg), 58.0);
+    }
+
+    #[test]
+    fn sniffed_responses_are_kept_once_and_limited() {
+        let s = |u: &str| Sniffed { url: u.into(), mime: String::new(), referer: String::new() };
+        let mut list = Vec::new();
+        for u in ["a", "b", "a", "c", "d"] {
+            remember_sniffed(&mut list, s(u), 3);
+        }
+        let urls: Vec<&str> = list.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(urls, ["b", "c", "d"]);
+    }
+
+    #[test]
+    fn resolving_prefers_a_players_own_source() {
+        let video = |src: &str, w: f32| Player {
+            id: "a:1".into(),
+            kind: Kind::Video,
+            w,
+            h: w,
+            src: src.into(),
+            frame: "https://hoster/e/1".into(),
+            ..Default::default()
+        };
+        let page = "https://site/p";
+        let seen =
+            [Sniffed { url: "https://cdn/m.m3u8".into(), mime: String::new(), referer: String::new() }];
+        // A blob player takes the manifest the network showed, with the frame's Referer.
+        let media = PageMedia { players: vec![video("blob:https://hoster/1", 10.0)], ..Default::default() };
+        let Capture::Found(found) = resolve_capture(Some(&media), page, &seen) else { panic!() };
+        assert_eq!(found.url, "https://cdn/m.m3u8");
+        // A bigger player with a plain file wins over a small blob one.
+        let media = PageMedia {
+            players: vec![video("blob:https://hoster/1", 10.0), video("https://cdn/v.mp4", 100.0)],
+            ..Default::default()
+        };
+        let Capture::Found(found) = resolve_capture(Some(&media), page, &[]) else { panic!() };
+        assert_eq!((found.url.as_str(), found.referer.as_str()), ("https://cdn/v.mp4", "https://hoster/e/1"));
+        // Only a blob and no network traffic: unplayable, with the reason; nothing at all: not yet.
+        let media = PageMedia { players: vec![video("blob:https://hoster/1", 10.0)], ..Default::default() };
+        assert_eq!(resolve_capture(Some(&media), page, &[]), Capture::Unsupported(axion_media::WHY_BLOB));
+        assert_eq!(resolve_capture(None, page, &[]), Capture::Nothing);
+        assert!(failure_text("hls").contains("stream"));
+        assert!(failure_text("whatever").contains("outside its page"));
     }
 
     #[test]
@@ -895,6 +1030,7 @@ mod tests {
             position: 0.0,
             rect: (0.0, 0.0, 1.0, 1.0),
             dpr: 1.0,
+            capture: Capture::Nothing,
         };
         assert_eq!(p.contains(&copy), Some(1));
         assert_ne!(p.random(), p.random());

@@ -463,6 +463,7 @@ name = "axion-engine"
 version = "0.0.1"
 dependencies = [
  "ash",
+ "axion-media",
  "cef",
  "glam",
  "libc",

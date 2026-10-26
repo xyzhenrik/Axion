@@ -51,6 +51,8 @@ pub enum PageAction {
     SelectAll,
     DeleteSelected,
     DownloadSelected,
+    /// The player area's *Open page* button (a video that can't play there).
+    OpenPage,
     /// The row (index into the shown rows) was clicked.
     Row(usize),
     RowMenu(usize),
@@ -59,7 +61,7 @@ pub enum PageAction {
     RowDown(usize),
 }
 
-const SIMPLE: [PageAction; 17] = [
+const SIMPLE: [PageAction; 18] = [
     PageAction::Close,
     PageAction::PlayAll,
     PageAction::ListMenu,
@@ -77,6 +79,7 @@ const SIMPLE: [PageAction; 17] = [
     PageAction::SelectAll,
     PageAction::DeleteSelected,
     PageAction::DownloadSelected,
+    PageAction::OpenPage,
 ];
 
 impl PageAction {
@@ -290,6 +293,8 @@ pub struct PlayerModel<'a> {
     pub sleep: bool,
     /// Text over the black area instead of a picture (nothing chosen, loading, …).
     pub note: Option<&'a str>,
+    /// The note comes with an *Open page* button.
+    pub open_page: bool,
     pub video: Option<VideoPicture>,
 }
 
@@ -321,6 +326,7 @@ pub struct PlaylistPage {
     video_box: NodeId,
     video: NodeId,
     video_note: NodeId,
+    open_page_button: NodeId,
     title: NodeId,
     site: NodeId,
     elapsed: NodeId,
@@ -586,6 +592,8 @@ impl PlaylistPage {
         if let Some(w) = ui.widget_mut(video_note) {
             w.set_paint(Paint::Fixed(Color::rgb(0x8E8E93)));
         }
+        let open_page_button = capsule(ui, note_box, PageAction::OpenPage, Icon::Globe, "Open page", false);
+        ui.set_visible(open_page_button, false);
 
         let info = ui.add(
             player_col,
@@ -712,6 +720,7 @@ impl PlaylistPage {
             video_box,
             video,
             video_note,
+            open_page_button,
             title,
             site,
             elapsed,
@@ -763,6 +772,12 @@ impl PlaylistPage {
         self.place(ui, config, rect, toggle_inset);
         ui.set_visible(self.root, true);
         self.apply_search_spring(config);
+    }
+
+    /// Hides the page while something else (the fullscreen player) covers the window, or
+    /// shows it again.
+    pub fn set_hidden(&mut self, ui: &mut Ui, hidden: bool) {
+        ui.set_visible(self.root, self.open && !hidden);
     }
 
     pub fn close(&mut self, ui: &mut Ui, config: &Config) {
@@ -1213,6 +1228,7 @@ impl PlaylistPage {
                 ui.set_visible(self.video, false);
                 self.shown_aspect = 0.0;
                 ui.set_text(self.video_note, note.unwrap_or("Choose a video"));
+                ui.set_visible(self.open_page_button, m.open_page);
                 if let Some(parent) = ui.parent(self.video_note) {
                     ui.set_visible(parent, true);
                 }

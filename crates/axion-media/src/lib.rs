@@ -11,6 +11,11 @@
 
 use serde::{Deserialize, Serialize};
 
+mod source;
+pub use source::{
+    Capture, MediaSource, Sniffed, StreamKind, WHY_BLOB, WHY_DASH, capture, classify_response, origin_of,
+};
+
 /// Console messages starting with this come from the bridge.
 pub const MARKER: &str = "\u{1}axion:";
 
@@ -94,6 +99,8 @@ pub struct Player {
     pub src: String,
     /// The `poster` picture of a `<video>`.
     pub poster: String,
+    /// The address of the frame the element lives in (an iframe's own, for embedded hosters).
+    pub frame: String,
 }
 
 impl Player {
@@ -195,6 +202,12 @@ pub enum Message {
     /// A player's loading state, asked for by [`Action::Probe`] (a debugging aid): its frame,
     /// source, ready/network state, error, and the frame's codec support, as JSON.
     Probe(String),
+    /// The dedicated media view could not play its source (`code`: where it failed,
+    /// `message`: what the media element or hls.js said).
+    Failure {
+        code: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -209,8 +222,16 @@ pub enum ParseError {
 #[serde(tag = "t", rename_all = "lowercase")]
 enum Wire {
     State(PageMedia),
-    Event { event: WireEvent },
+    Event {
+        event: WireEvent,
+    },
     Probe(serde_json::Map<String, serde_json::Value>),
+    Failure {
+        #[serde(default)]
+        code: String,
+        #[serde(default)]
+        message: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -228,7 +249,28 @@ pub fn parse(console_message: &str) -> Result<Option<Message>, ParseError> {
         Wire::Event { event } if event.e == "dblclick" => Some(Message::DoubleClick { id: event.id }),
         Wire::Event { .. } => None,
         Wire::Probe(fields) => Some(Message::Probe(serde_json::Value::Object(fields).to_string())),
+        Wire::Failure { code, message } => Some(Message::Failure { code, message }),
     })
+}
+
+/// The pieces of the dedicated media view (`axion://media/`): a blank page with one `<video>`
+/// that plays a captured [`MediaSource`] — natively for files, with the bundled hls.js
+/// (Apache-2.0, see `media_view/hls.LICENSE`) for HLS — and reports through the bridge.
+pub mod media_view {
+    /// The page.
+    pub const HTML: &str = include_str!("media_view/index.html");
+    pub const CSS: &str = include_str!("media_view/media.css");
+    /// Starts the source named by the page's `?s=` token (fetched from `/api/source`).
+    pub const JS: &str = include_str!("media_view/media.js");
+    /// hls.js 1.5.17 (pinned), minified.
+    pub const HLS_JS: &str = include_str!("media_view/hls.min.js");
+    /// What the page's CSP allows beyond the usual: media, streams and requests from the
+    /// network (never scripts from there), the bridge's styles, and hls.js's blob worker.
+    pub const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+        img-src 'self' data: blob:; media-src http: https: blob:; connect-src 'self' http: https:; \
+        worker-src blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+    /// The scheme host the page is served under (`axion://media/`).
+    pub const HOST: &str = "media";
 }
 
 /// Something the browser tells a player to do.
@@ -349,6 +391,19 @@ mod tests {
         let probe = format!("{MARKER}{}", r#"{"t":"probe","ready":0,"h264":false}"#);
         let Ok(Some(Message::Probe(state))) = parse(&probe) else { panic!("{probe}") };
         assert!(state.contains("\"h264\":false"));
+        let failure = format!(
+            "{MARKER}{}",
+            r#"{"t":"failure","code":"hls","message":"networkError manifestLoadError"}"#
+        );
+        assert_eq!(
+            parse(&failure).unwrap(),
+            Some(Message::Failure { code: "hls".into(), message: "networkError manifestLoadError".into() })
+        );
+        // The frame a player lives in comes with its state (an embedded hoster's own address).
+        let framed =
+            format!("{MARKER}{}", r#"{"t":"state","players":[{"id":"a:1","frame":"https://h/embed/1"}]}"#);
+        let Ok(Some(Message::State(state))) = parse(&framed) else { panic!("{framed}") };
+        assert_eq!(state.players[0].frame, "https://h/embed/1");
     }
 
     #[test]

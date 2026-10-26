@@ -29,6 +29,7 @@ mod home;
 mod input;
 mod lifecycle;
 mod lockscreen;
+mod media_view;
 mod menu;
 mod morph;
 mod mpris;

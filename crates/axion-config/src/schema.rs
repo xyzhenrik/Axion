@@ -1059,9 +1059,21 @@ pub struct Playlist {
     /// A video that was on its page for this long (seconds) gets its picture taken for the
     /// thumbnail when none comes with the page.
     pub thumbnail_frame_after_seconds: f32,
-    /// The video area of the Playlist page can be clicked (consent walls, play buttons of
-    /// site players): clicks reach the page inside it.
+    /// Obsolete: the Playlist plays only the video source, never the page (kept so old
+    /// config files still load).
     pub forward_clicks: bool,
+    /// An item saved without its video source gets it found by loading its page hidden; this
+    /// is how long that may take before the player says it couldn't (seconds).
+    pub resolve_timeout_seconds: f32,
+    /// A page whose videos look unplayable outside it (assembled by the page, DASH) is given
+    /// up on after this long (seconds), since the network may still show a source.
+    pub resolve_settle_seconds: f32,
+    /// While finding a source, the page's player is clicked this often (seconds): site
+    /// players load their video only after a click.
+    pub resolve_click_seconds: f32,
+    /// How many media responses (manifests, video files) a page's network traffic is
+    /// remembered by, for capturing the source behind `blob:` players.
+    pub sniff_limit: u32,
 }
 
 impl Default for Playlist {
@@ -1084,6 +1096,10 @@ impl Default for Playlist {
             sleep_timer_minutes: vec![15, 30, 45, 60],
             thumbnail_frame_after_seconds: 1.0,
             forward_clicks: true,
+            resolve_timeout_seconds: 25.0,
+            resolve_settle_seconds: 6.0,
+            resolve_click_seconds: 2.0,
+            sniff_limit: 40,
         }
     }
 }

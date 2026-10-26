@@ -152,15 +152,30 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   (Esc closes) on top, the video area (black, rounded), title, progress with elapsed/remaining,
   shuffle / previous / play / next / repeat (off, all, one), speed menu, sleep timer menu
   (`playlist.sleep_timer_minutes`, end of video) and fullscreen.
-- **Playing in the page.** Items play in a view of their own, drawn into the video area:
-  *downloaded files natively* (the media document in takeover, so the picture is just the
-  video), *page items* as the whole page in that area with mouse and wheel forwarded (consent
-  walls, site players) and the controls driving the bridge. It resumes at the saved position
-  (a little before: `playlist.resume_rewind_seconds`), saves it every
+- **Playing in the page: only the video, never the site.** Adding captures the real media
+  source (`axion_media::MediaSource`: address, kind file / HLS / DASH, and the `Referer` the
+  page sent): the `<video>`'s `currentSrc` (also inside embedded hoster iframes; the bridge
+  reports each player's frame address), and for `blob:` / MSE players the manifest or file the
+  page's network traffic showed (the engine reports `.m3u8` / `.mpd` / video responses as
+  `EngineEvent::MediaSniffed`, stream pieces excluded). It is stored with the item (`source`
+  column). Playback uses a *media view* — a CEF view of its own on `axion://media/` (a blank
+  page with one `<video>`, our bridge, no site scripts, no navigation, no popups) with the
+  stored `Referer` set on its requests and Shields still judging them as requests of the
+  original page; files play natively, HLS with the vendored hls.js 1.5.17 (Apache-2.0, licence
+  in `crates/axion-media/src/media_view/`), downloaded files as a plain `file://` document.
+  Our controls drive it through the bridge protocol. It resumes at the saved position (a
+  little before: `playlist.resume_rewind_seconds`), saves it every
   `playlist.position_save_seconds` and marks the video watched at `playlist.watched_fraction`;
-  tabs showing a saved video (page or downloaded file) save their position too. Fullscreen and
-  PiP hand the video over to a tab (Axion's fullscreen player / PiP window belong to tabs), at
-  the same position.
+  tabs showing a saved video (page or downloaded file) save their position too.
+  Items saved without a source are *resolved lazily* on first play: the page loads in a hidden,
+  muted view (its player clicked now and then, popups ignored) just long enough to capture the
+  source, which is then cached; the player area says "Finding video…". A source that stops
+  working (signed links expire) is resolved again once. What can't be captured or played (DRM,
+  MSE streams that show no manifest, DASH, unreachable) shows a message in the player area with
+  an *Open page* button that opens the page in a normal tab; the page is never loaded in the
+  player area. Fullscreen opens Axion's fullscreen player directly on the media view (no tab),
+  and Picture in Picture plays it in the PiP window; both are generalised to "a view with media
+  state" (tab or Playlist playback), at the same position.
 - Settings › Media › Playlist: button on/off, auto-download, delete files on remove, folder.
 
 ### 2.8 Customization
@@ -360,11 +375,13 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
   streams marked "streaming only".
 - [x] The page: list (rows, "…" menu, edit mode, search) + embedded player (progress, shuffle,
   repeat, speed, sleep timer), saved positions and watched state.
-- [ ] HLS/DASH download (needs a segment fetcher + remux, or ffmpeg), several named lists
-  (the list menu is there, with the one list), drag to reorder (edit mode has move up/down),
-  playing in the page's player with Axion's own fullscreen *inside* the page (now: hand-over to
-  a tab), Picture in Picture straight from the page's view, page keyboard navigation (↑/↓ over
-  rows), a Playlist button in the PiP window, importing/exporting lists.
+- [x] Video source only: source capture (iframes, `blob:` via network sniffing), the media view
+  (`axion://media/`, hls.js), lazy source resolving, *Open page* message, Axion's fullscreen
+  player and Picture in Picture directly on the media view.
+- [ ] HLS/DASH download (needs a segment fetcher + remux, or ffmpeg), DASH playback (dash.js),
+  several named lists (the list menu is there, with the one list), drag to reorder (edit mode
+  has move up/down), page keyboard navigation (↑/↓ over rows), a Playlist button in the PiP
+  window, importing/exporting lists.
 
 ### Phase 6 — Bookmarks & history
 - [ ] SQLite schema + migrations, sidebar views, search, import.
@@ -533,8 +550,8 @@ Windows/macOS, touchscreen-first mode.
     shortcut closes it first (`keeps_playlist` lists what leaves it open).
   - One list, "Play Later" (`playlist.list_name`); the table has a `list` column and the header
     a menu, so several lists are a UI task only.
-  - Playback lives in a view of its own (not a tab, no history/session), because Axion's
-    fullscreen and PiP players are bound to tabs; they pop the video out into a tab.
+  - Playback lives in a view of its own (not a tab, no history/session). Superseded
+    2026-10-26 (see below): Axion's fullscreen and PiP players now work on that view directly.
   - Thumbnails come from the page's own pictures first; frame grabs read the engine's frame
     textures back on the CPU (a few ms, only when adding or the first seconds of a downloaded
     file) instead of asking the page to draw a canvas (cross-origin videos would taint it).
@@ -542,9 +559,26 @@ Windows/macOS, touchscreen-first mode.
     (`DownloadInfo::original_url` matches them) and are also listed in Downloads; they never
     auto-open. Shields is asked explicitly before (the browser-initiated download bypasses the
     resource hooks).
-  - HLS/DASH/blob are streaming-only for now (no silent failure: reason shown); the bridge
-    stays injected in the page view like in tabs.
+  - HLS/DASH/blob are streaming-only for downloads (no silent failure: reason shown); they
+    play in the media view (HLS) or show the *Open page* message (DASH, uncapturable blobs).
   - Keys: `playlist_add` Ctrl+Shift+D, `open_playlist` Ctrl+Shift+P (both free).
+
+- 2026-10-26: **Playlist plays the video source only** (user requirement). Decisions:
+  - The media view is the engine's `set_media_view(view, MediaViewOptions)`: headers for its
+    requests, the original page as Shields' page, and a lock that refuses any navigation away
+    from its own page (`axion://media/` or the local file). `axion://media/` is served by
+    `media_view.rs` with its own CSP (media / XHR from http(s), scripts only from itself) and
+    `/api/source?s=<token>` answers only that page.
+  - Only `Referer` is replaced: Chromium's network stack refuses a request whose `Origin` was
+    changed (`ERR_INVALID_ARGUMENT`). Hosters that check `Origin` (not `Referer`) or send no
+    `Access-Control-Allow-Origin` for HLS segments won't play; the message offers *Open page*.
+  - Cookies: the media view uses the normal profile, so the host's cookies apply as in a tab.
+  - A media view may reach the local network / this computer (a home server, a local test
+    page): the engine grants Chromium's local-network permission prompt for media views only.
+  - hls.js is Apache-2.0 (not MIT); its licence file is kept next to the vendored script.
+  - Playing from the Playlist pauses the page resting under it.
+  - `playlist.forward_clicks` is obsolete (kept so old config files load). New keys:
+    `resolve_timeout_seconds`, `resolve_settle_seconds`, `resolve_click_seconds`, `sniff_limit`.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

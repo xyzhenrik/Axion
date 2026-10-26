@@ -83,6 +83,8 @@ const MIGRATIONS: &[&str] = &[
         dl_note TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX playlist_by_list ON playlist(list, sort);",
+    // 9: the media source captured for a Playlist item (JSON; empty until captured)
+    "ALTER TABLE playlist ADD COLUMN source TEXT NOT NULL DEFAULT '';",
 ];
 
 /// Download states of a playlist item (`PlaylistItem::dl_state`).
@@ -121,6 +123,8 @@ pub struct PlaylistItem {
     pub dl_size: i64,
     /// Why a download failed or isn't possible, for people.
     pub dl_note: String,
+    /// The captured media source as JSON (see `axion_media::MediaSource`); empty until captured.
+    pub source: String,
 }
 
 /// A video about to be added to the Playlist.
@@ -137,10 +141,11 @@ pub struct NewPlaylistItem {
     pub dl_path: String,
     pub dl_size: i64,
     pub dl_note: String,
+    pub source: String,
 }
 
 const PLAYLIST_COLUMNS: &str = "id, list, sort, title, page_url, media_url, thumbnail, duration, added_at, \
-     position, watched, dl_state, dl_path, dl_size, dl_note";
+     position, watched, dl_state, dl_path, dl_size, dl_note, source";
 
 fn playlist_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<PlaylistItem> {
     Ok(PlaylistItem {
@@ -159,6 +164,7 @@ fn playlist_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<PlaylistItem> {
         dl_path: r.get(12)?,
         dl_size: r.get(13)?,
         dl_note: r.get(14)?,
+        source: r.get(15)?,
     })
 }
 
@@ -437,6 +443,14 @@ impl Store {
                     |r| r.get(0),
                 )
                 .optional()?,
+            None if !new.source.is_empty() => self
+                .conn
+                .query_row(
+                    "SELECT id FROM playlist WHERE list = ?1 AND media_url IS NULL AND source = ?2",
+                    params![new.list, new.source],
+                    |r| r.get(0),
+                )
+                .optional()?,
             None => self
                 .conn
                 .query_row(
@@ -456,8 +470,8 @@ impl Store {
         )?;
         self.conn.execute(
             "INSERT INTO playlist (list, sort, title, page_url, media_url, thumbnail, duration, added_at,
-                position, dl_state, dl_path, dl_size, dl_note)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                position, dl_state, dl_path, dl_size, dl_note, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 new.list,
                 top,
@@ -471,7 +485,8 @@ impl Store {
                 new.dl_state,
                 new.dl_path,
                 new.dl_size,
-                new.dl_note
+                new.dl_note,
+                new.source
             ],
         )?;
         Ok((self.conn.last_insert_rowid(), true))
@@ -511,6 +526,12 @@ impl Store {
             "UPDATE playlist SET position = ?2, watched = ?3 WHERE id = ?1",
             params![id, position, watched],
         )?;
+        Ok(())
+    }
+
+    /// Keeps the media source captured for an item (JSON).
+    pub fn set_playlist_source(&self, id: i64, source: &str) -> Result<()> {
+        self.conn.execute("UPDATE playlist SET source = ?2 WHERE id = ?1", params![id, source])?;
         Ok(())
     }
 
@@ -1122,6 +1143,17 @@ mod tests {
         assert_eq!((item.position, item.watched, item.dl_size, item.duration), (42.5, true, 1234, 99.0));
         assert_eq!((item.dl_state.as_str(), item.dl_path.as_str()), ("done", "/tmp/x.mp4"));
         assert_eq!(item.thumbnail, "/tmp/x.png");
+        assert_eq!(item.source, "");
+        s.set_playlist_source(a, r#"{"url":"https://a/1.m3u8","kind":"hls"}"#).unwrap();
+        assert!(s.playlist_item(a).unwrap().unwrap().source.contains("m3u8"));
+        // A stream without a file is the same item when its captured source is the same.
+        let mut stream = new_item("https://s/p1", None);
+        stream.source = "S1".into();
+        let (c, created) = s.add_playlist_item(&stream, 5).unwrap();
+        assert!(created);
+        stream.page_url = "https://s/p2".into();
+        assert_eq!(s.add_playlist_item(&stream, 6).unwrap(), (c, false));
+        s.remove_playlist_item(c).unwrap();
         // b is on top; moving it down puts a first.
         s.move_playlist_item(b, false).unwrap();
         let ids: Vec<i64> = s.playlist_items("Play Later").unwrap().iter().map(|i| i.id).collect();
