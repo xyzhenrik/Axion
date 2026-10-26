@@ -2524,6 +2524,23 @@ impl Chrome {
         None
     }
 
+    /// The sidebar group header ("N Tabs" or "Private") at `node` or one of its parents:
+    /// `Some(private)`, with the header's node.
+    pub fn group_header_at(&self, ui: &Ui, node: NodeId) -> Option<(bool, NodeId)> {
+        let normal = ui.parent(self.tab_group_label)?;
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if n == normal {
+                return Some((false, n));
+            }
+            if n == self.private_row {
+                return Some((true, n));
+            }
+            at = ui.parent(n);
+        }
+        None
+    }
+
     /// The plane a tab item lies in (its context menu flows out of it there).
     pub fn tab_plane(&self, item: &TabItem) -> NodeId {
         match item.surface {

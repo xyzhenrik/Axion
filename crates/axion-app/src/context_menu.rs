@@ -27,9 +27,10 @@ pub enum TabCommand {
     Unmute,
     Close,
     CloseOthers,
-    CloseToTheRight,
     ReopenClosed,
     BookmarkAll,
+    /// Bookmarks this one tab.
+    Bookmark,
     MoveToPrivate,
     MoveToNormal,
 }
@@ -59,7 +60,8 @@ pub struct TabMenuInfo {
     pub can_bookmark: bool,
 }
 
-/// The rows of a tab's context menu, with the keymap's shortcuts where one applies.
+/// The rows of a tab's context menu: short and compact, only what concerns that one tab.
+/// The group-wide commands live in the menu of the group's header ([`group_items`]).
 pub fn tab_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
     let shortcut = |action: Action| keymap.chords_for(action).first().map(ToString::to_string);
     let item = |icon: Icon, label: &str, command: TabCommand, action: Option<Action>| {
@@ -70,14 +72,8 @@ pub fn tab_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
         }
     };
     let mut items = vec![
-        item(Icon::Plus, "New Tab to the Right", TabCommand::NewTabToTheRight, Some(Action::NewTab)),
-        item(Icon::Reload, "Reload", TabCommand::Reload, Some(Action::Reload)).separated(),
+        item(Icon::Reload, "Reload", TabCommand::Reload, Some(Action::Reload)),
         item(Icon::Copy, "Duplicate", TabCommand::Duplicate, None),
-        if info.pinned {
-            item(Icon::Pin, "Unpin", TabCommand::Unpin, Some(Action::PinTab))
-        } else {
-            item(Icon::Pin, "Pin", TabCommand::Pin, Some(Action::PinTab))
-        },
         if info.muted {
             item(Icon::Volume, "Unmute Tab", TabCommand::Unmute, None)
         } else {
@@ -85,22 +81,24 @@ pub fn tab_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
         },
     ];
     if info.can_bookmark {
-        items.push(item(Icon::Bookmark, "Bookmark All Tabs", TabCommand::BookmarkAll, None).separated());
+        items.push(item(Icon::Bookmark, "Bookmark", TabCommand::Bookmark, None));
     }
-    let move_item = if info.private {
-        item(Icon::TabGroup, "Move to Normal Tabs", TabCommand::MoveToNormal, None)
-    } else {
-        item(Icon::Hand, "Move to Private Tabs", TabCommand::MoveToPrivate, None)
-    };
-    // It starts the group when "Bookmark All Tabs" isn't there.
-    items.push(if info.can_bookmark { move_item } else { move_item.separated() });
     items.push(item(Icon::Close, "Close Tab", TabCommand::Close, Some(Action::CloseTab)).separated());
-    if info.others {
-        items.push(item(Icon::Close, "Close Other Tabs", TabCommand::CloseOthers, None));
-    }
-    if info.right {
-        items.push(item(Icon::Forward, "Close Tabs to the Right", TabCommand::CloseToTheRight, None));
-    }
+    items
+}
+
+/// The rows of a tab group header's menu ("N Tabs" or "Private"); `info` describes the group's
+/// active tab, which the per-tab rows (pin, move) act on.
+pub fn group_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
+    let shortcut = |action: Action| keymap.chords_for(action).first().map(ToString::to_string);
+    let item = |icon: Icon, label: &str, command: TabCommand, action: Option<Action>| {
+        let item = MenuItem::new(icon, label, MenuAction::Tab(command));
+        match action.and_then(shortcut) {
+            Some(keys) => item.with_detail(keys),
+            None => item,
+        }
+    };
+    let mut items = vec![item(Icon::Plus, "New Tab", TabCommand::NewTabToTheRight, Some(Action::NewTab))];
     if info.can_reopen {
         items.push(item(
             Icon::History,
@@ -108,6 +106,24 @@ pub fn tab_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
             TabCommand::ReopenClosed,
             Some(Action::ReopenClosedTab),
         ));
+    }
+    if !info.private {
+        items.push(if info.pinned {
+            item(Icon::Pin, "Unpin Current Tab", TabCommand::Unpin, Some(Action::PinTab)).separated()
+        } else {
+            item(Icon::Pin, "Pin Current Tab", TabCommand::Pin, Some(Action::PinTab)).separated()
+        });
+    }
+    items.push(if info.private {
+        item(Icon::TabGroup, "Move Current to Normal", TabCommand::MoveToNormal, None).separated()
+    } else {
+        item(Icon::Hand, "Move Current to Private", TabCommand::MoveToPrivate, None)
+    });
+    if info.can_bookmark {
+        items.push(item(Icon::Bookmark, "Bookmark All Tabs", TabCommand::BookmarkAll, None));
+    }
+    if info.others {
+        items.push(item(Icon::Close, "Close Other Tabs", TabCommand::CloseOthers, None).separated());
     }
     items
 }
@@ -214,28 +230,35 @@ mod tests {
     }
 
     #[test]
-    fn only_rows_that_apply() {
-        let alone = labels(TabMenuInfo::default());
-        assert!(!alone.iter().any(|l| l == "Close Other Tabs" || l == "Close Tabs to the Right"));
-        assert!(!alone.iter().any(|l| l == "Reopen Closed Tab" || l == "Bookmark All Tabs"));
-        assert!(alone.iter().any(|l| l == "Pin") && alone.iter().any(|l| l == "Mute Tab"));
-        assert!(alone.iter().any(|l| l == "Move to Private Tabs"));
+    fn tab_menu_is_short() {
+        let all = TabMenuInfo { can_bookmark: true, can_reopen: true, others: true, ..Default::default() };
+        assert_eq!(labels(all), ["Reload", "Duplicate", "Mute Tab", "Bookmark", "Close Tab"]);
+        let muted = TabMenuInfo { muted: true, ..all };
+        assert!(labels(muted).contains(&"Unmute Tab".to_owned()));
+        // No database: nothing to bookmark into.
+        assert_eq!(labels(TabMenuInfo::default()), ["Reload", "Duplicate", "Mute Tab", "Close Tab"]);
+    }
 
-        let full = labels(TabMenuInfo {
+    fn group_labels(info: TabMenuInfo) -> Vec<String> {
+        group_items(info, &Keymap::default()).into_iter().map(|i| i.label).collect()
+    }
+
+    #[test]
+    fn group_menu_rows() {
+        let normal = group_labels(TabMenuInfo::default());
+        assert_eq!(normal, ["New Tab", "Pin Current Tab", "Move Current to Private"]);
+        let full = group_labels(TabMenuInfo {
             pinned: true,
-            muted: true,
-            private: true,
-            others: true,
-            right: true,
             can_reopen: true,
             can_bookmark: true,
+            others: true,
+            ..Default::default()
         });
-        for label in
-            ["Unpin", "Unmute Tab", "Move to Normal Tabs", "Close Other Tabs", "Close Tabs to the Right"]
-        {
+        for label in ["Reopen Closed Tab", "Unpin Current Tab", "Bookmark All Tabs", "Close Other Tabs"] {
             assert!(full.iter().any(|l| l == label), "{label} missing in {full:?}");
         }
-        assert!(full.iter().all(|l| !l.is_empty()));
+        let private = group_labels(TabMenuInfo { private: true, ..Default::default() });
+        assert_eq!(private, ["New Tab", "Move Current to Normal"]);
     }
 
     #[test]
