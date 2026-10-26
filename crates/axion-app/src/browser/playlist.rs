@@ -1485,6 +1485,8 @@ impl Browser {
         if on == self.playlist.fullscreen {
             return;
         }
+        // The controls change under the pointer: nothing stays held.
+        self.release_pointer_holds();
         if on {
             if self.playlist.playback.is_none() || !self.playlist_open() {
                 return;

@@ -3340,6 +3340,7 @@ impl Browser {
                 }
                 EngineEvent::FullscreenRequested { view, fullscreen } => {
                     if Some(view) == self.active_view() {
+                        self.release_pointer_holds();
                         self.chrome.set_page_fullscreen(fullscreen);
                         // In F11 fullscreen the window stays fullscreen after the video.
                         let window = fullscreen || self.chrome.presentation();
@@ -3969,9 +3970,13 @@ impl Browser {
                 self.pointer_moved(p);
             }
             WindowEvent::CursorLeft { .. } => {
-                self.pointer = None;
-                self.ui.handle(UiInput::PointerLeave);
-                self.leave_page();
+                // A held slider keeps following the pointer outside the window (the compositor
+                // grabs it, the button-up still arrives), so the pointer position stays.
+                if self.ui.dragging().is_none() {
+                    self.pointer = None;
+                    self.ui.handle(UiInput::PointerLeave);
+                    self.leave_page();
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 self.tooltip.cancel(&mut self.ui);
@@ -4016,6 +4021,10 @@ impl Browser {
                 }
             }
             WindowEvent::Focused(focused) => {
+                if !focused {
+                    // The button-up may go to another window: nothing stays held.
+                    self.release_pointer_holds();
+                }
                 if let Some(view) = self.active_view()
                     && self.ui.focused().is_none()
                     && !self.is_locked()
@@ -4093,9 +4102,27 @@ impl Browser {
         }
     }
 
+    /// Lets go of whatever the pointer holds in the UI (a slider drag, a held glass button)
+    /// without a click: the button-up got lost (focus lost, Esc, view closed, fullscreen left).
+    fn release_pointer_holds(&mut self) {
+        if !self.ui.is_holding() || self.tab_drag.is_dragging() {
+            return;
+        }
+        let events = self.ui.end_interaction();
+        self.pointer_captured_by_ui = false;
+        self.tab_drag.release_press();
+        self.handle_ui_events(events);
+    }
+
     fn mouse_button(&mut self, state: ElementState, button: winit::event::MouseButton) {
-        let Some(p) = self.pointer else { return };
         let pressed = state.is_pressed();
+        let Some(p) = self.pointer else {
+            // A button-up without a known pointer (it left the window while held).
+            if !pressed && button == winit::event::MouseButton::Left {
+                self.release_pointer_holds();
+            }
+            return;
+        };
         let view = self.active_view();
         match button {
             winit::event::MouseButton::Back if pressed => return self.run(Action::Back),
@@ -4163,7 +4190,10 @@ impl Browser {
                 return;
             }
         }
-        if self.playlist_open() && self.playlist_pointer(p, Some((button, pressed))) {
+        // A left button-up always reaches the UI: a slider/button held in the fullscreen player
+        // is let go wherever the pointer is.
+        let left_up = button == winit::event::MouseButton::Left && !pressed;
+        if self.playlist_open() && !left_up && self.playlist_pointer(p, Some((button, pressed))) {
             return;
         }
         if button == winit::event::MouseButton::Left
@@ -4240,6 +4270,10 @@ impl Browser {
         let pressed = event.state.is_pressed();
         if pressed {
             self.tooltip.cancel(&mut self.ui);
+            if input::key(event) == Some(Key::Named("Escape".into())) {
+                // Esc ends a held drag (slider, button) before it does anything else.
+                self.release_pointer_holds();
+            }
         }
         if pressed && self.passwords.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.close_passwords();

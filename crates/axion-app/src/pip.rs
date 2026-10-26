@@ -582,6 +582,7 @@ impl PipWindow {
         self.takeover = false;
         self.hovered = false;
         self.pointer = None;
+        self.ui.end_interaction();
         self.ui.handle(UiInput::PointerLeave);
         self.controls_opacity = Animated::new(0.0, Spring::SNAPPY);
         if let Some(output) = self.output.take() {
@@ -680,6 +681,11 @@ impl PipWindow {
                 self.fit_at = Some(Instant::now() + settle);
             }
             WindowEvent::CursorEntered { .. } => self.hovered = true,
+            // The button-up may go to another window (or the window manager's move/resize
+            // grab): nothing stays held.
+            WindowEvent::Focused(false) => {
+                self.ui.end_interaction();
+            }
             WindowEvent::CursorLeft { .. } => {
                 // A slider being scrubbed keeps the pointer even outside the window.
                 if self.ui.dragging().is_none() {
