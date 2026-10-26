@@ -5820,6 +5820,9 @@ impl Browser {
                     }
                 }
                 "settings-scroll" => self.settings.scroll_by(&mut self.ui, -400.0),
+                // Capture aids for the import group: "import:source:N" (toggle a browser),
+                // "import:bookmarks" / "import:history" (toggle), "import:run", "import:file:PATH".
+                import if import.starts_with("import:") => self.import_capture(&import["import:".len()..]),
                 // Capture aids for Settings › Hardware: a change that needs a restart, and the
                 // AMD confirmation.
                 "hardware-change" => {

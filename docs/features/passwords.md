@@ -53,6 +53,10 @@ Copied passwords and card numbers are removed from the clipboard after a while. 
 
 ## Import from other browsers
 
+Passwords can't be read from another browser's files directly (they are encrypted with the desktop
+keyring), so they come in as a CSV file. For bookmarks and history see
+[Settings > Data & Downloads](../settings.md#import-from-another-browser).
+
 Export your logins from another browser or manager as a CSV file, then in
 **Settings > Passwords** type the file's path into **File** and press **Import CSV**. Axion
 understands the CSV files of Chrome (and Edge, Brave), Firefox and Bitwarden. Items already in the

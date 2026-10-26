@@ -293,6 +293,8 @@ impl Browser {
             })),
             "motion" => self.onboarding_pick(Pick::ReduceMotion(value != "off")),
             "transparency" => self.onboarding_pick(Pick::ReduceTransparency(value != "off")),
+            // Toggles the browser at this index in the import step.
+            "import" => self.onboarding_click(Click::Import(value.parse().unwrap_or(0))),
             "name" => self.onboarding.set_name(&mut self.ui, value),
             "password" => self.onboarding.set_password(&mut self.ui, value),
             other => tracing::warn!("--open=onb-{other} is not a known step"),

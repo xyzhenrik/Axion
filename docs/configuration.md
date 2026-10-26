@@ -106,6 +106,7 @@ ask_where_to_save = false
 | `downloads`, `data` | Download behaviour, what "Clear Browsing Data" clears. |
 | `passwords` | Saving, filling, generator, clipboard. |
 | `accounts` | Profile picture size and limit. |
+| `import` | Limits of the import from other browsers (history entries, bookmarks, file sizes). |
 | `hardware` | Acceleration, page frames, graphics card. |
 | `devtools`, `find`, `clipboard`, `toast`, `sidebar`, `ui` | Smaller options. |
 | `updates` | Update source and schedule. |
@@ -159,6 +160,7 @@ and tests.
 | Variable | Effect |
 |---|---|
 | `AXION_CONFIG_DIR` | Use this folder instead of `~/.config/axion` for settings. |
+| `AXION_IMPORT_HOME` | Look for other browsers to import from in this folder (a fake home with `.config/…`, `.mozilla/…`) instead of `$HOME`. For tests and screenshots. |
 | `AXION_PROFILE_DIR` | Use this folder instead of `~/.local/share/axion/profile` for browsing data. |
 | `AXION_DEVICE_KEY_DIR` | Use this folder instead of `~/.local/share/axion` for the vault's device secret. |
 | `AXION_GPU` | `low`, `high` or part of a card's name. Overrides **Graphics card**. |

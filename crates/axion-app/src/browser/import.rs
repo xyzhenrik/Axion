@@ -5,7 +5,7 @@
 use super::*;
 use crate::import::{self, Event, Finished};
 use crate::onboarding::ImportChoice;
-use crate::settings::{ImportRequest, ImportSource, ImportStatus};
+use crate::settings::{ImportAction, ImportRequest, ImportSource, ImportStatus};
 use axion_import::Wanted;
 
 impl Browser {
@@ -46,6 +46,37 @@ impl Browser {
                 selected: s.primary,
             })
             .collect()
+    }
+
+    /// Capture aids (`--open=import:…`): clicks of the import group without a pointer.
+    pub(super) fn import_capture(&mut self, what: &str) {
+        let action = match what.split_once(':') {
+            Some(("source", n)) => n.parse().ok().map(ImportAction::Source),
+            Some(("file", path)) => {
+                self.settings.set_import_status(None);
+                self.settings.set_import_busy(true);
+                self.importer.run_file(path.into(), &self.config);
+                self.refresh_settings();
+                return;
+            }
+            _ => match what {
+                "bookmarks" => Some(ImportAction::Bookmarks),
+                "history" => Some(ImportAction::History),
+                "run" => Some(ImportAction::Run),
+                _ => None,
+            },
+        };
+        let Some(action) = action else {
+            tracing::warn!("--open=import:{what} is not a known step");
+            return;
+        };
+        let outcome = self.settings.action(
+            &mut self.ui,
+            SettingsAction::Import(action),
+            &mut self.config,
+            &self.keymap,
+        );
+        self.settings_outcome(outcome);
     }
 
     /// The introduction's import step was left with these browsers checked.

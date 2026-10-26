@@ -220,6 +220,32 @@ Blocking of ads, trackers, popups and redirects. See [Shields](features/shields.
 | **Open “safe” files after downloading** | Opens pictures, movies, sounds, PDF and text documents when they finish. | Off | `downloads.open_safe_files` |
 | **Remove download list items** | When finished downloads leave the list: **Manually**, **After One Day**, **When Axion Quits**. | Manually | `downloads.remove_list_items` (`manually`, `after_one_day`, `on_quit`) |
 
+### Import from another browser
+
+Brings bookmarks and history from the other browsers on this computer into the current account.
+Axion only reads the other browser's files (it copies its databases to a temporary file first, so a
+running browser is no problem) and never changes them. Passwords and cookies are not imported:
+other browsers encrypt them with the desktop keyring. Export your passwords there as a CSV file and
+import it under [Settings > Passwords](#import-and-export).
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| Browser list | The browsers and profiles found (Chrome, Chromium, Brave, Edge, Vivaldi, Opera; Firefox, LibreWolf, Zen, Waterfox, Floorp; also their Flatpak and Snap versions), each with the number of bookmarks and history entries. Tick the ones to import; the most recently used one is ticked at first. | - | - |
+| **Bookmarks**, **History** | What to import from the ticked browsers. | Both | - |
+| **Import** | Starts the import in the background. The result is shown under the list (for example “Imported 312 bookmarks and 8,450 history entries; 40 already existed”) and as a notification. The sidebar lists, the bookmarks bar and the start page's top sites update by themselves. | - | - |
+| **Import from File…** | Imports bookmarks from a file: the HTML export every browser can make (**Export bookmarks**), a Chromium `Bookmarks` file or a Firefox JSON backup. | - | - |
+| **Open Passwords** | Goes to the Passwords page. | - | - |
+| Limit for history | At most this many history entries are imported per browser profile, the most recently visited first. | 20000 | `import.max_history_items` |
+| Limit for bookmarks | At most this many bookmarks per profile or file. | 50000 | `import.max_bookmarks` |
+| Size limit for databases | Larger browser databases are skipped (MB). They are copied to a temporary file, so this much space is needed. | 512 | `import.max_database_mb` |
+| Size limit for files | Larger bookmark files are refused (MB). | 64 | `import.max_file_mb` |
+
+Entries you already have (same address) are kept as they are and counted as “already existed”, so
+importing twice is safe. Bookmarks from a browser's bookmarks bar land on Axion's bookmarks bar; those
+in other folders appear in the sidebar's Bookmarks list with their old folder (for example
+“Dev / Rust”). Imports always go into the account that is open. The limits have no controls in
+Settings; change them in `config.toml`.
+
 ### Clear browsing data
 
 | Setting | What it does | Default | Config key |
