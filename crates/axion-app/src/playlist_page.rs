@@ -63,7 +63,7 @@ pub enum PageAction {
     RowDown(usize),
 }
 
-const SIMPLE: [PageAction; 18] = [
+const SIMPLE: [PageAction; 19] = [
     PageAction::Close,
     PageAction::PlayAll,
     PageAction::Edit,
