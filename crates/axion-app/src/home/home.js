@@ -829,6 +829,10 @@
     // Axion's accent colour, live (controls, focus rings, selection).
     if (state.accent) document.documentElement.style.setProperty("--accent", state.accent);
     document.body.classList.toggle("private", state.private);
+    // Flat style (`glass.style = "flat"`): the served HTML already carries the flag for the
+    // first paint; this keeps it live when the setting changes under an open page.
+    document.documentElement.toggleAttribute("data-flat", !!state.flat);
+    document.documentElement.toggleAttribute("data-calm", !!state.reduceMotion);
     if (state.private) {
       // The window around the page takes the page's theme colour: black, like the page.
       document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => {
@@ -891,5 +895,14 @@
     resizeTimer = setTimeout(() => { if (state) { renderSites(); fitStats(); } }, 120);
   });
 
-  refresh().then(startClock);
+  // Capture aids (`axion://home/?panel=1`, `?edit=1`): open the gear panel or the Add Site
+  // dialog once the first state arrived.
+  function captureAids() {
+    if (!state) return;
+    const query = new URLSearchParams(location.search);
+    if (query.get("panel") === "1" && !state.private) togglePanel(true);
+    if (query.get("edit") === "1" && !state.private) openEditor(null);
+  }
+
+  refresh().then(startClock).then(captureAids);
 })();

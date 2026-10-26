@@ -76,6 +76,8 @@ struct Served {
     thumbs_dir: PathBuf,
     favicons: Option<PathBuf>,
     dark: bool,
+    /// `glass.style = "flat"`: the page's HTML carries `data-flat` from the first byte.
+    flat: bool,
 }
 
 /// Serves the start page (on Chromium's network thread).
@@ -89,7 +91,7 @@ impl InternalPages for HomeService {
         }
         let served = self.0.read().unwrap_or_else(PoisonError::into_inner);
         Some(match request.path {
-            "/" | "/index.html" => InternalResponse::ok("text/html", PAGE_HTML),
+            "/" | "/index.html" => InternalResponse::ok("text/html", page_html(served.flat)),
             "/home.css" => InternalResponse::ok("text/css", PAGE_CSS),
             // The page's own icon: the app icon (also what `Favicons::get` shows for it).
             "/icon.png" => InternalResponse::ok("image/png", crate::favicons::APP_ICON_PNG),
@@ -147,6 +149,12 @@ impl InternalPages for HomeService {
 
 /// An icon cached for a subdomain of `domain` (a site only visited as `gist.github.com` still
 /// gets its tile icon), preferring the current colour scheme.
+/// The page's HTML; in flat style the root carries `data-flat` so the first paint is flat
+/// (no flash of glass before `/api/state` arrives).
+fn page_html(flat: bool) -> String {
+    if flat { PAGE_HTML.replacen("<html ", "<html data-flat ", 1) } else { PAGE_HTML.to_owned() }
+}
+
 fn subdomain_icon(dir: &Path, domain: &str, dark: bool) -> Option<Vec<u8>> {
     let (own, other) = (if dark { ".dark.png" } else { ".png" }, if dark { ".png" } else { ".dark.png" });
     let suffix = format!(".{domain}");
@@ -215,6 +223,7 @@ struct Inputs {
     dark: bool,
     accent: Color,
     reduce_motion: bool,
+    flat: bool,
 }
 
 /// The start page's side in the browser (main thread).
@@ -415,6 +424,7 @@ impl HomePage {
             dark,
             accent: config.appearance.accent,
             reduce_motion: config.glass.reduce_motion,
+            flat: config.glass.is_flat(),
         };
         let interval = Duration::from_secs_f32(config.home.stats_refresh_seconds.max(0.0));
         let stats_due =
@@ -473,6 +483,7 @@ impl HomePage {
         served.backgrounds_dir = self.library.dir().to_path_buf();
         served.thumbs_dir = self.library.thumbs_dir();
         served.dark = dark;
+        served.flat = inputs.flat;
         self.inputs = Some(inputs);
         true
     }
@@ -807,6 +818,8 @@ fn state_json(
         "i18n": page_translations(),
         "icons": icons_version,
         "accent": css_color(config.appearance.accent),
+        "flat": config.glass.is_flat(),
+        "reduceMotion": config.glass.reduce_motion,
         "clock": { "show": home.show_clock, "h24": h24, "format": match home.clock_format {
             ClockFormat::Auto => "auto", ClockFormat::H12 => "12h", ClockFormat::H24 => "24h" } },
         "greeting": { "show": home.show_greeting && !private, "name": first_name },
@@ -850,6 +863,41 @@ fn state_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flat_reaches_the_first_paint() {
+        assert!(page_html(true).contains("<html data-flat lang=\"en\">"));
+        assert!(!page_html(false).contains("data-flat"));
+        let mut config = Config::default();
+        let state = |c: &Config| state_json(1, c, None, 0, "", false, &Backgrounds::PRIVATE, 0);
+        assert_eq!(state(&config)["flat"], false);
+        config.glass.style = axion_config::GlassStyle::Flat;
+        assert_eq!(state(&config)["flat"], true);
+    }
+
+    /// Flat stays flat: past the marker, the stylesheet has no blur, no backdrop filter (other
+    /// than `none`), no gradient except the slider's track, and no spring curves.
+    #[test]
+    fn flat_css_has_no_glass() {
+        let (liquid, flat) = PAGE_CSS.split_once("==== FLAT STYLE").expect("the flat block");
+        assert!(liquid.contains("backdrop-filter: blur("), "the marker moved above the glass rules");
+        assert!(!flat.contains("blur("), "blur( in the flat block");
+        for line in flat.lines().filter(|l| l.contains("backdrop-filter")) {
+            assert!(line.contains("none"), "backdrop-filter in the flat block: {line}");
+        }
+        assert!(!flat.contains("mix-blend"), "blend modes in the flat block");
+        assert!(!flat.contains("cubic-bezier"), "spring curves in the flat block");
+        assert!(!flat.contains("scale("), "bounce transforms in the flat block");
+        for line in flat.lines().filter(|l| l.contains("gradient")) {
+            assert!(line.contains("var(--p"), "a glass gradient in the flat block: {line}");
+        }
+        // Every glass surface the liquid rules paint is reset in flat.
+        for surface in ["body .glass", "body .glass.thick", "body dialog", ".search.glass::before"] {
+            assert!(flat.contains(surface), "flat does not reset {surface}");
+        }
+        // A page that loaded before the switch is told live.
+        assert!(PAGE_JS.contains("toggleAttribute(\"data-flat\""));
+    }
 
     #[test]
     fn home_urls() {
