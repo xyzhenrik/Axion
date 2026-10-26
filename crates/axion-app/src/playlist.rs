@@ -197,6 +197,13 @@ fn find_existing(store: &Store, cfg: &PlaylistConfig, c: &Candidate) -> Option<i
 
 /// Whether a stored item is the candidate's video.
 pub fn same_video(item: &PlaylistItem, c: &Candidate) -> bool {
+    // The downloaded copy of an item is that item.
+    if let Source::Local(path) = &c.source
+        && item.dl_state == dl::DONE
+        && Path::new(&item.dl_path) == path
+    {
+        return true;
+    }
     match (&item.media_url, &c.media_url) {
         (Some(a), Some(b)) => a == b,
         (None, None) => item.page_url == c.page_url,
@@ -876,6 +883,20 @@ mod tests {
         assert_eq!(p.matching("rust talk"), [0]);
         assert_eq!(p.matching("y"), [1]);
         assert_eq!(p.matching(""), [0, 1]);
+        // A tab playing the downloaded copy shows the item as saved.
+        let copy = Candidate {
+            player: "a:1".into(),
+            title: "T".into(),
+            page_url: "file:///tmp/a%20b.mp4".into(),
+            media_url: Some("file:///tmp/a%20b.mp4".into()),
+            source: classify("file:///tmp/a%20b.mp4"),
+            thumb_url: None,
+            duration: 1.0,
+            position: 0.0,
+            rect: (0.0, 0.0, 1.0, 1.0),
+            dpr: 1.0,
+        };
+        assert_eq!(p.contains(&copy), Some(1));
         assert_ne!(p.random(), p.random());
         assert_eq!(sleep_label(15), "15 minutes");
         assert_eq!(sleep_label(60), "1 hour");

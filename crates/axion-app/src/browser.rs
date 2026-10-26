@@ -742,6 +742,7 @@ impl Browser {
     fn close_tab(&mut self, index: usize) {
         if let Some(view) = self.tabs.all().get(index).map(|t| t.view) {
             self.playlist_flush_tab(view);
+            self.playlist.pending.remove(&view);
         }
         let previous = self.tabs.active().map(|t| t.view);
         let Some(tab) = self.tabs.remove(index) else { return };
@@ -1929,12 +1930,19 @@ impl Browser {
         let mut planes = self.ui.children(root);
         let original = self.sidebar_before;
         planes.retain(|&n| n != sidebar);
+        if self.playlist_open() && !locked {
+            // The Playlist page lies under the sidebar and the toolbar (whose only visible
+            // part is then the sidebar's button).
+            let page = self.playlist_ui.page.root();
+            planes.retain(|&n| n != page);
+            let at = original.and_then(|next| planes.iter().position(|&n| n == next)).unwrap_or(0);
+            planes.insert(at, sidebar);
+            planes.insert(at, page);
+            self.ui.set_children(root, &planes);
+            return;
+        }
         let at = if locked {
             planes.iter().position(|&n| n == cover).map(|i| i + 1)
-        } else if self.playlist_open() {
-            // The sidebar stays usable above the Playlist page.
-            let page = self.playlist_ui.page.root();
-            planes.iter().position(|&n| n == page).map(|i| i + 1)
         } else {
             original.and_then(|next| planes.iter().position(|&n| n == next))
         };

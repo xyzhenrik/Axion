@@ -1402,6 +1402,25 @@ impl SettingsSheet {
                     self.control(ui, config, setting);
                 }
                 self.note(ui, "Pages keep their own player; in fullscreen, Axion's takes over.");
+                self.section(ui, "Playlist");
+                for setting in [
+                    Setting::PlaylistQuickAction,
+                    Setting::PlaylistAutoDownload,
+                    Setting::PlaylistDeleteFiles,
+                ] {
+                    self.control(ui, config, setting);
+                }
+                let folder = crate::downloads::display_path(&crate::playlist::download_directory(config));
+                let row_node = self.row(ui, "Playlist downloads");
+                let label = ui.add_label(row_node, &folder, TextStyle::Callout, Style::default());
+                if let Some(w) = ui.widget_mut(label) {
+                    w.set_paint(Paint::Secondary);
+                }
+                pill_button(ui, row_node, "Change…", SettingsAction::ChoosePlaylistFolder, false);
+                if !config.playlist.directory.trim().is_empty() {
+                    pill_button(ui, row_node, "Default", SettingsAction::ResetPlaylistFolder, false);
+                }
+                self.note(ui, "Plain video files can be downloaded; streams are watched online only.");
                 self.section(ui, "Sites that keep their own player");
                 for (i, site) in config.media.trusted_player_sites.iter().enumerate() {
                     let row_node = self.row(ui, site);
@@ -1448,28 +1467,6 @@ impl SettingsSheet {
                 for setting in [Setting::HardwareDecoding, Setting::DesktopIntegration] {
                     self.control(ui, config, setting);
                 }
-                self.section(ui, "Playlist");
-                for setting in [
-                    Setting::PlaylistQuickAction,
-                    Setting::PlaylistAutoDownload,
-                    Setting::PlaylistDeleteFiles,
-                ] {
-                    self.control(ui, config, setting);
-                }
-                let folder = crate::downloads::display_path(&crate::playlist::download_directory(config));
-                let row_node = self.row(ui, "Playlist downloads");
-                let label = ui.add_label(row_node, &folder, TextStyle::Callout, Style::default());
-                if let Some(w) = ui.widget_mut(label) {
-                    w.set_paint(Paint::Secondary);
-                }
-                pill_button(ui, row_node, "Change…", SettingsAction::ChoosePlaylistFolder, false);
-                if !config.playlist.directory.trim().is_empty() {
-                    pill_button(ui, row_node, "Default", SettingsAction::ResetPlaylistFolder, false);
-                }
-                self.note(
-                    ui,
-                    "Videos that are plain files can be downloaded for offline use; streams (HLS …) are watched online only.",
-                );
             }
             Category::Shields => {
                 let row_node = self.row(ui, "Shields on sites you haven't set");

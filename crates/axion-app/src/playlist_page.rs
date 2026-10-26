@@ -19,7 +19,7 @@ use axion_ui::{ActionId, Align, Background, CAPSULE, GlassLevel, Paint, TextStyl
 use glam::Vec2;
 
 use crate::favicons::{Favicons, favicon_or};
-use crate::menu::{MAX_ITEMS, Menu, MenuItem, Placement};
+use crate::menu::{Menu, MenuItem, Placement};
 use crate::playlist::{Repeat, wrap_title};
 
 /// Action ids of the page: the buttons, then the rows' (`ROW_BASE + 8 * row + kind`), then
@@ -227,7 +227,7 @@ fn capsule(ui: &mut Ui, parent: NodeId, action: PageAction, icon: Icon, text: &s
     let background = if danger {
         Background::Fill(Paint::Fixed(DANGER), 0.16)
     } else {
-        Background::Glass(GlassLevel::Thin)
+        Background::Fill(Paint::Label, 0.08)
     };
     let node = ui.add(
         parent,
@@ -686,7 +686,6 @@ impl PlaylistPage {
         // The menu of the rows, the list's name, the speeds and the sleep timer: after
         // everything, so it lies above.
         let menu = Menu::build(ui, root, MENU_BASE, Placement::BelowStart);
-        debug_assert!(MAX_ITEMS <= 100);
 
         ui.set_visible(root, false);
         Self {
@@ -843,6 +842,7 @@ impl PlaylistPage {
         self.rows.clear();
         let width =
             self.list_width() - 2.0 * PAD - 2.0 * ROW_PADDING - THUMB.x - ROW_GAP - MENU_BUTTON - ROW_GAP;
+        let width = if editing { width - SELECT_CIRCLE - ROW_GAP } else { width };
         let chars = (width / CHAR_WIDTH).floor().max(8.0) as usize;
         for (i, m) in models.iter().take(MAX_ROWS).enumerate() {
             let nodes = self.build_row(ui, i, m, editing, chars, favicons);

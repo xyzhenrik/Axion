@@ -1007,15 +1007,6 @@ impl Default for Media {
     }
 }
 
-/// How the Playlist page lists its videos.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlaylistView {
-    #[default]
-    Grid,
-    List,
-}
-
 /// Axion Playlist: videos saved for later, optionally downloaded for offline use.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -1033,8 +1024,6 @@ pub struct Playlist {
     pub max_items: u32,
     /// Titles are cut to this many characters.
     pub max_title_chars: u32,
-    /// Grid of cards or a list of rows.
-    pub view: PlaylistView,
     /// Thumbnails are scaled down to at most this many pixels on the long side.
     pub thumbnail_max_px: u32,
     /// How long Axion waits for a thumbnail from the page before giving up (seconds).
@@ -1070,7 +1059,6 @@ impl Default for Playlist {
             delete_files_on_remove: true,
             max_items: 1000,
             max_title_chars: 200,
-            view: PlaylistView::Grid,
             thumbnail_max_px: 480,
             thumbnail_wait_seconds: 8.0,
             watched_fraction: 0.9,
@@ -1133,6 +1121,16 @@ mod tests {
         assert!(!media.add_trusted_site("example.com"));
         assert!(!media.add_trusted_site("  "));
         assert!(!toml::to_string(&media).unwrap().contains("own_controls"));
+    }
+
+    #[test]
+    fn playlist_defaults_and_keys() {
+        let p = Playlist::default();
+        assert!(p.quick_action && !p.auto_download && p.delete_files_on_remove);
+        assert_eq!(p.list_name, "Play Later");
+        let c: Config = toml::from_str("[playlist]\nauto_download = true").unwrap();
+        assert!(c.playlist.auto_download);
+        assert_eq!(c.playlist.max_items, p.max_items);
     }
 
     #[test]

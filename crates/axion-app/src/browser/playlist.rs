@@ -16,11 +16,13 @@ use crate::playlist::{
 use crate::playlist_page::{PageAction, PlayerModel, PlaylistPage, RowModel, VideoPicture};
 use crate::playlist_popover::{PlaylistPopover, PopoverAction as AddAction, VideoInfo};
 
+type Thumb = (wgpu::TextureView, (u32, u32));
+
 /// Thumbnails as GPU textures, loaded from the profile a few per frame.
 pub(super) struct ThumbCache {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    loaded: HashMap<i64, Option<(wgpu::TextureView, (u32, u32))>>,
+    loaded: HashMap<i64, Option<Thumb>>,
     budget: u32,
 }
 
@@ -40,7 +42,7 @@ impl ThumbCache {
 
     /// The thumbnail of item `id` stored at `path`; `None` while it isn't loaded (the budget
     /// of this frame is spent: `pending` is set) or has none.
-    fn get(&mut self, id: i64, path: &str, pending: &mut bool) -> Option<(wgpu::TextureView, (u32, u32))> {
+    fn get(&mut self, id: i64, path: &str, pending: &mut bool) -> Option<Thumb> {
         if path.is_empty() {
             return None;
         }
@@ -452,7 +454,7 @@ impl Browser {
         for y in 0..h as usize {
             let line = &data[y * row as usize..y * row as usize + 4 * w as usize];
             if bgra {
-                for px in line.chunks_exact(4) {
+                for px in line.as_chunks::<4>().0 {
                     pixels.extend_from_slice(&[px[2], px[1], px[0], 255]);
                 }
             } else {
@@ -613,7 +615,7 @@ impl Browser {
             self.playlist.progress.remove(&id);
             self.set_item_download(id, state, &path, size, &note);
         } else {
-            self.playlist.progress.insert(id, Some(progress.unwrap_or(0.0)).filter(|_| progress.is_some()));
+            self.playlist.progress.insert(id, progress);
             let known = self.playlist_ui.page.row_has_bar(id);
             if let Some(item) = self.playlist.items.iter_mut().find(|i| i.id == id) {
                 item.dl_state = dl::DOWNLOADING.to_owned();
@@ -867,18 +869,18 @@ impl Browser {
         }
         self.engine.request_frame(view);
         let frame = self.engine.frame(view);
-        let picture = frame.as_ref().and_then(|f| {
+        let picture = frame.as_ref().map(|f| {
             let tex = Vec2::new(f.texture.width() as f32, f.texture.height() as f32);
             let (aspect, uv) = match (&player, local) {
                 (Some(p), true) if p.vw > 0.0 => (p.aspect(), letterbox(tex, p.aspect())),
                 _ => (tex.x / tex.y.max(1.0), Rect { origin: Vec2::ZERO, size: Vec2::ONE }),
             };
-            Some(VideoPicture {
+            VideoPicture {
                 view: f.texture.create_view(&Default::default()),
                 size: (f.texture.width(), f.texture.height()),
                 uv,
                 aspect,
-            })
+            }
         });
         let (elapsed, duration, playing) =
             player.as_ref().map_or((item.position, item.duration, false), |p| {
@@ -1418,7 +1420,6 @@ impl Browser {
 
     /// A tab closes or leaves its page: the position it reached is kept.
     pub(super) fn playlist_flush_tab(&mut self, view: ViewId) {
-        self.playlist.pending.remove(&view);
         let Some(tracked) = self.playlist.tracked.remove(&view) else { return };
         let player =
             find_tab(&self.tabs, &self.parked, view).and_then(|t| t.media.as_ref()?.primary().cloned());
