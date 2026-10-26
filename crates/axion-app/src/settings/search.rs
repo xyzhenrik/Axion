@@ -363,6 +363,11 @@ pub const INDEX: &[Entry] = &[
         S::HardwareDecoding,
         &["gpu", "vaapi", "acceleration", "hardware", "beschleunigung", "video", "decoding", "dekodierung"],
     ),
+    control(
+        C::General,
+        S::AppMenuEntry,
+        &["desktop", "icon", "launcher", "menu", "taskbar", "symbol", "startmenü"],
+    ),
     control(C::Media, S::DesktopIntegration, &["mpris", "media keys", "medientasten", "lock screen", "kde"]),
     control(
         C::Hardware,

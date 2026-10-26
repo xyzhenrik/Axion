@@ -19,6 +19,7 @@ mod browser;
 mod chrome;
 mod context_menu;
 mod desktop;
+mod desktop_integration;
 mod downloads;
 mod downloads_popover;
 mod drip;

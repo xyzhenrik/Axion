@@ -68,6 +68,10 @@ pub struct General {
     /// shows once; Settings › General › Show Welcome Tour runs it again). Accounts that
     /// existed before the tour was added count as done.
     pub onboarding_done: bool,
+    /// Linux: add Axion to the application menu at start (a per-user `axion.desktop` and the
+    /// icon set in `$XDG_DATA_HOME`), which is what gives the window its icon on Wayland.
+    /// Off: Axion leaves the desktop entry alone (and removes nothing).
+    pub desktop_integration: bool,
 }
 
 /// Which language the interface is shown in.
@@ -120,6 +124,7 @@ impl Default for General {
             search_url: "https://duckduckgo.com/?q={}".into(),
             language: UiLanguage::System,
             onboarding_done: false,
+            desktop_integration: true,
         }
     }
 }
@@ -412,6 +417,9 @@ pub struct Glass {
     /// Tint opacity (0–1) of tinted (primary, destructive) glass buttons: how much of the accent
     /// colour the glass takes. The rest is the backdrop, refracted, with the rim light on top.
     pub tinted_opacity: f32,
+    /// Rim light of tinted glass buttons relative to plain glass (1 = the same): coloured glass
+    /// reads as glass by its bright, refractive edge.
+    pub tinted_rim: f32,
     /// Extra tint opacity over busy or mid-grey backdrops, to keep labels legible.
     pub adaptive_opacity: f32,
     /// Replace glass with opaque surfaces.
@@ -476,7 +484,8 @@ impl Default for Glass {
             popover_bridge_fillet: 30.0,
             menu_plate_opacity: 0.6,
             button_opacity: 0.04,
-            tinted_opacity: 0.85,
+            tinted_opacity: 0.65,
+            tinted_rim: 1.6,
             adaptive_opacity: 0.12,
             reduce_transparency: false,
             reduce_motion: false,

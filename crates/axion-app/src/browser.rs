@@ -490,6 +490,9 @@ impl Browser {
             .inspect_err(|e| tracing::warn!("live config reload unavailable: {e}"))
             .ok();
 
+        // Wayland shows the icon of `axion.desktop` (matched by the app id below): make sure a
+        // current one exists before the window does (not for capture runs: they are test runs).
+        crate::desktop_integration::ensure(config.general.desktop_integration && options.capture.is_none());
         let attributes = Window::default_attributes()
             .with_title("Axion")
             .with_window_icon(crate::app_icon::window_icon())

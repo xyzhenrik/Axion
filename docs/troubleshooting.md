@@ -43,8 +43,21 @@ the setting. See [Hardware acceleration](features/hardware-acceleration.md).
 
 ## The window has no icon on Wayland
 
-On Wayland, the desktop takes the window and taskbar icon from a desktop entry, not from the window.
-Install one for your user with the script in the source folder:
+On Wayland, the desktop takes the window and taskbar icon from a desktop entry (`axion.desktop`), not
+from the window. Axion adds one for your user by itself: at start it writes
+`~/.local/share/applications/axion.desktop` (pointing at the Axion you started) and the icons in
+`~/.local/share/icons/hicolor`, then refreshes the desktop caches in the background. This is
+**Settings > General > Add Axion to the application menu** (`general.desktop_integration`, on by
+default).
+
+- The very first start after this can still show the generic icon, because the desktop only learns
+  about a new entry a moment after the window opened. Restart Axion once; the icon is there from then
+  on. If it is still missing, sign out and in, or run `kbuildsycoca6 --noincremental` on KDE.
+- Axion rewrites the entry when you start it from another place (for example a new build) or after an
+  update. It never removes the entry: delete `axion.desktop` and the `axion.png` / `axion.svg` icons
+  yourself, or run `tools/install-desktop.sh --uninstall`, and turn the setting off first.
+- Only a switch you turned off, or an unusual setup (no writable `~/.local/share`), needs the manual
+  route. The script in the source folder does the same by hand:
 
 ```bash
 tools/install-desktop.sh                   # for target/release/axion in this checkout
@@ -52,8 +65,7 @@ tools/install-desktop.sh --bin /path/to/axion
 tools/install-desktop.sh --uninstall       # remove it again
 ```
 
-It is safe to run more than once. Sign out and in, or restart your shell, if the icon does not show
-at once.
+It is safe to run more than once.
 
 ## I cannot open my private tabs
 
