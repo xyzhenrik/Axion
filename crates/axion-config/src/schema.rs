@@ -486,6 +486,8 @@ pub struct Privacy {
     /// Lock private tabs behind the account password (set in Settings › Privacy). Entering
     /// the password once unlocks them until Axion quits or the account menu's Lock is used.
     pub lock_private_tabs: bool,
+    /// Open the password card (focused) by itself when locked private browsing comes up.
+    pub prompt_unlock_on_open: bool,
     /// Older setting (locking again after time in the background), no longer used: an unlock
     /// lasts for the session. Accepted so old files load.
     #[serde(skip_serializing)]
@@ -494,7 +496,7 @@ pub struct Privacy {
 
 impl Default for Privacy {
     fn default() -> Self {
-        Self { lock_private_tabs: true, lock_after_seconds: None }
+        Self { lock_private_tabs: true, prompt_unlock_on_open: true, lock_after_seconds: None }
     }
 }
 
@@ -896,5 +898,15 @@ mod tests {
         let text = Config::default_toml();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back, Config::default());
+    }
+}
+
+#[cfg(test)]
+mod private_prompt_tests {
+    use super::*;
+
+    #[test]
+    fn the_unlock_card_opens_by_itself_by_default() {
+        assert!(Privacy::default().prompt_unlock_on_open);
     }
 }

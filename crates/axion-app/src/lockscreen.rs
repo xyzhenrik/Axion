@@ -18,6 +18,7 @@ use glam::Vec2;
 const SHOW_ALERT: ActionId = ActionId(9000);
 const UNLOCK: ActionId = ActionId(9001);
 const CANCEL: ActionId = ActionId(9002);
+const REVEAL: ActionId = ActionId(9003);
 const ALERT_WIDTH: f32 = 320.0;
 const ALERT_RADIUS: f32 = 22.0;
 /// The alert grows from this size as it appears.
@@ -29,6 +30,9 @@ pub struct LockScreen {
     alert_layer: NodeId,
     alert: NodeId,
     field: NodeId,
+    /// The eye in the field: shows or hides the typed password.
+    eye_icon: NodeId,
+    revealed: bool,
     /// The alert's line that names the account.
     text: NodeId,
     error: NodeId,
@@ -179,6 +183,20 @@ impl LockScreen {
             },
         );
         ui.set_secure(field, true);
+        // The eye (Safari/iOS style): lets the user check what they typed.
+        let eye = ui.add(
+            field_box,
+            Widget::container().with_action(REVEAL).with_radius(CAPSULE),
+            Style {
+                size: Size { width: length(28.0), height: length(28.0) },
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        let eye_icon =
+            ui.add(eye, Widget::icon(Icon::Eye, 18.0).with_paint(Paint::Secondary), Style::default());
         let error = ui.add_label(alert, "Wrong password", TextStyle::Footnote, Style::default());
         if let Some(w) = ui.widget_mut(error) {
             w.set_paint(Paint::Fixed(ERROR));
@@ -202,6 +220,8 @@ impl LockScreen {
             alert_layer,
             alert,
             field,
+            eye_icon,
+            revealed: false,
             text,
             error,
             visible: false,
@@ -235,7 +255,7 @@ impl LockScreen {
     }
 
     pub fn is_lock_action(action: ActionId) -> bool {
-        [SHOW_ALERT, UNLOCK, CANCEL].contains(&action)
+        [SHOW_ALERT, UNLOCK, CANCEL, REVEAL].contains(&action)
     }
 
     pub fn is_alert_open(&self) -> bool {
@@ -277,8 +297,24 @@ impl LockScreen {
                 self.close_alert(ui);
                 Vec::new()
             }
+            REVEAL => {
+                self.set_revealed(ui, !self.revealed);
+                // Keep typing: the click didn't take the focus away.
+                ui.focus(self.field)
+            }
             _ => Vec::new(),
         }
+    }
+
+    fn set_revealed(&mut self, ui: &mut Ui, on: bool) {
+        self.revealed = on;
+        ui.set_secure(self.field, !on);
+        ui.set_icon(self.eye_icon, if on { Icon::EyeOff } else { Icon::Eye });
+    }
+
+    /// Whether `p` (logical px) is on the alert card.
+    pub fn alert_contains(&self, ui: &Ui, p: Vec2) -> bool {
+        self.alert_open && ui.frame(self.alert).contains(p)
     }
 
     fn open_alert(&mut self, ui: &mut Ui, config: &Config) -> Vec<UiEvent> {
@@ -296,6 +332,7 @@ impl LockScreen {
 
     pub fn close_alert(&mut self, ui: &mut Ui) {
         self.alert_open = false;
+        self.set_revealed(ui, false);
         self.appear.target = 0.0;
         ui.set_field_text(self.field, "");
         ui.set_visible(self.error, false);
@@ -307,6 +344,7 @@ impl LockScreen {
 
     fn hide_alert(&mut self, ui: &mut Ui) {
         self.alert_open = false;
+        self.set_revealed(ui, false);
         self.appear.snap(0.0);
         ui.set_visible(self.alert_layer, false);
         ui.set_visible(self.error, false);

@@ -700,6 +700,15 @@ impl Browser {
         }
     }
 
+    /// Closes the only tab without opening a replacement (the tab overview does that when it
+    /// is left).
+    fn close_last_tab_quietly(&mut self, index: usize) {
+        if let Some(tab) = self.tabs.remove(index) {
+            self.engine.close_view(tab.view);
+            self.tabs_changed = true;
+        }
+    }
+
     /// Closes every private tab (leaving private browsing if it is shown).
     fn close_private_tabs(&mut self) {
         if self.private_mode {
@@ -1771,7 +1780,9 @@ impl Browser {
         self.menu.close(&mut self.ui, &self.config);
         self.shields_popover.close(&mut self.ui, &self.config);
         self.suggestions.hide(&mut self.ui, &self.config);
-        if self.tabs.is_empty() {
+        if self.tabs.is_empty() && self.overview.is_open() && !self.private_mode {
+            // Normal tabs all closed in the overview: it makes one when it is left.
+        } else if self.tabs.is_empty() {
             let home = self.config.general.homepage.clone();
             if let Err(e) = self.open_tab(&home, true) {
                 tracing::error!("opening a tab failed: {e:#}");
@@ -1796,7 +1807,7 @@ impl Browser {
         }
         let was_locked = self.lock_shown.is_some();
         self.lock_shown = page;
-        self.chrome.set_locked(&mut self.ui, locked);
+        self.chrome.set_locked(&mut self.ui, &self.config, locked);
         if locked {
             if let Some(view) = self.active_view() {
                 self.engine.set_focus(view, false);
@@ -1811,6 +1822,10 @@ impl Browser {
         self.lock_screen.show(&mut self.ui, page, radius);
         self.order_lock_planes(locked);
         self.tabs_changed = true;
+        if locked && !was_locked && self.config.privacy.prompt_unlock_on_open && !self.overview.is_open() {
+            // The password card comes up by itself, focused: no extra click to start typing.
+            self.show_unlock_alert();
+        }
     }
 
     /// The lock screen's cover lies above the toolbar and its popovers (nothing of a locked
@@ -1843,6 +1858,11 @@ impl Browser {
                 self.lock_screen.close_alert(&mut self.ui);
                 self.tabs_changed = true;
                 self.update_lock();
+                if self.overview.is_open() {
+                    // Unlocked inside the overview: the private tabs' cards replace the note.
+                    self.sync_overview_mode();
+                    self.rebuild_overview();
+                }
                 if let Some((view, index)) = self.pending_move.take()
                     && let Some(from) = self.group(false).index_of(view)
                 {
@@ -1889,6 +1909,16 @@ impl Browser {
             self.handle_ui_events(events);
             return;
         }
+        let index = if self.tabs.is_empty() {
+            // The last tab was closed in the overview; leaving it asks for a new one.
+            let home = self.config.general.homepage.clone();
+            if let Err(e) = self.open_tab(&home, true) {
+                tracing::error!("opening a new tab failed: {e:#}");
+            }
+            self.tabs.active_index()
+        } else {
+            index
+        };
         self.select_tab(index);
         let page = self.page_rect();
         let events =
@@ -1904,17 +1934,19 @@ impl Browser {
             OverviewAction::Select(i) => self.close_overview(i),
             OverviewAction::Done => self.close_overview(self.tabs.active_index()),
             OverviewAction::Close(i) if !self.is_locked() => {
-                self.close_tab(i);
+                if self.tabs.len() == 1 && !self.private_mode {
+                    // The only tab: no new one until the overview is left.
+                    self.close_last_tab_quietly(i);
+                } else {
+                    self.close_tab(i);
+                }
                 // Closing the last private tab went back to the normal ones.
                 self.sync_overview_mode();
                 self.rebuild_overview();
             }
             OverviewAction::Close(_) => {}
-            OverviewAction::NewTab if self.is_locked() => {
-                let events = self.overview.close_instantly(&mut self.ui);
-                self.handle_ui_events(events);
-                self.show_unlock_alert();
-            }
+            OverviewAction::NewTab | OverviewAction::Unlock if self.is_locked() => self.show_unlock_alert(),
+            OverviewAction::Unlock => {}
             OverviewAction::NewTab => {
                 let home = self.config.general.homepage.clone();
                 if let Err(e) = self.open_tab(&home, true) {
@@ -3630,6 +3662,12 @@ impl Browser {
             _ => return,
         };
 
+        if pressed && self.lock_screen.is_alert_open() && !self.lock_screen.alert_contains(&self.ui, p) {
+            // A click outside the password card only dismisses it.
+            self.lock_screen.close_alert(&mut self.ui);
+            self.pending_move = None;
+            return;
+        }
         if pressed && self.menu.is_open() && !self.menu.contains(&self.ui, p) {
             // A click outside only dismisses the menu.
             self.menu.close(&mut self.ui, &self.config);

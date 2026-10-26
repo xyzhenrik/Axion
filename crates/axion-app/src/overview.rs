@@ -25,6 +25,8 @@ const NEW_TAB: u32 = 9201;
 const PRIVATE: u32 = 9202;
 const NORMAL: u32 = 9203;
 const SEARCH: u32 = 9205;
+/// The Unlock button shown in place of locked private tabs.
+const UNLOCK: u32 = 9206;
 
 /// Layout from the design board, in logical pixels.
 const TOP: f32 = 14.0;
@@ -65,6 +67,8 @@ pub enum OverviewAction {
     ShowPrivate,
     ShowNormal,
     ToggleSearch,
+    /// Unlock the private tabs (the lock screen's password card opens).
+    Unlock,
 }
 
 impl OverviewAction {
@@ -77,6 +81,7 @@ impl OverviewAction {
             OverviewAction::ShowPrivate => PRIVATE,
             OverviewAction::ShowNormal => NORMAL,
             OverviewAction::ToggleSearch => SEARCH,
+            OverviewAction::Unlock => UNLOCK,
         })
     }
 
@@ -87,6 +92,7 @@ impl OverviewAction {
             PRIVATE => OverviewAction::ShowPrivate,
             NORMAL => OverviewAction::ShowNormal,
             SEARCH => OverviewAction::ToggleSearch,
+            UNLOCK => OverviewAction::Unlock,
             n if (CLOSE_BASE..CLOSE_BASE + 1000).contains(&n) => {
                 OverviewAction::Close((n - CLOSE_BASE) as usize)
             }
@@ -241,6 +247,28 @@ impl Overview {
         let note_label = ui.add_label(note_row, "", TextStyle::Title2, Style::default());
         if let Some(w) = ui.widget_mut(note_label) {
             w.set_paint(Paint::Secondary);
+        }
+        let unlock = ui.add(
+            note_row,
+            Widget::container()
+                .with_action(ActionId(UNLOCK))
+                .with_radius(CAPSULE)
+                .with_background(Background::Fill(Paint::Accent, 1.0)),
+            Style {
+                size: Size { width: auto(), height: length(34.0) },
+                padding: Rect {
+                    left: length(18.0),
+                    right: length(18.0),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        let unlock_label = ui.add_label(unlock, "Unlock", TextStyle::Callout, Style::default());
+        if let Some(w) = ui.widget_mut(unlock_label) {
+            w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
         }
         ui.set_visible(note_row, false);
 
@@ -755,5 +783,26 @@ impl Overview {
             _ => {}
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_ids_round_trip() {
+        for action in [
+            OverviewAction::Select(3),
+            OverviewAction::Close(2),
+            OverviewAction::Done,
+            OverviewAction::NewTab,
+            OverviewAction::ShowPrivate,
+            OverviewAction::ShowNormal,
+            OverviewAction::ToggleSearch,
+            OverviewAction::Unlock,
+        ] {
+            assert_eq!(OverviewAction::from_id(action.id()), Some(action));
+        }
     }
 }
