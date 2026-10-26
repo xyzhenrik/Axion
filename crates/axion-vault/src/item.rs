@@ -17,10 +17,10 @@ impl Kind {
 
     pub fn title(self) -> &'static str {
         match self {
-            Kind::Login => "Passwords",
-            Kind::Card => "Cards",
-            Kind::Address => "Addresses",
-            Kind::Note => "Secure Notes",
+            Kind::Login => axion_i18n::tr("Passwords"),
+            Kind::Card => axion_i18n::tr("Cards"),
+            Kind::Address => axion_i18n::tr("Addresses"),
+            Kind::Note => axion_i18n::tr("Secure Notes"),
         }
     }
 }

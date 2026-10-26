@@ -124,8 +124,10 @@ pub enum Capture {
     Nothing,
 }
 
-pub const WHY_DASH: &str = "This video uses a DASH stream, which Axion can only play on its page.";
-pub const WHY_BLOB: &str = "This video is assembled by its page and can only be played there.";
+pub const WHY_DASH: &str =
+    axion_i18n::tr_mark("This video uses a DASH stream, which Axion can only play on its page.");
+pub const WHY_BLOB: &str =
+    axion_i18n::tr_mark("This video is assembled by its page and can only be played there.");
 
 /// The source of a video: the address its element plays (`player_src`, from the frame
 /// `player_frame`), else — for `blob:` streams and elements without a source yet — the best
@@ -142,7 +144,11 @@ pub fn capture(player_src: &str, player_frame: &str, page_url: &str, sniffed: &[
             .or(Some(player_frame).filter(|f| f.starts_with("http")))
             .unwrap_or(page_url);
         let source = MediaSource::new(src, kind, referer);
-        return if source.playable() { Capture::Found(source) } else { Capture::Unsupported(WHY_DASH) };
+        return if source.playable() {
+            Capture::Found(source)
+        } else {
+            Capture::Unsupported(axion_i18n::tr(WHY_DASH))
+        };
     }
     // A manifest beats the files (a master playlist is requested before its variants, so
     // the earliest one is the master); a plain file is the most recent one.
@@ -155,8 +161,8 @@ pub fn capture(player_src: &str, player_frame: &str, page_url: &str, sniffed: &[
             let referer = if s.referer.is_empty() { page_url } else { s.referer.as_str() };
             Capture::Found(MediaSource::new(&s.url, kind, referer))
         }
-        None if dash => Capture::Unsupported(WHY_DASH),
-        None if src.starts_with("blob:") => Capture::Unsupported(WHY_BLOB),
+        None if dash => Capture::Unsupported(axion_i18n::tr(WHY_DASH)),
+        None if src.starts_with("blob:") => Capture::Unsupported(axion_i18n::tr(WHY_BLOB)),
         None => Capture::Nothing,
     }
 }

@@ -8,6 +8,7 @@
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
+use axion_i18n::tr;
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
@@ -370,7 +371,7 @@ impl NowPlayingCard {
         } else {
             ui.set_value(self.scrubber, 0.0);
             ui.set_text(self.elapsed, &axion_media::format_time(now.time));
-            ui.set_text(self.remaining, if now.live { "Live" } else { "\u{2212}:\u{2212}\u{2212}" });
+            ui.set_text(self.remaining, if now.live { tr("Live") } else { "\u{2212}:\u{2212}\u{2212}" });
         }
         let enabled = |ui: &mut Ui, node: NodeId, on: bool| {
             if let Some(w) = ui.widget_mut(node) {

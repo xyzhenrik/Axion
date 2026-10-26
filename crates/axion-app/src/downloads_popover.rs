@@ -5,6 +5,7 @@
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
+use axion_i18n::tr;
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
@@ -95,10 +96,10 @@ impl DownloadsPopover {
     fn fill(&mut self, ui: &mut Ui, items: &[PanelItem]) {
         ui.clear_children(self.plate);
         let header = ui.add(self.plate, Widget::container(), fixed_row(HEADER, 8.0));
-        ui.add_label(header, "Downloads", TextStyle::BodyEmphasis, Style::default());
+        ui.add_label(header, tr("Downloads"), TextStyle::BodyEmphasis, Style::default());
         if items.is_empty() {
             let empty = ui.add(self.plate, Widget::container(), fixed_row(EMPTY, 0.0));
-            secondary(ui, empty, "Nothing downloaded yet", TextStyle::Footnote);
+            secondary(ui, empty, tr("Nothing downloaded yet"), TextStyle::Footnote);
         }
         for (i, item) in items.iter().enumerate() {
             let row_node = ui.add(
@@ -168,7 +169,7 @@ impl DownloadsPopover {
             Widget::container().with_action(SHOW_ALL).with_radius(CAPSULE),
             Style { padding: padding(8.0, 0.0), ..fixed_row(FOOTER, 4.0) },
         );
-        let label = ui.add_label(footer, "Show All Downloads", TextStyle::Callout, Style::default());
+        let label = ui.add_label(footer, tr("Show All Downloads"), TextStyle::Callout, Style::default());
         if let Some(w) = ui.widget_mut(label) {
             w.set_paint(Paint::Accent);
         }

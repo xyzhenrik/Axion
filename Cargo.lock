@@ -502,6 +502,7 @@ dependencies = [
 name = "axion-media"
 version = "0.0.1"
 dependencies = [
+ "axion-i18n",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -563,6 +564,7 @@ version = "0.0.1"
 dependencies = [
  "addr",
  "argon2",
+ "axion-i18n",
  "chacha20poly1305",
  "directories",
  "hkdf",
