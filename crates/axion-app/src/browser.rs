@@ -74,6 +74,7 @@ use crate::update::{InstallMode, Notice, Phase, Updater};
 use crate::update_alert::{AlertAction, UpdateAlert};
 use crate::url::display_host;
 use crate::url::resolve_input;
+use crate::window_resize::{Debounce, ResizePacer};
 
 mod context;
 mod onboarding;
@@ -434,6 +435,13 @@ pub struct Browser {
     /// `--bench-resize`: the scripted run; `AXION_RESIZE_LOG=1`: frame timings of each real
     /// resize (logged once it has been still for `RESIZE_LOG_QUIET`), and the counters both use.
     resize_bench: Option<ResizeBench>,
+    /// The window's newest size, applied by the next frame (see `apply_window_size`).
+    pending_window_size: Option<winit::dpi::PhysicalSize<u32>>,
+    /// The shown view's resizes, one at a time, and the background tabs' once the window is
+    /// still (see `pace_page_resizes`).
+    page_pacer: ResizePacer,
+    paced_view: Option<ViewId>,
+    background_resize: Debounce,
     resize_log: Option<(Recorder, Instant)>,
     resize_log_enabled: bool,
     resize_counters: ResizeCounters,
@@ -759,6 +767,10 @@ impl Browser {
             slide_seen_width: None,
             page_lag: None,
             resize_bench: options.bench_resize.then(|| ResizeBench::new(options.capture_after)),
+            pending_window_size: None,
+            page_pacer: ResizePacer::default(),
+            paced_view: None,
+            background_resize: Debounce::default(),
             resize_log: None,
             resize_log_enabled: std::env::var_os("AXION_RESIZE_LOG").is_some(),
             resize_counters: ResizeCounters::default(),
@@ -839,10 +851,26 @@ impl Browser {
         // While the sidebar slides, the shown tab's size is managed by the slide (see
         // `redraw_frame`); resizing it here too would make Chromium render an extra size.
         let sliding = self.slide_view_size.map(|(view, _)| view);
-        for tab in self.tabs.all() {
-            if Some(tab.view) != sliding {
-                self.engine.resize(tab.view, view_size);
+        let shown = self.display_view().filter(|v| Some(*v) != sliding);
+        if let Some(view) = shown {
+            self.resize_shown_view(view, view_size);
+        }
+        // The overview shows every tab: they follow at once there. Elsewhere the tabs in the
+        // background follow once the window is still (see `pace_page_resizes`).
+        let background: Vec<ViewId> = self
+            .tabs
+            .all()
+            .iter()
+            .map(|t| t.view)
+            .filter(|v| Some(*v) != sliding && Some(*v) != shown)
+            .collect();
+        if self.overview.is_open() {
+            for view in background {
+                self.engine.resize(view, view_size);
             }
+        } else if !background.is_empty() {
+            let delay = Duration::from_secs_f32(self.config.layout.background_resize_delay.max(0.0));
+            self.background_resize.touch(Instant::now(), delay);
         }
         self.layout_size = size;
     }
@@ -4594,21 +4622,15 @@ impl Browser {
                 self.resize_counters.events += 1;
                 if self.resize_log_enabled {
                     let counters = self.bench_counters();
-                    let log = self.resize_log.get_or_insert_with(|| (Recorder::new(counters), Instant::now()));
+                    let log =
+                        self.resize_log.get_or_insert_with(|| (Recorder::new(counters), Instant::now()));
                     log.1 = Instant::now();
                 }
+                // Applied once, by the next frame: a resize sends a stream of these (dozens
+                // between two frames when the window manager catches up), and reconfiguring
+                // the swapchain and laying everything out for each one froze the window.
                 if size.width > 0 && size.height > 0 {
-                    let started = Instant::now();
-                    self.resize_counters.configures += 1;
-                    self.surface_config.width = size.width;
-                    self.surface_config.height = size.height;
-                    self.surface.configure(&self.device, &self.surface_config);
-                    self.frame_times.configure += ms_since(started);
-                    let laid = Instant::now();
-                    self.update_layout();
-                    self.frame_times.layout += ms_since(laid);
-                    self.sync_frame_rate();
-                    self.frame_times.resize_events += ms_since(started);
+                    self.pending_window_size = Some(size);
                 }
             }
             WindowEvent::ScaleFactorChanged { .. } => {
@@ -5132,12 +5154,71 @@ impl Browser {
         let result = self.redraw_frame();
         let serial = self.active_view().and_then(|v| self.engine.frame(v)).map_or(0, |f| f.serial);
         self.frame_stats.record(started.elapsed(), serial);
-        self.frame_times.total = ms_since(started) + self.frame_times.resize_events;
+        // Resize events are applied inside the frame (`apply_window_size`).
+        self.frame_times.total = ms_since(started);
         result?;
         self.bench_frame()
     }
 
+    /// The window's newest size from its `Resized` events since the last frame.
+    fn apply_window_size(&mut self) {
+        let Some(size) = self.pending_window_size.take() else { return };
+        let started = Instant::now();
+        if (size.width, size.height) != (self.surface_config.width, self.surface_config.height) {
+            self.resize_counters.configures += 1;
+            self.surface_config.width = size.width;
+            self.surface_config.height = size.height;
+            self.surface.configure(&self.device, &self.surface_config);
+        }
+        self.frame_times.configure += ms_since(started);
+        let laid = Instant::now();
+        self.update_layout();
+        self.frame_times.layout += ms_since(laid);
+        self.sync_frame_rate();
+        self.frame_times.resize_events += ms_since(started);
+    }
+
+    /// The shown page gets the window's sizes one at a time (see `window_resize`), the
+    /// background tabs once the window has been still for `layout.background_resize_delay`.
+    fn pace_page_resizes(&mut self, now: Instant) {
+        let wait = Duration::from_secs_f32(self.config.layout.window_resize_wait.max(0.0));
+        if let Some(view) = self.paced_view {
+            if let Some(frame) = self.engine.frame(view) {
+                self.page_pacer.frame(frame.texture.width(), frame.texture.height());
+            }
+            if !self.chrome.is_sliding()
+                && Some(view) == self.display_view()
+                && let Some(size) = self.page_pacer.poll(now, wait)
+            {
+                self.engine.resize(view, size);
+            }
+        }
+        if self.background_resize.take_due(now) {
+            let size = self.view_size();
+            let sliding = self.slide_view_size.map(|(view, _)| view);
+            let views: Vec<ViewId> = self.tabs.all().iter().map(|t| t.view).collect();
+            for view in views {
+                if Some(view) != sliding && Some(view) != self.paced_view {
+                    self.engine.resize(view, size);
+                }
+            }
+        }
+    }
+
+    /// Gives the shown view `size`, paced (see `pace_page_resizes`).
+    fn resize_shown_view(&mut self, view: ViewId, size: ViewSize) {
+        if self.paced_view != Some(view) {
+            self.paced_view = Some(view);
+            self.page_pacer.reset();
+        }
+        let wait = Duration::from_secs_f32(self.config.layout.window_resize_wait.max(0.0));
+        if let Some(size) = self.page_pacer.request(size, Instant::now(), wait) {
+            self.engine.resize(view, size);
+        }
+    }
+
     fn redraw_frame(&mut self) -> Result<()> {
+        self.apply_window_size();
         if self.logical_size() != self.layout_size {
             let started = Instant::now();
             self.update_layout();
@@ -5926,6 +6007,9 @@ impl Browser {
         let hovered = if self.tab_drag.is_dragging() { None } else { self.ui.hovered() };
         self.chrome.update_hover(&mut self.ui, hovered);
         self.update_tab_drag(dt);
+        let started = Instant::now();
+        self.pace_page_resizes(now);
+        self.frame_times.layout += ms_since(started);
         let started = Instant::now();
         self.ui.layout();
         self.frame_times.ui_layout = ms_since(started);

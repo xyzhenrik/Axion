@@ -31,9 +31,9 @@ const SETTLE: Duration = Duration::from_secs(2);
 /// Where the main thread's time in one frame went (milliseconds).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameTimes {
-    /// The whole redraw, and the window's resize events handled since the last one.
+    /// The whole redraw (with the window's resize applied in it).
     pub total: f32,
-    /// Handling `WindowEvent::Resized` since the last frame.
+    /// Applying the window's new size (swapchain, layout, page resizes).
     pub resize_events: f32,
     /// Swapchain reconfigurations (in resize events or the frame).
     pub configure: f32,
@@ -186,20 +186,13 @@ impl Recorder {
         self.m.pump_ms += pump.as_secs_f32() * 1000.0;
     }
 
-    pub fn elapsed(&self) -> Duration {
-        self.started.elapsed()
-    }
-
-    pub fn frames(&self) -> usize {
-        self.m.frames.len()
-    }
-
     /// Logs the summary under `label`.
     pub fn log(&self, label: &str, counters: ResizeCounters) {
         let secs = self.started.elapsed().as_secs_f32().max(1e-3);
         let mut totals: Vec<f32> = self.m.frames.iter().map(|f| f.total).collect();
         totals.sort_by(f32::total_cmp);
-        let pct = |p: f32| totals.get(((totals.len() as f32 - 1.0) * p).round() as usize).copied().unwrap_or(0.0);
+        let pct =
+            |p: f32| totals.get(((totals.len() as f32 - 1.0) * p).round() as usize).copied().unwrap_or(0.0);
         let mut sum = FrameTimes::default();
         for f in &self.m.frames {
             sum.add(f);
@@ -425,9 +418,9 @@ mod tests {
                 Phase::Settle,
                 Phase::IdleAfter,
                 Phase::ScrollAfter,
-                Phase::Done
             ]
         );
+        assert_eq!(bench.phase(), Phase::Done);
         assert_eq!(resizes as u32, SWEEP_STEPS * 2 + BURST + 1);
     }
 }

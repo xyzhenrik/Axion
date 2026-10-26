@@ -65,6 +65,7 @@ mod typing_probe;
 mod update;
 mod update_alert;
 mod url;
+mod window_resize;
 
 use std::time::Duration;
 
