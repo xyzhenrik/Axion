@@ -713,6 +713,16 @@ pub struct Passwords {
     /// How long the user name typed on the first step of a two-step sign-in is remembered, to
     /// pair it with the password asked on the next page (0: don't pair).
     pub two_step_memory_seconds: f32,
+    /// How long a declined "Save password?" / "Change Password?" is remembered for that exact
+    /// credential (same site, user name and password; in memory only). A different password
+    /// always prompts again.
+    pub decline_memory_seconds: f32,
+    /// A login filled from the vault counts as "just used" for this long: a different password
+    /// submitted for the same account then waits for `login_check_seconds` before it is offered.
+    pub fill_recent_seconds: f32,
+    /// After such a submit the page gets this long to show the sign-in form again; if it does,
+    /// the login most likely failed (a typo) and no "Change Password?" is offered.
+    pub login_check_seconds: f32,
     /// Fetch the icons of saved logins' sites that aren't cached yet, for the Passwords list.
     pub fetch_missing_icons: bool,
     /// At most this many icons are fetched each time the list opens.
@@ -749,6 +759,9 @@ impl Default for Passwords {
                 group(&["yahoo.com", "aol.com"]),
             ],
             two_step_memory_seconds: 300.0,
+            decline_memory_seconds: 1800.0,
+            fill_recent_seconds: 120.0,
+            login_check_seconds: 4.0,
             fetch_missing_icons: true,
             icon_fetch_limit: 40,
         }

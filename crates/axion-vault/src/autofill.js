@@ -23,7 +23,10 @@
     }
   }
 
-  var last = '';
+  // Enter, the button click and the form's submit event all report the same sign-in: only
+  // that burst is collapsed. The same credentials submitted again later (a page that stays
+  // after a failed or declined attempt) are reported again.
+  var last = '', lastAt = 0;
   // The user submitted: report the user name and password for "Save password?".
   function submitted(scope) {
     var pw = submittedPassword(scope);
@@ -31,8 +34,10 @@
     var user = userField(pw);
     var name = user ? user.value : '';
     var key = name + '\n' + pw.value;
-    if (key === last) return;
+    var now = Date.now();
+    if (key === last && now - lastAt < 1500) return;
     last = key;
+    lastAt = now;
     post({ e: 'submit', user: name, pass: pw.value });
   }
 

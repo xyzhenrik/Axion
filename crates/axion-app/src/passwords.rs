@@ -298,6 +298,14 @@ pub struct Passwords {
     asking: Option<Reauth>,
     /// The user name from the first step of a two-step sign-in, until the password step.
     step_user: Option<StepUser>,
+    /// Credentials the user declined to save, remembered briefly and only for that exact
+    /// (site, user name, password). Never a whole site.
+    declines: Declines,
+    /// The login last filled from the vault (host, user name), to tell a typo from a change.
+    last_fill: Option<(String, String, Instant)>,
+    /// A different password for a just-filled login, waiting to see whether the sign-in form
+    /// comes back (a failed login) before "Change Password?" is offered.
+    held: Option<Held>,
     /// The related-domain groups the vault was given (to apply config changes).
     related_applied: Vec<Vec<String>>,
     /// Site icons of the logins in the list, by host.
@@ -310,6 +318,67 @@ pub struct Passwords {
 struct StepUser {
     username: String,
     at: Instant,
+}
+
+/// A submit waiting for the page to show whether the login worked.
+struct Held {
+    view: ViewId,
+    pending: PendingSave,
+    at: Instant,
+}
+
+/// What a submitted login leads to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Offer {
+    /// "Save password?" (no login for this site and user yet).
+    Save,
+    /// "Change Password?" (the site and user have a login with another password).
+    Change,
+}
+
+/// Whether, and how, to offer saving a submitted login. `stored` is the saved password for the
+/// same site and user name (`None`: no such login, or the vault is locked), `declined` whether
+/// the user already said "Not Now" to exactly these credentials.
+fn offer_for(stored: Option<&str>, submitted: &str, declined: bool) -> Option<Offer> {
+    match stored {
+        Some(stored) if stored == submitted => None,
+        _ if declined => None,
+        Some(_) => Some(Offer::Change),
+        None => Some(Offer::Save),
+    }
+}
+
+/// Fingerprints of declined credentials. The password is only kept as a keyed hash (random key
+/// per run), in memory.
+struct Declines {
+    hasher: std::hash::RandomState,
+    list: Vec<(String, String, u64, Instant)>,
+}
+
+impl Default for Declines {
+    fn default() -> Self {
+        Self { hasher: std::hash::RandomState::new(), list: Vec::new() }
+    }
+}
+
+impl Declines {
+    fn print(&self, host: &str, user: &str, password: &str) -> u64 {
+        use std::hash::BuildHasher;
+        self.hasher.hash_one((host, user, password))
+    }
+
+    fn add(&mut self, host: &str, user: &str, password: &str, now: Instant) {
+        let print = self.print(host, user, password);
+        self.list.retain(|(h, u, p, _)| !(h == host && u == user && *p == print));
+        self.list.push((host.to_owned(), user.to_owned(), print, now));
+    }
+
+    /// Whether these exact credentials were declined within `memory`.
+    fn contains(&mut self, host: &str, user: &str, password: &str, now: Instant, memory: Duration) -> bool {
+        self.list.retain(|(.., at)| now.saturating_duration_since(*at) < memory);
+        let print = self.print(host, user, password);
+        self.list.iter().any(|(h, u, p, _)| h == host && u == user && *p == print)
+    }
 }
 
 fn padding(h: f32, v: f32) -> Rect<LengthPercentage> {
@@ -682,6 +751,9 @@ impl Passwords {
             account: account.to_owned(),
             asking: None,
             step_user: None,
+            declines: Declines::default(),
+            last_fill: None,
+            held: None,
             related_applied: Vec::new(),
             icons: HashMap::new(),
             icons_requested: HashSet::new(),
@@ -1677,8 +1749,20 @@ impl Passwords {
                 }
             }
             PROMPT_CLOSE => {
-                if let Some(PromptState::Unlock { url, .. }) = &self.prompt.state {
-                    self.unlock_dismissed.insert(site::display_host(url));
+                match &self.prompt.state {
+                    Some(PromptState::Unlock { url, .. }) => {
+                        self.unlock_dismissed.insert(site::display_host(url));
+                    }
+                    // Only these exact credentials: another password prompts again.
+                    Some(PromptState::Save(p)) => {
+                        self.declines.add(
+                            &site::display_host(&p.url),
+                            &p.username,
+                            &p.password,
+                            Instant::now(),
+                        );
+                    }
+                    _ => {}
                 }
                 self.prompt.hide();
             }
@@ -1815,6 +1899,7 @@ impl Passwords {
         if let Some(vault) = &mut self.vault {
             vault.touch();
         }
+        self.last_fill = Some((site::display_host(&url), login.username.clone(), Instant::now()));
         match axion_vault::autofill::fill_script(&url, &login.username, &login.password) {
             Some(script) => Outcome::Fill { view, script },
             None => Outcome::Nothing,
@@ -1830,6 +1915,10 @@ impl Passwords {
         self.sync_related(config);
         match event {
             PageEvent::Form | PageEvent::IdentifierForm => {
+                // The sign-in form is back after a submit: the login most likely failed.
+                if self.held.as_ref().is_some_and(|h| h.view == view) {
+                    self.held = None;
+                }
                 if !config.passwords.autofill || matches!(self.prompt.state, Some(PromptState::Save(_))) {
                     return;
                 }
@@ -1879,16 +1968,48 @@ impl Passwords {
                 if !config.passwords.offer_to_save || self.vault.is_none() {
                     return;
                 }
-                if let Some(vault) = self.vault.as_ref().filter(|v| v.is_unlocked())
-                    && let Some(item) = vault.login_for(url, &username)
-                    && matches!(&item.data, ItemData::Login(l) if *l.password == *password)
-                {
+                self.held = None;
+                let host = site::display_host(url);
+                let stored = self
+                    .vault
+                    .as_ref()
+                    .filter(|v| v.is_unlocked())
+                    .and_then(|v| v.login_for(url, &username))
+                    .and_then(|i| match &i.data {
+                        ItemData::Login(l) => Some(l.password.to_string()),
+                        _ => None,
+                    });
+                let memory = Duration::from_secs_f32(config.passwords.decline_memory_seconds.max(0.0));
+                let declined = self.declines.contains(&host, &username, &password, Instant::now(), memory);
+                let Some(offer) = offer_for(stored.as_deref(), &password, declined) else { return };
+                let pending = PendingSave { url: url.to_owned(), username, password };
+                let fill_window = Duration::from_secs_f32(config.passwords.fill_recent_seconds.max(0.0));
+                let just_filled = self.last_fill.as_ref().is_some_and(|(h, u, at)| {
+                    *h == host && *u == pending.username && at.elapsed() <= fill_window
+                });
+                if offer == Offer::Change && just_filled {
+                    // The filled password was replaced by another one: a typo until the page
+                    // shows otherwise (see `release_held`).
+                    self.held = Some(Held { view, pending, at: Instant::now() });
                     return;
                 }
-                self.prompt.state =
-                    Some(PromptState::Save(PendingSave { url: url.to_owned(), username, password }));
+                self.prompt.state = Some(PromptState::Save(pending));
                 self.build_prompt(ui, config);
             }
+        }
+    }
+
+    /// A held submit whose page did not bring the sign-in form back in time worked: offer it.
+    fn release_held(&mut self, ui: &mut Ui, config: &Config) {
+        let wait = Duration::from_secs_f32(config.passwords.login_check_seconds.max(0.0));
+        if self.held.as_ref().is_some_and(|h| h.at.elapsed() >= wait)
+            && let Some(held) = self.held.take()
+        {
+            if self.open || matches!(self.prompt.state, Some(PromptState::Save(_))) {
+                return;
+            }
+            self.prompt.state = Some(PromptState::Save(held.pending));
+            self.build_prompt(ui, config);
         }
     }
 
@@ -2025,7 +2146,7 @@ impl Passwords {
                         .vault
                         .as_ref()
                         .is_some_and(|v| v.login_for(&pending.url, &pending.username).is_some());
-                let title = if update { "Update saved password?" } else { "Save password?" };
+                let title = if update { "Change Password?" } else { "Save password?" };
                 ui.add_label(titles, title, TextStyle::BodyEmphasis, Style::default());
                 let host = site::display_host(&pending.url);
                 let who = if pending.username.is_empty() {
@@ -2049,6 +2170,9 @@ impl Passwords {
 
     /// Hides the prompt (another tab was selected, or the page navigated away).
     pub fn hide_prompt(&mut self, view: Option<ViewId>, keep_save: bool) {
+        if !keep_save {
+            self.held = None;
+        }
         let hide = match &self.prompt.state {
             Some(PromptState::Fill { view: v, .. } | PromptState::Unlock { view: v, .. }) => {
                 view.is_none_or(|view| view == *v)
@@ -2081,6 +2205,7 @@ impl Passwords {
             ui.set_opacity(self.alert_layer, k.min(1.0));
             scale_in(ui, self.alert, k);
         }
+        self.release_held(ui, config);
         self.prompt.animate(ui, config, dt, address);
     }
 
@@ -2391,5 +2516,34 @@ mod tests {
                 assert!(!asks_every_time(kind, secret));
             }
         }
+    }
+
+    #[test]
+    fn offer_decisions() {
+        // Same credentials as saved: nothing. New login: save. Other password: change.
+        assert_eq!(offer_for(Some("pw"), "pw", false), None);
+        assert_eq!(offer_for(None, "pw", false), Some(Offer::Save));
+        assert_eq!(offer_for(Some("old"), "new", false), Some(Offer::Change));
+        // A declined exact credential stays quiet, for a save and for a change alike.
+        assert_eq!(offer_for(None, "pw", true), None);
+        assert_eq!(offer_for(Some("old"), "new", true), None);
+    }
+
+    #[test]
+    fn decline_is_remembered_for_the_exact_credential_only() {
+        let (t0, memory) = (Instant::now(), Duration::from_secs(60));
+        let mut d = Declines::default();
+        d.add("a.com", "me", "wrong", t0);
+        assert!(d.contains("a.com", "me", "wrong", t0, memory));
+        // The correct password after the typo, another user, another site: all prompt again.
+        assert!(!d.contains("a.com", "me", "right", t0, memory));
+        assert!(!d.contains("a.com", "you", "wrong", t0, memory));
+        assert!(!d.contains("b.com", "me", "wrong", t0, memory));
+        assert_eq!(
+            offer_for(None, "right", d.contains("a.com", "me", "right", t0, memory)),
+            Some(Offer::Save)
+        );
+        // Short-lived.
+        assert!(!d.contains("a.com", "me", "wrong", t0 + Duration::from_secs(61), memory));
     }
 }
