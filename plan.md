@@ -319,7 +319,8 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. â
   physics (lens follows the pointer, rows slide aside), between normal and private tabs
   (`tabs.drag_threshold`).
 - [x] Tab bar widths: all tabs equally wide (`layout.tab_width`, shrinking equally to
-  `layout.tab_min_width`, then overflowing), springing to new widths; hairline separators in
+  `layout.tab_min_width`, below which titles hide and tabs shrink on to icon-only squares of
+  `layout.tab_icon_width`, then overflowing; `distribute_tab_widths`), springing to new widths; hairline separators in
   the separate tab bar (hidden beside the open and the hovered tab).
 - [x] Tab context menu (right click on tab bar, compact segments, sidebar rows; glass menu
   flowing out of the tab, shortcuts from the keymap); pinned tabs (first, favicon only,

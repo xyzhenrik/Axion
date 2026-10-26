@@ -50,9 +50,6 @@ const PANEL_PROGRESS_ROOM: f32 = 12.0;
 const TAB_GAP: f32 = 4.0;
 const TAB_STRIP_PADDING: f32 = 4.0;
 const TAB_CAPSULE_PADDING: f32 = 5.0;
-/// Tabs never get narrower than this, even when the preferred width doesn't fit (then they
-/// overflow the bar).
-const TAB_HARD_MIN: f32 = 56.0;
 /// The hairline between two tabs of the separate tab bar.
 const TAB_SEPARATOR_HEIGHT: f32 = 18.0;
 /// Its strength (label colour at this opacity, so it reads on light and dark chrome).
@@ -489,8 +486,16 @@ struct TabWidths {
     ready: bool,
     applied: f32,
     preferred: f32,
+    /// Below this width the tabs show their favicon only.
     min: f32,
+    /// The narrowest a tab gets (favicon only).
+    floor: f32,
+    /// Configured width of a pinned tab (0: a square as high as the row).
     pinned: f32,
+    /// What hides when the tabs are icon-only: titles and close buttons of the unpinned tabs.
+    hideable: Vec<NodeId>,
+    /// The tabs currently show their titles.
+    labels_shown: bool,
     reduce_motion: bool,
     /// The separate tab bar's tabs: (segment, the hairline before it, active).
     separators: Vec<(NodeId, Option<NodeId>, bool)>,
@@ -525,13 +530,41 @@ struct BookmarkRow {
 }
 
 /// The width each of `count` equally wide tabs gets in `available` px (gaps between them
-/// included): `preferred`, or less when they don't fit, but never under `min`.
-pub fn equal_tab_width(available: f32, count: usize, gap: f32, preferred: f32, min: f32) -> f32 {
+/// included): `preferred`, or less when they don't fit, but never under `floor`.
+pub fn equal_tab_width(available: f32, count: usize, gap: f32, preferred: f32, floor: f32) -> f32 {
     if count == 0 {
-        return preferred.max(min);
+        return preferred.max(floor);
     }
     let share = (available - gap * (count - 1) as f32) / count as f32;
-    share.min(preferred).max(min)
+    share.min(preferred).max(floor)
+}
+
+/// The tabs' sizes in a row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabSizes {
+    /// The one width every unpinned tab gets.
+    pub flexible: f32,
+    /// The one width every pinned tab gets.
+    pub pinned: f32,
+}
+
+/// Distributes `span` px (a row's inner width, minus the compact bar's address segment) over
+/// `pinned` pinned and `flexible` unpinned tabs `gap` apart. Pinned tabs keep `pinned_width`;
+/// every unpinned one gets the same width: `preferred`, shrinking together when the rest
+/// doesn't fit, down to `floor`. The active tab (the compact bar's address segment) is not
+/// part of `flexible`.
+pub fn distribute_tab_widths(
+    span: f32,
+    pinned: usize,
+    flexible: usize,
+    gap: f32,
+    preferred: f32,
+    floor: f32,
+    pinned_width: f32,
+) -> TabSizes {
+    let taken = pinned as f32 * (pinned_width + gap);
+    let flexible = equal_tab_width(span - taken, flexible, gap, preferred, floor);
+    TabSizes { flexible, pinned: pinned_width }
 }
 
 /// How many of the bookmarks bar's items (natural `widths`, `gap` apart) fit into `available`
@@ -1337,7 +1370,10 @@ impl Chrome {
                 applied: -1.0,
                 preferred: layout.tab_width,
                 min: layout.tab_min_width,
+                floor: layout.tab_icon_width,
                 pinned: layout.pinned_tab_width,
+                hideable: Vec::new(),
+                labels_shown: true,
                 reduce_motion: false,
                 separators: Vec::new(),
                 separator_hover: None,
@@ -1956,6 +1992,7 @@ impl Chrome {
         let widths = &mut self.tab_widths;
         widths.preferred = l.tab_width;
         widths.min = l.tab_min_width;
+        widths.floor = l.tab_icon_width.min(l.tab_min_width);
         widths.pinned = l.pinned_tab_width;
         widths.reduce_motion = config.glass.reduce_motion;
         widths.width.spring = Spring::new(
@@ -2408,6 +2445,9 @@ impl Chrome {
         self.items.clear();
         self.hovered_row = None;
         self.tab_widths.pills.clear();
+        self.tab_widths.hideable.clear();
+        self.tab_widths.labels_shown = true;
+        self.tab_widths.applied = -1.0;
         self.tab_widths.separators.clear();
         self.tab_widths.separator_hover = None;
         let narrow = self.mode == Mode::Narrow;
@@ -2437,7 +2477,8 @@ impl Chrome {
             let height = if separate { TAB_STRIP_HEIGHT - 2.0 * TAB_STRIP_PADDING } else { SEGMENT_HEIGHT };
             // Every tab is equally wide (see `animate_tab_widths`); pinned ones are just their
             // favicon.
-            let width = if tab.pinned { self.tab_widths.pinned } else { self.tab_widths.width.value };
+            let width =
+                if tab.pinned { self.tab_widths.pinned_side(height) } else { self.tab_widths.width.value };
             let pill = ui.add(
                 parent,
                 Widget::container()
@@ -2448,7 +2489,7 @@ impl Chrome {
                 Style {
                     flex_grow: 0.0,
                     flex_shrink: if tab.pinned { 0.0 } else { 1.0 },
-                    min_size: Size { width: length(TAB_HARD_MIN.min(width)), height: auto() },
+                    min_size: Size { width: length(self.tab_widths.floor.min(width)), height: auto() },
                     size: Size { width: length(width), height: length(height) },
                     padding: if tab.pinned {
                         padding(0.0, 0.0, 0.0, 0.0)
@@ -2464,12 +2505,14 @@ impl Chrome {
                 },
             );
             if active && separate && !tab.pinned {
-                close_dot(ui, pill, ChromeAction::CloseTab(i), 24.0);
+                let close = close_dot(ui, pill, ChromeAction::CloseTab(i), 24.0);
+                self.tab_widths.hideable.push(close);
             }
             favicon_node(ui, pill, &tab.url, 16.0, favicons);
             if !tab.pinned {
                 let style = if active { TextStyle::BodyEmphasis } else { TextStyle::Callout };
-                ui.add_label(pill, &tab.label(), style, shrinking_label());
+                let label = ui.add_label(pill, &tab.label(), style, shrinking_label());
+                self.tab_widths.hideable.push(label);
             }
             if separate {
                 // A hairline before every tab but the first (shown by `update_separators`).
@@ -2783,6 +2826,13 @@ impl BookmarkRow {
     }
 }
 
+impl TabWidths {
+    /// A pinned tab's width: the configured one, or a square as high as the tab row.
+    fn pinned_side(&self, row_height: f32) -> f32 {
+        if self.pinned > 0.0 { self.pinned } else { row_height }
+    }
+}
+
 impl Chrome {
     /// Springs the tabs' shared width towards what fits now (all tabs equally wide: the
     /// preferred width, or less when they don't fit), and gives it to every tab segment.
@@ -2799,11 +2849,20 @@ impl Chrome {
         if outer <= 1.0 || !ui.is_visible(container) {
             return;
         }
+        let height = if separate { TAB_STRIP_HEIGHT - 2.0 * TAB_STRIP_PADDING } else { SEGMENT_HEIGHT };
         let widths = &mut self.tab_widths;
         let pinned = widths.pills.iter().filter(|(_, pinned)| *pinned).count();
         let flexible = widths.pills.len() - pinned;
-        let available = outer - 2.0 * inner_padding - reserved - pinned as f32 * (widths.pinned + TAB_GAP);
-        let target = equal_tab_width(available, flexible, TAB_GAP, widths.preferred, widths.min);
+        let sizes = distribute_tab_widths(
+            outer - 2.0 * inner_padding - reserved,
+            pinned,
+            flexible,
+            TAB_GAP,
+            widths.preferred,
+            widths.floor,
+            widths.pinned_side(height),
+        );
+        let target = sizes.flexible;
         widths.width.target = target;
         if !widths.ready || widths.reduce_motion {
             widths.width.snap(target);
@@ -2816,7 +2875,7 @@ impl Chrome {
             // As wide as its tabs (and their gaps), centred in its span.
             let count = widths.pills.len();
             let gaps = count.saturating_sub(1) as f32 * TAB_GAP;
-            let tabs = flexible as f32 * width + pinned as f32 * widths.pinned + gaps;
+            let tabs = flexible as f32 * width + pinned as f32 * sizes.pinned + gaps;
             let (left, span) = widths.strip_area;
             let strip_width = (tabs + 2.0 * inner_padding).min(span);
             let placed = (left + (span - strip_width) / 2.0, strip_width);
@@ -2830,17 +2889,33 @@ impl Chrome {
                 ui.set_style(self.tab_strip, style);
             }
         }
-        if (width - widths.applied).abs() < 0.05 {
+        // Narrower than `tab_min_width`: favicon only, centred.
+        let labels = width >= widths.min - 0.5;
+        if (width - widths.applied).abs() < 0.05 && labels == widths.labels_shown {
             return;
         }
         widths.applied = width;
-        for &(pill, pinned) in &widths.pills {
+        widths.labels_shown = labels;
+        let floor = widths.floor;
+        let pills = widths.pills.clone();
+        let hideable = widths.hideable.clone();
+        for &node in &hideable {
+            ui.set_visible(node, labels);
+        }
+        for (pill, pinned) in pills {
             if pinned {
                 continue;
             }
             let mut style = ui.style(pill);
             style.size.width = length(width);
-            style.min_size.width = length(TAB_HARD_MIN.min(width));
+            style.min_size.width = length(floor.min(width));
+            if !labels {
+                style.padding = padding(0.0, 0.0, 0.0, 0.0);
+                style.justify_content = JustifyContent::CENTER;
+            } else if !separate {
+                style.padding = padding(14.0, 14.0, 0.0, 0.0);
+                style.justify_content = JustifyContent::START;
+            }
             ui.set_style(pill, style);
         }
     }
@@ -3054,9 +3129,29 @@ mod tests {
         // Many: they shrink equally to fill the row …
         let w = equal_tab_width(1000.0, 8, 4.0, 220.0, 72.0);
         assert!((w * 8.0 + 7.0 * 4.0 - 1000.0).abs() < 0.01, "{w}");
-        // … down to the minimum.
+        // … down to the floor.
         assert_eq!(equal_tab_width(1000.0, 40, 4.0, 220.0, 72.0), 72.0);
         assert_eq!(equal_tab_width(1000.0, 0, 4.0, 220.0, 72.0), 220.0);
+    }
+
+    #[test]
+    fn distribution_keeps_pinned_square_and_flexible_equal() {
+        // Two pinned (36 px) and three unpinned tabs in a roomy row: preferred width, pinned fixed.
+        let s = distribute_tab_widths(2000.0, 2, 3, 4.0, 220.0, 36.0, 36.0);
+        assert_eq!(s, TabSizes { flexible: 220.0, pinned: 36.0 });
+        // Tight: the unpinned ones shrink together to fill what the pinned ones leave.
+        let s = distribute_tab_widths(500.0, 2, 4, 4.0, 220.0, 36.0, 36.0);
+        let left = 500.0 - 2.0 * (36.0 + 4.0);
+        assert!((s.flexible * 4.0 + 3.0 * 4.0 - left).abs() < 0.01, "{s:?}");
+        assert_eq!(s.pinned, 36.0);
+        // Never under the icon-only floor.
+        assert_eq!(distribute_tab_widths(100.0, 1, 11, 4.0, 220.0, 36.0, 36.0).flexible, 36.0);
+        // The active tab is not in the count: one fewer flexible tab means wider ones.
+        let with = distribute_tab_widths(600.0, 0, 5, 4.0, 220.0, 36.0, 36.0).flexible;
+        let without = distribute_tab_widths(600.0, 0, 4, 4.0, 220.0, 36.0, 36.0).flexible;
+        assert!(without > with);
+        // No unpinned tabs at all: nothing to size.
+        assert_eq!(distribute_tab_widths(600.0, 3, 0, 4.0, 220.0, 36.0, 36.0).flexible, 220.0);
     }
 
     #[test]
