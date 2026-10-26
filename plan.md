@@ -748,6 +748,21 @@ Windows/macOS, touchscreen-first mode.
 - 2026-10-26: Favicons are cached **per colour scheme** (`<host>.png`, `<host>.dark.png`, with
   the source URL in `.url`); the engine reports icon links with their `media` queries
   (`EngineEvent::PageMetaChanged`), and a scheme switch re-resolves open pages' icons.
+- 2026-10-26: **Favicons readable in both appearances** (user: dark/light icons broken again).
+  Root cause: a single-variant icon made for light pages (GitHub's black octocat) is invisible on
+  dark chrome; the per-scheme cache only helps sites that ship a dark variant. Now (a) the page
+  meta script also reports each icon link's `type`, and links are ranked by scheme, then SVG /
+  `sizes` >= 32 px; (b) SVGs with `prefers-color-scheme` rules inside are fetched as text on a
+  thread (`svg_icons.rs`), their media queries decided for the chrome (`favicon_contrast::
+  svg_for_scheme`) and Chromium rasterises the rewritten `data:` copy (`Favicons::alias` ties it
+  back); (c) `appearance.favicon_contrast` = `off` | `backing` | `invert` (default): an icon
+  whose pixels mostly have < 3:1 contrast against the chrome ground (saturated colours are
+  excused) is inverted when it is a single-colour glyph, else put on a light/dark rounded tile
+  with a hairline. The cache keeps the site's own pixels; the adapted texture is per host and
+  scheme, dropped when the theme or the setting changes. The start page's `/api/favicon` applies
+  the same adaptation. Verified with local test pages (media variants, black/white PNG, adaptive
+  SVG, colourful) in dark/light, liquid/flat, compact/separate, sidebar, overview and a live
+  theme flip. No Settings row yet (config key only).
 - 2026-10-26 (user feedback, small UI decisions):
   - Chromium runs with `--password-store=basic`: it must never open the desktop keyring
     (KWallet prompts); Axion's own vault holds passwords.
