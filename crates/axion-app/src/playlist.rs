@@ -414,6 +414,46 @@ pub fn sleep_label(minutes: u32) -> String {
     }
 }
 
+/// What to do with a tab opened for a saved video once its player is ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Then {
+    Nothing,
+    /// Axion's fullscreen player.
+    Fullscreen,
+    PictureInPicture,
+}
+
+/// A tab opened for a saved video, waiting for its player.
+#[derive(Clone, Copy, Debug)]
+pub struct Pending {
+    pub position: f64,
+    pub then: Then,
+}
+
+/// What a row's menu, the lists menu, the speed menu, the sleep timer and the page menu's
+/// Playlist entries do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Command {
+    Play(i64),
+    Download(i64),
+    RemoveDownload(i64),
+    OpenPage(i64),
+    Reveal(i64),
+    Remove(i64),
+    /// Speed `playback_speeds[i]`.
+    Speed(usize),
+    SleepOff,
+    SleepEnd,
+    /// The timer `sleep_timer_minutes[i]`.
+    SleepAfter(usize),
+    /// Switch to the list at this index of the lists menu.
+    List(usize),
+    /// Add the page's video (the page menu).
+    Add,
+    /// Open the Playlist page (the page menu).
+    Show,
+}
+
 /// The video of the Playlist page: its view (not a tab) and what the bridge reports.
 pub struct Playback {
     pub item: i64,
@@ -426,7 +466,10 @@ pub struct Playback {
     pub opened: Instant,
     /// The thumbnail was taken from the picture (or didn't need to be).
     pub thumb_done: bool,
-    pub takeover_sent: bool,
+    /// A saved copy plays (a media document), so its picture is the whole view.
+    pub local: bool,
+    /// The seek, the speed and the autoplay were sent.
+    pub started: bool,
     /// When the position was last saved.
     pub saved_at: Instant,
     pub ended_handled: bool,
@@ -469,10 +512,12 @@ pub struct Playlist {
     pub shuffle: bool,
     pub repeat: Repeat,
     pub sleep: Sleep,
+    /// The speed of the Playlist page's player.
+    pub rate: f64,
+    /// Tabs opened for a saved video, waiting for their player.
+    pub pending: HashMap<ViewId, Pending>,
     pub editing: bool,
     pub selected: HashSet<i64>,
-    /// Thumbnails whose file couldn't be read, not tried again.
-    pub bad_thumbs: HashSet<i64>,
     rng: u64,
     /// `<profile>/playlist/thumbs`.
     pub thumb_dir: PathBuf,
@@ -491,9 +536,10 @@ impl Playlist {
             shuffle: false,
             repeat: Repeat::Off,
             sleep: Sleep::Off,
+            rate: 1.0,
+            pending: HashMap::new(),
             editing: false,
             selected: HashSet::new(),
-            bad_thumbs: HashSet::new(),
             rng: 0x9E37_79B9_7F4A_7C15
                 ^ std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -518,10 +564,6 @@ impl Playlist {
 
     pub fn item(&self, id: i64) -> Option<&PlaylistItem> {
         self.items.iter().find(|i| i.id == id)
-    }
-
-    pub fn index_of(&self, id: i64) -> Option<usize> {
-        self.items.iter().position(|i| i.id == id)
     }
 
     /// The saved item a page address belongs to: the page of a streamed video, or the file of

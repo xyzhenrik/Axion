@@ -117,7 +117,15 @@ impl Downloads {
 
     /// A download changed. Finished ones go to the store (and open, if they're safe and the
     /// setting says so).
-    pub fn update(&mut self, mut info: DownloadInfo, store: Option<&Store>, config: &Config, now: i64) {
+    /// `open_when_done` is false for downloads someone else keeps (the Playlist's).
+    pub fn update(
+        &mut self,
+        mut info: DownloadInfo,
+        store: Option<&Store>,
+        config: &Config,
+        now: i64,
+        open_when_done: bool,
+    ) {
         // The first update comes before the name is decided.
         if info.file_name.is_empty() {
             let path = info.url.split(['?', '#']).next().unwrap_or_default();
@@ -164,7 +172,11 @@ impl Downloads {
                 tracing::error!("saving a download failed: {e}");
             }
         }
-        if info.state == DownloadState::Complete && config.downloads.open_safe_files && is_safe(&info.path) {
+        if open_when_done
+            && info.state == DownloadState::Complete
+            && config.downloads.open_safe_files
+            && is_safe(&info.path)
+        {
             open_path(&info.path);
         }
     }

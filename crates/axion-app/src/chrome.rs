@@ -113,6 +113,10 @@ pub enum ChromeAction {
     ClearPanel,
     /// The sidebar's Downloads row.
     Downloads,
+    /// The sidebar's Playlist row: opens the Playlist page.
+    Playlist,
+    /// The Playlist button in the address field: Add to Playlist (or what is saved).
+    PlaylistButton,
     /// The toolbar's download button (opens the downloads popover).
     DownloadsButton,
     /// The `k`th trailing button of panel entry `i` (a download's pause, open …).
@@ -183,7 +187,7 @@ const GROUP_BASE: u32 = 11_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 29] = [
+    const SIMPLE: [ChromeAction; 31] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -213,6 +217,8 @@ impl ChromeAction {
         ChromeAction::CollapsePrivate,
         ChromeAction::BookmarksOverflow,
         ChromeAction::Home,
+        ChromeAction::Playlist,
+        ChromeAction::PlaylistButton,
     ];
 
     pub fn id(self) -> ActionId {
@@ -439,6 +445,13 @@ pub struct Chrome {
     address_icon_override: Option<Option<String>>,
     audio_button: NodeId,
     audio_icon: NodeId,
+    /// The Playlist button in the address field, and its glyph.
+    playlist_button: NodeId,
+    playlist_icon: NodeId,
+    /// The toolbar's right group (Share, New Tab, Overview …).
+    actions: NodeId,
+    /// The Playlist page is up: the toolbar shows only the sidebar button.
+    playlist_page: bool,
     progress: NodeId,
     /// Inactive tab segments, rebuilt by `sync_tabs`.
     pills: Vec<NodeId>,
@@ -826,6 +839,7 @@ impl Chrome {
         sidebar_row(ui, saved_list, ChromeAction::Bookmarks, Icon::Book, "Bookmarks", None);
         sidebar_row(ui, saved_list, ChromeAction::ReadingList, Icon::Glasses, "Reading List", None);
         sidebar_row(ui, saved_list, ChromeAction::History, Icon::History, "History", None);
+        sidebar_row(ui, saved_list, ChromeAction::Playlist, Icon::Playlist, "Playlist", None);
         sidebar_row(ui, saved_list, ChromeAction::Downloads, Icon::Download, "Downloads", None);
         sidebar_row(ui, saved_list, ChromeAction::Passwords, Icon::Key, "Passwords", None);
 
@@ -1085,6 +1099,16 @@ impl Chrome {
         );
         tip(ui, audio_button, "Mute or Unmute Tab", None);
         ui.set_visible(audio_button, false);
+        // Pages with a video: save it for later (Playlist).
+        let (playlist_button, playlist_icon) = icon_button(
+            ui,
+            address,
+            ChromeAction::PlaylistButton,
+            Widget::icon(Icon::PlaylistAdd, 18.0),
+            30.0,
+        );
+        tip(ui, playlist_button, "Add to Playlist", Some(Action::PlaylistAdd));
+        ui.set_visible(playlist_button, false);
         let address_label = ui.add_label(address, "", TextStyle::BodyEmphasis, shrinking_label());
         ui.set_label_align(address_label, Align::Start);
         let address_field = ui.add_text_field(
@@ -1294,6 +1318,10 @@ impl Chrome {
             address_icon_override: None,
             audio_button,
             audio_icon,
+            playlist_button,
+            playlist_icon,
+            actions,
+            playlist_page: false,
             progress,
             pills: Vec::new(),
             overview,
@@ -1978,7 +2006,10 @@ impl Chrome {
             w.radius = l.sidebar_corner_radius;
         }
 
-        let narrow = self.mode == Mode::Narrow || self.locked;
+        // Locked private browsing and the Playlist page show no address bar, tab row or page
+        // buttons: only the sidebar's button remains.
+        let bare = self.locked || self.playlist_page;
+        let narrow = self.mode == Mode::Narrow || bare;
         // With the sidebar open, its own header holds the toggle.
         ui.set_visible(self.bar_sidebar_button, !show_sidebar);
         ui.set_visible(self.forward, !narrow);
@@ -1989,14 +2020,16 @@ impl Chrome {
         ui.set_visible(self.tab_count, narrow);
         // With the sidebar open (its header holds the toggle) a locked bar's left group would
         // be an empty sliver.
-        ui.set_visible(self.nav, !(self.locked && show_sidebar));
-        if self.locked {
+        ui.set_visible(self.nav, !(bare && show_sidebar));
+        ui.set_visible(self.actions, !self.playlist_page);
+        if bare {
             // Locked private browsing shows no address bar, tab row or page buttons.
             for &node in &self.lock_hidden {
                 ui.set_visible(node, false);
             }
             ui.set_visible(self.tab_strip, false);
             ui.set_visible(self.bookmarks.bar, false);
+            ui.set_visible(self.downloads, false);
         } else {
             // Unlocked again (or never locked): the page buttons the lock hid come back.
             for node in [self.back, self.share, self.new_tab] {
@@ -2114,6 +2147,46 @@ impl Chrome {
     }
 
     /// The address field's speaker: shown while the active tab plays sound or is muted.
+    /// The Playlist page opens or closes: the toolbar, address and tab row give way (or come
+    /// back).
+    pub fn set_playlist_page(&mut self, ui: &mut Ui, config: &Config, on: bool) {
+        if self.playlist_page == on {
+            return;
+        }
+        self.playlist_page = on;
+        self.apply_layout(ui, config, self.window);
+    }
+
+    /// The Playlist button of the address field: hidden (`None`), or add (`Some(false)`) /
+    /// already saved (`Some(true)`).
+    pub fn set_playlist_button(&self, ui: &mut Ui, state: Option<bool>) {
+        ui.set_visible(self.playlist_button, state.is_some());
+        if let Some(added) = state {
+            ui.set_icon(self.playlist_icon, if added { Icon::Playlist } else { Icon::PlaylistAdd });
+            if let Some(w) = ui.widget_mut(self.playlist_icon) {
+                w.set_paint(if added { Paint::Accent } else { Paint::Label });
+            }
+        }
+    }
+
+    /// The Playlist button (logical px), for anchoring its popover.
+    pub fn playlist_button_frame(&self, ui: &Ui) -> Frame {
+        ui.frame(self.playlist_button)
+    }
+
+    /// The card the Playlist page fills: the whole window beside a docked sidebar, with the
+    /// page card's margins.
+    pub fn playlist_rect(&self, config: &Config, window: Vec2) -> Frame {
+        let margin = config.layout.page_margin;
+        let origin = Vec2::new(self.docked_sidebar_width(config).max(0.0) + margin, margin);
+        Frame { origin, size: (window - origin - Vec2::splat(margin)).max(Vec2::ONE) }
+    }
+
+    /// The sidebar's button when the sidebar is closed: the Playlist page keeps clear of it.
+    pub fn sidebar_button_room(&self) -> f32 {
+        BUTTON + 2.0 * self.bar_top.max(8.0)
+    }
+
     pub fn set_audio(&self, ui: &mut Ui, playing: bool, muted: bool) {
         ui.set_visible(self.audio_button, (playing || muted) && !self.locked);
         ui.set_icon(self.audio_icon, if muted { Icon::Muted } else { Icon::Volume });

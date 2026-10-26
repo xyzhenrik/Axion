@@ -68,11 +68,13 @@ pub enum Control {
     /// Close: leave fullscreen.
     Fullscreen,
     PictureInPicture,
+    /// Save the playing video to the Playlist.
+    Playlist,
     /// An entry of the speed menu (index into `media.playback_speeds`).
     SpeedChoice(usize),
 }
 
-const CONTROLS: [Control; 8] = [
+const CONTROLS: [Control; 9] = [
     Control::PlayPause,
     Control::SkipBack,
     Control::SkipForward,
@@ -81,6 +83,7 @@ const CONTROLS: [Control; 8] = [
     Control::Captions,
     Control::Fullscreen,
     Control::PictureInPicture,
+    Control::Playlist,
 ];
 
 impl Control {
@@ -120,6 +123,8 @@ pub struct Context<'a> {
 pub enum Outcome {
     Command(ViewId, Command),
     PictureInPicture(ViewId, Player),
+    /// Add this video to the Playlist.
+    AddToPlaylist(ViewId, Player),
     Nothing,
 }
 
@@ -127,6 +132,8 @@ pub struct PlayerOverlay {
     root: NodeId,
     top_left: NodeId,
     first_icon: NodeId,
+    playlist_button: NodeId,
+    playlist_icon: NodeId,
     volume_capsule: NodeId,
     volume: NodeId,
     mute_icon: NodeId,
@@ -248,6 +255,9 @@ impl PlayerOverlay {
         let (_, first_icon) =
             circle(ui, top_left, Control::Fullscreen, Icon::Fullscreen, FULLSCREEN.corner, None);
         circle(ui, top_left, Control::PictureInPicture, Icon::PictureInPicture, FULLSCREEN.corner, None);
+        let (playlist_button, playlist_icon) =
+            circle(ui, top_left, Control::Playlist, Icon::PlaylistAdd, FULLSCREEN.corner, None);
+        ui.set_visible(playlist_button, false);
 
         // Top right: volume.
         let volume_capsule = ui.add(
@@ -355,6 +365,8 @@ impl PlayerOverlay {
             root,
             top_left,
             first_icon,
+            playlist_button,
+            playlist_icon,
             volume_capsule,
             volume,
             mute_icon,
@@ -385,6 +397,19 @@ impl PlayerOverlay {
 
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// The video the controls are about right now.
+    pub fn target(&self) -> Option<(ViewId, &Player)> {
+        self.target.as_ref().map(|(view, player)| (*view, player))
+    }
+
+    /// The Playlist button: hidden (`None`; private tabs), add, or already saved.
+    pub fn set_playlist_button(&self, ui: &mut Ui, state: Option<bool>) {
+        ui.set_visible(self.playlist_button, state.is_some());
+        if let Some(added) = state {
+            ui.set_icon(self.playlist_icon, if added { Icon::Check } else { Icon::PlaylistAdd });
+        }
     }
 
     /// The scrubber node, whose value changes seek.
@@ -641,6 +666,12 @@ impl PlayerOverlay {
                     None => Outcome::Nothing,
                 };
             }
+            Control::Playlist => {
+                return match &self.target {
+                    Some((view, player)) => Outcome::AddToPlaylist(*view, player.clone()),
+                    None => Outcome::Nothing,
+                };
+            }
             Control::SpeedChoice(_) => self.close_speed_menu(ui),
             _ => {}
         }
@@ -669,7 +700,7 @@ impl PlayerOverlay {
             Control::Captions => Action::Caption(next_caption(player)),
             Control::Fullscreen => Action::Fullscreen(self.mode != Mode::Fullscreen),
             Control::SpeedChoice(i) => Action::Rate(f64::from(*config.media.playback_speeds.get(i)?)),
-            Control::PictureInPicture => return None,
+            Control::PictureInPicture | Control::Playlist => return None,
         };
         Some((*view, Command::new(&player.id, action)))
     }

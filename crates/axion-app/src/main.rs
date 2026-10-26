@@ -39,6 +39,8 @@ mod pip;
 mod platform;
 mod player;
 mod playlist;
+mod playlist_page;
+mod playlist_popover;
 mod popover;
 mod private;
 mod settings;

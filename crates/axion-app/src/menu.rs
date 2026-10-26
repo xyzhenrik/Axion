@@ -69,6 +69,8 @@ pub enum MenuAction {
     Tab(crate::context_menu::TabCommand),
     /// A bookmark's context menu, or the bookmarks bar's overflow menu.
     Bookmark(crate::context_menu::BookmarkCommand),
+    /// The Playlist page's menus and the page menu's Playlist rows.
+    Playlist(crate::playlist::Command),
 }
 
 /// Where a menu opens relative to its button.
