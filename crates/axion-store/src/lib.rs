@@ -186,14 +186,17 @@ pub struct TopSiteOverride {
     pub hidden: bool,
 }
 
-/// A site among the most visited, ranked by frecency.
+/// A domain among the most visited: every host and page of it counts as one site.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopSite {
-    /// Lowercase, without `www.`.
+    /// The registrable domain (`github.com` for `gist.github.com/x`), lowercase, no `www.`.
     pub host: String,
-    /// The site's most visited page.
+    /// The domain's root page, in the scheme of its most visited variant.
     pub url: String,
+    /// The domain name again (page titles make poor tile names).
     pub title: String,
+    /// Visits within the window, across all of the domain's pages.
+    pub visits: i64,
 }
 
 /// A finished download in the download list.
@@ -297,7 +300,41 @@ impl Store {
             conn.pragma_update(None, "user_version", i as i64 + 1)?;
             tracing::info!(version = i + 1, "store migrated");
         }
-        Ok(Self { conn })
+        let store = Self { conn };
+        store.migrate_top_sites_to_domains()?;
+        Ok(store)
+    }
+
+    /// Older versions kept pins and removals per host; they belong to the host's domain now.
+    fn migrate_top_sites_to_domains(&self) -> Result<()> {
+        for o in self.top_site_overrides()? {
+            let key = top_site_key(&o.host);
+            if key == o.host {
+                continue;
+            }
+            self.conn.execute("DELETE FROM top_sites WHERE host = ?1", [&o.host])?;
+            let taken: Option<bool> = self
+                .conn
+                .query_row("SELECT hidden FROM top_sites WHERE host = ?1", [&key], |r| r.get(0))
+                .optional()?;
+            match taken {
+                // Removed wins over pinned; an existing pin is kept.
+                Some(false) if o.hidden => {
+                    self.conn.execute(
+                        "UPDATE top_sites SET hidden = 1, url = '', title = '' WHERE host = ?1",
+                        [&key],
+                    )?;
+                }
+                Some(_) => {}
+                None => {
+                    self.conn.execute(
+                        "INSERT INTO top_sites (host, url, title, position, hidden) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![key, o.url, o.title, o.position, o.hidden],
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 
     // ---- history ----
@@ -723,42 +760,53 @@ impl Store {
 
     // ---- top sites ----
 
-    /// The most visited sites (one entry per host, its most visited page), best first by
-    /// frecency summed over the host's pages. Only http(s) pages count.
-    pub fn top_sites(&self, limit: usize, now: i64) -> Result<Vec<TopSite>> {
+    /// The most visited domains, best first: visits within the last `window_days` days summed
+    /// over every page and host of the registrable domain, newer visits weighing a little more.
+    /// Only http(s) pages count.
+    pub fn top_sites(&self, limit: usize, now: i64, window_days: u32) -> Result<Vec<TopSite>> {
+        let since = now - i64::from(window_days.max(1)) * DAY;
         let mut stmt = self.conn.prepare_cached(
-            "SELECT url, title, visit_count * CASE
-                    WHEN ?1 - last_visit < 4 * ?2 THEN 100
-                    WHEN ?1 - last_visit < 14 * ?2 THEN 70
-                    WHEN ?1 - last_visit < 31 * ?2 THEN 50
-                    WHEN ?1 - last_visit < 90 * ?2 THEN 30
-                    ELSE 10 END AS score, visit_count
-             FROM urls WHERE url LIKE 'http%' ORDER BY score DESC LIMIT 2000",
+            "SELECT u.url, COUNT(*), SUM(CASE WHEN ?2 - v.at < 7 * ?3 THEN 100
+                                              WHEN ?2 - v.at < 30 * ?3 THEN 85 ELSE 70 END)
+             FROM visits v JOIN urls u ON u.id = v.url_id
+             WHERE v.at >= ?1 AND u.url LIKE 'http%' GROUP BY u.id",
         )?;
-        let rows = stmt.query_map(params![now, DAY], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
+        let rows = stmt.query_map(params![since, now, DAY], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
         })?;
-        // host → (summed score, best page's visits, url, title, first seen)
-        let mut sites: Vec<(String, i64, i64, String, String)> = Vec::new();
+        #[derive(Default)]
+        struct Domain {
+            visits: i64,
+            score: i64,
+            /// "scheme://authority" of each variant, with its visits.
+            variants: Vec<(String, i64)>,
+        }
+        let mut domains: std::collections::HashMap<String, Domain> = std::collections::HashMap::new();
         for row in rows {
-            let (url, title, score, visits) = row?;
-            let Some(host) = site_host(&url) else { continue };
-            match sites.iter_mut().find(|s| s.0 == host) {
-                Some(site) => {
-                    site.1 += score;
-                    if visits > site.2 {
-                        (site.2, site.3, site.4) = (visits, url, title);
-                    }
-                }
-                None => sites.push((host, score, visits, url, title)),
+            let (url, visits, score) = row?;
+            let Some(domain) = registrable_domain(&url) else { continue };
+            let Some((scheme, rest)) = url.split_once("://") else { continue };
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            let authority = authority.rsplit('@').next().unwrap_or_default();
+            let variant = format!("{}://{}", scheme.to_ascii_lowercase(), authority.to_ascii_lowercase());
+            let d = domains.entry(domain).or_default();
+            d.visits += visits;
+            d.score += score;
+            match d.variants.iter_mut().find(|(v, _)| *v == variant) {
+                Some((_, n)) => *n += visits,
+                None => d.variants.push((variant, visits)),
             }
         }
-        sites.sort_by_key(|s| std::cmp::Reverse(s.1));
-        Ok(sites
+        let mut sites: Vec<(i64, TopSite)> = domains
             .into_iter()
-            .take(limit)
-            .map(|(host, _, _, url, title)| TopSite { host, url, title })
-            .collect())
+            .filter_map(|(host, d)| {
+                let (best, _) = d.variants.iter().max_by_key(|(v, n)| (*n, std::cmp::Reverse(v.clone())))?;
+                let url = root_url(best, &host);
+                Some((d.score, TopSite { title: host.clone(), host, url, visits: d.visits }))
+            })
+            .collect();
+        sites.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.visits.cmp(&a.1.visits)).then(a.1.host.cmp(&b.1.host)));
+        Ok(sites.into_iter().take(limit).map(|(_, s)| s).collect())
     }
 
     /// The pinned and removed top sites, pinned ones in their order.
@@ -780,6 +828,7 @@ impl Store {
 
     /// Pins a site (or updates a pinned one) with this address and title; new pins go last.
     pub fn pin_top_site(&self, host: &str, url: &str, title: &str) -> Result<()> {
+        let host = &top_site_key(host);
         let position: i64 = self.conn.query_row(
             "SELECT COALESCE((SELECT position FROM top_sites WHERE host = ?1 AND hidden = 0),
                              (SELECT COALESCE(MAX(position) + 1, 0) FROM top_sites))",
@@ -797,6 +846,7 @@ impl Store {
 
     /// Removes a site from the top sites (also unpins it).
     pub fn hide_top_site(&self, host: &str) -> Result<()> {
+        let host = &top_site_key(host);
         self.conn.execute(
             "INSERT INTO top_sites (host, hidden) VALUES (?1, 1)
              ON CONFLICT(host) DO UPDATE SET hidden = 1, url = '', title = ''",
@@ -807,6 +857,7 @@ impl Store {
 
     /// Unpins a site (it may still show from history).
     pub fn unpin_top_site(&self, host: &str) -> Result<()> {
+        let host = &top_site_key(host);
         self.conn.execute("DELETE FROM top_sites WHERE host = ?1 AND hidden = 0", [host])?;
         Ok(())
     }
@@ -912,6 +963,40 @@ pub fn site_host(url: &str) -> Option<String> {
     let host = rest.split(['/', '?', '#']).next()?.rsplit('@').next()?.to_ascii_lowercase();
     let host = host.strip_prefix("www.").unwrap_or(&host).to_owned();
     (!host.is_empty()).then_some(host)
+}
+
+/// The registrable domain of an http(s) address: `https://gist.github.com/x/y` is `github.com`,
+/// `a.b.co.uk` is `b.co.uk`. Ports and `www.` are dropped; IPs and unknown suffixes
+/// (`localhost`) stay as they are.
+pub fn registrable_domain(url: &str) -> Option<String> {
+    let host = site_host(url)?;
+    if host.starts_with('[') {
+        return Some(host.split_once(']').map_or(host.clone(), |(h, _)| format!("{h}]")));
+    }
+    let host = host.split(':').next().unwrap_or_default().to_owned();
+    if host.is_empty() {
+        return None;
+    }
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Some(host);
+    }
+    let root = addr::parse_domain_name(&host).ok().and_then(|d| d.root().map(str::to_owned));
+    Some(root.unwrap_or(host))
+}
+
+/// The key of a pinned or removed site: the host's registrable domain.
+fn top_site_key(host: &str) -> String {
+    registrable_domain(&format!("https://{host}")).unwrap_or_else(|| host.to_owned())
+}
+
+/// The root page of `domain` for the most visited variant: that variant's scheme and host
+/// when it is the domain or its `www.` form, else the bare domain.
+fn root_url(variant: &str, domain: &str) -> String {
+    let (scheme, authority) = variant.split_once("://").unwrap_or(("https", variant));
+    let host = authority.split(':').next().unwrap_or_default();
+    let authority =
+        if host == domain || host.strip_prefix("www.") == Some(domain) { authority } else { domain };
+    format!("{scheme}://{authority}/")
 }
 
 /// `https://www.example.com/x` → `example.com/x`.
@@ -1090,7 +1175,26 @@ mod tests {
     }
 
     #[test]
-    fn top_sites_by_host() {
+    fn registrable_domains() {
+        let d = |u: &str| registrable_domain(u);
+        assert_eq!(d("https://github.com/").as_deref(), Some("github.com"));
+        assert_eq!(d("https://test.github.com/a").as_deref(), Some("github.com"));
+        assert_eq!(d("https://gist.github.com/x/y?z#w").as_deref(), Some("github.com"));
+        assert_eq!(d("http://WWW.GitHub.com:8080/").as_deref(), Some("github.com"));
+        assert_eq!(d("https://news.bbc.co.uk/x").as_deref(), Some("bbc.co.uk"));
+        assert_eq!(d("https://bbc.co.uk").as_deref(), Some("bbc.co.uk"));
+        assert_eq!(d("https://user.github.io/").as_deref(), Some("user.github.io"));
+        assert_eq!(d("http://192.168.0.1:3000/x").as_deref(), Some("192.168.0.1"));
+        assert_eq!(d("http://[::1]:8080/x").as_deref(), Some("[::1]"));
+        assert_eq!(d("http://localhost:3000/").as_deref(), Some("localhost"));
+        assert_eq!(d("https://u:p@sub.example.org/").as_deref(), Some("example.org"));
+        assert_eq!(d("axion://home/"), None);
+        assert_eq!(d("about:blank"), None);
+        assert_eq!(d("file:///tmp/x.html"), None);
+    }
+
+    #[test]
+    fn top_sites_by_domain() {
         let s = store();
         for _ in 0..3 {
             s.record_visit("https://www.rust-lang.org/learn", "Learn", NOW).unwrap();
@@ -1098,12 +1202,41 @@ mod tests {
         s.record_visit("https://rust-lang.org/", "Rust", NOW).unwrap();
         s.record_visit("https://docs.example/", "Docs", NOW - 100 * DAY).unwrap();
         s.record_visit("file:///tmp/x.html", "", NOW).unwrap();
-        let top = s.top_sites(10, NOW).unwrap();
+        let top = s.top_sites(10, NOW, 90).unwrap();
         let hosts: Vec<&str> = top.iter().map(|t| t.host.as_str()).collect();
-        assert_eq!(hosts, ["rust-lang.org", "docs.example"]);
-        assert_eq!(top[0].url, "https://www.rust-lang.org/learn", "the most visited page");
+        assert_eq!(hosts, ["rust-lang.org"], "visits outside the window don't count");
+        assert_eq!(top[0].url, "https://www.rust-lang.org/", "the root of the most visited variant");
+        assert_eq!(top[0].title, "rust-lang.org");
+        assert_eq!(top[0].visits, 4);
+        assert_eq!(s.top_sites(10, NOW, 365).unwrap().len(), 2);
         assert_eq!(site_host("HTTP://user@WWW.A.example:80/x").as_deref(), Some("a.example:80"));
         assert_eq!(site_host("axion://home/"), None);
+    }
+
+    #[test]
+    fn subdomains_add_up_and_rank_by_visits() {
+        let s = store();
+        // github.com: spread over hosts and pages, 6 visits in total.
+        for url in ["https://github.com/a", "https://test.github.com/b", "https://gist.github.com/c/d"] {
+            s.record_visit(url, "t", NOW).unwrap();
+            s.record_visit(url, "t", NOW - DAY).unwrap();
+        }
+        // youtube.com: 4 visits on one page; docs.example: 5, but two months ago (weighs less).
+        for _ in 0..4 {
+            s.record_visit("https://www.youtube.com/watch?v=1", "V", NOW).unwrap();
+        }
+        for _ in 0..5 {
+            s.record_visit("https://docs.example/", "D", NOW - 60 * DAY).unwrap();
+        }
+        // Not web pages, and a lone newest visit doesn't beat many.
+        s.record_visit("about:blank", "", NOW).unwrap();
+        s.record_visit("https://new.example/", "N", NOW).unwrap();
+        let top = s.top_sites(5, NOW, 90).unwrap();
+        let hosts: Vec<&str> = top.iter().map(|t| t.host.as_str()).collect();
+        assert_eq!(hosts, ["github.com", "youtube.com", "docs.example", "new.example"]);
+        assert_eq!(top[0].url, "https://github.com/", "the domain's root, never a subdomain page");
+        assert_eq!(top[0].visits, 6);
+        assert_eq!(s.top_sites(2, NOW, 90).unwrap().len(), 2);
     }
 
     #[test]
@@ -1124,6 +1257,42 @@ mod tests {
         assert!(s.top_site_overrides().unwrap().is_empty());
         s.record_visit("axion://home/", "Start", NOW).unwrap();
         assert!(s.recent_history(5).unwrap().is_empty(), "Axion's own pages stay out of history");
+    }
+
+    #[test]
+    fn top_site_overrides_work_per_domain() {
+        let s = store();
+        s.pin_top_site("gist.github.com", "https://github.com/", "GH").unwrap();
+        s.hide_top_site("www.youtube.com").unwrap();
+        s.hide_top_site("m.youtube.com").unwrap();
+        let all = s.top_site_overrides().unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|o| o.host == "github.com" && !o.hidden));
+        s.unpin_top_site("test.github.com").unwrap();
+        assert_eq!(s.top_site_overrides().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn old_per_host_overrides_move_to_their_domain() {
+        let s = store();
+        for (host, url, title, pos, hidden) in [
+            ("gist.github.com", "https://gist.github.com/", "Gist", 0, 0),
+            ("github.com", "https://github.com/", "GH", 1, 0),
+            ("test.youtube.com", "", "", 0, 1),
+            ("localhost:3000", "http://localhost:3000/", "Dev", 2, 0),
+        ] {
+            s.conn
+                .execute(
+                    "INSERT INTO top_sites (host, url, title, position, hidden) VALUES (?1,?2,?3,?4,?5)",
+                    params![host, url, title, pos, hidden],
+                )
+                .unwrap();
+        }
+        s.migrate_top_sites_to_domains().unwrap();
+        let all = s.top_site_overrides().unwrap();
+        let rows: Vec<(&str, bool)> = all.iter().map(|o| (o.host.as_str(), o.hidden)).collect();
+        assert_eq!(rows, [("youtube.com", true), ("github.com", false), ("localhost", false)]);
+        assert_eq!(all[1].title, "GH", "an existing pin of the domain is kept");
     }
 
     fn new_item(url: &str, media: Option<&str>) -> NewPlaylistItem {

@@ -520,6 +520,7 @@ dependencies = [
 name = "axion-store"
 version = "0.0.1"
 dependencies = [
+ "addr",
  "rusqlite",
  "thiserror 2.0.21",
  "tracing",

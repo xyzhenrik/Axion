@@ -480,7 +480,8 @@ main {
 .page {
   flex: 0 0 100%;
   display: grid;
-  grid-template-columns: repeat(var(--columns, 6), minmax(0, 1fr));
+  grid-template-columns: repeat(var(--columns, 6), minmax(0, 132px));
+  justify-content: center;
   gap: 18px 14px;
   padding: 6px;
   align-content: start;
