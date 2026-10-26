@@ -418,6 +418,8 @@ pub struct Chrome {
     /// Toolbar parts that stay hidden while locked private browsing is shown (only the sidebar
     /// button and the overview button remain).
     lock_hidden: Vec<NodeId>,
+    /// The glass group of the toolbar's left buttons (empty while locked with the sidebar open).
+    nav: NodeId,
     /// The window size of the last `apply_layout`.
     window: Vec2,
 }
@@ -1147,6 +1149,7 @@ impl Chrome {
                 new_tab_button,
                 downloads,
             ],
+            nav,
             window: Vec2::new(1280.0, 800.0),
             private_chevron,
             private_chevron_icon,
@@ -1749,6 +1752,9 @@ impl Chrome {
         }
         ui.set_visible(self.overview, !narrow);
         ui.set_visible(self.tab_count, narrow);
+        // With the sidebar open (its header holds the toggle) a locked bar's left group would
+        // be an empty sliver.
+        ui.set_visible(self.nav, !(self.locked && show_sidebar));
         if self.locked {
             // Locked private browsing shows no address bar, tab row or page buttons.
             for &node in &self.lock_hidden {

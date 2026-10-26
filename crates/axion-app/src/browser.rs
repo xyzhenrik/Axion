@@ -943,7 +943,13 @@ impl Browser {
 
     /// The unlock alert, over the locked view or (from the normal tabs) on its own.
     fn show_unlock_alert(&mut self) {
-        let page = self.page_rect();
+        // The overview covers the whole window (no sidebar beside it): the card centres there,
+        // above the note's Unlock button.
+        let page = if self.overview.is_open() {
+            Rect { origin: Vec2::ZERO, size: self.logical_size() }
+        } else {
+            self.page_rect()
+        };
         let events = self.lock_screen.show_alert_over(&mut self.ui, &self.config, page);
         self.handle_ui_events(events);
     }
@@ -4284,6 +4290,24 @@ impl Browser {
                         for key in input::ctrl_keys(letter) {
                             self.engine.send_input(view, &key);
                         }
+                    }
+                }
+                // Capture aid: type "ui-text:TEXT" into whatever chrome field has the focus.
+                typed if typed.starts_with("ui-text:") => {
+                    let (_, events) = self.ui.handle(UiInput::Text(typed["ui-text:".len()..].to_owned()));
+                    self.handle_ui_events(events);
+                }
+                // Capture aid: a keyboard shortcut through the keymap, as pressed ("chord:Alt+T").
+                chord if chord.starts_with("chord:") => {
+                    match chord["chord:".len()..].parse::<axion_config::Chord>() {
+                        Ok(c) => match self.keymap.action_for(&c) {
+                            Some(action) => {
+                                tracing::info!("chord {c:?} runs {action}");
+                                self.run(action);
+                            }
+                            None => tracing::warn!("chord {c:?} is bound to nothing"),
+                        },
+                        Err(e) => tracing::warn!("bad chord: {e}"),
                     }
                 }
                 "paste" => self.run(Action::Paste),
