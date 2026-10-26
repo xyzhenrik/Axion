@@ -371,6 +371,16 @@ impl Ui {
             if self.pressed == Some(n) {
                 self.pressed = None;
             }
+            if self.dragging == Some(n) {
+                self.dragging = None;
+            }
+            if self.press_anchor.is_some_and(|(held, _)| held == n) {
+                self.press_anchor = None;
+            }
+            if self.field_select.is_some_and(|(f, _)| f == n) {
+                self.field_select = None;
+            }
+            self.knobs.remove(&n);
             let _ = self.tree.remove(n);
         }
         self.needs_layout = true;
@@ -421,6 +431,15 @@ impl Ui {
         if style.display != display {
             style.display = display;
             self.set_style(node, style);
+            if !visible && self.is_holding() {
+                // A hidden control can't receive its button-up: it lets go now.
+                let below = self.descendants(node);
+                let held =
+                    self.dragging.into_iter().chain(self.pressed).chain(self.press_anchor.map(|(g, _)| g));
+                if held.into_iter().any(|h| below.contains(&h)) {
+                    self.end_interaction();
+                }
+            }
         }
     }
 
@@ -752,6 +771,28 @@ impl Ui {
     /// The button being held down, if any.
     pub fn pressed_action(&self) -> Option<NodeId> {
         self.pressed
+    }
+
+    /// Ends whatever the pointer holds without a click: a slider/toggle drag (it settles where
+    /// it is, springing back), a held button (its glass springs back), a text selection.
+    /// For a button-up that never reached the UI: pointer outside the window, focus lost, Esc,
+    /// the held control hidden or removed. Returns the events of the settled drag.
+    pub fn end_interaction(&mut self) -> Vec<UiEvent> {
+        let mut events = Vec::new();
+        self.field_select = None;
+        if let Some(node) = self.dragging.take() {
+            events.extend(self.release_knob(node));
+        }
+        self.pressed = None;
+        if let Some((held, _)) = self.press_anchor.take() {
+            self.release_press(held);
+        }
+        events
+    }
+
+    /// Whether the pointer holds something (a drag or a pressed button).
+    pub fn is_holding(&self) -> bool {
+        self.dragging.is_some() || self.pressed.is_some() || self.press_anchor.is_some()
     }
 
     /// Lets go of the held button without a click (the press became a drag of it).
@@ -2290,6 +2331,59 @@ mod tests {
         ui.handle(UiInput::PointerUp);
         let (_, events) = ui.handle(UiInput::PointerMove(Vec2::new(f.origin.x + 200.0, f.center().y)));
         assert!(events.is_empty(), "no drag after release");
+    }
+
+    #[test]
+    fn drag_ends_on_release_outside_focus_loss_or_hiding() {
+        let mut ui = ui();
+        let root = ui.root();
+        let slider = ui.add(
+            root,
+            Widget::slider(0.0),
+            Style { size: Size { width: length(224.0), height: auto() }, ..Default::default() },
+        );
+        let button = ui.add(
+            root,
+            Widget::container().with_action(ActionId(3)),
+            Style { size: Size { width: length(44.0), height: length(44.0) }, ..Default::default() },
+        );
+        ui.layout();
+        let f = ui.frame(slider);
+        let grab = |ui: &mut Ui| {
+            ui.handle(UiInput::PointerMove(Vec2::new(f.origin.x + 12.0, f.center().y)));
+            ui.handle(UiInput::PointerDown);
+            assert_eq!(ui.dragging(), Some(slider));
+        };
+        // Press, move far outside the control, release there: the drag ends.
+        grab(&mut ui);
+        ui.handle(UiInput::PointerMove(Vec2::new(700.0, 500.0)));
+        assert_eq!(ui.dragging(), Some(slider));
+        ui.handle(UiInput::PointerUp);
+        assert!(!ui.is_holding());
+        // The button-up never arrives (focus lost, Esc, pointer outside): explicit end.
+        grab(&mut ui);
+        assert!(ui.is_holding());
+        ui.end_interaction();
+        assert!(!ui.is_holding());
+        let (_, events) = ui.handle(UiInput::PointerMove(Vec2::new(f.origin.x + 200.0, f.center().y)));
+        assert!(events.is_empty(), "no drag after the forced end");
+        // A held button lets go without a click.
+        let b = ui.frame(button);
+        ui.handle(UiInput::PointerMove(b.center()));
+        ui.handle(UiInput::PointerDown);
+        assert!(ui.is_holding());
+        let events = ui.end_interaction();
+        assert!(events.is_empty() && !ui.is_holding());
+        let (_, events) = ui.handle(UiInput::PointerUp);
+        assert!(events.iter().all(|e| !matches!(e, UiEvent::Clicked { .. })));
+        // Hiding or removing the held control ends the drag too.
+        grab(&mut ui);
+        ui.set_visible(slider, false);
+        assert!(!ui.is_holding());
+        ui.set_visible(slider, true);
+        grab(&mut ui);
+        ui.remove(slider);
+        assert!(!ui.is_holding());
     }
 
     #[test]
