@@ -140,6 +140,11 @@ impl ApplicationHandler for App {
             browser.pip_window_event(event);
             return;
         }
+        // Late events of a closed PiP window: never the browser window's (its CloseRequested
+        // would quit).
+        if !browser.is_main_window(id) {
+            return;
+        }
         match browser.window_event(event) {
             Ok(true) => {}
             Ok(false) => event_loop.exit(),

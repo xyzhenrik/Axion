@@ -66,6 +66,8 @@ pub struct Player {
     /// The video's own size in pixels (0 while unknown, and for audio).
     pub vw: f32,
     pub vh: f32,
+    /// The element's CSS `object-fit` ("contain" for a video unless the page changes it).
+    pub fit: String,
     pub paused: bool,
     pub ended: bool,
     /// Seconds.
@@ -108,6 +110,26 @@ impl Player {
         } else {
             16.0 / 9.0
         }
+    }
+
+    /// Where the picture is drawn inside the element (CSS px, like `x`/`y`/`w`/`h`): the
+    /// element is often bigger than the video, which then sits letterboxed in it (`contain`,
+    /// the default). `cover`/`fill`, or an unknown video size, use the whole element. Assumes
+    /// the default, centred `object-position`.
+    pub fn picture_rect(&self) -> (f32, f32, f32, f32) {
+        let whole = (self.x, self.y, self.w, self.h);
+        let contained = matches!(self.fit.as_str(), "" | "contain" | "scale-down" | "none");
+        if !contained || self.vw <= 0.0 || self.vh <= 0.0 || self.w <= 0.0 || self.h <= 0.0 {
+            return whole;
+        }
+        let aspect = self.vw / self.vh;
+        let (mut w, mut h) =
+            if self.w / self.h > aspect { (self.h * aspect, self.h) } else { (self.w, self.w / aspect) };
+        // `scale-down` and `none` never scale the video up.
+        if self.fit != "contain" && !self.fit.is_empty() && w > self.vw {
+            (w, h) = (self.vw, self.vh);
+        }
+        (self.x + (self.w - w) / 2.0, self.y + (self.h - h) / 2.0, w, h)
     }
 
     pub fn area(&self) -> f32 {
@@ -274,6 +296,21 @@ pub fn format_time(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picture_rect_skips_the_elements_black_bars() {
+        // A 16:9 video in a 900×600 element: bars above and below.
+        let p = Player { x: 10.0, y: 20.0, w: 900.0, h: 600.0, vw: 1280.0, vh: 720.0, ..Default::default() };
+        assert_eq!(p.picture_rect(), (10.0, 20.0 + (600.0 - 506.25) / 2.0, 900.0, 506.25));
+        // Bars left and right for a tall element's 4:3 video.
+        let p = Player { w: 400.0, h: 400.0, vw: 400.0, vh: 300.0, fit: "contain".into(), ..p };
+        assert_eq!(p.picture_rect(), (10.0, 20.0 + 50.0, 400.0, 300.0));
+        // `cover` fills the element; so does a video of unknown size.
+        let cover = Player { fit: "cover".into(), ..p.clone() };
+        assert_eq!(cover.picture_rect(), (10.0, 20.0, 400.0, 400.0));
+        let unknown = Player { vw: 0.0, ..p };
+        assert_eq!(unknown.picture_rect(), (10.0, 20.0, 400.0, 400.0));
+    }
 
     #[test]
     fn script_is_filled_in() {
