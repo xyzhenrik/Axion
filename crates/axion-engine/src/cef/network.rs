@@ -15,6 +15,8 @@ use crate::{
 /// State shared by every view's network hooks.
 #[derive(Default)]
 pub(super) struct Network {
+    /// Refuse the Chrome Web Store (extensions are off; see `cef::extension_switches`).
+    pub block_web_store: std::sync::atomic::AtomicBool,
     pub policy: RwLock<Option<Arc<dyn RequestPolicy>>>,
     /// Events raised off the main thread, tagged with the CEF browser like [`super::Shared`]'s.
     pub events: Mutex<Vec<(i32, EngineEvent)>>,
@@ -304,6 +306,16 @@ wrap_request_handler! {
                     return 1;
                 }
             }
+            if self.net.block_web_store.load(std::sync::atomic::Ordering::Relaxed) {
+                let to = CefString::from(&request.url()).to_string();
+                if is_web_store_url(&to) {
+                    tracing::info!(%to, "the Chrome Web Store is not available: extensions are not supported");
+                    if frame.is_main() == 1 {
+                        frame.load_url(Some(&EXTENSIONS_NOTICE.into()));
+                    }
+                    return 1;
+                }
+            }
             let Some(policy) = self.net.policy() else { return 0 };
             if frame.is_main() == 0 {
                 return 0;
@@ -362,6 +374,20 @@ wrap_request_handler! {
     }
 }
 
+/// Shown instead of the Chrome Web Store while extensions are not supported.
+const EXTENSIONS_NOTICE: &str = "data:text/html;charset=utf-8,<!doctype html><meta name=color-scheme content='light dark'><title>Extensions</title><body style='font:16px system-ui;max-width:32em;margin:20vh auto;padding:0 1em;line-height:1.5'><h1>Extensions are not supported yet</h1><p>Axion does not load Chrome extensions, so the Chrome Web Store cannot install them.</p>";
+
+/// The Chrome Web Store: `chrome.webstorePrivate` (the install API) is offered to its pages.
+fn is_web_store_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) else {
+        return false;
+    };
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = host.split([':', '?', '#']).next().unwrap_or(host).to_ascii_lowercase();
+    host == "chromewebstore.google.com"
+        || ((host == "chrome.google.com" || host == "www.chrome.google.com") && path.starts_with("webstore"))
+}
+
 /// Axion's own pages open only in a top-level frame, and only by the browser or from another
 /// Axion page (the scheme is display-isolated anyway; this is the second lock).
 fn refuse_internal_navigation(frame: &Frame, request: &Request) -> bool {
@@ -400,4 +426,19 @@ fn refuse_internal_navigation(frame: &Frame, request: &Request) -> bool {
 pub(super) fn build_request_handler(net: &Arc<Network>, view: ViewId) -> RequestHandler {
     let resources = ResourceRequestHandlerBuilder::new(Arc::clone(net), view, DenyCookiesBuilder::new());
     RequestHandlerBuilder::new(Arc::clone(net), view, resources)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_web_store_url;
+
+    #[test]
+    fn web_store_urls() {
+        assert!(is_web_store_url("https://chromewebstore.google.com/detail/x/abc"));
+        assert!(is_web_store_url("https://chrome.google.com/webstore/detail/x/abc"));
+        assert!(is_web_store_url("https://CHROMEWEBSTORE.google.com:443/"));
+        assert!(!is_web_store_url("https://chrome.google.com/intl/en/chrome/"));
+        assert!(!is_web_store_url("https://example.com/chromewebstore.google.com"));
+        assert!(!is_web_store_url("https://notchromewebstore.google.com/"));
+    }
 }

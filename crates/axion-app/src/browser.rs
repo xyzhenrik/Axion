@@ -533,6 +533,7 @@ impl Browser {
                         / 1000.0,
                 ),
                 hardware_video_decoding: config.media.hardware_decoding,
+                extensions_enabled: config.extensions.enabled,
                 waker: options.waker.clone(),
             },
         )?;

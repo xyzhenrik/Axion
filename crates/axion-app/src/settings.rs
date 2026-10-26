@@ -1863,6 +1863,17 @@ impl SettingsSheet {
                         Paint::Fixed(Color::rgb(0xD0362B))
                     });
                 }
+                self.section(ui, tr("Extensions"));
+                let row_node = self.row(ui, tr("Chrome extensions"));
+                let state =
+                    ui.add_label(row_node, tr("Not supported yet"), TextStyle::Callout, Style::default());
+                if let Some(w) = ui.widget_mut(state) {
+                    w.set_paint(Paint::Secondary);
+                }
+                self.note(
+                    ui,
+                    tr("Chrome extensions are not supported yet; the Chrome Web Store cannot install them."),
+                );
             }
             Category::Passwords => {
                 let row_node = self.row(ui, tr("Saved passwords, cards and addresses"));

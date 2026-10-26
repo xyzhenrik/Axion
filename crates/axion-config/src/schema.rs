@@ -32,6 +32,7 @@ pub struct Config {
     pub sidebar: Sidebar,
     pub ui: Ui,
     pub updates: Updates,
+    pub extensions: Extensions,
 }
 
 /// Account profile pictures.
@@ -757,6 +758,17 @@ impl Default for Privacy {
     fn default() -> Self {
         Self { lock_private_tabs: true, prompt_unlock_on_open: true, lock_after_seconds: None }
     }
+}
+
+/// Chrome extensions.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Extensions {
+    /// Chrome extensions are not supported yet; the Web Store cannot install them. Leave this
+    /// off: with the extension system running, the Web Store's "Add to Chrome" reaches an
+    /// install dialog that has no window to attach to in off-screen mode and crashes Chromium.
+    /// Applies after a restart. Default: off.
+    pub enabled: bool,
 }
 
 /// When finished downloads leave the Downloads list.

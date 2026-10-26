@@ -592,6 +592,12 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. â
 Chrome extension subset, encrypted sync, reader mode, profiles, Servo backend,
 Windows/macOS, touchscreen-first mode.
 
+**Extensions are disabled** (`[extensions] enabled = false`, `--disable-extensions`): the Web Store's
+"Add to Chrome" crashed Chromium in off-screen mode (`ExtensionInstallPrompt::ShowDialog` ->
+`constrained_window::CreateBrowserModalDialogViews`: no native parent window). A real extension
+system is a separate project: `CefRequestContext::LoadExtension`, our own install confirmation UI
+(Liquid Glass sheet instead of Chromium's views dialog) and extension popups/action buttons.
+
 ## 6. Risks
 | Risk | Mitigation |
 |---|---|
