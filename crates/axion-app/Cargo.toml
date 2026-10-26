@@ -53,5 +53,9 @@ x11rb = { version = "0.13", default-features = false }
 default = ["tpm"]
 tpm = ["axion-vault/tpm"]
 
+[dev-dependencies]
+# A stub GPU device for tests that need one (favicons, the chrome built with tabs).
+wgpu = { workspace = true, features = ["noop"] }
+
 [lints]
 workspace = true

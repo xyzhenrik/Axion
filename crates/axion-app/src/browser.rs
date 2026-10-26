@@ -5966,6 +5966,27 @@ impl Browser {
                 // that imitates it (a glass pass, a rim, a knocked-out or heavy shadow) and logs
                 // every finding ("flat-audit: ...").
                 "flat-audit" => self.flat_audit = true,
+                // Capture aid: switches the tab bar live, the way Settings > Appearance does
+                // ("tabbar:separate" / "tabbar:compact").
+                style if style.starts_with("tabbar:") => {
+                    let style = match &style["tabbar:".len()..] {
+                        "separate" => Some(TabBarStyle::Separate),
+                        "compact" => Some(TabBarStyle::Compact),
+                        _ => None,
+                    };
+                    if let Some(style) = style {
+                        self.config.layout.tab_bar = style;
+                        self.settings_outcome(Outcome::Changed);
+                    }
+                }
+                // Capture aid: a click into the address field, then "TEXT" typed into it, as
+                // keystrokes ("edit-address:TEXT"; unlike `--address`, which sets the text).
+                typed if typed.starts_with("edit-address:") => {
+                    self.edit_address();
+                    let text = typed["edit-address:".len()..].to_owned();
+                    let (_, events) = self.ui.handle(UiInput::Text(text));
+                    self.handle_ui_events(events);
+                }
                 // Capture aid: logs every text of the visible chrome that does not fit its box
                 // (a translation too long for its layout).
                 "i18n-overflow" => {
