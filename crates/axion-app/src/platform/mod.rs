@@ -2,3 +2,4 @@
 
 pub mod clipboard;
 pub mod pointer;
+pub mod stall;

@@ -428,6 +428,7 @@ dependencies = [
  "image",
  "jiff",
  "pollster",
+ "rustix 1.1.5",
  "serde_json",
  "tracing",
  "tracing-subscriber",

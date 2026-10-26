@@ -47,8 +47,14 @@ pub enum DeviceKeyError {
 
 /// Where the vault gets the device secret from.
 pub trait DeviceKey: Send + Sync {
-    /// The secret, created on first use.
+    /// The secret, created on first use. May wait for the TPM (most of a second).
     fn secret(&self) -> Result<DeviceSecret, DeviceKeyError>;
+
+    /// The secret if it is at hand without waiting: loaded before, or a key that needs no
+    /// device. `None` while a TPM-sealed key hasn't been loaded (see [`DeviceKey::secret`]).
+    fn ready_secret(&self) -> Option<DeviceSecret> {
+        self.secret().ok()
+    }
 }
 
 /// A fixed secret held in memory: for tests, and to simulate several devices.
@@ -260,6 +266,11 @@ impl DeviceKey for SystemDeviceKey {
         *loaded = Some((secret.clone(), backend));
         Ok(secret)
     }
+
+    fn ready_secret(&self) -> Option<DeviceSecret> {
+        // Busy: another thread is loading it right now (the TPM): not ready either.
+        self.loaded.try_lock().ok()?.as_ref().map(|(secret, _)| secret.clone())
+    }
 }
 
 fn read_plain(path: &Path) -> Result<DeviceSecret, DeviceKeyError> {
@@ -342,9 +353,11 @@ mod tests {
             let mode = std::fs::metadata(dir.join(SEALED_FILE)).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
-        // Next start: the sealed key, same secret.
+        // Next start: the sealed key, same secret. Not at hand before it was loaded.
         let next = fake(&dir, FakeTpm::Works);
+        assert!(next.ready_secret().is_none());
         assert_eq!(*next.secret().unwrap(), *secret);
+        assert_eq!(next.ready_secret().as_deref(), Some(&*secret));
         assert_eq!(next.backend(), Some(Backend::Tpm));
         std::fs::remove_dir_all(&dir).unwrap();
     }

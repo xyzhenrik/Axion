@@ -110,6 +110,38 @@ The lines to look at are marked `perf`. The most telling values:
 | `monitor`, `refresh_hz`, `surface`, `fullscreen` | Where the window is and how big. |
 | `cpu_main_pct`, `cpu_chromium_pct` | CPU use of Axion and of its Chromium processes (100 = one core). |
 
+## Axion freezes for a moment
+
+When the whole window stops reacting for a second or more (a click, typing, opening a page),
+the stall log says what Axion was busy with.
+
+1. Close Axion.
+2. Start it from a terminal with both logs on:
+
+   ```bash
+   AXION_STALL_LOG=1 AXION_PERF_LOG=1 axion 2>&1 | tee axion-stall.log
+   ```
+
+   For a freeze you can repeat, add `AXION_STALL_STACK=1` as well: a freeze longer than a second
+   then also logs where in the code Axion's main thread is stuck (this needs `eu-stack` from
+   elfutils or `gdb` installed, and lets debuggers attach to Axion while it runs, so use it
+   only for this).
+3. Do what froze, wait until Axion reacts again, then quit it.
+4. Attach `axion-stall.log` to your report, with what you did and roughly when.
+
+The lines to look at are marked `stall`:
+
+| Line | Meaning |
+|---|---|
+| `main thread busy for N ms, in "…"` | Axion stopped reacting; the quoted step is what it was doing (input, the Chromium pump, a frame, settings, …). |
+| `kernel wait …, syscall …` | What it waited for: `futex` is a lock or another thread, `poll`/`epoll_wait` a socket or pipe (network, D-Bus, the clipboard), `wait4` another program, `running` busy computing. |
+| `still busy after N ms` | Repeated every second while it lasts. |
+| `main thread was busy for N ms` | The freeze is over: how long it lasted. |
+| `main thread stack:` | With `AXION_STALL_STACK=1`: the functions it was in. |
+
+A stall of a few hundred milliseconds while Axion starts is normal. `AXION_STALL_LOG=400` reports
+only stalls longer than 400 ms.
+
 ## The window has no icon on Wayland
 
 On Wayland, the desktop takes the window and taskbar icon from a desktop entry (`axion.desktop`), not

@@ -2179,7 +2179,11 @@ impl Chrome {
         let widths_floor = l.tab_icon_width.min(l.tab_min_width);
         let mut address = ui.style(self.address);
         if separate {
+            // Not the tiled compact segment's fixed width (`animate_tab_widths`): it fills the
+            // room between the groups, up to its maximum.
             address.flex_grow = 1.0;
+            address.flex_basis = length(0.0);
+            address.size.width = auto();
             address.max_size = Size { width: length(SEPARATE_ADDRESS_MAX), height: auto() };
             address.min_size = Size { width: length(0.0), height: auto() };
             // On its own between the groups it is as tall as the buttons' capsules.
@@ -2196,6 +2200,7 @@ impl Chrome {
                 // Alone in the capsule (narrow window, locked): it takes the room.
                 address.flex_grow = ACTIVE_SEGMENT_GROW;
                 address.flex_basis = length(0.0);
+                address.size.width = auto();
                 address.min_size = Size { width: length(ACTIVE_SEGMENT_MIN), height: auto() };
             }
         }
@@ -3182,8 +3187,12 @@ impl Chrome {
         } else {
             AddressFit::ALL
         };
-        if self.tab_widths.address_fit != Some((wanted, editing, tiled)) {
-            self.apply_address_fit(ui, wanted, editing, tiled);
+        // Whether the field shows follows the editing state in every layout, not only in the
+        // tiled compact bar (`editing` above only widens the tiled segment): the separate bar's
+        // field was hidden again right after a click into it.
+        let shown_editing = self.editing;
+        if self.tab_widths.address_fit != Some((wanted, shown_editing, tiled)) {
+            self.apply_address_fit(ui, wanted, shown_editing, tiled);
         }
         let widths = &mut self.tab_widths;
         // Narrower than `tab_min_width`: favicon only, centred.
@@ -3518,6 +3527,75 @@ mod tests {
             chrome.set_locked(&mut ui, &config, false);
             assert!(all.iter().all(|&n| ui.is_visible(n)), "round {round}: unlocked toolbar");
             assert!(ui.is_visible(chrome.tab_capsule));
+        }
+    }
+
+    /// Whether `node` and every parent of it are displayed.
+    fn shown(ui: &Ui, node: NodeId) -> bool {
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if !ui.is_visible(n) {
+                return false;
+            }
+            at = ui.parent(n);
+        }
+        true
+    }
+
+    /// Regression: after switching the tab bar live (Settings > Appearance), typing into the
+    /// address showed nothing: the separate bar's field was hidden again by the compact
+    /// segment's fit logic right after the click into it.
+    #[test]
+    fn address_field_shows_while_editing_in_every_tab_bar() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let favicons = Favicons::new(device, queue, None);
+        let window = Vec2::new(1400.0, 900.0);
+        for count in [1, 3] {
+            for start in [TabBarStyle::Compact, TabBarStyle::Separate] {
+                let mut config = Config::default();
+                config.layout.tab_bar = start;
+                let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+                ui.set_viewport(window, 1.0);
+                let mut chrome = Chrome::build(&mut ui, &config);
+                let mut tabs = Tabs::default();
+                for i in 0..count {
+                    tabs.insert(Tab::new(ViewId(i), &format!("https://t{i}.example")), i == 0);
+                }
+                let other = Tabs::default();
+                let other_style =
+                    if start == TabBarStyle::Compact { TabBarStyle::Separate } else { TabBarStyle::Compact };
+                for (step, style) in [start, other_style, start].into_iter().enumerate() {
+                    let case = format!("{count} tabs, {start:?} start, step {step} ({style:?})");
+                    config.layout.tab_bar = style;
+                    // What a settings change does: relayout, then the tabs again.
+                    chrome.apply_layout(&mut ui, &config, window);
+                    chrome.sync_tabs(&mut ui, &tabs, &other, &favicons);
+                    let settle = |chrome: &mut Chrome, ui: &mut Ui| {
+                        for _ in 0..90 {
+                            ui.layout();
+                            chrome.animate_all(ui, 1.0 / 60.0);
+                        }
+                        ui.layout();
+                    };
+                    settle(&mut chrome, &mut ui);
+                    let _ = chrome.set_editing(&mut ui, true);
+                    settle(&mut chrome, &mut ui);
+                    assert_eq!(ui.focused(), Some(chrome.address_field), "{case}: focus");
+                    assert!(shown(&ui, chrome.address_field), "{case}: field shown");
+                    assert!(!ui.is_visible(chrome.address_label), "{case}: label hidden");
+                    let field = ui.frame(chrome.address_field);
+                    let segment = ui.frame(chrome.address);
+                    assert!(field.size.x > 40.0 && field.size.y > 0.0, "{case}: field {field:?}");
+                    assert!(
+                        field.origin.x >= segment.origin.x - 0.5
+                            && field.origin.x + field.size.x <= segment.origin.x + segment.size.x + 0.5,
+                        "{case}: field {field:?} outside its segment {segment:?}"
+                    );
+                    let _ = chrome.set_editing(&mut ui, false);
+                    settle(&mut chrome, &mut ui);
+                    assert!(!ui.is_visible(chrome.address_field), "{case}: field hidden after editing");
+                }
+            }
         }
     }
 

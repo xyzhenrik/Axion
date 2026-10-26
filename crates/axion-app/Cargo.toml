@@ -46,12 +46,19 @@ zeroize = "1"
 # data-control) and the pointer during file drags (X11).
 wl-clipboard-rs = "0.9"
 x11rb = { version = "0.13", default-features = false }
+# Already in the tree (wayland, wl-clipboard-rs): with `AXION_STALL_STACK` a debugger may read
+# the main thread's stack during a freeze (see `platform::stall`).
+rustix = { version = "1.1", features = ["process"] }
 
 [features]
 # The vault's device key is sealed with the TPM (needs libtss2-esys to build); without it the
 # device key lives in a file.
 default = ["tpm"]
 tpm = ["axion-vault/tpm"]
+
+[dev-dependencies]
+# A stub GPU device for tests that need one (favicons, the chrome built with tabs).
+wgpu = { workspace = true, features = ["noop"] }
 
 [lints]
 workspace = true
