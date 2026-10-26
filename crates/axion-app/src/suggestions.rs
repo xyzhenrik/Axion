@@ -55,7 +55,11 @@ pub fn suggest(input: &str, store: Option<&Store>, search_url: &str, now: i64) -
     let mut out = vec![if is_address(query) {
         Suggestion { kind: Kind::Address, title: query.to_owned(), url: own }
     } else {
-        Suggestion { kind: Kind::Search, title: format!("Search for “{query}”"), url: own }
+        Suggestion {
+            kind: Kind::Search,
+            title: axion_i18n::tr_fmt!("Search for “{query}”", query = query),
+            url: own,
+        }
     }];
     let Some(store) = store else { return out };
     let push = |s: Suggestion, out: &mut Vec<Suggestion>| {

@@ -9,6 +9,7 @@
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
 use axion_engine::{Engine, FindRequest, ViewId};
+use axion_i18n::tr;
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
 
@@ -90,7 +91,7 @@ impl FindBar {
         );
         let field = ui.add_text_field(
             plate,
-            "Find on Page",
+            tr("Find on Page"),
             TextStyle::Body,
             Style {
                 flex_grow: 1.0,
@@ -262,9 +263,9 @@ impl FindBar {
             self.step(engine, true);
         }
         let text = match count {
-            0 if final_update => "Not found".to_owned(),
+            0 if final_update => tr("Not found").to_owned(),
             0 => return,
-            _ => format!("{} of {count}", active.max(1)),
+            _ => axion_i18n::tr_fmt!("{index} of {count}", index = active.max(1), count = count),
         };
         ui.set_text(self.count, &text);
     }

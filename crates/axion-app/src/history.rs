@@ -1,6 +1,7 @@
 //! The History panel: entries grouped by the day they were last visited (newest first), with
 //! headings like Safari's ("Today", "Yesterday", "Saturday, 24 October").
 
+use axion_i18n::tr;
 use axion_store::HistoryEntry;
 use jiff::Timestamp;
 use jiff::civil::Date;
@@ -18,8 +19,8 @@ pub fn panel_items(entries: Vec<HistoryEntry>, now: i64) -> Vec<PanelItem> {
         .into_iter()
         .map(|entry| {
             let day = local_date(entry.last_visit, &tz);
-            let section =
-                (current != day).then(|| day.map_or_else(|| "Earlier".to_owned(), |d| day_label(d, today)));
+            let section = (current != day)
+                .then(|| day.map_or_else(|| tr("Earlier").to_owned(), |d| day_label(d, today)));
             current = day;
             PanelItem {
                 detail: display_host(&entry.url),
@@ -41,10 +42,10 @@ pub(crate) fn local_date(unix: i64, tz: &TimeZone) -> Option<Date> {
 pub(crate) fn day_label(day: Date, today: Option<Date>) -> String {
     if let Some(today) = today {
         if day == today {
-            return "Today".into();
+            return tr("Today").into();
         }
         if today.yesterday().ok() == Some(day) {
-            return "Yesterday".into();
+            return tr("Yesterday").into();
         }
         if day.year() == today.year() {
             return day.strftime("%A, %-d %B").to_string();

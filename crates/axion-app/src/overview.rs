@@ -6,6 +6,7 @@
 use axion_compositor::{Icon, IconWeight, Rect as Frame};
 use axion_config::{Color, Config};
 use axion_engine::ViewId;
+use axion_i18n::{tr, tr_n};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, Shadow, TextStyle, Ui, UiEvent, Widget};
@@ -266,7 +267,7 @@ impl Overview {
                 ..Default::default()
             },
         );
-        let unlock_label = ui.add_label(unlock, "Unlock", TextStyle::Callout, Style::default());
+        let unlock_label = ui.add_label(unlock, tr("Unlock"), TextStyle::Callout, Style::default());
         if let Some(w) = ui.widget_mut(unlock_label) {
             w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
         }
@@ -318,8 +319,8 @@ impl Overview {
         );
         // Tap a segment, or hold the pill and slide it across (like a Liquid Glass switch).
         let segmented = ui.add(segments, Widget::segmented(1), row_style(2.0));
-        let private_segment = segment(ui, segmented, "Private");
-        let normal_segment = segment(ui, segmented, "Tabs");
+        let private_segment = segment(ui, segmented, tr("Private"));
+        let normal_segment = segment(ui, segmented, tr("Tabs"));
         let search_box = ui.add(
             centre,
             Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
@@ -337,7 +338,7 @@ impl Overview {
         ui.add(search_box, Widget::icon(Icon::Search, 17.0).with_paint(Paint::Secondary), Style::default());
         let search = ui.add_text_field(
             search_box,
-            "Search Tabs",
+            tr("Search Tabs"),
             TextStyle::Body,
             Style {
                 flex_grow: 1.0,
@@ -393,10 +394,7 @@ impl Overview {
 
     /// Shows which group of tabs is listed: the selected segment is the lighter pill.
     pub fn set_mode(&mut self, ui: &mut Ui, private: bool, normal_count: usize) {
-        ui.set_text(
-            self.normal_segment.1,
-            &format!("{normal_count} {}", if normal_count == 1 { "Tab" } else { "Tabs" }),
-        );
+        ui.set_text(self.normal_segment.1, &tr_n("{n} Tab", "{n} Tabs", normal_count));
         ui.set_value(self.segmented, if private { 0.0 } else { 1.0 });
         for ((_, label), selected) in [(self.private_segment, private), (self.normal_segment, !private)] {
             if let Some(w) = ui.widget_mut(label) {

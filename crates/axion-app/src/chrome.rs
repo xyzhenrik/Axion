@@ -10,6 +10,7 @@
 
 use axion_compositor::{Icon, IconWeight, Rect as Frame};
 use axion_config::{Action, Color, Config, SidebarMode, TabBarStyle};
+use axion_i18n::{tr, tr_n};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Align, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
@@ -746,7 +747,7 @@ impl Chrome {
                 .with_background(Background::Glass(GlassLevel::Thin))
                 .with_radius(CAPSULE)
                 .with_action(ChromeAction::ToggleSidebar.id())
-                .with_tooltip("Hide Sidebar", Some(Action::ToggleSidebar)),
+                .with_tooltip(tr("Hide Sidebar"), Some(Action::ToggleSidebar)),
             Style { size: square(SIDEBAR_BUTTON), justify_content: JustifyContent::CENTER, ..row(0.0) },
         );
         ui.add(header_toggle, Widget::icon(Icon::Sidebar, 22.0), Style::default());
@@ -779,7 +780,7 @@ impl Chrome {
             ChromeAction::ToggleTabsSection,
             ChromeAction::CollapseTabs,
             Icon::TabGroup,
-            "Tabs",
+            tr("Tabs"),
             false,
         );
         let sidebar_tabs = ui.add(
@@ -798,7 +799,7 @@ impl Chrome {
             ChromeAction::Private,
             ChromeAction::CollapsePrivate,
             Icon::Hand,
-            "Private",
+            tr("Private"),
             true,
         );
         let saved_header = ui.add(
@@ -816,7 +817,7 @@ impl Chrome {
                 ..row(8.0)
             },
         );
-        let saved_title = ui.add_label(saved_header, "Saved", TextStyle::Title2, shrinking_label());
+        let saved_title = ui.add_label(saved_header, tr("Saved"), TextStyle::Title2, shrinking_label());
         if let Some(w) = ui.widget_mut(saved_title) {
             w.set_paint(Paint::Secondary);
         }
@@ -834,14 +835,14 @@ impl Chrome {
                 ..Default::default()
             },
         );
-        sidebar_row(ui, saved_list, ChromeAction::Bookmarks, Icon::Book, "Bookmarks", None);
-        sidebar_row(ui, saved_list, ChromeAction::ReadingList, Icon::Glasses, "Reading List", None);
-        sidebar_row(ui, saved_list, ChromeAction::History, Icon::History, "History", None);
+        sidebar_row(ui, saved_list, ChromeAction::Bookmarks, Icon::Book, tr("Bookmarks"), None);
+        sidebar_row(ui, saved_list, ChromeAction::ReadingList, Icon::Glasses, tr("Reading List"), None);
+        sidebar_row(ui, saved_list, ChromeAction::History, Icon::History, tr("History"), None);
         let (playlist_label, _) =
-            sidebar_row(ui, saved_list, ChromeAction::Playlist, Icon::Playlist, "Playlist", None);
+            sidebar_row(ui, saved_list, ChromeAction::Playlist, Icon::Playlist, tr("Playlist"), None);
         let playlist_row = ui.parent(playlist_label);
-        sidebar_row(ui, saved_list, ChromeAction::Downloads, Icon::Download, "Downloads", None);
-        sidebar_row(ui, saved_list, ChromeAction::Passwords, Icon::Key, "Passwords", None);
+        sidebar_row(ui, saved_list, ChromeAction::Downloads, Icon::Download, tr("Downloads"), None);
+        sidebar_row(ui, saved_list, ChromeAction::Passwords, Icon::Key, tr("Passwords"), None);
 
         // Fills the sidebar below its header, so the list scrolls inside it.
         let panel = ui.add(
@@ -896,7 +897,7 @@ impl Chrome {
         ui.add(panel_search, Widget::icon(Icon::Search, 15.0).with_paint(Paint::Secondary), Style::default());
         let panel_search_field = ui.add_text_field(
             panel_search,
-            "Search",
+            tr("Search"),
             TextStyle::Body,
             Style {
                 flex_grow: 1.0,
@@ -1002,15 +1003,15 @@ impl Chrome {
         let nav = glass_group(ui, bar);
         let (bar_sidebar_button, _) =
             icon_button(ui, nav, ChromeAction::ToggleSidebar, Widget::icon(Icon::Sidebar, 21.0), BUTTON);
-        tip(ui, bar_sidebar_button, "Show Sidebar", Some(Action::ToggleSidebar));
+        tip(ui, bar_sidebar_button, tr("Show Sidebar"), Some(Action::ToggleSidebar));
         let (back, _) = icon_button(ui, nav, ChromeAction::Back, Widget::icon(Icon::Back, 21.0), BUTTON);
-        tip(ui, back, "Back", Some(Action::Back));
+        tip(ui, back, tr("Back"), Some(Action::Back));
         let (forward, _) =
             icon_button(ui, nav, ChromeAction::Forward, Widget::icon(Icon::Forward, 21.0), BUTTON);
-        tip(ui, forward, "Forward", Some(Action::Forward));
+        tip(ui, forward, tr("Forward"), Some(Action::Forward));
         let (home_button, _) =
             icon_button(ui, nav, ChromeAction::Home, Widget::icon(Icon::Home, 20.0), BUTTON);
-        tip(ui, home_button, "Home", None);
+        tip(ui, home_button, tr("Home"), None);
 
         // Separate tab bar: the address segment sits here, centred between the groups.
         let address_slot = ui.add(
@@ -1057,7 +1058,7 @@ impl Chrome {
         let address_close = close_dot(ui, address, ChromeAction::CloseTab(0), 32.0);
         let shield_glyph = Widget::icon(Icon::Shield, 18.0).with_paint(Paint::Shield);
         let (shield, shield_glyph) = icon_button(ui, address, ChromeAction::Shield, shield_glyph, 30.0);
-        tip(ui, shield, "Shields", None);
+        tip(ui, shield, tr("Shields"), None);
         // The site's icon, like on the other tabs' segments.
         let address_favicon = ui.add(
             address,
@@ -1072,7 +1073,7 @@ impl Chrome {
             Widget::icon(Icon::Volume, 18.0).with_paint(Paint::Accent),
             30.0,
         );
-        tip(ui, audio_button, "Mute or Unmute Tab", None);
+        tip(ui, audio_button, tr("Mute or Unmute Tab"), None);
         ui.set_visible(audio_button, false);
         // Pages with a video: save it for later (Playlist).
         let (playlist_button, playlist_icon) = icon_button(
@@ -1082,7 +1083,7 @@ impl Chrome {
             Widget::icon(Icon::PlaylistAdd, 18.0),
             30.0,
         );
-        tip(ui, playlist_button, "Add to Playlist", Some(Action::PlaylistAdd));
+        tip(ui, playlist_button, tr("Add to Playlist"), Some(Action::PlaylistAdd));
         ui.set_visible(playlist_button, false);
         let address_label = ui.add_label(address, "", TextStyle::BodyEmphasis, shrinking_label());
         ui.set_label_align(address_label, Align::Start);
@@ -1095,10 +1096,10 @@ impl Chrome {
         ui.set_visible(address_field, false);
         let (reload_button, reload_icon) =
             icon_button(ui, address, ChromeAction::ReloadOrStop, Widget::icon(Icon::Reload, 19.0), 34.0);
-        tip(ui, reload_button, "Reload", Some(Action::Reload));
+        tip(ui, reload_button, tr("Reload"), Some(Action::Reload));
         let (page_menu, _) =
             icon_button(ui, address, ChromeAction::PageMenu, Widget::icon(Icon::Menu, 20.0), 34.0);
-        tip(ui, page_menu, "Page Menu", None);
+        tip(ui, page_menu, tr("Page Menu"), None);
         let progress = ui.add(
             address,
             Widget::progress(Paint::Accent),
@@ -1139,7 +1140,7 @@ impl Chrome {
             Widget::container()
                 .with_action(ChromeAction::DownloadsButton.id())
                 .with_radius(CAPSULE)
-                .with_tooltip("Downloads", None),
+                .with_tooltip(tr("Downloads"), None),
             Style {
                 size: square(BUTTON),
                 justify_content: JustifyContent::CENTER,
@@ -1161,20 +1162,20 @@ impl Chrome {
         ui.set_visible(downloads, false);
         let (share_button, _) =
             icon_button(ui, actions, ChromeAction::Share, Widget::icon(Icon::Share, 21.0), BUTTON);
-        tip(ui, share_button, "Copy Link", None);
+        tip(ui, share_button, tr("Copy Link"), None);
         let (new_tab_button, _) =
             icon_button(ui, actions, ChromeAction::NewTab, Widget::icon(Icon::Plus, 22.0), BUTTON);
-        tip(ui, new_tab_button, "New Tab", Some(Action::NewTab));
+        tip(ui, new_tab_button, tr("New Tab"), Some(Action::NewTab));
         let (overview, _) =
             icon_button(ui, actions, ChromeAction::Overview, Widget::icon(Icon::Overview, 20.0), BUTTON);
-        tip(ui, overview, "Show Tab Overview", Some(Action::TabOverview));
+        tip(ui, overview, tr("Show Tab Overview"), Some(Action::TabOverview));
         // Narrow windows: the overview button shows the tab count instead.
         let tab_count = ui.add(
             actions,
             Widget::container()
                 .with_action(ChromeAction::Overview.id())
                 .with_radius(CAPSULE)
-                .with_tooltip("Show Tab Overview", Some(Action::TabOverview)),
+                .with_tooltip(tr("Show Tab Overview"), Some(Action::TabOverview)),
             Style { size: square(BUTTON), justify_content: JustifyContent::CENTER, ..row(0.0) },
         );
         let count_box = ui.add(
@@ -1252,7 +1253,7 @@ impl Chrome {
             panel_viewport,
             panel_search,
             panel_search_field,
-            panel_empty: "Nothing here yet".into(),
+            panel_empty: tr("Nothing here yet").into(),
             panel_scroll: 0.0,
             panel_list,
             panel_groups: Vec::new(),
@@ -1454,7 +1455,7 @@ impl Chrome {
                         .panel_group_state
                         .get(section)
                         .copied()
-                        .unwrap_or(!collapse_older || section == "Today");
+                        .unwrap_or(!collapse_older || section == tr("Today"));
                     let heading = ui.add(
                         self.panel_list,
                         Widget::container()
@@ -1778,7 +1779,7 @@ impl Chrome {
             ui.set_visible(pill, !locked && self.mode != Mode::Narrow);
         }
         if locked {
-            ui.set_text(self.address_label, "Private Browsing");
+            ui.set_text(self.address_label, tr("Private Browsing"));
         }
     }
 
@@ -2476,7 +2477,7 @@ impl Chrome {
         // Sidebar: each group's tabs are listed under its row: the normal ones under "N Tabs",
         // the private ones under "Private". Rows of the other group switch to it.
         let count = if self.private_mode { self.normal_count } else { tabs.len() };
-        ui.set_text(self.tab_group_label, &format!("{count} {}", if count == 1 { "Tab" } else { "Tabs" }));
+        ui.set_text(self.tab_group_label, &tr_n("{n} Tab", "{n} Tabs", count));
         if let Some(header) = ui.parent(self.tab_group_label) {
             let (normal, private) = if self.private_mode {
                 (self.sidebar_other, self.sidebar_tabs)
@@ -2532,7 +2533,7 @@ impl Chrome {
         let Some(tab) = tabs.active() else { return };
         let home = crate::home::is_home_url(&tab.url);
         let host = match () {
-            _ if self.locked => "Private Browsing".to_owned(),
+            _ if self.locked => tr("Private Browsing").to_owned(),
             _ if home => crate::home::ADDRESS_PLACEHOLDER.to_owned(),
             _ => display_host(&tab.url),
         };
@@ -2555,7 +2556,7 @@ impl Chrome {
             w.set_icon(if tab.loading { Icon::Stop } else { Icon::Reload });
         }
         if let Some(button) = ui.parent(self.reload_icon) {
-            let label = if tab.loading { "Stop Loading" } else { "Reload" };
+            let label = if tab.loading { tr("Stop Loading") } else { tr("Reload") };
             tip(ui, button, label, (!tab.loading).then_some(Action::Reload));
         }
         ui.set_progress(self.progress, if tab.loading { tab.progress.max(0.08) as f32 } else { 1.0 });
@@ -2703,7 +2704,7 @@ impl BookmarkRow {
         );
         let hint = ui.add_label(
             list,
-            "Bookmarks you add appear here",
+            tr("Bookmarks you add appear here"),
             TextStyle::Footnote,
             Style { padding: padding(10.0, 10.0, 0.0, 0.0), ..Default::default() },
         );
