@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{Color, Config};
 use axion_engine::ViewId;
+use axion_i18n::{tr, tr_fmt, tr_mark, tr_n};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
@@ -100,34 +101,47 @@ fn kind_icon(kind: Kind) -> Icon {
 
 fn kind_name(kind: Kind) -> &'static str {
     match kind {
-        Kind::Login => "Password",
-        Kind::Card => "Card",
-        Kind::Address => "Address",
-        Kind::Note => "Note",
+        Kind::Login => tr("Password"),
+        Kind::Card => tr("Card"),
+        Kind::Address => tr("Address"),
+        Kind::Note => tr("Note"),
     }
 }
+
+const LOGIN_FIELDS: &[(&str, bool)] = &[
+    (tr_mark("Website"), false),
+    (tr_mark("User name"), false),
+    (tr_mark("Password"), true),
+    (tr_mark("Notes"), false),
+];
+
+const CARD_FIELDS: &[(&str, bool)] = &[
+    (tr_mark("Name"), false),
+    (tr_mark("Cardholder"), false),
+    (tr_mark("Card number"), true),
+    (tr_mark("Expiry (MM/YY)"), false),
+    (tr_mark("Security code"), true),
+];
+
+const ADDRESS_FIELDS: &[(&str, bool)] = &[
+    (tr_mark("Full name"), false),
+    (tr_mark("Street"), false),
+    (tr_mark("City"), false),
+    (tr_mark("ZIP code"), false),
+    (tr_mark("Country"), false),
+    (tr_mark("Email"), false),
+    (tr_mark("Phone"), false),
+];
+
+const NOTE_FIELDS: &[(&str, bool)] = &[(tr_mark("Title"), false), (tr_mark("Note"), true)];
 
 /// The fields of each kind: label and whether it is a secret (hidden until revealed).
 fn fields(kind: Kind) -> &'static [(&'static str, bool)] {
     match kind {
-        Kind::Login => &[("Website", false), ("User name", false), ("Password", true), ("Notes", false)],
-        Kind::Card => &[
-            ("Name", false),
-            ("Cardholder", false),
-            ("Card number", true),
-            ("Expiry (MM/YY)", false),
-            ("Security code", true),
-        ],
-        Kind::Address => &[
-            ("Full name", false),
-            ("Street", false),
-            ("City", false),
-            ("ZIP code", false),
-            ("Country", false),
-            ("Email", false),
-            ("Phone", false),
-        ],
-        Kind::Note => &[("Title", false), ("Note", true)],
+        Kind::Login => LOGIN_FIELDS,
+        Kind::Card => CARD_FIELDS,
+        Kind::Address => ADDRESS_FIELDS,
+        Kind::Note => NOTE_FIELDS,
     }
 }
 
@@ -580,7 +594,7 @@ impl Passwords {
             },
         );
         let header = ui.add(side, Widget::container(), Style { padding: padding(8.0, 0.0), ..row(8.0) });
-        ui.add_label(header, "Passwords", TextStyle::Title1, grow());
+        ui.add_label(header, tr("Passwords"), TextStyle::Title1, grow());
         icon_button(ui, header, LOCK, Icon::Lock, 32.0);
         icon_button(ui, header, ADD, Icon::Plus, 32.0);
         let search_box = ui.add(
@@ -596,7 +610,7 @@ impl Passwords {
         ui.add(search_box, Widget::icon(Icon::Search, 16.0).with_paint(Paint::Secondary), Style::default());
         let search = ui.add_text_field(
             search_box,
-            "Search",
+            tr("Search"),
             TextStyle::Body,
             Style {
                 flex_grow: 1.0,
@@ -678,7 +692,8 @@ impl Passwords {
             },
         );
         ui.add(alert, Widget::icon(Icon::Key, 30.0).with_paint(Paint::Accent), Style::default());
-        let alert_title = ui.add_label(alert, "Unlock Passwords", TextStyle::BodyEmphasis, Style::default());
+        let alert_title =
+            ui.add_label(alert, tr("Unlock Passwords"), TextStyle::BodyEmphasis, Style::default());
         let alert_text = secondary(ui, alert, "", TextStyle::Footnote);
         let alert_note = secondary(ui, alert, "", TextStyle::Footnote);
         let field_style = Style {
@@ -686,9 +701,9 @@ impl Passwords {
             margin: Rect { left: length(0.0), right: length(0.0), top: length(6.0), bottom: length(0.0) },
             ..row(0.0)
         };
-        let alert_field = field_box(ui, alert, "Account password", field_style.clone());
+        let alert_field = field_box(ui, alert, tr("Account password"), field_style.clone());
         ui.set_secure(alert_field, true);
-        let confirm_field = field_box(ui, alert, "Repeat password", field_style);
+        let confirm_field = field_box(ui, alert, tr("Repeat password"), field_style);
         ui.set_secure(confirm_field, true);
         let confirm_box = ui.parent(confirm_field).unwrap_or(confirm_field);
         let alert_error = painted(ui, alert, "", TextStyle::Footnote, Paint::Fixed(ERROR));
@@ -701,8 +716,8 @@ impl Passwords {
                 ..row(10.0)
             },
         );
-        capsule_button(ui, buttons, CANCEL_UNLOCK, "Cancel", false);
-        let alert_button = capsule_button(ui, buttons, UNLOCK, "Unlock", true);
+        capsule_button(ui, buttons, CANCEL_UNLOCK, tr("Cancel"), false);
+        let alert_button = capsule_button(ui, buttons, UNLOCK, tr("Unlock"), true);
         ui.set_visible(root, false);
         ui.set_visible(alert_layer, false);
         let morph = SheetMorph::build(sheet, root, SHEET_RADIUS, BACKDROP_DIM);
@@ -1025,20 +1040,29 @@ impl Passwords {
         ui.set_visible(self.alert_layer, true);
         ui.set_visible(self.alert_error, false);
         let set_up = self.vault.as_ref().is_some_and(Vault::is_set_up);
+        let account = &self.account;
         let (title, text, note, button) = match &self.vault {
-            None => ("Passwords Unavailable", "The password vault couldn't be opened.", "", "Close"),
-            Some(_) if set_up => {
-                ("Unlock Passwords", "Enter the password of “{}” to continue.", "", "Unlock")
-            }
+            None => (
+                tr("Passwords Unavailable"),
+                tr("The password vault couldn't be opened.").to_owned(),
+                "",
+                tr("Close"),
+            ),
+            Some(_) if set_up => (
+                tr("Unlock Passwords"),
+                tr_fmt!("Enter the password of “{name}” to continue.", name = account),
+                "",
+                tr("Unlock"),
+            ),
             Some(_) => (
-                "Set Up Passwords",
-                "Choose a password for “{}”.",
-                "It encrypts Passwords and locks private tabs.",
-                "Create",
+                tr("Set Up Passwords"),
+                tr_fmt!("Choose a password for “{name}”.", name = account),
+                tr("It encrypts Passwords and locks private tabs."),
+                tr("Create"),
             ),
         };
         ui.set_text(self.alert_title, title);
-        ui.set_text(self.alert_text, &text.replace("{}", &self.account));
+        ui.set_text(self.alert_text, &text);
         ui.set_text(self.alert_note, note);
         ui.set_visible(self.alert_note, !note.is_empty());
         ui.set_text(self.alert_button, button);
@@ -1067,16 +1091,18 @@ impl Passwords {
             };
         }
         let (title, note) = match reason {
-            Reauth::OpenSheet => ("Passwords", ""),
-            Reauth::Reveal(_) => ("Show Card Details", "Card details ask for the password every time."),
-            Reauth::Copy(_) => ("Copy Card Details", "Card details ask for the password every time."),
+            Reauth::OpenSheet => (tr("Passwords"), ""),
+            Reauth::Reveal(_) => {
+                (tr("Show Card Details"), tr("Card details ask for the password every time."))
+            }
+            Reauth::Copy(_) => (tr("Copy Card Details"), tr("Card details ask for the password every time.")),
         };
         ui.set_text(self.alert_title, title);
-        let text = format!("Enter the password of “{}” to continue.", self.account);
+        let text = tr_fmt!("Enter the password of “{name}” to continue.", name = self.account);
         ui.set_text(self.alert_text, &text);
         ui.set_text(self.alert_note, note);
         ui.set_visible(self.alert_note, !note.is_empty());
-        ui.set_text(self.alert_button, if self.is_unlocked() { "Continue" } else { "Unlock" });
+        ui.set_text(self.alert_button, if self.is_unlocked() { tr("Continue") } else { tr("Unlock") });
         ui.set_visible(ui.parent(self.alert_field).unwrap_or(self.alert_field), true);
         ui.set_visible(self.confirm_box, false);
         self.alert_appear.spring = spring(config);
@@ -1117,7 +1143,7 @@ impl Passwords {
                 let _ = ui.blur();
                 outcome
             }
-            Err(VaultError::WrongPassword) => self.alert_failed(ui, "Wrong password"),
+            Err(VaultError::WrongPassword) => self.alert_failed(ui, tr("Wrong password")),
             Err(e) => {
                 tracing::error!("checking the account password failed: {e}");
                 self.alert_failed(ui, &describe(&e))
@@ -1144,10 +1170,13 @@ impl Passwords {
         } else {
             let confirm = Zeroizing::new(ui.field_text(self.confirm_field).unwrap_or_default().to_owned());
             if password.chars().count() < MIN_MASTER_LENGTH {
-                return self.alert_failed(ui, &format!("Use at least {MIN_MASTER_LENGTH} characters."));
+                return self.alert_failed(
+                    ui,
+                    &tr_fmt!("Use at least {count} characters.", count = MIN_MASTER_LENGTH),
+                );
             }
             if *password != *confirm {
-                return self.alert_failed(ui, "The passwords don't match.");
+                return self.alert_failed(ui, tr("The passwords don't match."));
             }
             vault.setup(&password)
         };
@@ -1161,7 +1190,7 @@ impl Passwords {
                 }
                 self.refresh(ui, config)
             }
-            Err(VaultError::WrongPassword) => self.alert_failed(ui, "Wrong password"),
+            Err(VaultError::WrongPassword) => self.alert_failed(ui, tr("Wrong password")),
             Err(e) => {
                 tracing::error!("unlocking passwords failed: {e}");
                 self.alert_failed(ui, &describe(&e))
@@ -1274,7 +1303,8 @@ impl Passwords {
             }
         }
         if self.list_ids.is_empty() {
-            let text = if self.query.trim().is_empty() { "Nothing saved yet." } else { "No matches." };
+            let text =
+                if self.query.trim().is_empty() { tr("Nothing saved yet.") } else { tr("No matches.") };
             let label = secondary(ui, self.list, text, TextStyle::Footnote);
             let mut style = ui.style(label);
             style.margin =
@@ -1309,8 +1339,11 @@ impl Passwords {
                 );
                 ui.add(empty, Widget::icon(Icon::Key, 34.0).with_paint(Paint::Secondary), Style::default());
                 let none = self.vault.as_ref().is_none_or(|v| v.items().is_empty());
-                let text =
-                    if none { "Click + to save a password, card or address." } else { "Select an item." };
+                let text = if none {
+                    tr("Click + to save a password, card or address.")
+                } else {
+                    tr("Select an item.")
+                };
                 secondary(ui, empty, text, TextStyle::Body);
             }
             Detail::View(id) => self.build_view(ui, &id),
@@ -1378,7 +1411,7 @@ impl Passwords {
         };
         let kind = item.data.kind();
         let subtitle = jiff::Timestamp::from_second(item.modified)
-            .map(|t| format!("Edited {}", t.strftime("%Y-%m-%d")))
+            .map(|t| tr_fmt!("Edited {date}", date = t.strftime("%Y-%m-%d")))
             .unwrap_or_default();
         self.header(ui, kind, &item.data.title(), &subtitle);
         let group = self.group(ui);
@@ -1402,7 +1435,7 @@ impl Passwords {
             style.flex_grow = 1.0;
             style.min_size = Size { width: length(0.0), height: auto() };
             ui.set_style(texts, style);
-            secondary(ui, texts, label, TextStyle::Footnote);
+            secondary(ui, texts, tr(label), TextStyle::Footnote);
             let revealed = self.revealed.get(i).copied().unwrap_or(false);
             ui.add_label(
                 texts,
@@ -1431,17 +1464,23 @@ impl Passwords {
                 ..row(10.0)
             },
         );
-        pill(ui, buttons, EDIT, "Edit", false);
-        pill(ui, buttons, DELETE, if self.confirm_delete { "Click again to delete" } else { "Delete" }, true);
+        pill(ui, buttons, EDIT, tr("Edit"), false);
+        pill(
+            ui,
+            buttons,
+            DELETE,
+            if self.confirm_delete { tr("Click again to delete") } else { tr("Delete") },
+            true,
+        );
     }
 
     fn build_edit(&mut self, ui: &mut Ui, config: &Config, id: Option<&str>, kind: Kind) {
         let item = id.and_then(|id| self.vault.as_ref()?.get(id)).cloned();
         let data = item.as_ref().map_or_else(|| ItemData::empty(kind), |i| i.data.clone());
         let title = if item.is_some() {
-            format!("Edit {}", kind_name(kind))
+            tr_fmt!("Edit {kind}", kind = kind_name(kind))
         } else {
-            format!("New {}", kind_name(kind))
+            tr_fmt!("New {kind}", kind = kind_name(kind))
         };
         self.header(ui, kind, &title, "");
         if item.is_none() {
@@ -1482,7 +1521,7 @@ impl Passwords {
             );
             ui.add_label(
                 row_node,
-                label,
+                tr(label),
                 TextStyle::Body,
                 Style {
                     size: Size { width: length(EDIT_LABEL_WIDTH), height: auto() },
@@ -1490,7 +1529,7 @@ impl Passwords {
                     ..Default::default()
                 },
             );
-            let field_node = field_box(ui, row_node, label, grow());
+            let field_node = field_box(ui, row_node, tr(label), grow());
             ui.set_field_text(field_node, field(&data, i));
             if secret {
                 let revealed = self.revealed[i];
@@ -1521,13 +1560,13 @@ impl Passwords {
                 ..row(10.0)
             },
         );
-        pill(ui, buttons, SAVE, "Save", false);
-        pill(ui, buttons, CANCEL_EDIT, "Cancel", false);
+        pill(ui, buttons, SAVE, tr("Save"), false);
+        pill(ui, buttons, CANCEL_EDIT, tr("Cancel"), false);
     }
 
     /// The password generator under a login's fields: length, symbols, Generate.
     fn generator(&mut self, ui: &mut Ui, config: &Config) {
-        let label = secondary(ui, self.detail, "PASSWORD GENERATOR", TextStyle::Caption);
+        let label = secondary(ui, self.detail, tr("PASSWORD GENERATOR"), TextStyle::Caption);
         let mut style = ui.style(label);
         style.margin =
             Rect { left: length(GROUP_INSET), right: length(0.0), top: length(18.0), bottom: length(6.0) };
@@ -1538,7 +1577,7 @@ impl Passwords {
             Widget::container(),
             Style { size: Size { width: auto(), height: length(EDIT_ROW) }, flex_shrink: 0.0, ..row(12.0) },
         );
-        ui.add_label(row_node, "Length", TextStyle::Body, Style::default());
+        ui.add_label(row_node, tr("Length"), TextStyle::Body, Style::default());
         let (min, max) = GENERATOR_RANGE;
         let value = ((config.passwords.generator_length as f32 - min) / (max - min)).clamp(0.0, 1.0);
         self.generator_length = Some(ui.add(
@@ -1556,11 +1595,11 @@ impl Passwords {
         style.size = Size { width: length(24.0), height: auto() };
         ui.set_style(length_label, style);
         self.generator_length_label = Some(length_label);
-        ui.add_label(row_node, "Symbols", TextStyle::Body, Style::default());
+        ui.add_label(row_node, tr("Symbols"), TextStyle::Body, Style::default());
         self.generator_symbols =
             Some(ui.add(row_node, Widget::toggle(config.passwords.generator_symbols), Style::default()));
         ui.add(row_node, Widget::container(), grow());
-        pill(ui, row_node, GENERATE, "Generate", false);
+        pill(ui, row_node, GENERATE, tr("Generate"), false);
     }
 
     /// Reads the edited fields and saves the item.
@@ -1576,13 +1615,13 @@ impl Passwords {
         }
         let missing = match &data {
             ItemData::Login(l) if l.site.is_empty() || l.password.is_empty() => {
-                Some("Add a website and a password.")
+                Some(tr("Add a website and a password."))
             }
-            ItemData::Card(c) if c.number.is_empty() => Some("Add the card number."),
+            ItemData::Card(c) if c.number.is_empty() => Some(tr("Add the card number.")),
             ItemData::Address(_) | ItemData::Note(_)
                 if (0..fields(kind).len()).all(|i| field(&data, i).is_empty()) =>
             {
-                Some("Fill in at least one field.")
+                Some(tr("Fill in at least one field."))
             }
             _ => None,
         };
@@ -2090,7 +2129,7 @@ impl Passwords {
         ui.set_style(titles, style);
         match &self.prompt.state {
             Some(PromptState::Fill { url, ids, .. }) => {
-                ui.add_label(titles, "Fill with Axion", TextStyle::BodyEmphasis, Style::default());
+                ui.add_label(titles, tr("Fill with Axion"), TextStyle::BodyEmphasis, Style::default());
                 secondary(ui, titles, &site::display_host(url), TextStyle::Footnote);
                 icon_button(ui, header, PROMPT_CLOSE, Icon::Close, 28.0);
                 for (i, id) in ids.iter().enumerate() {
@@ -2114,21 +2153,21 @@ impl Passwords {
                         Style::default(),
                     );
                     let name =
-                        if login.username.is_empty() { "No user name" } else { login.username.as_str() };
+                        if login.username.is_empty() { tr("No user name") } else { login.username.as_str() };
                     ui.add_label(row_node, name, TextStyle::Body, grow());
                     secondary(ui, row_node, HIDDEN, TextStyle::Footnote);
                 }
             }
             Some(PromptState::Unlock { url, .. }) => {
-                ui.add_label(titles, "Unlock to fill", TextStyle::BodyEmphasis, Style::default());
+                ui.add_label(titles, tr("Unlock to fill"), TextStyle::BodyEmphasis, Style::default());
                 secondary(ui, titles, &site::display_host(url), TextStyle::Footnote);
                 icon_button(ui, header, PROMPT_CLOSE, Icon::Close, 28.0);
                 let line = ui.add(root, Widget::container(), fixed(PROMPT_LINE, padding(2.0, 0.0), 8.0));
                 height += PROMPT_GAP_ROWS + PROMPT_LINE;
-                let field = field_box(ui, line, "Account password", Style { flex_grow: 1.0, ..row(0.0) });
+                let field = field_box(ui, line, tr("Account password"), Style { flex_grow: 1.0, ..row(0.0) });
                 ui.set_secure(field, true);
                 // The field takes the room; the button keeps its natural width.
-                let label = capsule_button(ui, line, PROMPT_UNLOCK, "Unlock", true);
+                let label = capsule_button(ui, line, PROMPT_UNLOCK, tr("Unlock"), true);
                 if let Some(button) = ui.parent(label) {
                     let mut style = ui.style(button);
                     style.flex_grow = 0.0;
@@ -2146,7 +2185,7 @@ impl Passwords {
                         .vault
                         .as_ref()
                         .is_some_and(|v| v.login_for(&pending.url, &pending.username).is_some());
-                let title = if update { "Change Password?" } else { "Save password?" };
+                let title = if update { tr("Change Password?") } else { tr("Save password?") };
                 ui.add_label(titles, title, TextStyle::BodyEmphasis, Style::default());
                 let host = site::display_host(&pending.url);
                 let who = if pending.username.is_empty() {
@@ -2157,9 +2196,12 @@ impl Passwords {
                 secondary(ui, titles, &who, TextStyle::Footnote);
                 let buttons = ui.add(root, Widget::container(), fixed(PROMPT_LINE, padding(2.0, 0.0), 8.0));
                 height += PROMPT_GAP_ROWS + PROMPT_LINE;
-                capsule_button(ui, buttons, PROMPT_CLOSE, "Not Now", false);
-                let save =
-                    if self.is_unlocked() { if update { "Update" } else { "Save" } } else { "Save…" };
+                capsule_button(ui, buttons, PROMPT_CLOSE, tr("Not Now"), false);
+                let save = if self.is_unlocked() {
+                    if update { tr("Update") } else { tr("Save") }
+                } else {
+                    tr("Save…")
+                };
                 capsule_button(ui, buttons, PROMPT_SAVE, save, true);
             }
             None => return,
@@ -2238,16 +2280,16 @@ impl Passwords {
     pub fn export(&self, path: &Path, password: &str) -> String {
         match &self.vault {
             Some(vault) if vault.is_unlocked() => match vault.export_encrypted(path, password) {
-                Ok(()) => format!("Exported to {}", path.display()),
+                Ok(()) => tr_fmt!("Exported to {path}", path = path.display()),
                 Err(VaultError::WrongPassword) => {
-                    "Export failed: that isn't the account password.".to_owned()
+                    tr("Export failed: that isn't the account password.").to_owned()
                 }
                 Err(e) => {
                     tracing::error!("exporting passwords failed: {e}");
-                    format!("Export failed: {}", describe(&e))
+                    tr_fmt!("Export failed: {reason}", reason = describe(&e))
                 }
             },
-            _ => "Unlock Passwords first (open Passwords in the sidebar).".to_owned(),
+            _ => tr("Unlock Passwords first (open Passwords in the sidebar).").to_owned(),
         }
     }
 
@@ -2257,15 +2299,17 @@ impl Passwords {
     /// got its password just now.
     pub fn restore(&mut self, ui: &mut Ui, config: &Config, path: &Path, password: &str) -> (String, bool) {
         let Some(vault) = self.vault.as_mut() else {
-            return ("Passwords are unavailable.".to_owned(), false);
+            return (tr("Passwords are unavailable.").to_owned(), false);
         };
         let set_up = vault.is_set_up();
         if set_up && !vault.is_unlocked() {
-            return ("Unlock Passwords first (open Passwords in the sidebar).".to_owned(), false);
+            return (tr("Unlock Passwords first (open Passwords in the sidebar).").to_owned(), false);
         }
         let bytes = match std::fs::read(path) {
             Ok(bytes) => Zeroizing::new(bytes),
-            Err(e) => return (format!("Can't read {}: {e}", path.display()), false),
+            Err(e) => {
+                return (tr_fmt!("Can't read {path}: {error}", path = path.display(), error = e), false);
+            }
         };
         let result = if set_up {
             vault.import_export(&bytes, password)
@@ -2279,20 +2323,21 @@ impl Passwords {
                     self.after_unlock(ui, config);
                 }
                 let mut status = match n {
-                    0 => "Nothing new to restore.".to_owned(),
-                    n => format!("Restored {n} item{}.", if n == 1 { "" } else { "s" }),
+                    0 => tr("Nothing new to restore.").to_owned(),
+                    n => tr_n("Restored {n} item.", "Restored {n} items.", n),
                 };
                 if !set_up {
-                    status.push_str(" Its password is now the account password.");
+                    status.push(' ');
+                    status.push_str(tr("Its password is now the account password."));
                 }
                 (status, !set_up)
             }
             Err(VaultError::WrongPassword) => {
-                ("Restore failed: wrong password for this export.".to_owned(), false)
+                (tr("Restore failed: wrong password for this export.").to_owned(), false)
             }
             Err(e) => {
                 tracing::error!("restoring passwords failed: {e}");
-                (format!("Restore failed: {}", describe(&e)), false)
+                (tr_fmt!("Restore failed: {reason}", reason = describe(&e)), false)
             }
         }
     }
@@ -2300,18 +2345,18 @@ impl Passwords {
     /// Imports a CSV export of another browser or manager. Returns a status line.
     pub fn import_csv(&mut self, path: &Path) -> String {
         let Some(vault) = self.vault.as_mut().filter(|v| v.is_unlocked()) else {
-            return "Unlock Passwords first (open Passwords in the sidebar).".to_owned();
+            return tr("Unlock Passwords first (open Passwords in the sidebar).").to_owned();
         };
         let text = match std::fs::read_to_string(path) {
             Ok(text) => Zeroizing::new(text),
-            Err(e) => return format!("Can't read {}: {e}", path.display()),
+            Err(e) => return tr_fmt!("Can't read {path}: {error}", path = path.display(), error = e),
         };
         match vault.import_csv(&text) {
-            Ok(0) => "Nothing new to import.".to_owned(),
-            Ok(n) => format!("Imported {n} item{}.", if n == 1 { "" } else { "s" }),
+            Ok(0) => tr("Nothing new to import.").to_owned(),
+            Ok(n) => tr_n("Imported {n} item.", "Imported {n} items.", n),
             Err(e) => {
                 tracing::error!("importing passwords failed: {e}");
-                format!("Import failed: {e}")
+                tr_fmt!("Import failed: {reason}", reason = e)
             }
         }
     }
@@ -2488,10 +2533,12 @@ impl Prompt {
 /// What to tell the user about a vault error.
 pub fn describe(e: &VaultError) -> String {
     match e {
-        VaultError::WrongPassword => "Wrong password".to_owned(),
-        VaultError::OtherDevice => "These passwords belong to another device. Restore them from an Axion \
-                                    export in Settings › Passwords."
-            .to_owned(),
+        VaultError::WrongPassword => tr("Wrong password").to_owned(),
+        VaultError::OtherDevice => {
+            tr("These passwords belong to another device. Restore them from an Axion \
+                                    export in Settings › Passwords.")
+            .to_owned()
+        }
         e => {
             let text = e.to_string();
             let mut chars = text.chars();

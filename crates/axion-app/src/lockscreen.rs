@@ -1,5 +1,5 @@
 //! Private browsing while locked (Safari, iPadOS 26): the page area shows a grey lock,
-//! "“Private Browsing” is locked" and a blue Unlock button. Unlock brings up a glass alert
+//! “Private Browsing” is locked and a blue Unlock button. Unlock brings up a glass alert
 //! card (scaling up and fading in) that asks for the account password — where Safari asks for
 //! Touch ID.
 //!
@@ -10,6 +10,7 @@
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{Color, Config};
+use axion_i18n::{tr, tr_fmt};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
@@ -100,7 +101,7 @@ impl LockScreen {
             },
         );
         ui.add(root, Widget::icon(Icon::Lock, 34.0).with_paint(Paint::Secondary), Style::default());
-        secondary(ui, root, "“Private Browsing” is locked", TextStyle::Title2);
+        secondary(ui, root, tr("“Private Browsing” is locked"), TextStyle::Title2);
         let unlock = ui.add(
             root,
             Widget::container()
@@ -119,7 +120,7 @@ impl LockScreen {
                 ..Default::default()
             },
         );
-        let label = ui.add_label(unlock, "Unlock", TextStyle::Callout, Style::default());
+        let label = ui.add_label(unlock, tr("Unlock"), TextStyle::Callout, Style::default());
         if let Some(w) = ui.widget_mut(label) {
             w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
         }
@@ -154,7 +155,7 @@ impl LockScreen {
             },
         );
         ui.add(alert, Widget::icon(Icon::Lock, 30.0).with_paint(Paint::Accent), Style::default());
-        ui.add_label(alert, "Unlock “Private Browsing”", TextStyle::BodyEmphasis, Style::default());
+        ui.add_label(alert, tr("Unlock “Private Browsing”"), TextStyle::BodyEmphasis, Style::default());
         let text = secondary(ui, alert, "", TextStyle::Footnote);
         let field_box = ui.add(
             alert,
@@ -174,7 +175,7 @@ impl LockScreen {
         );
         let field = ui.add_text_field(
             field_box,
-            "Password",
+            tr("Password"),
             TextStyle::Body,
             Style {
                 flex_grow: 1.0,
@@ -197,7 +198,7 @@ impl LockScreen {
         );
         let eye_icon =
             ui.add(eye, Widget::icon(Icon::Eye, 18.0).with_paint(Paint::Secondary), Style::default());
-        let error = ui.add_label(alert, "Wrong password", TextStyle::Footnote, Style::default());
+        let error = ui.add_label(alert, tr("Wrong password"), TextStyle::Footnote, Style::default());
         if let Some(w) = ui.widget_mut(error) {
             w.set_paint(Paint::Fixed(ERROR));
         }
@@ -211,8 +212,8 @@ impl LockScreen {
                 ..Default::default()
             },
         );
-        capsule_button(ui, buttons, CANCEL, "Cancel", false);
-        capsule_button(ui, buttons, UNLOCK, "Unlock", true);
+        capsule_button(ui, buttons, CANCEL, tr("Cancel"), false);
+        capsule_button(ui, buttons, UNLOCK, tr("Unlock"), true);
         ui.set_visible(alert_layer, false);
         ui.set_visible(root, false);
         Self {
@@ -238,7 +239,7 @@ impl LockScreen {
 
     /// Names the account whose password unlocks.
     pub fn set_account(&self, ui: &mut Ui, name: &str) {
-        let text = format!("Enter the password of “{name}”.");
+        let text = tr_fmt!("Enter the password of “{name}”.", name = name);
         ui.set_text(self.text, &text);
     }
 
@@ -378,7 +379,7 @@ impl LockScreen {
     }
 
     pub fn wrong_password(&mut self, ui: &mut Ui) {
-        self.show_error(ui, "Wrong password");
+        self.show_error(ui, tr("Wrong password"));
     }
 
     /// Shows why unlocking failed (and clears the field).

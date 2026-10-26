@@ -5,6 +5,7 @@
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
+use axion_i18n::tr;
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
@@ -107,7 +108,8 @@ impl PlaylistPopover {
                 .with_paint(Paint::Accent),
             Style::default(),
         );
-        let heading = if any_added && videos.len() == 1 { "In your Playlist" } else { "Add to Playlist" };
+        let heading =
+            if any_added && videos.len() == 1 { tr("In your Playlist") } else { tr("Add to Playlist") };
         ui.add_label(header, heading, TextStyle::BodyEmphasis, Style::default());
         for (i, v) in videos.iter().enumerate() {
             let titles = ui.add(
@@ -155,17 +157,17 @@ impl PlaylistPopover {
                     buttons,
                     PopoverAction::OpenPlaylist.id_for(i),
                     Icon::Playlist,
-                    "Open Playlist",
+                    tr("Open Playlist"),
                     false,
                 );
-                button(ui, buttons, PopoverAction::Remove(i).id_for(i), Icon::Trash, "Remove", false);
+                button(ui, buttons, PopoverAction::Remove(i).id_for(i), Icon::Trash, tr("Remove"), false);
             } else {
                 button(
                     ui,
                     buttons,
                     PopoverAction::Add { video: i, download: false }.id_for(i),
                     Icon::PlaylistAdd,
-                    "Add",
+                    tr("Add"),
                     !v.can_download,
                 );
                 if v.can_download {
@@ -174,7 +176,7 @@ impl PlaylistPopover {
                         buttons,
                         PopoverAction::Add { video: i, download: true }.id_for(i),
                         Icon::Download,
-                        "Add and Download",
+                        tr("Add and Download"),
                         true,
                     );
                 }

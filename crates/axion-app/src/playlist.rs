@@ -16,6 +16,8 @@ use axion_engine::{DownloadInfo, DownloadState, ViewId};
 use axion_media::{Capture, Kind, PageMedia, Player, Sniffed, format_time};
 use axion_store::{NewPlaylistItem, PlaylistItem, Store, dl};
 
+use axion_i18n::{tr, tr_fmt, tr_mark, tr_n};
+
 use crate::url::display_host;
 
 /// Where a video's bytes come from, which decides if it can be saved for offline use.
@@ -38,14 +40,16 @@ pub fn classify(media_url: &str) -> Source {
     }
     let scheme_ok = url.starts_with("http://") || url.starts_with("https://");
     if !scheme_ok {
-        return Source::Streaming("The page streams this video itself, so it can only be watched online.");
+        return Source::Streaming(tr_mark(
+            "The page streams this video itself, so it can only be watched online.",
+        ));
     }
     let path = url.split(['?', '#']).next().unwrap_or_default().to_ascii_lowercase();
     if path.ends_with(".m3u8") || path.ends_with(".m3u") {
-        return Source::Streaming("HLS streams (.m3u8) can only be watched online for now.");
+        return Source::Streaming(tr_mark("HLS streams (.m3u8) can only be watched online for now."));
     }
     if path.ends_with(".mpd") || path.ends_with(".ism/manifest") {
-        return Source::Streaming("DASH streams can only be watched online for now.");
+        return Source::Streaming(tr_mark("DASH streams can only be watched online for now."));
     }
     Source::Direct(url.to_owned())
 }
@@ -228,13 +232,13 @@ pub fn same_video(item: &PlaylistItem, c: &Candidate) -> bool {
 
 /// The wording around downloads, in one place: the action is always called "Download"; what a
 /// row says about a stream it can't fetch is its state, and the toast on a click says why.
-pub const DOWNLOAD_ACTION: &str = "Download";
+pub const DOWNLOAD_ACTION: &str = tr_mark("Download");
 /// A row's state for an item that can only be watched online.
-pub const STATE_NOT_DOWNLOADED: &str = "Not downloaded";
+pub const STATE_NOT_DOWNLOADED: &str = tr_mark("Not downloaded");
 /// The menu row's secondary text when the Download action can't succeed.
-pub const DOWNLOAD_UNAVAILABLE_DETAIL: &str = "can’t download";
+pub const DOWNLOAD_UNAVAILABLE_DETAIL: &str = tr_mark("can’t download");
 /// The toast when Download is chosen for an item that can't be fetched.
-pub const DOWNLOAD_UNAVAILABLE_TOAST: &str = "Can’t be downloaded — it can only be streamed";
+pub const DOWNLOAD_UNAVAILABLE_TOAST: &str = tr_mark("Can’t be downloaded — it can only be streamed");
 
 /// What a download of an item would be.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,7 +257,7 @@ pub fn plan_download(item: &PlaylistItem) -> DownloadPlan {
     }
     let Some(media) = item.media_url.as_deref() else {
         let note = if item.dl_note.is_empty() {
-            "This video is a stream the page assembles itself, so it can only be watched online."
+            tr_mark("This video is a stream the page assembles itself, so it can only be watched online.")
         } else {
             item.dl_note.as_str()
         };
@@ -273,10 +277,15 @@ pub fn download_update(info: &DownloadInfo) -> (&'static str, String, i64, Strin
     match info.state {
         DownloadState::InProgress | DownloadState::Paused => (dl::DOWNLOADING, path, size, String::new()),
         DownloadState::Complete => (dl::DONE, path, size, String::new()),
-        DownloadState::Cancelled => (dl::NONE, String::new(), 0, "The download was cancelled.".to_owned()),
-        DownloadState::Failed => {
-            (dl::FAILED, String::new(), 0, "The download failed. The site may not allow it.".to_owned())
+        DownloadState::Cancelled => {
+            (dl::NONE, String::new(), 0, tr_mark("The download was cancelled.").to_owned())
         }
+        DownloadState::Failed => (
+            dl::FAILED,
+            String::new(),
+            0,
+            tr_mark("The download failed. The site may not allow it.").to_owned(),
+        ),
     }
 }
 
@@ -379,9 +388,9 @@ pub fn progress(time: f64, duration: f64, cfg: &PlaylistConfig) -> (f64, bool) {
 
 /// The sort choices: mode, menu label, icon. The menu and Settings list them in this order.
 pub const SORTS: [(PlaylistSort, &str, Icon); 3] = [
-    (PlaylistSort::Newest, "Newest First", Icon::ChevronDown),
-    (PlaylistSort::Oldest, "Oldest First", Icon::ChevronUp),
-    (PlaylistSort::Manual, "Custom Order", Icon::Menu),
+    (PlaylistSort::Newest, tr_mark("Newest First"), Icon::ChevronDown),
+    (PlaylistSort::Oldest, tr_mark("Oldest First"), Icon::ChevronUp),
+    (PlaylistSort::Manual, tr_mark("Custom Order"), Icon::Menu),
 ];
 
 /// Whether an item counts as finished: watched up to `watched_fraction`, or watched and
@@ -428,15 +437,14 @@ pub fn resume_position(item: &PlaylistItem, cfg: &PlaylistConfig) -> f64 {
 /// "44 items 17h 17min" for the list's header.
 pub fn summary(items: &[PlaylistItem]) -> String {
     let count = items.len();
-    let word = if count == 1 { "item" } else { "items" };
+    let words = tr_n("{n} item", "{n} items", count);
     let total: f64 = items.iter().map(|i| i.duration.max(0.0)).sum();
     let minutes = (total / 60.0).round() as u64;
-    let time = match (minutes / 60, minutes % 60) {
-        (0, 0) => String::new(),
-        (0, m) => format!(" {m}min"),
-        (h, m) => format!(" {h}h {m}min"),
-    };
-    format!("{count} {word}{time}")
+    match (minutes / 60, minutes % 60) {
+        (0, 0) => words,
+        (0, m) => tr_fmt!("{items} {m}min", items = words, m = m),
+        (h, m) => tr_fmt!("{items} {h}h {m}min", items = words, h = h, m = m),
+    }
 }
 
 /// A duration for a row ("1:05", "1:02:03"); empty while unknown.
@@ -518,12 +526,24 @@ pub fn resolve_capture(media: Option<&PageMedia>, page_url: &str, sniffed: &[Sni
     }
 }
 
+/// The wording for why a video can't be played outside its page (the reasons come from
+/// `axion_media` in English).
+pub fn unsupported_text(why: &'static str) -> &'static str {
+    if why == axion_media::WHY_DASH {
+        tr("This video uses a DASH stream, which Axion can only play on its page.")
+    } else if why == axion_media::WHY_BLOB {
+        tr("This video is assembled by its page and can only be played there.")
+    } else {
+        why
+    }
+}
+
 /// What the player area says when the media view reported a failure.
 pub fn failure_text(code: &str) -> &'static str {
     match code {
-        "hls" => "This stream couldn’t be loaded. Its server may refuse playback outside the page.",
-        "source" => "The video’s address is no longer available.",
-        _ => "This video can’t be played outside its page.",
+        "hls" => tr("This stream couldn’t be loaded. Its server may refuse playback outside the page."),
+        "source" => tr("The video’s address is no longer available."),
+        _ => tr("This video can’t be played outside its page."),
     }
 }
 
@@ -595,8 +615,8 @@ pub enum Sleep {
 /// A sleep timer's choice for the menu (index into `playlist.sleep_timer_minutes`).
 pub fn sleep_label(minutes: u32) -> String {
     match minutes {
-        m if m >= 60 && m % 60 == 0 => format!("{} hour{}", m / 60, if m == 60 { "" } else { "s" }),
-        m => format!("{m} minutes"),
+        m if m >= 60 && m % 60 == 0 => tr_n("{n} hour", "{n} hours", (m / 60) as usize),
+        m => tr_n("{n} minute", "{n} minutes", m as usize),
     }
 }
 

@@ -1,4 +1,4 @@
-//! Accounts in the browser: the "Add Account" sheet, and switching by relaunching.
+//! Accounts in the browser: the tr("Add Account") sheet, and switching by relaunching.
 //!
 //! Chromium allows one root cache path per process, so switching accounts (for now) saves the
 //! session, shuts Chromium down and starts Axion again with `--account=ID` in the same place.
@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{Color, Config};
+use axion_i18n::tr;
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
@@ -155,9 +156,9 @@ impl AddAccountSheet {
             },
         );
         ui.set_visible(picture, false);
-        ui.add_label(alert, "Add Account", TextStyle::BodyEmphasis, Style::default());
-        secondary(ui, alert, "Its own tabs, history, passwords and settings.");
-        secondary(ui, alert, "A password can be set later in Account Settings.");
+        ui.add_label(alert, tr("Add Account"), TextStyle::BodyEmphasis, Style::default());
+        secondary(ui, alert, tr("Its own tabs, history, passwords and settings."));
+        secondary(ui, alert, tr("A password can be set later in Account Settings."));
         let photo_buttons = ui.add(
             alert,
             Widget::container(),
@@ -167,8 +168,8 @@ impl AddAccountSheet {
                 ..Default::default()
             },
         );
-        glass_button(ui, photo_buttons, CHOOSE_PHOTO, "Choose Photo…");
-        let remove_photo = glass_button(ui, photo_buttons, REMOVE_PHOTO, "Remove Photo");
+        glass_button(ui, photo_buttons, CHOOSE_PHOTO, tr("Choose Photo…"));
+        let remove_photo = glass_button(ui, photo_buttons, REMOVE_PHOTO, tr("Remove Photo"));
         ui.set_visible(remove_photo, false);
         let field_box = ui.add(
             alert,
@@ -188,7 +189,7 @@ impl AddAccountSheet {
         );
         let field = ui.add_text_field(
             field_box,
-            "Name",
+            tr("Name"),
             TextStyle::Body,
             Style {
                 flex_grow: 1.0,
@@ -196,7 +197,7 @@ impl AddAccountSheet {
                 ..Default::default()
             },
         );
-        let error = ui.add_label(alert, "Enter a name.", TextStyle::Footnote, Style::default());
+        let error = ui.add_label(alert, tr("Enter a name."), TextStyle::Footnote, Style::default());
         if let Some(w) = ui.widget_mut(error) {
             w.set_paint(Paint::Fixed(ERROR));
         }
@@ -210,8 +211,8 @@ impl AddAccountSheet {
                 ..Default::default()
             },
         );
-        capsule_button(ui, buttons, CANCEL, "Cancel", false);
-        capsule_button(ui, buttons, CREATE, "Add and Switch", true);
+        capsule_button(ui, buttons, CANCEL, tr("Cancel"), false);
+        capsule_button(ui, buttons, CREATE, tr("Add and Switch"), true);
         ui.set_visible(root, false);
         Self {
             root,
@@ -276,7 +277,7 @@ impl AddAccountSheet {
     /// The name typed, trimmed; shows an error while it is empty.
     pub fn name(&self, ui: &mut Ui) -> Option<String> {
         let name = ui.field_text(self.field).unwrap_or_default().trim().to_owned();
-        ui.set_text(self.error, "Enter a name.");
+        ui.set_text(self.error, tr("Enter a name."));
         ui.set_visible(self.error, name.is_empty());
         (!name.is_empty()).then_some(name)
     }
