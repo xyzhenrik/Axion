@@ -472,6 +472,41 @@ pub const INDEX: &[Entry] = &[
             "gerät",
         ],
     ),
+    page(
+        C::About,
+        tr_mark("About & Updates"),
+        &[
+            "about",
+            "version",
+            "update",
+            "updates",
+            "upgrade",
+            "über",
+            "info",
+            "aktualisieren",
+            "aktualisierung",
+        ],
+    ),
+    page(
+        C::About,
+        tr_mark("Check for Updates"),
+        &["update", "new version", "release", "neue version", "aktualisierung", "suchen", "prüfen"],
+    ),
+    page(
+        C::About,
+        tr_mark("Repository"),
+        &["update source", "git", "github", "owner", "releases", "quelle", "projekt"],
+    ),
+    control(
+        C::About,
+        S::AutoCheckUpdates,
+        &["update", "automatic", "startup", "automatisch", "aktualisierung", "suchen"],
+    ),
+    control(
+        C::About,
+        S::UpdatePrereleases,
+        &["update", "beta", "channel", "preview", "vorabversion", "kanal", "testversion"],
+    ),
 ];
 
 /// Lower-case, with German umlauts also findable as ae/oe/ue/ss.

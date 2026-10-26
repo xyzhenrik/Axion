@@ -60,7 +60,7 @@ impl Browser {
         if let Some(view) = self.active_view() {
             self.engine.set_focus(view, false);
         }
-        if let Some(icon) = crate::app_icon::picture() {
+        if let Some(icon) = crate::app_icon::image() {
             self.onboarding.set_icon(Some(self.avatars.upload(&icon)));
         }
         let info = self.account_info();

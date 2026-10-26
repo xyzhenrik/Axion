@@ -64,6 +64,8 @@ pub enum MenuAction {
     DevTools,
     FindOnPage,
     Settings,
+    /// Opens Settings > About & Updates and looks for a new version.
+    CheckForUpdates,
     /// Switch to the account at this index of the list.
     SwitchAccount(usize),
     AddAccount,

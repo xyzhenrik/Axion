@@ -17,8 +17,8 @@ pub fn window_icon() -> Option<Icon> {
     Icon::from_rgba(img.into_raw(), w, h).inspect_err(|e| tracing::warn!("app icon: {e}")).ok()
 }
 
-/// The icon's pixels (256 px), for showing it big in the first-run introduction.
-pub fn picture() -> Option<image::RgbaImage> {
+/// The same artwork as pixels (the first-run introduction and the About page show it).
+pub fn image() -> Option<image::RgbaImage> {
     image::load_from_memory_with_format(ICON_PNG, image::ImageFormat::Png)
         .inspect_err(|e| tracing::warn!("app icon: {e}"))
         .ok()

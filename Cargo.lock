@@ -420,6 +420,7 @@ dependencies = [
  "axion-store",
  "axion-tabs",
  "axion-ui",
+ "axion-update",
  "axion-vault",
  "directories",
  "glam",
@@ -560,6 +561,23 @@ dependencies = [
  "pollster",
  "taffy",
  "wgpu",
+]
+
+[[package]]
+name = "axion-update"
+version = "0.0.1"
+dependencies = [
+ "axion-config",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+ "ureq",
+ "url",
 ]
 
 [[package]]

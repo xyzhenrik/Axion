@@ -31,6 +31,7 @@ pub struct Config {
     pub toast: Toast,
     pub sidebar: Sidebar,
     pub ui: Ui,
+    pub updates: Updates,
 }
 
 /// Account profile pictures.
@@ -987,17 +988,104 @@ impl Default for Ui {
     }
 }
 
+/// The repository Axion's releases are published in, as `owner/name` (GitHub, or any forge
+/// with a GitHub-compatible releases API via `updates.api_url`). **Fill this in once the
+/// project's repository exists**; while it and `updates.manifest_url` are both empty, the
+/// updater does nothing at all (no network access, no notices).
+pub const DEFAULT_REPOSITORY: &str = "";
+
+/// Which releases the updater offers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    /// Only final releases.
+    #[default]
+    Stable,
+    /// Also pre-releases (alpha, beta, rc).
+    Prerelease,
+}
+
+/// Looking for newer Axion versions (Settings › About). Inert while no source is set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Updates {
+    /// Master switch for update checks (a no-op while no source is set).
+    pub enabled: bool,
+    /// `owner/name` of the releases' repository (a full `https://github.com/owner/name`
+    /// address works too). Empty: no source (see [`DEFAULT_REPOSITORY`]).
+    pub repository: String,
+    /// A forge without a GitHub-style API: the address of a JSON manifest
+    /// (`{"version": "1.2.3", "notes": "…", "url": "release page", "assets": [{"name": "…",
+    /// "url": "…", "sha256": "…"}]}`). Wins over `repository` when both are set.
+    pub manifest_url: String,
+    /// The GitHub-compatible API of the repository's host.
+    pub api_url: String,
+    pub channel: UpdateChannel,
+    /// Automatic checks happen at most this often (hours).
+    pub check_interval_hours: u32,
+    /// Check shortly after Axion starts, when the interval has passed.
+    pub auto_check_on_start: bool,
+    /// The automatic check runs this long after Axion started (seconds), out of the way of
+    /// loading the first page.
+    pub startup_delay_seconds: u32,
+    /// "Remind Me Later" silences the automatic notice for this long (hours).
+    pub remind_later_hours: u32,
+    /// Give up on a check after this many seconds.
+    pub timeout_seconds: u32,
+    /// Larger downloads (the AppImage) are refused (MB).
+    pub max_download_mb: u32,
+    /// When the last check ran (Unix seconds; 0: never). Written by Axion.
+    pub last_checked: u64,
+    /// A version the user chose to skip: no automatic notice for it. Written by Axion.
+    pub skipped_version: String,
+    /// The version the toast already announced (once per version). Written by Axion.
+    pub notified_version: String,
+    /// No automatic notice before this time (Unix seconds). Written by Axion.
+    pub remind_until: u64,
+}
+
+impl Default for Updates {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            repository: DEFAULT_REPOSITORY.into(),
+            manifest_url: String::new(),
+            api_url: "https://api.github.com".into(),
+            channel: UpdateChannel::Stable,
+            check_interval_hours: 24,
+            auto_check_on_start: true,
+            startup_delay_seconds: 8,
+            remind_later_hours: 24,
+            timeout_seconds: 10,
+            max_download_mb: 1024,
+            last_checked: 0,
+            skipped_version: String::new(),
+            notified_version: String::new(),
+            remind_until: 0,
+        }
+    }
+}
+
+impl Updates {
+    /// Whether a repository or manifest address is configured.
+    pub fn has_source(&self) -> bool {
+        !self.repository.trim().is_empty() || !self.manifest_url.trim().is_empty()
+    }
+}
+
 /// Short glass notifications ("Link copied").
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Toast {
     /// How long a toast stays before it springs away (seconds).
     pub duration_seconds: f32,
+    /// How long a toast with a button ("Axion 0.2.0 is available" – Update) stays (seconds).
+    pub action_duration_seconds: f32,
 }
 
 impl Default for Toast {
     fn default() -> Self {
-        Self { duration_seconds: 2.0 }
+        Self { duration_seconds: 2.0, action_duration_seconds: 8.0 }
     }
 }
 

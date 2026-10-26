@@ -2035,7 +2035,9 @@ impl Ui {
             self.flush(sub, &mut layers);
             for layer in &mut layers {
                 if let Layer::Content(content) = layer {
-                    content.clip = Some(px);
+                    // A clipped box inside a clipped page (release notes in Settings) keeps its
+                    // own clip, cut to this one's.
+                    content.clip = Some(content.clip.map_or(px, |inner| clip(inner, px)));
                 }
             }
             stacks[child_depth].after.extend(layers);

@@ -69,6 +69,8 @@ use crate::tabs::{Tab, Tabs, ZOOM_STEP};
 use crate::toast::Toast;
 use crate::tooltip::Tooltip;
 use crate::typing_probe;
+use crate::update::{InstallMode, Notice, Phase, Updater};
+use crate::update_alert::{AlertAction, UpdateAlert};
 use crate::url::display_host;
 use crate::url::resolve_input;
 
@@ -243,6 +245,14 @@ pub struct Browser {
     shields_popover: ShieldsPopover,
     downloads_popover: DownloadsPopover,
     toast: Toast,
+    updater: Updater,
+    update_alert: UpdateAlert,
+    /// When the first automatic update check runs (a moment after start; none when not due).
+    update_check_at: Option<Instant>,
+    /// Where the install stood when the About page was last drawn.
+    update_phase: Phase,
+    /// The app icon as a texture for the About page (made when first needed).
+    about_icon: Option<crate::home::Image>,
     tooltip: Tooltip,
     /// What the sidebar panel's search field held when the list was last built.
     panel_query: String,
@@ -585,6 +595,9 @@ impl Browser {
             playlist::PlaylistUi::build(&mut ui, &config, chrome.bar_node(), device.clone(), queue.clone());
         let add_account = AddAccountSheet::build(&mut ui);
         let onboarding = Onboarding::build(&mut ui);
+        let update_alert = UpdateAlert::build(&mut ui);
+        let update_check_at = axion_update::auto_check_due(&config.updates, &axion_update::SystemClock)
+            .then(|| Instant::now() + Duration::from_secs(u64::from(config.updates.startup_delay_seconds)));
         // The dragged tab's lens above the chrome, and the lock screen's alert above all.
         let tab_drag = TabDrag::build(&mut ui);
         let context_menus = ContextMenus::build(
@@ -624,6 +637,11 @@ impl Browser {
             shields_popover,
             downloads_popover,
             toast,
+            updater: Updater::new(),
+            update_alert,
+            update_check_at,
+            update_phase: Phase::Idle,
+            about_icon: None,
             tooltip,
             panel_query: String::new(),
             find,
@@ -1041,6 +1059,7 @@ impl Browser {
                     self.shields_popover.close(&mut self.ui, &self.config);
                     self.account_menu.close(&mut self.ui, &self.config);
                     self.settings.set_account(self.account_info());
+                    self.sync_about();
                     self.settings.set_memory_used(self.memory.used());
                     let window = self.logical_size();
                     // Out of what it was opened from (the address field by default).
@@ -1358,6 +1377,7 @@ impl Browser {
             position: self.window.outer_position().ok().map(|p| (p.x, p.y)),
             maximized: self.window.is_maximized(),
             capture,
+            exe: None,
         });
         self.capture = None;
         // The next start of a plain `axion` opens it too.
@@ -2581,6 +2601,10 @@ impl Browser {
             }
             items.insert(items.len() - 1, tools);
         }
+        items.insert(
+            items.len() - 1,
+            MenuItem::new(Icon::Info, tr("Check for Updates…"), MenuAction::CheckForUpdates),
+        );
         self.account_menu.close(&mut self.ui, &self.config);
         let anchor = self.chrome.page_menu_frame(&self.ui);
         let window = self.logical_size();
@@ -2755,6 +2779,14 @@ impl Browser {
                 self.sheet_origin =
                     Some(Origin { plane: self.chrome.bar_node(), point: row.center(), control: row });
                 self.run(Action::OpenSettings);
+            }
+            MenuAction::CheckForUpdates => {
+                // Out of the menu's row, like Settings.
+                let row = self.menu_click_frame.unwrap_or_else(|| self.menu.anchor());
+                self.sheet_origin =
+                    Some(Origin { plane: self.chrome.bar_node(), point: row.center(), control: row });
+                self.menu.close(&mut self.ui, &self.config);
+                self.open_about(true);
             }
             MenuAction::SwitchAccount(_)
             | MenuAction::AddAccount
@@ -3205,6 +3237,11 @@ impl Browser {
                     let outcome = self.settings.action(&mut self.ui, action, &mut self.config, &self.keymap);
                     self.settings_outcome(outcome);
                 }
+                UiEvent::Submitted { node, .. } if Some(node) == self.settings.repository_field() => {
+                    let action = SettingsAction::SaveRepository;
+                    let outcome = self.settings.action(&mut self.ui, action, &mut self.config, &self.keymap);
+                    self.settings_outcome(outcome);
+                }
                 UiEvent::Submitted { node, .. } if node == self.add_account.field() => {
                     self.add_account_action(SheetAction::Create);
                 }
@@ -3215,6 +3252,18 @@ impl Browser {
                         continue;
                     }
                     self.add_account_action(action);
+                }
+                UiEvent::Clicked { action, .. } if self.update_alert.action(action).is_some() => {
+                    let Some(action) = self.update_alert.action(action) else { continue };
+                    let on_alert = self.pointer.is_some_and(|p| self.update_alert.contains(&self.ui, p));
+                    if action == AlertAction::Backdrop && (on_alert || !self.update_alert.is_dismissable()) {
+                        continue;
+                    }
+                    self.update_alert_action(action);
+                }
+                UiEvent::Clicked { action, .. } if self.toast.owns(action) => {
+                    self.toast.dismiss(&mut self.ui, &self.config);
+                    self.open_about(false);
                 }
                 UiEvent::Clicked { action, .. } if self.account_menu.owns(action) => {
                     if let Some(click) = self.account_menu.click(&mut self.ui, &self.config, action) {
@@ -3737,6 +3786,31 @@ impl Browser {
             }
             Outcome::Close => self.close_settings(),
             Outcome::ShowWelcomeTour => self.open_onboarding(0),
+            Outcome::CheckForUpdates => {
+                self.updater.check(&self.config, true);
+                self.refresh_about();
+            }
+            Outcome::InstallUpdate => self.request_update_install(),
+            Outcome::OpenReleasePage => self.open_release_page(),
+            Outcome::RelaunchNow => self.relaunch_for_update(),
+            Outcome::SkipUpdate => {
+                if let Some(release) = self.updater.available() {
+                    axion_update::skip(&mut self.config.updates, &release.version);
+                    self.config_dirty_since.get_or_insert(Instant::now());
+                }
+                self.refresh_about();
+            }
+            Outcome::RemindLater => {
+                axion_update::remind_later(&mut self.config.updates, &axion_update::SystemClock);
+                self.config_dirty_since.get_or_insert(Instant::now());
+                self.refresh_about();
+            }
+            Outcome::SourceChanged => {
+                self.config_dirty_since.get_or_insert(Instant::now());
+                self.updater.reset();
+                self.updater.check(&self.config, true);
+                self.refresh_about();
+            }
             Outcome::SetAccountPassword { current, new } => {
                 let (ui, config) = (&mut self.ui, &self.config);
                 let (result, done) = match &current {
@@ -3933,6 +4007,16 @@ impl Browser {
         self.toast.show(&mut self.ui, &self.config, anchor, width, icon, text);
     }
 
+    /// A toast with a button, like [`Self::show_toast`].
+    fn show_toast_with_action(&mut self, icon: Icon, text: &str, action: &str) {
+        let mut anchor = self.chrome.share_frame(&self.ui);
+        if anchor.size.x <= 0.0 {
+            anchor = self.chrome.address_frame(&self.ui);
+        }
+        let width = self.logical_size().x;
+        self.toast.show_with_action(&mut self.ui, &self.config, anchor, width, icon, text, Some(action));
+    }
+
     /// Tooltips stay away while a menu, popover, sheet or drag is active.
     fn tooltips_blocked(&self) -> bool {
         self.tab_drag.is_dragging()
@@ -3948,6 +4032,7 @@ impl Browser {
             || self.passwords.is_open()
             || self.add_account.is_open()
             || self.onboarding.is_open()
+            || self.update_alert.is_open()
             || self.lock_screen.is_alert_open()
     }
 
@@ -3976,6 +4061,172 @@ impl Browser {
             self.run(Action::ToggleSidebar);
         }
         self.show_panel(Panel::Downloads);
+    }
+
+    // ---- updates ----
+
+    /// Gives Settings the current update state (and the badge on the account button).
+    fn sync_about(&mut self) {
+        if self.about_icon.is_none() {
+            self.about_icon = crate::app_icon::image().map(|icon| self.avatars.upload(&icon));
+        }
+        let info = self.updater.about(&self.config, self.about_icon.clone());
+        self.settings.set_about(&mut self.ui, info);
+        self.update_phase = self.updater.phase();
+        let badge = self.updater.should_badge(&self.config);
+        self.chrome.set_update_badge(&mut self.ui, badge);
+    }
+
+    /// Like [`Self::sync_about`], and redraws the About page if it is showing.
+    fn refresh_about(&mut self) {
+        self.sync_about();
+        if self.settings.is_open() && self.settings.category() == Category::About {
+            self.settings.show(&mut self.ui, &self.config, &self.keymap);
+        }
+    }
+
+    /// Opens Settings › About & Updates (checking for updates first, for the menu's row).
+    fn open_about(&mut self, check: bool) {
+        self.settings.set_category(Category::About);
+        if check {
+            self.updater.check(&self.config, true);
+        }
+        if self.settings.is_open() {
+            self.refresh_about();
+        } else {
+            self.run(Action::OpenSettings);
+        }
+    }
+
+    /// Runs the startup check when it is due, and takes what the update threads reported.
+    fn poll_updates(&mut self) {
+        if self.update_check_at.is_some_and(|at| Instant::now() >= at) {
+            self.update_check_at = None;
+            self.updater.check(&self.config, false);
+            self.refresh_about();
+        }
+        let notices = self.updater.poll();
+        if notices.is_empty() {
+            return;
+        }
+        let mut checked = false;
+        for notice in notices {
+            match notice {
+                Notice::Checked { manual, ok, update } => {
+                    checked = true;
+                    if ok {
+                        axion_update::record_check(&mut self.config.updates, &axion_update::SystemClock);
+                        self.config_dirty_since.get_or_insert(Instant::now());
+                    }
+                    // Once per version, and never for a skipped one or while reminded later.
+                    if let Some(release) = update
+                        && !manual
+                        && axion_update::may_notify(
+                            &self.config.updates,
+                            &release,
+                            &axion_update::SystemClock,
+                        )
+                        && self.config.updates.notified_version != release.version.to_string()
+                    {
+                        self.config.updates.notified_version = release.version.to_string();
+                        self.config_dirty_since.get_or_insert(Instant::now());
+                        let text =
+                            tr_fmt!("Axion {version} is available", version = release.version.to_string());
+                        self.show_toast_with_action(Icon::Download, &text, tr("Update"));
+                    }
+                }
+                Notice::Changed => self.sync_update_alert(),
+            }
+        }
+        // The page redraws when the install starts or ends, not for every progress line.
+        if checked || self.updater.phase() != self.update_phase {
+            self.refresh_about();
+        }
+    }
+
+    /// Shows the alert for the install's current state (or closes it).
+    fn sync_update_alert(&mut self) {
+        match self.updater.current_alert() {
+            Some(view) => self.update_alert.show(&mut self.ui, &self.config, view),
+            None => self.update_alert.close(),
+        }
+    }
+
+    /// "Update": asks first (glass alert); a package-managed install just opens the page.
+    fn request_update_install(&mut self) {
+        if self.updater.mode() == InstallMode::Other {
+            self.open_release_page();
+            return;
+        }
+        if let Some(view) = self.updater.prepare_install() {
+            self.update_alert.show(&mut self.ui, &self.config, view);
+        }
+    }
+
+    /// The available release's page in a new tab.
+    fn open_release_page(&mut self) {
+        let Some(url) = self.updater.release_page() else { return };
+        if self.settings.is_open() {
+            self.close_settings();
+        }
+        if let Err(e) = self.open_tab(&url, true) {
+            tracing::error!("opening the release page failed: {e:#}");
+        }
+    }
+
+    fn update_alert_action(&mut self, action: AlertAction) {
+        match self.updater.phase() {
+            Phase::Idle => self.update_alert.close(),
+            Phase::Confirm => {
+                if action == AlertAction::Primary {
+                    self.updater.start_install(&self.config);
+                    self.sync_update_alert();
+                    self.refresh_about();
+                } else {
+                    self.updater.dismiss();
+                    self.update_alert.close();
+                }
+            }
+            Phase::Running => {
+                if action == AlertAction::Secondary {
+                    self.updater.cancel();
+                }
+            }
+            Phase::Done => {
+                if action == AlertAction::Primary {
+                    self.relaunch_for_update();
+                } else {
+                    // The page keeps offering "Relaunch Now".
+                    self.update_alert.close();
+                }
+            }
+            Phase::Failed => {
+                self.updater.dismiss();
+                self.update_alert.close();
+                self.refresh_about();
+            }
+        }
+    }
+
+    /// Starts the updated Axion in this one's place (the window closes, the session is saved
+    /// and Chromium shuts down first, as for an account switch).
+    fn relaunch_for_update(&mut self) {
+        let Some(exe) = self.updater.relaunch_exe() else { return };
+        let size = self.window.inner_size().to_logical::<f64>(self.window.scale_factor());
+        self.relaunch = Some(Relaunch {
+            account: self.account_id.clone(),
+            size: (size.width, size.height),
+            position: self.window.outer_position().ok().map(|p| (p.x, p.y)),
+            maximized: self.window.is_maximized(),
+            capture: None,
+            exe: Some(exe),
+        });
+        tracing::info!("relaunching into the updated Axion");
+    }
+
+    /// A point inside the release notes box (capture aid), if the page has one.
+    fn settings_notes_point(&self) -> Option<Vec2> {
+        self.settings.notes_point(&self.ui)
     }
 
     /// Rebuilds the open settings page (after data it shows arrived).
@@ -4320,7 +4571,9 @@ impl Browser {
                 } else if self.passwords.is_open() {
                     self.passwords.scroll_by(&mut self.ui, delta.y);
                 } else if self.settings.is_open() {
-                    self.settings.scroll_by(&mut self.ui, delta.y);
+                    if !self.settings.scroll_notes(&mut self.ui, delta.y, self.pointer) {
+                        self.settings.scroll_by(&mut self.ui, delta.y);
+                    }
                 } else if self.playlist_open()
                     && self.pointer.is_some_and(|p| self.playlist_ui.page.list_contains(&self.ui, p))
                 {
@@ -4660,6 +4913,13 @@ impl Browser {
             self.account_menu.close(&mut self.ui, &self.config);
             return false;
         }
+        if pressed
+            && self.update_alert.is_dismissable()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            self.update_alert_action(AlertAction::Backdrop);
+            return false;
+        }
         if pressed && self.add_account.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.add_account.close(&mut self.ui);
             return false;
@@ -4867,6 +5127,27 @@ impl Browser {
                 }
                 "bookmarks" => self.show_panel(Panel::Bookmarks),
                 "settings" => self.run(Action::OpenSettings),
+                // Capture aids for the updater: Settings › About (and checking), the install
+                // asking for confirmation, and answering it.
+                "about" => self.open_about(false),
+                "about-check" => self.open_about(true),
+                "update-install" => self.request_update_install(),
+                "update-confirm" => self.update_alert_action(AlertAction::Primary),
+                "update-cancel" => self.update_alert_action(AlertAction::Secondary),
+                // Capture aid: a real pointer click on the toast's Update button.
+                "toast-click" => {
+                    let at = self.toast.button_center(&self.ui);
+                    let _ = self.ui.handle(UiInput::PointerMove(at));
+                    let (_, events) = self.ui.handle(UiInput::PointerDown);
+                    self.handle_ui_events(events);
+                    let (_, events) = self.ui.handle(UiInput::PointerUp);
+                    self.handle_ui_events(events);
+                }
+                "about-notes-scroll" => {
+                    let point = self.settings_notes_point();
+                    let scrolled = self.settings.scroll_notes(&mut self.ui, -60.0, point);
+                    tracing::info!(scrolled, "release notes scrolled");
+                }
                 // Capture aids for the Playlist: its page, the Add popover, adding the page's
                 // video, playing row N, a search, a row's menu, edit mode, the player's menus.
                 "playlist" => self.open_playlist(),
@@ -5537,6 +5818,8 @@ impl Browser {
         self.settings.poll_search(&mut self.ui, &self.config, &self.keymap);
         self.poll_panel_search();
         self.toast.animate(&mut self.ui, &self.config, dt);
+        self.update_alert.animate(&mut self.ui, dt);
+        self.poll_updates();
         let blocked = self.tooltips_blocked();
         let window = self.logical_size();
         self.tooltip.animate(&mut self.ui, &self.config, &self.keymap, window, blocked, dt);
