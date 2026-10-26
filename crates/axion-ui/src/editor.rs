@@ -27,6 +27,24 @@ impl Editor {
         self.anchor = None;
     }
 
+    /// Selects the word around byte index `at` (letters and digits; URL punctuation such as
+    /// `/`, `.`, `:` and `?` ends a word, so a double click picks one part of an address).
+    pub fn select_word_at(&mut self, at: usize) {
+        let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
+        let at = at.min(self.text.len());
+        let start = self.text[..at]
+            .char_indices()
+            .rev()
+            .find(|&(_, c)| !is_word(c))
+            .map_or(0, |(i, c)| i + c.len_utf8());
+        let end = self.text[at..]
+            .char_indices()
+            .find(|&(_, c)| !is_word(c))
+            .map_or(self.text.len(), |(i, _)| at + i);
+        self.anchor = Some(start);
+        self.cursor = end.max(start);
+    }
+
     pub fn select_all(&mut self) {
         self.anchor = Some(0);
         self.cursor = self.text.len();
@@ -215,5 +233,14 @@ mod tests {
         let mut e = editor("");
         e.insert("a\nb\tc");
         assert_eq!(e.text(), "a bc");
+    }
+
+    #[test]
+    fn double_click_selects_one_part_of_an_address() {
+        let mut e = editor("https://www.rust-lang.org/learn");
+        e.select_word_at(14);
+        assert_eq!(e.selected_text(), Some("rust-lang"));
+        e.select_word_at(28);
+        assert_eq!(e.selected_text(), Some("learn"));
     }
 }

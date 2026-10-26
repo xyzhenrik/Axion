@@ -2390,6 +2390,11 @@ impl Browser {
     }
 
     fn edit_address(&mut self) {
+        // Already editing: the click places the caret or selects inside the field (it must not
+        // start over and select everything again).
+        if self.ui.focused() == Some(self.chrome.address_field) {
+            return;
+        }
         if let Some(view) = self.active_view() {
             self.engine.set_focus(view, false);
         }
