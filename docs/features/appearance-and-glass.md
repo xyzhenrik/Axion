@@ -82,3 +82,5 @@ so it stays readable on any colour. Six colours are offered. You can use any col
 
 **Settings > General > Language** switches Axion's own interface between **System**, **English**
 and **Deutsch**. Restart Axion for it to apply.
+
+The start page follows the glass style: with **Flat** it uses solid neutral surfaces with no blur, springs or glass effects (it is served flat from the first paint and switches live when you change the setting); **Liquid Glass** is unchanged.

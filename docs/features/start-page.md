@@ -73,3 +73,5 @@ gear panel opens Settings.
 
 **Settings > General > Homepage** decides what opens in new windows and tabs. Leave it empty for the
 start page, or enter any address. The home button (**Show home button**) opens the same page.
+
+The start page follows the glass style: with **Flat** it uses solid neutral surfaces with no blur, springs or glass effects (it is served flat from the first paint and switches live when you change the setting); **Liquid Glass** is unchanged.
