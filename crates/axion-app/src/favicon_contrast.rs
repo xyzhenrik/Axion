@@ -15,6 +15,14 @@ const MIN_CONTRAST: f32 = 3.0;
 const COLOUR_RELIEF: f32 = 1.5;
 /// Share of the icon's pixels (by opacity) that must be below `MIN_CONTRAST` to act.
 const WEAK_SHARE: f32 = 0.7;
+/// An icon with its own opaque ground (a filled square or rounded tile, e.g. a red logo on a
+/// black square) is readable when at least this share of it stands out: the site designed
+/// the ground, and a light tile around it reads as a white frame.
+const MIN_READABLE_ON_GROUND: f32 = 0.08;
+/// Share of the outermost pixel ring that must be opaque for the icon to have its own ground
+/// (rounded tiles leave their corners clear), and the alpha that counts as opaque.
+const GROUND_EDGE_SHARE: f32 = 0.6;
+const OPAQUE_ALPHA: u8 = 230;
 /// Mean saturation (0-1) below which an icon counts as a single-colour glyph.
 const MONO_SATURATION: f32 = 0.16;
 /// Relative luminance of the chrome ground the icons sit on, in dark and light chrome.
@@ -34,12 +42,16 @@ pub struct Look {
     pub saturation: f32,
     /// Whether there is anything visible at all.
     pub visible: bool,
+    /// The icon fills its box with an opaque ground of its own (see `GROUND_EDGE_SHARE`).
+    pub own_ground: bool,
 }
 
 impl Look {
-    /// The icon fades into the chrome.
+    /// The icon fades into the chrome: a glyph on a clear ground that is mostly too close to
+    /// the chrome's tone, or an icon on its own ground with next to nothing standing out.
     pub fn is_lost(&self) -> bool {
-        self.visible && self.weak >= WEAK_SHARE
+        let readable = 1.0 - self.weak;
+        self.visible && self.weak >= WEAK_SHARE && !(self.own_ground && readable >= MIN_READABLE_ON_GROUND)
     }
 
     /// The icon is a single-colour glyph.
@@ -67,8 +79,25 @@ fn ground(dark: bool) -> f32 {
     if dark { GROUND_DARK } else { GROUND_LIGHT }
 }
 
-/// Measures `rgba` against the chrome ground (`dark`: dark chrome).
-pub fn analyse(rgba: &[u8], dark: bool) -> Look {
+/// Whether the outermost pixel ring of `rgba` (`width` × `height`) is mostly opaque.
+fn has_own_ground(rgba: &[u8], width: u32, height: u32) -> bool {
+    let (w, h) = (width as usize, height as usize);
+    if w < 3 || h < 3 || rgba.len() < w * h * 4 {
+        return false;
+    }
+    let opaque = |x: usize, y: usize| rgba[(y * w + x) * 4 + 3] >= OPAQUE_ALPHA;
+    let ring = (0..w).flat_map(|x| [(x, 0), (x, h - 1)]).chain((1..h - 1).flat_map(|y| [(0, y), (w - 1, y)]));
+    let (mut total, mut solid) = (0usize, 0usize);
+    for (x, y) in ring {
+        total += 1;
+        solid += usize::from(opaque(x, y));
+    }
+    solid as f32 >= GROUND_EDGE_SHARE * total as f32
+}
+
+/// Measures `rgba` (`width` × `height`) against the chrome ground (`dark`: dark chrome).
+pub fn analyse(rgba: &[u8], width: u32, height: u32, dark: bool) -> Look {
+    let own_ground = has_own_ground(rgba, width, height);
     let ground = ground(dark);
     let (mut weight, mut weak, mut saturation) = (0.0f32, 0.0f32, 0.0f32);
     for px in rgba.as_chunks::<4>().0 {
@@ -87,9 +116,9 @@ pub fn analyse(rgba: &[u8], dark: bool) -> Look {
         saturation += alpha * sat;
     }
     if weight < 1.0 {
-        return Look { weak: 0.0, saturation: 0.0, visible: false };
+        return Look { weak: 0.0, saturation: 0.0, visible: false, own_ground };
     }
-    Look { weak: weak / weight, saturation: saturation / weight, visible: true }
+    Look { weak: weak / weight, saturation: saturation / weight, visible: true, own_ground }
 }
 
 /// What to show instead of `rgba` (`width` × `height`) on chrome of the given tone: `None`
@@ -104,7 +133,7 @@ pub fn adapt(
     if mode == FaviconContrast::Off || rgba.len() != width as usize * height as usize * 4 {
         return None;
     }
-    let look = analyse(rgba, dark);
+    let look = analyse(rgba, width, height, dark);
     if !look.is_lost() {
         return None;
     }
@@ -250,23 +279,83 @@ mod tests {
         (0..n * n).flat_map(|_| [rgb[0], rgb[1], rgb[2], alpha]).collect()
     }
 
+    /// An `n`×`n` icon: `ground` everywhere (alpha `ground_alpha`), with a bright red square
+    /// in the middle covering about `share` of it (silencescripts.net's red "S" on black).
+    fn logo_on(ground: [u8; 3], ground_alpha: u8, share: f32, n: usize) -> Vec<u8> {
+        let side = ((share * (n * n) as f32).sqrt().round() as usize).min(n);
+        let start = (n - side) / 2;
+        let inside = |v: usize| (start..start + side).contains(&v);
+        (0..n * n)
+            .flat_map(|i| {
+                let (x, y) = (i % n, i / n);
+                if inside(x) && inside(y) {
+                    [235, 20, 20, 255]
+                } else {
+                    [ground[0], ground[1], ground[2], ground_alpha]
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn logo_on_its_own_dark_ground_is_left_alone() {
+        // A red logo on an opaque black square: ~20 % stands out, the rest is the site's own
+        // ground. A light tile around it was a white frame (the reported silencescripts.net
+        // bug); it is readable as it is.
+        let icon = logo_on([2, 0, 0], 255, 0.2, 32);
+        let look = analyse(&icon, 32, 32, true);
+        assert!(look.own_ground && look.weak >= WEAK_SHARE, "{look:?}");
+        assert!(!look.is_lost());
+        assert!(adapt(&icon, 32, 32, true, FaviconContrast::Invert).is_none());
+        assert!(adapt(&icon, 32, 32, true, FaviconContrast::Backing).is_none());
+    }
+
+    #[test]
+    fn rounded_tile_counts_as_own_ground() {
+        // Clear corners (a rounded tile) still leave most of the edge opaque.
+        let n = 32;
+        let mut icon = logo_on([2, 0, 0], 255, 0.2, n);
+        for (x, y) in [(0, 0), (1, 0), (0, 1), (n - 1, 0), (n - 2, 0), (n - 1, 1)] {
+            icon[(y * n + x) * 4 + 3] = 0;
+            icon[((n - 1 - y) * n + x) * 4 + 3] = 0;
+        }
+        assert!(analyse(&icon, n as u32, n as u32, true).own_ground);
+    }
+
+    #[test]
+    fn dark_glyph_on_a_clear_ground_still_gets_help() {
+        // The same amount of red, but the dark part is a glyph on a transparent ground (no
+        // own ground): its shape is lost on dark chrome, so it still gets a tile.
+        let mut icon = logo_on([10, 10, 10], 255, 0.2, 32);
+        for y in 0..32 {
+            for x in [0, 1, 30, 31] {
+                icon[(y * 32 + x) * 4 + 3] = 0;
+                icon[(x * 32 + y) * 4 + 3] = 0;
+            }
+        }
+        let look = analyse(&icon, 32, 32, true);
+        assert!(!look.own_ground && look.is_lost(), "{look:?}");
+        // On its own ground but with nothing standing out (a black square): still lost.
+        assert!(analyse(&solid([2, 2, 2], 255, 16), 16, 16, true).is_lost());
+    }
+
     #[test]
     fn black_glyph_is_lost_on_dark_chrome_only() {
         let black = solid([10, 10, 10], 255, 16);
-        assert!(analyse(&black, true).is_lost());
-        assert!(!analyse(&black, false).is_lost());
+        assert!(analyse(&black, 16, 16, true).is_lost());
+        assert!(!analyse(&black, 16, 16, false).is_lost());
         let white = solid([250, 250, 250], 255, 16);
-        assert!(analyse(&white, false).is_lost());
-        assert!(!analyse(&white, true).is_lost());
+        assert!(analyse(&white, 16, 16, false).is_lost());
+        assert!(!analyse(&white, 16, 16, true).is_lost());
     }
 
     #[test]
     fn colourful_and_empty_icons_are_left_alone() {
         let blue = solid([30, 90, 255], 255, 16);
-        assert!(!analyse(&blue, true).is_lost());
+        assert!(!analyse(&blue, 16, 16, true).is_lost());
         assert!(adapt(&blue, 16, 16, true, FaviconContrast::Invert).is_none());
         let empty = solid([0, 0, 0], 0, 16);
-        assert!(!analyse(&empty, true).is_lost());
+        assert!(!analyse(&empty, 16, 16, true).is_lost());
         assert!(adapt(&empty, 16, 16, true, FaviconContrast::Backing).is_none());
     }
 
@@ -305,7 +394,7 @@ mod tests {
     fn coloured_lost_icon_gets_a_tile_even_in_invert_mode() {
         // Dark navy: nearly black, but not a grey.
         let navy = solid([5, 10, 60], 255, 16);
-        let look = analyse(&navy, true);
+        let look = analyse(&navy, 16, 16, true);
         assert!(look.is_lost() && !look.is_mono());
         let (w, _, _) = adapt(&navy, 16, 16, true, FaviconContrast::Invert).unwrap();
         assert_eq!(w, TILE_MIN_SIDE);
