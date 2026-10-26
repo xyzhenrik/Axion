@@ -3677,8 +3677,7 @@ impl Browser {
                     }
                     self.settings_outcome(Outcome::Changed);
                 } else {
-                    let status = "That file isn't an image Axion can use as a background, or there are \
-                                  too many backgrounds already.";
+                    let status = self.home.add_error().unwrap_or("That file can't be used as a background.");
                     self.settings.set_background_status(Some(status.to_owned()));
                 }
                 self.sync_backgrounds();
@@ -3888,6 +3887,9 @@ impl Browser {
             self.config_dirty_since.get_or_insert(Instant::now());
             self.refresh_settings();
         }
+        // A file chooser pick (or the start page's path field) can fail too: Settings says why.
+        let add_error = self.home.add_error().map(str::to_owned);
+        self.settings.sync_background_status(add_error);
         self.update_background_picker();
         let name = self.account().map(|a| a.name.clone()).unwrap_or_default();
         let dark = is_dark(&self.config, &self.window, self.desktop_theme.dark());

@@ -120,6 +120,34 @@ fn extension_for(source: &Path, mime: &str) -> String {
     }
 }
 
+/// Why a file was not added as a background (its message is shown to the user).
+#[derive(Debug, PartialEq, Eq)]
+pub enum AddError {
+    TooBig { size: u64, max_bytes: u64 },
+    Unsupported,
+    TooMany(usize),
+    Io(String),
+}
+
+impl std::fmt::Display for AddError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const MB: u64 = 1024 * 1024;
+        match self {
+            Self::TooBig { size, max_bytes } => write!(
+                f,
+                "That file is {} MB; backgrounds can be at most {} MB (home.max_background_mb).",
+                size.div_ceil(MB),
+                max_bytes / MB
+            ),
+            Self::Unsupported => f.write_str(
+                "That file isn't an image or video Axion can show (PNG, JPEG, GIF, WebP, AVIF, BMP, MP4, WebM).",
+            ),
+            Self::TooMany(max) => write!(f, "There are {max} backgrounds already; remove one first."),
+            Self::Io(e) => write!(f, "Saving the background failed: {e}"),
+        }
+    }
+}
+
 /// The backgrounds in the account's directory.
 pub struct Library {
     dir: PathBuf,
@@ -199,20 +227,20 @@ impl Library {
     }
 
     /// Copies the file at `source` in (at most `max` are kept, each at most `max_bytes` big).
-    /// Returns its new name.
-    pub fn add(&mut self, source: &Path, max: usize, max_bytes: u64) -> Option<String> {
+    /// Returns its new name, or why it was not added.
+    pub fn add(&mut self, source: &Path, max: usize, max_bytes: u64) -> Result<String, AddError> {
         let size = std::fs::metadata(source).map(|m| m.len()).unwrap_or(0);
         if size > max_bytes {
             tracing::warn!(path = %source.display(), size, max_bytes, "background file too big");
-            return None;
+            return Err(AddError::TooBig { size, max_bytes });
         }
         let Some(mime) = image_mime(source).filter(|_| size > 0) else {
             tracing::warn!(path = %source.display(), "not a usable background image or video");
-            return None;
+            return Err(AddError::Unsupported);
         };
         if self.entries.len() >= max {
             tracing::warn!(max, "too many background images; remove one first");
-            return None;
+            return Err(AddError::TooMany(max));
         }
         let name = self.new_name(&extension_for(source, &mime));
         let result = std::fs::create_dir_all(&self.dir).and_then(|()| {
@@ -222,10 +250,10 @@ impl Library {
         });
         if let Err(e) = result {
             tracing::warn!("saving the background image failed: {e}");
-            return None;
+            return Err(AddError::Io(e.to_string()));
         }
         self.scan();
-        Some(name)
+        Ok(name)
     }
 
     /// Stores the first frame the start page made of video `name` (any image format) as its
@@ -582,11 +610,23 @@ mod tests {
         assert_eq!(sniff(&webm), Some(("video/webm".to_owned(), Kind::Video)));
         let mp4 = write("a.mp4", b"\0\0\0\x18ftypisom\0\0\x02\0isomiso2");
         assert_eq!(sniff(&mp4), Some(("video/mp4".to_owned(), Kind::Video)));
+        // Animated WebP (VP8X with the animation flag) and APNG (`acTL` before `IDAT`).
+        let mut webp = b"RIFF\x20\0\0\0WEBPVP8X\x0a\0\0\0".to_vec();
+        webp.extend_from_slice(&[0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let webp = write("a.webp", &webp);
+        assert_eq!(sniff(&webp), Some(("image/webp".to_owned(), Kind::Animated)));
+        let mut apng = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        apng.extend_from_slice(&[0; 13]);
+        apng.extend_from_slice(b"\0\0\0\0\0\0\0\x08acTL\0\0\0\0\0\0\0\0IDAT");
+        let apng = write("a.png", &apng);
+        assert_eq!(sniff(&apng), Some(("image/png".to_owned(), Kind::Animated)));
         let still = tmp.join("s.png");
         png(&still, 4, 4);
         assert_eq!(sniff(&still), Some(("image/png".to_owned(), Kind::Image)));
         let mut library = Library::new(&tmp.join("home"));
-        assert!(library.add(&mp4, 9, 8).is_none(), "the size limit holds");
+        assert!(matches!(library.add(&mp4, 9, 8), Err(AddError::TooBig { .. })), "the size limit holds");
+        let message = AddError::TooBig { size: 300 * 1024 * 1024, max_bytes: 200 * 1024 * 1024 }.to_string();
+        assert!(message.contains("300 MB") && message.contains("200 MB"), "{message}");
         let name = library.add(&mp4, 9, MAX).unwrap();
         assert!(name.ends_with(".mp4"));
         assert_eq!(library.kind(&name), Some(Kind::Video));
@@ -619,10 +659,10 @@ mod tests {
         assert!(a.ends_with(".png") && valid_name(&a));
         let b = library.add(&source, 2, MAX).unwrap();
         assert_ne!(a, b);
-        assert!(library.add(&source, 2, MAX).is_none(), "the limit holds");
-        assert!(library.add(&tmp.join("missing.png"), 9, MAX).is_none());
+        assert_eq!(library.add(&source, 2, MAX), Err(AddError::TooMany(2)), "the limit holds");
+        assert_eq!(library.add(&tmp.join("missing.png"), 9, MAX), Err(AddError::Unsupported));
         std::fs::write(tmp.join("text.png"), b"not an image").unwrap();
-        assert!(library.add(&tmp.join("text.png"), 9, MAX).is_none());
+        assert_eq!(library.add(&tmp.join("text.png"), 9, MAX), Err(AddError::Unsupported));
         assert_eq!(library.file(&a).map(|(_, m)| m).as_deref(), Some("image/png"));
         // The source stays where it was; the copy is inside the directory.
         assert!(source.exists());

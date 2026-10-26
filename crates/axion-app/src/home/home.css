@@ -126,6 +126,19 @@ body.has-image #backdrop { opacity: 1; }
   justify-content: center;
 }
 .bg-swatch.pending { background: color-mix(in srgb, var(--accent) 18%, var(--tile)); }
+#bg-hint {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  max-width: min(560px, calc(100vw - 120px));
+  padding: 9px 16px;
+  border-radius: 18px;
+  font-size: 13px;
+  text-align: center;
+  color: var(--label);
+}
 .note { margin: 0; padding: 2px 14px 8px; font-size: 12px; color: var(--secondary); }
 #backdrop::after {
   content: "";
