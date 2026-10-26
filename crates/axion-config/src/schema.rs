@@ -91,6 +91,10 @@ pub struct General {
     /// shows once; Settings › General › Show Welcome Tour runs it again). Accounts that
     /// existed before the tour was added count as done.
     pub onboarding_done: bool,
+    /// Linux: add Axion to the application menu at start (a per-user `axion.desktop` and the
+    /// icon set in `$XDG_DATA_HOME`), which is what gives the window its icon on Wayland.
+    /// Off: Axion leaves the desktop entry alone (and removes nothing).
+    pub desktop_integration: bool,
 }
 
 /// Which language the interface is shown in.
@@ -143,6 +147,7 @@ impl Default for General {
             search_url: "https://duckduckgo.com/?q={}".into(),
             language: UiLanguage::System,
             onboarding_done: false,
+            desktop_integration: true,
         }
     }
 }
@@ -286,6 +291,21 @@ pub enum ThemeMode {
     Auto,
 }
 
+/// What happens to a site icon that would vanish on the chrome (a black glyph on dark chrome,
+/// a white one on light chrome).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FaviconContrast {
+    /// Icons are shown as the site made them.
+    Off,
+    /// A small neutral tile in the opposite tone goes behind the icon.
+    Backing,
+    /// Single-colour glyphs are inverted (white on dark chrome, like Safari and Arc); coloured
+    /// icons that vanish get the tile.
+    #[default]
+    Invert,
+}
+
 /// How the window tint is picked from the page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -315,6 +335,8 @@ pub struct Appearance {
     /// Switch the chrome between light and dark to match the page's brightness (opt-in; off:
     /// the chrome follows `theme` only, so it never depends on the website).
     pub adapt_to_page: bool,
+    /// What to do with site icons that are hard to see on the chrome (see `FaviconContrast`).
+    pub favicon_contrast: FaviconContrast,
     /// Icon stroke weight in the light chrome, as a multiple of the design's base stroke
     /// (1.75 in a 24-unit box). Dark-on-light icons look thinner than light-on-dark ones, so
     /// light defaults a little heavier. Clamped to 0.5-2.0 when used. Only the stroke changes;
@@ -349,6 +371,7 @@ impl Default for Appearance {
             font_family: "Inter".into(),
             text_scale: 1.0,
             adapt_to_page: false,
+            favicon_contrast: FaviconContrast::Invert,
             icon_stroke_light: 1.2,
             icon_stroke_dark: 1.0,
             tint_from_page: false,
@@ -435,6 +458,9 @@ pub struct Glass {
     /// Tint opacity (0–1) of tinted (primary, destructive) glass buttons: how much of the accent
     /// colour the glass takes. The rest is the backdrop, refracted, with the rim light on top.
     pub tinted_opacity: f32,
+    /// Rim light of tinted glass buttons relative to plain glass (1 = the same): coloured glass
+    /// reads as glass by its bright, refractive edge.
+    pub tinted_rim: f32,
     /// Extra tint opacity over busy or mid-grey backdrops, to keep labels legible.
     pub adaptive_opacity: f32,
     /// Replace glass with opaque surfaces.
@@ -499,7 +525,8 @@ impl Default for Glass {
             popover_bridge_fillet: 30.0,
             menu_plate_opacity: 0.6,
             button_opacity: 0.04,
-            tinted_opacity: 0.85,
+            tinted_opacity: 0.65,
+            tinted_rim: 1.6,
             adaptive_opacity: 0.12,
             reduce_transparency: false,
             reduce_motion: false,
@@ -700,9 +727,15 @@ pub struct Layout {
     pub wide_from: f32,
     /// Below this window width, tabs collapse into a single compact capsule.
     pub narrow_below: f32,
-    /// Preferred width of a tab in the separate tab bar and of the other tabs' segments in the
-    /// compact one; all tabs share it, and they shrink equally when they don't fit.
+    /// Preferred width of a tab in the separate tab bar; all tabs share it, and they shrink
+    /// equally when they don't fit.
     pub tab_width: f32,
+    /// Compact tab bar: the widest a tab segment gets (all segments, the open one with the
+    /// address included, are equally wide); 0 = they fill the capsule.
+    pub compact_tab_max_width: f32,
+    /// Compact tab bar: while the address is being edited, the open segment grows to this width
+    /// (at most the capsule's room); the others shrink equally to make space.
+    pub compact_address_width: f32,
     /// Below this width a tab drops its title (and close button) and shows only its favicon.
     pub tab_min_width: f32,
     /// Tabs shrink no further than this (icon only, logical px); beyond it they overflow.
@@ -764,6 +797,8 @@ impl Default for Layout {
             wide_from: 1280.0,
             narrow_below: 800.0,
             tab_width: 260.0,
+            compact_tab_max_width: 0.0,
+            compact_address_width: 480.0,
             tab_min_width: 72.0,
             tab_icon_width: 36.0,
             pinned_tab_width: 0.0,
@@ -1276,6 +1311,12 @@ pub struct Tabs {
     pub drag_threshold: f32,
     /// Pages draw at most this many frames per second; 0 follows the display's refresh rate.
     pub max_frame_rate: u32,
+    /// Following the display (`max_frame_rate = 0`), pages draw at most this many frames per
+    /// second (0: as many as the display shows). Each page frame costs Chromium a frame of its
+    /// own GPU work and Axion a copy: a busy chat-app-like page (DOM updates, WebGL, canvas,
+    /// video) kept Chromium's processes at 0.75 CPU cores at 60, 1.3 at 120 and 1.55 at 240
+    /// frames per second, for motion that hardly looks smoother.
+    pub max_frame_rate_cap: u32,
     /// GPU-shared page frames are copied this many milliseconds after Chromium hands them over
     /// (0: at once). Chromium reports a frame once its drawing is *submitted*, and the driver
     /// gives no fence to wait for, so a copy made at once can still hold the buffer's previous
@@ -1298,6 +1339,7 @@ impl Default for Tabs {
             check_interval_seconds: 5.0,
             drag_threshold: 6.0,
             max_frame_rate: 0,
+            max_frame_rate_cap: 120,
             gpu_frame_settle_ms: 6.0,
         }
     }

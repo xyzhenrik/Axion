@@ -127,6 +127,7 @@ ask_where_to_save = false
 | `layout.sidebar` | `auto`, `docked` or `overlay`. | `auto` |
 | `tabs.check_interval_seconds` | How often memory is measured and tab rules applied. | `5` |
 | `tabs.max_frame_rate` | Limit pages to N frames per second (0 follows the display). | `0` |
+| `tabs.max_frame_rate_cap` | Following the display, pages draw at most this many frames per second (0: no cap). | `120` |
 | `media.skip_seconds` | How far the skip buttons jump. | `10` |
 | `media.playback_speeds` | The speeds the speed button cycles through. | `[1.0, 1.25, 1.5, 2.0, 0.5, 0.75]` |
 | `passwords.generator_length` | Length of generated passwords. | `20` |

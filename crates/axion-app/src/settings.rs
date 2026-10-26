@@ -209,6 +209,7 @@ enum Setting {
     HardwareEnabled,
     GpuRasterization,
     DesktopIntegration,
+    AppMenuEntry,
     AskWhereToSave,
     OpenSafeFiles,
     ClearCookiesOnQuit,
@@ -277,6 +278,7 @@ impl Setting {
             Setting::HardwareEnabled => tr_mark("Use hardware acceleration"),
             Setting::GpuRasterization => tr_mark("Smooth WebGL, canvas and GPU rasterization"),
             Setting::DesktopIntegration => tr_mark("Desktop media controls and media keys (after restart)"),
+            Setting::AppMenuEntry => tr_mark("Add Axion to the application menu"),
             Setting::AskWhereToSave => tr_mark("Ask where to save each file"),
             Setting::OpenSafeFiles => tr_mark("Open “safe” files after downloading"),
             Setting::ClearCookiesOnQuit => tr_mark("Clear cookies and site data when Axion quits"),
@@ -327,6 +329,7 @@ impl Setting {
                 | Setting::HardwareEnabled
                 | Setting::GpuRasterization
                 | Setting::DesktopIntegration
+                | Setting::AppMenuEntry
                 | Setting::AskWhereToSave
                 | Setting::OpenSafeFiles
                 | Setting::ClearCookiesOnQuit
@@ -450,6 +453,7 @@ impl Setting {
             Setting::HardwareEnabled => return c.hardware.enabled as u8 as f32,
             Setting::GpuRasterization => return c.hardware.gpu_rasterization as u8 as f32,
             Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
+            Setting::AppMenuEntry => return c.general.desktop_integration as u8 as f32,
             Setting::AskWhereToSave => return c.downloads.ask_where_to_save as u8 as f32,
             Setting::OpenSafeFiles => return c.downloads.open_safe_files as u8 as f32,
             Setting::ClearCookiesOnQuit => return c.data.clear_cookies_on_quit as u8 as f32,
@@ -525,6 +529,7 @@ impl Setting {
             Setting::HardwareEnabled => c.hardware.enabled = on,
             Setting::GpuRasterization => c.hardware.gpu_rasterization = on,
             Setting::DesktopIntegration => c.media.desktop_integration = on,
+            Setting::AppMenuEntry => c.general.desktop_integration = on,
             Setting::AskWhereToSave => c.downloads.ask_where_to_save = on,
             Setting::OpenSafeFiles => c.downloads.open_safe_files = on,
             Setting::ClearCookiesOnQuit => c.data.clear_cookies_on_quit = on,
@@ -1613,6 +1618,13 @@ impl SettingsSheet {
                 let current = LANGUAGES.iter().position(|&(_, l)| l == config.general.language);
                 segmented(ui, row_node, &languages, current);
                 self.note(ui, tr("Applies after restarting Axion."));
+                if cfg!(target_os = "linux") {
+                    self.control(ui, config, Setting::AppMenuEntry);
+                    self.note(
+                        ui,
+                        tr("Gives Axion its icon in the taskbar and the application menu. Applies after restarting Axion."),
+                    );
+                }
                 let row_node = self.row(ui, tr("Welcome tour"));
                 glass_pill(ui, row_node, tr("Show Welcome Tour"), SettingsAction::ShowWelcomeTour);
                 self.control(ui, config, Setting::HomeButton);

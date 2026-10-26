@@ -19,14 +19,17 @@ mod browser;
 mod chrome;
 mod context_menu;
 mod desktop;
+mod desktop_integration;
 mod downloads;
 mod downloads_popover;
 mod drip;
 mod engine_icons;
 mod eye;
+mod favicon_contrast;
 mod favicons;
 mod filedrop;
 mod find;
+mod frame_rate;
 mod gpu;
 mod hardware;
 mod history;
@@ -46,6 +49,7 @@ mod overview;
 mod page_color;
 mod page_menu;
 mod passwords;
+mod perf_log;
 mod pip;
 mod platform;
 mod player;
@@ -59,6 +63,7 @@ mod settings;
 mod shields;
 mod shields_popover;
 mod suggestions;
+mod svg_icons;
 mod tabdrag;
 mod tabs;
 mod toast;
@@ -209,18 +214,11 @@ impl ApplicationHandler for App {
             // wakes us), input, or Chromium's next work, whichever comes first. After a frame
             // that was skipped (nothing changed, nothing presented) the next one is due a
             // display refresh later instead of at once.
-            let wakeup = browser.next_wakeup();
-            match browser.redraw_at().filter(|at| *at > std::time::Instant::now()) {
-                Some(at) => {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(wakeup.map_or(at, |w| w.min(at))));
-                }
-                None => {
-                    event_loop.set_control_flow(match wakeup {
-                        Some(at) => ControlFlow::WaitUntil(at),
-                        None => ControlFlow::Poll,
-                    });
-                    browser.request_redraw();
-                }
+            let plan =
+                frame_rate::wake_plan(std::time::Instant::now(), browser.redraw_at(), browser.next_wakeup());
+            event_loop.set_control_flow(plan.until.map_or(ControlFlow::Poll, ControlFlow::WaitUntil));
+            if plan.redraw {
+                browser.request_redraw();
             }
         }
     }

@@ -49,7 +49,11 @@ pub fn init(event_loop: &ActiveEventLoop, window: &Arc<Window>, choice: &Adapter
     };
     let info = adapter.get_info();
     tracing::info!(adapter = %info.name, driver = %info.driver, "using GPU");
-    let wanted = axion_engine::cef::required_features();
+    let mut wanted = axion_engine::cef::required_features();
+    // `AXION_PERF_LOG`: GPU time of the window's passes (see `perf_log`).
+    if std::env::var_os("AXION_PERF_LOG").is_some() {
+        wanted |= wgpu::Features::TIMESTAMP_QUERY;
+    }
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("axion"),
         required_features: adapter.features() & wanted,

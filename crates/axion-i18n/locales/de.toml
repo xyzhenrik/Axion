@@ -878,3 +878,6 @@
 
 # crates/axion-app/src/settings/search.rs
 "Import bookmarks and history" = "Lesezeichen und Verlauf importieren"
+
+"Add Axion to the application menu" = "Axion zum Anwendungsmenü hinzufügen"
+"Gives Axion its icon in the taskbar and the application menu. Applies after restarting Axion." = "Gibt Axion sein Symbol in der Taskleiste und im Anwendungsmenü. Wird nach einem Neustart von Axion übernommen."

@@ -182,6 +182,9 @@ pub struct Ui {
     /// Set while painting a clipped subtree (its glass is drawn in passes of its own, so a
     /// lens there could not flow out of the glass around it).
     painting_clipped: Cell<u32>,
+    /// The clip rectangles (physical px) of the clipped subtrees being painted, innermost last:
+    /// glass cannot be cut to one, so glass that is not wholly inside it is painted flat.
+    clip_stack: RefCell<Vec<Rect>>,
     /// Switch and slider knobs that are held or still animating.
     knobs: HashMap<NodeId, Knob>,
     focus: Option<NodeId>,
@@ -220,6 +223,7 @@ impl Ui {
             press_scale: HashMap::new(),
             press_anchor: None,
             painting_clipped: Cell::new(0),
+            clip_stack: RefCell::new(Vec::new()),
             knobs: HashMap::new(),
             caret_epoch: Instant::now(),
             needs_layout: true,
@@ -855,7 +859,9 @@ impl Ui {
                     if caret > field.scroll_x + width - CARET_WIDTH {
                         field.scroll_x = caret - width + CARET_WIDTH;
                     }
-                    if !focused {
+                    if !focused || caret + CARET_WIDTH <= width {
+                        // Unfocused, or the field grew until the caret fits again (the compact
+                        // address expands while it is edited): back to the start.
                         field.scroll_x = 0.0;
                     }
                 }
@@ -1667,6 +1673,7 @@ impl Ui {
                     params.tint = [glass[0], glass[1], glass[2], theme.tinted_opacity()];
                     // Tinted glass is a button: neighbours stay separate drops (no blob between two).
                     params.merge_smoothness = 0.0;
+                    params.rim *= theme.tinted_rim();
                 }
                 if fade < 1.0 {
                     // Fading glass loses blur, tint, refraction and light together.
@@ -1797,8 +1804,19 @@ impl Ui {
         let child_fade = fade * reveal;
         let mut child_depth = depth;
         let content = &mut stacks[depth].content;
+        // Glass in a clipped subtree (a scrolled settings page) cannot be cut to the clip: where
+        // it is not wholly inside it, it is a flat card (clipped like any content) or, wholly
+        // outside, nothing.
+        let glass_clipped = self.clip_stack.borrow().last().is_some_and(|c| !contains_rect(*c, bg_px));
+        let glass_unseen = self.clip_stack.borrow().last().is_some_and(|c| {
+            let hit = clip(bg_px, *c);
+            hit.size.x <= 0.0 || hit.size.y <= 0.0
+        });
         match widget.background {
-            Background::Glass(_) | Background::TintedGlass(..) if flat => {
+            Background::Glass(_) | Background::TintedGlass(..) if glass_unseen => {
+                child_depth = depth + 1;
+            }
+            Background::Glass(_) | Background::TintedGlass(..) if flat || glass_clipped => {
                 // No glass: the same surface as a plain card (see `Theme::flat_paint`).
                 // A bare group draws nothing and is no surface for what lies in it.
                 if widget.flat_role == FlatRole::Bare {
@@ -2036,10 +2054,16 @@ impl Ui {
             // The subtree as its own layers, each cut to this widget's frame.
             let mut sub: Vec<Stack<'a>> = Vec::new();
             self.painting_clipped.set(self.painting_clipped.get() + 1);
+            {
+                let mut stack = self.clip_stack.borrow_mut();
+                let cut = stack.last().map_or(px, |outer| clip(px, *outer));
+                stack.push(cut);
+            }
             for child in self.tree.children(node).unwrap_or_default() {
                 self.paint_node(child, child_depth, dim, child_fade, &mut sub);
             }
             self.painting_clipped.set(self.painting_clipped.get() - 1);
+            self.clip_stack.borrow_mut().pop();
             let mut layers = Vec::new();
             self.flush(sub, &mut layers);
             for layer in &mut layers {
@@ -2473,6 +2497,15 @@ fn clip(rect: Rect, to: Rect) -> Rect {
     Rect { origin: min, size: (max - min).max(Vec2::ZERO) }
 }
 
+/// `inner` lies wholly inside `outer` (half a pixel of slack).
+fn contains_rect(outer: Rect, inner: Rect) -> bool {
+    let slack = 0.5;
+    inner.origin.x >= outer.origin.x - slack
+        && inner.origin.y >= outer.origin.y - slack
+        && inner.origin.x + inner.size.x <= outer.origin.x + outer.size.x + slack
+        && inner.origin.y + inner.size.y <= outer.origin.y + outer.size.y + slack
+}
+
 fn rounded_contains(frame: Rect, radius: f32, p: Vec2) -> bool {
     if !frame.contains(p) {
         return false;
@@ -2745,6 +2778,56 @@ mod tests {
         assert!(events.is_empty(), "{events:?}");
     }
 
+    /// The selection pill is the selected segment's real frame, whatever the segments' widths
+    /// (translated labels make them unequal), and in between it moves and grows from one
+    /// segment's frame to the next one's.
+    #[test]
+    fn segmented_pill_matches_unequal_segments() {
+        let mut ui = ui();
+        let root = ui.root();
+        let seg = ui.add(
+            root,
+            Widget::segmented(0),
+            Style { flex_direction: FlexDirection::Row, ..Default::default() },
+        );
+        let widths = [60.0_f32, 140.0, 90.0];
+        let cells: Vec<NodeId> = widths
+            .iter()
+            .map(|&w| {
+                ui.add(
+                    seg,
+                    Widget::container(),
+                    Style { size: Size { width: length(w), height: length(30.0) }, ..Default::default() },
+                )
+            })
+            .collect();
+        ui.layout();
+        for (i, &cell) in cells.iter().enumerate() {
+            let pill = ui.segment_pill(seg, ui.segment_pos(seg, i)).expect("pill");
+            let frame = ui.frame(cell);
+            assert!(
+                (pill.origin - frame.origin).abs().max_element() < 0.01
+                    && (pill.size - frame.size).abs().max_element() < 0.01,
+                "segment {i}: pill {pill:?} vs frame {frame:?}"
+            );
+        }
+        // Half way between segments 0 and 1: the mean of both frames.
+        let half = ui.segment_pill(seg, 0.25).expect("pill");
+        let (a, b) = (ui.frame(cells[0]), ui.frame(cells[1]));
+        assert!((half.size.x - (a.size.x + b.size.x) / 2.0).abs() < 0.01);
+        assert!((half.center().x - (a.center().x + b.center().x) / 2.0).abs() < 0.01);
+        // After the labels change width the pill follows the new frames at once.
+        ui.set_style(
+            cells[1],
+            Style { size: Size { width: length(40.0), height: length(30.0) }, ..Default::default() },
+        );
+        ui.layout();
+        let pill = ui.segment_pill(seg, ui.segment_pos(seg, 1)).expect("pill");
+        assert!(
+            (pill.size.x - 40.0).abs() < 0.01 && (pill.origin.x - ui.frame(cells[1]).origin.x).abs() < 0.01
+        );
+    }
+
     #[test]
     fn toggles_and_sliders() {
         let mut ui = ui();
@@ -2923,6 +3006,53 @@ mod tests {
         assert!((value(&events) - 0.8).abs() < 1e-3);
         ui.handle(UiInput::PointerUp);
         assert!(!ui.is_holding());
+    }
+
+    /// Glass in a clipped (scrolling) box cannot be cut to it: wholly outside it is not drawn
+    /// (a scrolled-out tinted button used to float below its page), straddling the edge it is a
+    /// clipped flat card, wholly inside it stays glass.
+    #[test]
+    fn glass_in_a_clipped_box_never_leaves_it() {
+        let mut ui = ui();
+        let root = ui.root();
+        let boxed = ui.add(
+            root,
+            Widget::container().with_clip(),
+            Style { size: Size { width: length(200.0), height: length(100.0) }, ..Default::default() },
+        );
+        let tall = ui.add(
+            boxed,
+            Widget::container(),
+            Style {
+                size: Size { width: length(200.0), height: length(400.0) },
+                flex_direction: FlexDirection::Column,
+                justify_content: taffy::JustifyContent::SPACE_BETWEEN,
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+        );
+        let button = |ui: &mut Ui| {
+            ui.add(
+                tall,
+                Widget::container()
+                    .with_radius(10.0)
+                    .with_background(Background::TintedGlass(GlassLevel::Thin, Paint::Accent)),
+                Style { size: Size { width: length(80.0), height: length(30.0) }, ..Default::default() },
+            )
+        };
+        let inside = button(&mut ui);
+        let outside = button(&mut ui);
+        ui.layout();
+        assert!(ui.frame(inside).origin.y + 30.0 <= 100.0 && ui.frame(outside).origin.y >= 100.0);
+        let glass_shapes = |ui: &Ui| {
+            let mut layers = Vec::new();
+            ui.paint(&mut layers);
+            layers
+                .iter()
+                .map(|l| if let Layer::Glass { shapes, .. } = l { shapes.len() } else { 0 })
+                .sum::<usize>()
+        };
+        assert_eq!(glass_shapes(&ui), 1, "the visible button is glass, the scrolled-out one is not drawn");
     }
 
     fn flat_ui() -> Ui {

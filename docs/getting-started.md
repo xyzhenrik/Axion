@@ -28,7 +28,7 @@ while. The full requirements and build options are in the [README](../README.md#
 
 **Optional extras**
 
-- A desktop icon on Wayland: run `tools/install-desktop.sh` (see [Troubleshooting](troubleshooting.md)).
+- A desktop icon on Wayland: Axion installs its own desktop entry at start (the first start may still show the generic icon; see [Troubleshooting](troubleshooting.md)).
 - Video from sites that use H.264/AAC: needs a special engine build (see [Troubleshooting](troubleshooting.md)).
 
 ## The first launch
