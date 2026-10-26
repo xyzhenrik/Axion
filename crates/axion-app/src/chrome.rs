@@ -411,6 +411,7 @@ pub struct Chrome {
     bar: NodeId,
     bar_sidebar_button: NodeId,
     back: NodeId,
+    new_tab: NodeId,
     forward: NodeId,
     home_button: NodeId,
     tab_capsule: NodeId,
@@ -1251,6 +1252,7 @@ impl Chrome {
             bar,
             bar_sidebar_button,
             back,
+            new_tab: new_tab_button,
             forward,
             home_button,
             tab_capsule,
@@ -1976,6 +1978,13 @@ impl Chrome {
             }
             ui.set_visible(self.tab_strip, false);
             ui.set_visible(self.bookmarks.bar, false);
+        } else {
+            // Unlocked again (or never locked): the page buttons the lock hid come back.
+            for node in [self.back, self.share, self.new_tab] {
+                ui.set_visible(node, true);
+            }
+            let downloads = self.download_state.is_some_and(|(shown, _)| shown);
+            ui.set_visible(self.downloads, downloads);
         }
     }
 
@@ -2898,6 +2907,32 @@ mod tests {
         assert_eq!(bookmarks_that_fit(&widths, 2.0, 150.0, 26.0), 1);
         assert_eq!(bookmarks_that_fit(&widths, 2.0, 50.0, 26.0), 0);
         assert_eq!(bookmarks_that_fit(&[], 2.0, 50.0, 26.0), 0);
+    }
+
+    /// Regression: leaving the locked private view must bring the whole toolbar back (the lock
+    /// hid back, share, new tab and downloads, and nothing showed them again).
+    #[test]
+    fn unlocking_restores_the_toolbar() {
+        let config = Config::default();
+        let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+        let mut chrome = Chrome::build(&mut ui, &config);
+        let window = Vec2::new(1400.0, 900.0);
+        chrome.set_download_indicator(&mut ui, true, Some(0.5));
+        for round in 0..2 {
+            chrome.apply_layout(&mut ui, &config, window);
+            let all = [chrome.back, chrome.forward, chrome.share, chrome.new_tab, chrome.downloads];
+            assert!(all.iter().all(|&n| ui.is_visible(n)), "round {round}: normal toolbar");
+            chrome.set_locked(&mut ui, &config, true);
+            assert!(all.iter().all(|&n| !ui.is_visible(n)), "round {round}: locked toolbar");
+            assert!(!ui.is_visible(chrome.tab_capsule) && !ui.is_visible(chrome.address_slot));
+            assert!(!ui.is_visible(chrome.overview) && ui.is_visible(chrome.tab_count));
+            // A relayout while locked keeps it hidden.
+            chrome.apply_layout(&mut ui, &config, window);
+            assert!(all.iter().all(|&n| !ui.is_visible(n)));
+            chrome.set_locked(&mut ui, &config, false);
+            assert!(all.iter().all(|&n| ui.is_visible(n)), "round {round}: unlocked toolbar");
+            assert!(ui.is_visible(chrome.tab_capsule));
+        }
     }
 
     #[test]
