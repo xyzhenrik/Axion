@@ -23,6 +23,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Fullscreen, Window};
 
 use crate::accounts::{AddAccountSheet, Relaunch, SheetAction};
+use crate::avatars::{Avatars, PhotoChooser, PhotoFor};
 use crate::chrome::{Chrome, ChromeAction, MoveKey, NowPlaying, PanelItem, Section, Surface, TabItem};
 use crate::context_menu::ContextMenus;
 use crate::desktop::DesktopTheme;
@@ -297,6 +298,11 @@ pub struct Browser {
     account_id: String,
     account_menu: Menu,
     add_account: AddAccountSheet,
+    /// Profile pictures as textures, and the file chooser to pick one.
+    avatars: Avatars,
+    photo_chooser: PhotoChooser,
+    /// The picture chosen in the Add Account sheet (already cropped and scaled).
+    new_account_photo: Option<image::RgbaImage>,
     /// Set when switching accounts: the window closes and Axion starts again in the other one.
     relaunch: Option<Relaunch>,
     /// Whether the account (its vault) was unlocked last time we looked; private tabs follow.
@@ -569,6 +575,7 @@ impl Browser {
         let sidebar_before =
             planes.iter().position(|&n| n == chrome.sidebar_node()).and_then(|i| planes.get(i + 1)).copied();
 
+        let avatars = Avatars::new(device.clone(), queue.clone());
         let mut browser = Self {
             window,
             surface,
@@ -641,6 +648,9 @@ impl Browser {
             account_id,
             account_menu,
             add_account,
+            avatars,
+            photo_chooser: PhotoChooser::default(),
+            new_account_photo: None,
             relaunch: None,
             account_unlocked: false,
             lock,
@@ -1110,6 +1120,11 @@ impl Browser {
         self.accounts.get(&self.account_id)
     }
 
+    /// The texture of account `id`'s profile picture (decoded once; none: the initials show).
+    fn picture_of(&self, id: &str) -> Option<crate::home::Image> {
+        self.avatars.get(id, || self.accounts.avatar_path(id))
+    }
+
     fn account_info(&self) -> AccountInfo {
         let account = self.account();
         AccountInfo {
@@ -1117,6 +1132,7 @@ impl Browser {
             initials: account.map(|a| a.initials()).unwrap_or_default(),
             color: account.map_or(axion_config::ACCENT_SWATCHES[0], |a| a.color),
             has_password: self.passwords.has_password(),
+            picture: self.picture_of(&self.account_id),
             count: self.accounts.all().len(),
         }
     }
@@ -1124,7 +1140,7 @@ impl Browser {
     /// Shows the current account wherever it appears (account button, lock screen, settings).
     fn show_account(&mut self) {
         let info = self.account_info();
-        self.chrome.set_account(&mut self.ui, &info.name, &info.initials, info.color);
+        self.chrome.set_account(&mut self.ui, &info.name, &info.initials, info.color, info.picture.as_ref());
         self.lock_screen.set_account(&mut self.ui, &info.name);
         self.passwords.set_account_name(&info.name);
         self.settings.set_account(info);
@@ -1148,7 +1164,14 @@ impl Browser {
             .enumerate()
             .map(|(i, a)| {
                 let current = a.id == self.account_id;
-                MenuItem::account(a.initials(), a.color, &a.name, current, MenuAction::SwitchAccount(i))
+                MenuItem::account(
+                    a.initials(),
+                    a.color,
+                    self.picture_of(&a.id),
+                    &a.name,
+                    current,
+                    MenuAction::SwitchAccount(i),
+                )
             })
             .collect();
         items.push(MenuItem::new(Icon::PersonAdd, "Add Account…", MenuAction::AddAccount).separated());
@@ -1174,18 +1197,32 @@ impl Browser {
         if let Some(view) = self.active_view() {
             self.engine.set_focus(view, false);
         }
+        self.new_account_photo = None;
         let events = self.add_account.open(&mut self.ui, &self.config);
         self.handle_ui_events(events);
     }
 
     fn add_account_action(&mut self, action: SheetAction) {
         match action {
-            SheetAction::Cancel => self.add_account.close(&mut self.ui),
+            SheetAction::Cancel => {
+                self.new_account_photo = None;
+                self.add_account.close(&mut self.ui);
+            }
+            SheetAction::ChoosePhoto => self.photo_chooser.choose(PhotoFor::NewAccount),
+            SheetAction::RemovePhoto => {
+                self.new_account_photo = None;
+                self.add_account.set_photo(&mut self.ui, None);
+            }
             SheetAction::Create => {
                 let Some(name) = self.add_account.name(&mut self.ui) else { return };
                 match self.accounts.add(&name, unix_now()) {
                     Ok(id) => {
                         tracing::info!(account = %id, "account added");
+                        if let Some(photo) = self.new_account_photo.take()
+                            && let Err(e) = self.accounts.set_avatar(&id, &photo)
+                        {
+                            tracing::warn!("saving the new account's picture failed: {e}");
+                        }
                         self.add_account.close(&mut self.ui);
                         self.switch_account(&id);
                     }
@@ -3538,6 +3575,7 @@ impl Browser {
         self.downloads_pump(downloads_changed);
         self.playlist_housekeeping();
         self.update_home();
+        self.update_photos();
         if count > 0 {
             let took = started.elapsed();
             let stats = &mut self.frame_stats;
@@ -3669,6 +3707,19 @@ impl Browser {
             Outcome::ChooseDownloadFolder => self.downloads.choose_folder(),
             Outcome::ChoosePlaylistFolder => self.downloads.choose_playlist_folder(),
             Outcome::ChooseBackground => self.home.choose_background(),
+            Outcome::ChooseAccountPhoto => {
+                self.settings.set_photo_status(None);
+                self.photo_chooser.choose(PhotoFor::Current);
+            }
+            Outcome::RemoveAccountPhoto => {
+                if let Err(e) = self.accounts.remove_avatar(&self.account_id) {
+                    tracing::error!("removing the profile picture failed: {e}");
+                }
+                self.avatars.forget(&self.account_id);
+                self.settings.set_photo_status(None);
+                self.show_account();
+                self.refresh_settings();
+            }
             Outcome::AddBackground(path) => {
                 if self.home.add_background(&path, &mut self.config) {
                     self.settings.set_background_status(None);
@@ -3877,6 +3928,60 @@ impl Browser {
         if dark != self.dark {
             self.dark = dark;
             self.ui.set_theme(Theme::new(&self.config, dark || self.private_mode));
+        }
+    }
+
+    // ---- profile pictures ----
+
+    /// Takes a picture chosen in the file chooser: copies it into the account's directory
+    /// (current account) or keeps it for the account the sheet creates.
+    fn update_photos(&mut self) {
+        let Some((target, path)) = self.photo_chooser.poll() else { return };
+        self.apply_photo(target, &path);
+    }
+
+    fn apply_photo(&mut self, target: PhotoFor, path: &std::path::Path) {
+        let (size, max_mb) = (self.config.accounts.avatar_size_px, self.config.accounts.avatar_max_mb);
+        let picture = match axion_accounts::load_avatar(path, size, max_mb) {
+            Ok(picture) => picture,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "profile picture refused: {e}");
+                let text = match e {
+                    axion_accounts::AccountsError::AvatarTooLarge { .. }
+                    | axion_accounts::AccountsError::AvatarUnreadable => e.to_string(),
+                    _ => "That picture couldn't be read.".to_owned(),
+                };
+                match target {
+                    PhotoFor::NewAccount => self.add_account.show_error(&mut self.ui, &text),
+                    PhotoFor::Current => {
+                        self.settings.set_photo_status(Some(text.clone()));
+                        self.refresh_settings();
+                    }
+                }
+                self.show_toast(Icon::Close, &text);
+                return;
+            }
+        };
+        match target {
+            PhotoFor::NewAccount => {
+                let image = self.avatars.upload(&picture);
+                self.add_account.set_photo(&mut self.ui, Some(&image));
+                self.new_account_photo = Some(picture);
+            }
+            PhotoFor::Current => {
+                match self.accounts.set_avatar(&self.account_id, &picture) {
+                    Ok(()) => {
+                        self.settings.set_photo_status(None);
+                    }
+                    Err(e) => {
+                        tracing::error!("saving the profile picture failed: {e}");
+                        self.settings.set_photo_status(Some("The picture couldn't be saved.".to_owned()));
+                    }
+                }
+                self.avatars.forget(&self.account_id);
+                self.show_account();
+                self.refresh_settings();
+            }
         }
     }
 
@@ -5076,6 +5181,30 @@ impl Browser {
                     self.add_account.set_name(&mut self.ui, &name["add-account-name:".len()..]);
                 }
                 "add-account-create" => self.add_account_action(SheetAction::Create),
+                // Capture aids (throwaway profiles only): "account-avatar:PATH" sets the current
+                // account's profile picture, "add-account-avatar:PATH" the Add Account sheet's,
+                // "account-avatar-remove" removes it.
+                photo
+                    if photo.starts_with("account-avatar:")
+                        && std::env::var_os("AXION_PROFILE_DIR").is_some() =>
+                {
+                    self.apply_photo(
+                        PhotoFor::Current,
+                        std::path::Path::new(&photo["account-avatar:".len()..]),
+                    );
+                }
+                photo
+                    if photo.starts_with("add-account-avatar:")
+                        && std::env::var_os("AXION_PROFILE_DIR").is_some() =>
+                {
+                    self.apply_photo(
+                        PhotoFor::NewAccount,
+                        std::path::Path::new(&photo["add-account-avatar:".len()..]),
+                    );
+                }
+                "account-avatar-remove" if std::env::var_os("AXION_PROFILE_DIR").is_some() => {
+                    self.settings_outcome(Outcome::RemoveAccountPhoto);
+                }
                 "account-settings" => self.open_account_settings(),
                 "privacy-settings" => {
                     self.settings.set_category(Category::Privacy);

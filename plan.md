@@ -67,6 +67,12 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   asked only when needed (locked private tabs, Passwords, filling/saving a password).
 - Account button at the bottom of the sidebar (avatar + name) with a glass menu: accounts,
   Add Account…, Account Settings…, Lock.
+- Profile pictures: "Choose Photo…" (desktop file chooser) in Account Settings and the Add
+  Account sheet. The picture is copied once into the account's directory (`avatar.png`,
+  centre-cropped to a square, `accounts.avatar_size_px`, input limit `accounts.avatar_max_mb`),
+  so deleting the original never breaks it; removing/replacing/deleting the account deletes
+  the file. Without one the coloured initials show. Capture aids: `--open=account-avatar:PATH`,
+  `add-account-avatar:PATH`, `account-avatar-remove`.
 
 ### 2.4 Tabs & memory
 - Lifecycle states: **Active → Background → Frozen → Discarded**.

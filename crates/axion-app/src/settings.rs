@@ -67,6 +67,8 @@ pub struct BackgroundCard {
 }
 /// The avatar on the Account page.
 const AVATAR_SIZE: f32 = 52.0;
+/// The small preview next to the photo buttons.
+const PHOTO_PREVIEW: f32 = 36.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
@@ -503,6 +505,9 @@ pub enum SettingsAction {
     SaveAccountName,
     /// Index into the accent swatches.
     AccountColor(usize),
+    /// Pick a profile photo with the desktop's file chooser.
+    ChooseAccountPhoto,
+    RemoveAccountPhoto,
     DeleteAccount,
     ShieldLevel(ShieldLevel),
     UpdateFilterLists,
@@ -595,6 +600,8 @@ impl SettingsAction {
                     SettingsAction::SaveAccountName => 52,
                     SettingsAction::DeleteAccount => 53,
                     SettingsAction::AccountColor(i) => 54 + i as u32,
+                    SettingsAction::ChooseAccountPhoto => 64,
+                    SettingsAction::RemoveAccountPhoto => 65,
                     SettingsAction::ShieldLevel(level) => {
                         60 + SHIELD_LEVELS.iter().position(|(_, l)| *l == level).unwrap_or(0) as u32
                     }
@@ -658,6 +665,8 @@ impl SettingsAction {
             54..=59 if ((n - 54) as usize) < ACCENTS.len() => SettingsAction::AccountColor((n - 54) as usize),
             60..=62 => SettingsAction::ShieldLevel(SHIELD_LEVELS[(n - 60) as usize].1),
             63 => SettingsAction::UpdateFilterLists,
+            64 => SettingsAction::ChooseAccountPhoto,
+            65 => SettingsAction::RemoveAccountPhoto,
             70 => SettingsAction::TabBar(TabBarStyle::Separate),
             71 => SettingsAction::TabBar(TabBarStyle::Compact),
             72..=75 => SettingsAction::CloseAfter(CLOSE_AFTER[(n - 72) as usize].1),
@@ -709,6 +718,9 @@ pub enum Outcome {
     },
     RenameAccount(String),
     AccountColor(Color),
+    /// Pick a profile photo for the current account (the chooser opens).
+    ChooseAccountPhoto,
+    RemoveAccountPhoto,
     /// Delete the current account (confirmed) and switch to another one.
     DeleteAccount,
     UpdateFilterLists,
@@ -772,6 +784,8 @@ pub struct SettingsSheet {
     account: AccountInfo,
     /// The last result of setting the account password (an error, or that it worked).
     account_status: Option<String>,
+    /// Why the last profile photo was refused (or nothing).
+    photo_status: Option<String>,
     confirm_delete: bool,
     /// The page must be rebuilt after a change (a toggle that shows more rows).
     rebuild: bool,
@@ -965,6 +979,7 @@ impl SettingsSheet {
             account_name: None,
             account: AccountInfo::default(),
             account_status: None,
+            photo_status: None,
             confirm_delete: false,
             rebuild: false,
             passwords_file: None,
@@ -1024,6 +1039,11 @@ impl SettingsSheet {
     /// changes the Privacy page).
     pub fn set_account(&mut self, account: AccountInfo) {
         self.account = account;
+    }
+
+    /// Why the last profile photo was refused (or nothing), shown under the photo buttons.
+    pub fn set_photo_status(&mut self, status: Option<String>) {
+        self.photo_status = status;
     }
 
     /// The result of setting or changing the account password.
@@ -1613,7 +1633,7 @@ impl SettingsSheet {
                 ..row(14.0)
             },
         );
-        avatar(ui, header, &account.initials, account.color, AVATAR_SIZE);
+        avatar(ui, header, &account.initials, account.color, AVATAR_SIZE, account.picture.as_ref());
         let names = ui.add(
             header,
             Widget::container(),
@@ -1639,6 +1659,15 @@ impl SettingsSheet {
         ui.set_field_text(field, &account.name);
         self.account_name = Some(field);
         pill_button(ui, row_node, "Save", SettingsAction::SaveAccountName, false);
+        let row_node = self.row(ui, "Photo");
+        avatar(ui, row_node, &account.initials, account.color, PHOTO_PREVIEW, account.picture.as_ref());
+        glass_pill(ui, row_node, "Choose Photo…", SettingsAction::ChooseAccountPhoto);
+        if account.picture.is_some() {
+            glass_pill(ui, row_node, "Remove Photo", SettingsAction::RemoveAccountPhoto);
+        }
+        if let Some(status) = self.photo_status.clone() {
+            self.note(ui, &status);
+        }
         let row_node = self.row(ui, "Colour");
         swatches(ui, row_node, account.color, SettingsAction::AccountColor);
 
@@ -2360,6 +2389,8 @@ impl SettingsSheet {
                 self.account.color = ACCENTS[i];
                 Outcome::AccountColor(ACCENTS[i])
             }
+            SettingsAction::ChooseAccountPhoto => return Outcome::ChooseAccountPhoto,
+            SettingsAction::RemoveAccountPhoto => return Outcome::RemoveAccountPhoto,
             SettingsAction::SaveAccountName => {
                 let name =
                     self.account_name.and_then(|f| ui.field_text(f)).unwrap_or_default().trim().to_owned();
@@ -2517,6 +2548,26 @@ fn pill_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsAction, 
     }
 }
 
+/// A button of thin glass (Liquid Glass lying on the sheet's glass), for actions that
+/// aren't the page's main one.
+pub fn glass_pill(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsAction) {
+    let button = ui.add(
+        parent,
+        Widget::container()
+            .with_action(action.id())
+            .with_radius(CAPSULE)
+            .with_background(Background::Glass(GlassLevel::Thin)),
+        Style {
+            size: Size { width: auto(), height: length(36.0) },
+            padding: padding(16.0, 0.0),
+            // Apart enough that neighbouring glass buttons don't merge.
+            margin: Rect { left: length(6.0), right: length(0.0), top: length(0.0), bottom: length(0.0) },
+            ..row(0.0)
+        },
+    );
+    ui.add_label(button, text, TextStyle::Callout, Style::default());
+}
+
 /// A red button for destructive actions; filled while it asks for confirmation.
 fn destructive_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsAction, confirming: bool) {
     let button = ui.add(
@@ -2540,6 +2591,8 @@ pub struct AccountInfo {
     pub initials: String,
     pub color: Color,
     pub has_password: bool,
+    /// The profile picture, if the account has one (else the initials show).
+    pub picture: Option<Image>,
     /// How many accounts there are (the only one can't be deleted).
     pub count: usize,
 }
@@ -2551,6 +2604,7 @@ impl Default for AccountInfo {
             initials: String::new(),
             color: ACCENTS[0],
             has_password: false,
+            picture: None,
             count: 1,
         }
     }
@@ -2606,8 +2660,16 @@ fn swatches(ui: &mut Ui, parent: NodeId, current: Color, action: fn(usize) -> Se
     }
 }
 
-/// A round avatar: the account's initials on its colour.
-pub fn avatar(ui: &mut Ui, parent: NodeId, initials: &str, color: Color, side: f32) -> NodeId {
+/// A round avatar: the account's picture (clipped to a circle) or, without one, its initials
+/// on its colour.
+pub fn avatar(
+    ui: &mut Ui,
+    parent: NodeId,
+    initials: &str,
+    color: Color,
+    side: f32,
+    picture: Option<&Image>,
+) -> NodeId {
     let circle = ui.add(
         parent,
         Widget::container().with_background(Background::Fill(Paint::Fixed(color), 1.0)).with_radius(CAPSULE),
@@ -2619,12 +2681,32 @@ pub fn avatar(ui: &mut Ui, parent: NodeId, initials: &str, color: Color, side: f
             ..Default::default()
         },
     );
+    if let Some(picture) = picture {
+        picture_fill(ui, circle, picture, side);
+        return circle;
+    }
     let style = if side >= 40.0 { TextStyle::Title2 } else { TextStyle::Callout };
     let label = ui.add_label(circle, initials, style, Style::default());
     if let Some(w) = ui.widget_mut(label) {
         w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
     }
     circle
+}
+
+/// A round picture covering `circle` (an avatar of `side` px).
+pub fn picture_fill(ui: &mut Ui, circle: NodeId, picture: &Image, side: f32) -> NodeId {
+    let node = ui.add(
+        circle,
+        Widget::image().with_radius(side / 2.0),
+        Style {
+            position: Position::Absolute,
+            inset: Rect { left: length(0.0), right: auto(), top: length(0.0), bottom: auto() },
+            size: Size { width: length(side), height: length(side) },
+            ..Default::default()
+        },
+    );
+    ui.set_image(node, Some(picture.clone()));
+    node
 }
 
 /// A segmented control: options as capsules, the current one filled.
@@ -2845,6 +2927,8 @@ mod tests {
             SettingsAction::Category(Category::Account),
             SettingsAction::Category(Category::General),
             SettingsAction::AccountColor(5),
+            SettingsAction::ChooseAccountPhoto,
+            SettingsAction::RemoveAccountPhoto,
             SettingsAction::SaveAccountName,
             SettingsAction::DeleteAccount,
             SettingsAction::SetPassword,

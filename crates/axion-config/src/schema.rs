@@ -24,11 +24,29 @@ pub struct Config {
     pub downloads: Downloads,
     pub data: Data,
     pub passwords: Passwords,
+    pub accounts: Accounts,
     pub find: Find,
     pub clipboard: Clipboard,
     pub toast: Toast,
     pub sidebar: Sidebar,
     pub ui: Ui,
+}
+
+/// Account profile pictures.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Accounts {
+    /// A chosen picture is cropped to a square and scaled to this many pixels per side
+    /// (stored as PNG in the account's directory).
+    pub avatar_size_px: u32,
+    /// Larger picture files are refused (MB).
+    pub avatar_max_mb: u32,
+}
+
+impl Default for Accounts {
+    fn default() -> Self {
+        Self { avatar_size_px: 256, avatar_max_mb: 20 }
+    }
 }
 
 /// Axion's own start page, served at this address.

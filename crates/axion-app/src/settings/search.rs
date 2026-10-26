@@ -48,7 +48,12 @@ pub const INDEX: &[Entry] = &[
         "Account name",
         &["rename", "name", "kontoname", "umbenennen", "name ändern", "profilname", "benutzername"],
     ),
-    page(C::Account, "Account colour", &["avatar", "color", "initials", "farbe", "profilbild", "kontofarbe"]),
+    page(C::Account, "Account colour", &["avatar", "color", "initials", "farbe", "kontofarbe"]),
+    page(
+        C::Account,
+        "Account photo",
+        &["avatar", "profile picture", "photo", "image", "profilbild", "foto", "bild"],
+    ),
     page(
         C::Account,
         "Account password",

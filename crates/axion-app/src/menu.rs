@@ -12,6 +12,7 @@ use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
 
 use crate::drip::Phase;
+use crate::home::Image;
 use crate::popover::Popover;
 
 /// The page menu's rows.
@@ -111,8 +112,8 @@ impl MenuControl {
 
 pub struct MenuItem {
     pub icon: Option<Icon>,
-    /// An account's avatar (initials and colour) instead of an icon.
-    pub avatar: Option<(String, Color)>,
+    /// An account's avatar (initials and colour, or its picture) instead of an icon.
+    pub avatar: Option<(String, Color, Option<Image>)>,
     pub label: String,
     /// Secondary text at the end of the row (e.g. the current zoom).
     pub detail: Option<String>,
@@ -146,8 +147,20 @@ impl MenuItem {
     }
 
     /// A row for an account: its avatar and name.
-    pub fn account(initials: String, color: Color, name: &str, checked: bool, action: MenuAction) -> Self {
-        Self { icon: None, avatar: Some((initials, color)), checked, ..Self::new(Icon::Person, name, action) }
+    pub fn account(
+        initials: String,
+        color: Color,
+        picture: Option<Image>,
+        name: &str,
+        checked: bool,
+        action: MenuAction,
+    ) -> Self {
+        Self {
+            icon: None,
+            avatar: Some((initials, color, picture)),
+            checked,
+            ..Self::new(Icon::Person, name, action)
+        }
     }
 
     /// A row of compact buttons.
@@ -445,9 +458,9 @@ impl Menu {
             },
         );
         match (&item.avatar, item.icon) {
-            (Some((initials, color)), _) => {
+            (Some((initials, color, picture)), _) => {
                 // Shifted left a little, so its centre lines up with the icons'.
-                let avatar = crate::settings::avatar(ui, row, initials, *color, AVATAR);
+                let avatar = crate::settings::avatar(ui, row, initials, *color, AVATAR, picture.as_ref());
                 let mut style = ui.style(avatar);
                 style.margin =
                     Rect { left: length(-3.5), right: length(-3.5), top: length(0.0), bottom: length(0.0) };
