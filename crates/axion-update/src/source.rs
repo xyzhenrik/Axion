@@ -80,6 +80,11 @@ impl Source {
     /// The configured source; `Err(NoSource)` while neither a manifest nor a repository is set,
     /// which keeps the whole updater inert.
     pub fn from_config(updates: &Updates) -> Result<Self, UpdateError> {
+        Self::from_config_or(updates, axion_config::DEFAULT_REPOSITORY)
+    }
+
+    /// [`Self::from_config`] with another default repository.
+    pub(crate) fn from_config_or(updates: &Updates, default_repository: &str) -> Result<Self, UpdateError> {
         let manifest = updates.manifest_url.trim();
         if !manifest.is_empty() {
             let valid = url::Url::parse(manifest)
@@ -90,10 +95,11 @@ impl Source {
                 Err(UpdateError::InvalidUrl(manifest.to_owned()))
             };
         }
-        if updates.repository.trim().is_empty() {
+        let typed = updates.effective_repository_or(default_repository);
+        if typed.is_empty() {
             return Err(UpdateError::NoSource);
         }
-        let repository = parse_repository(&updates.repository)?;
+        let repository = parse_repository(typed)?;
         let api_url = updates.api_url.trim().trim_end_matches('/').to_owned();
         if url::Url::parse(&api_url).is_err() {
             return Err(UpdateError::InvalidUrl(api_url));
@@ -153,8 +159,9 @@ mod tests {
 
     #[test]
     fn source_from_config() {
-        let mut updates = Updates { repository: String::new(), ..Updates::default() };
-        assert!(matches!(Source::from_config(&updates), Err(UpdateError::NoSource)));
+        let mut updates = Updates::default();
+        // The default repository is the source while nothing is typed.
+        assert_eq!(Source::from_config(&updates).is_ok(), !axion_config::DEFAULT_REPOSITORY.is_empty());
         updates.repository = "henrik/axion".into();
         assert_eq!(
             Source::from_config(&updates).expect("repository set"),

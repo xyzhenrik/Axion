@@ -2339,13 +2339,22 @@ impl SettingsSheet {
         self.control(ui, config, Setting::AutoCheckUpdates);
         self.control(ui, config, Setting::UpdatePrereleases);
         let row_node = self.row(ui, tr("Repository"));
-        let field = text_field(ui, row_node, tr("owner/name"), 230.0, false);
-        let shown = self.repository_draft.clone().unwrap_or_else(|| config.updates.repository.clone());
+        // The default repository is the placeholder; the field holds only what the user typed.
+        let placeholder = if axion_config::DEFAULT_REPOSITORY.is_empty() {
+            tr("owner/name")
+        } else {
+            axion_config::DEFAULT_REPOSITORY
+        };
+        let field = text_field(ui, row_node, placeholder, 230.0, false);
+        let shown = self
+            .repository_draft
+            .clone()
+            .unwrap_or_else(|| config.updates.repository_field_text().to_owned());
         ui.set_field_text(field, &shown);
         self.repository_field = Some(field);
         pill_button(ui, row_node, tr("Save"), SettingsAction::SaveRepository, false);
         let note = self.repository_status.clone().unwrap_or_else(|| {
-            tr("Where Axion's releases are published, as owner/name. Leave it empty to turn updates off. Looking for an update sends nothing but a request for the newest release.")
+            tr("Where Axion's releases are published, as owner/name. Leave it empty to use the default. Looking for an update sends nothing but a request for the newest release.")
                 .to_owned()
         });
         self.note(ui, &note);
@@ -3550,14 +3559,22 @@ impl SettingsSheet {
                     .trim()
                     .to_owned();
                 if text.is_empty() {
-                    config.updates.repository.clear();
+                    config.updates.set_repository("");
                     self.repository_draft = None;
-                    self.repository_status = Some(tr("Updates are off: no repository is set.").to_owned());
+                    let default = config.updates.effective_repository().to_owned();
+                    self.repository_status = Some(if default.is_empty() {
+                        tr("Updates are off: no repository is set.").to_owned()
+                    } else {
+                        tr_fmt!(
+                            "Back to the default: looking for updates in {repository}.",
+                            repository = default
+                        )
+                    });
                     Outcome::SourceChanged
                 } else {
                     match axion_update::parse_repository(&text) {
                         Ok(repository) => {
-                            config.updates.repository = repository.to_string();
+                            config.updates.set_repository(&repository.to_string());
                             self.repository_draft = None;
                             self.repository_status = Some(tr_fmt!(
                                 "Saved. Looking for updates in {repository}.",

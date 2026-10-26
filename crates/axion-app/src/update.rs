@@ -3,8 +3,9 @@
 //! Checks and installs run on background threads and report through a channel that
 //! [`Updater::poll`] drains every frame, so nothing here blocks the UI. Settings › About
 //! shows [`AboutInfo`]; the confirmation and the progress of an install are an
-//! [`AlertView`] in the glass alert. Everything stays inert until `updates.repository` or
-//! `updates.manifest_url` is set (see `axion-update`).
+//! [`AlertView`] in the glass alert. The source is `updates.manifest_url`, else
+//! `updates.repository`, else the default repository; everything stays inert while all are
+//! empty (see `axion-update`).
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -171,6 +172,8 @@ pub struct Updater {
     exe: Option<PathBuf>,
     current: Version,
     cancel: Arc<AtomicBool>,
+    /// The repository used while none is typed (tests inject another one).
+    default_repository: String,
 }
 
 impl Updater {
@@ -190,7 +193,16 @@ impl Updater {
             exe: axion_update::install::current_exe(),
             current: axion_update::running_version(VERSION),
             cancel: Arc::new(AtomicBool::new(false)),
+            default_repository: axion_config::DEFAULT_REPOSITORY.to_owned(),
         }
+    }
+
+    /// `updates` with the repository in effect written into it, so everything downstream
+    /// (`axion_update`) sees one explicit value.
+    fn resolved(&self, updates: &axion_config::Updates) -> axion_config::Updates {
+        let mut resolved = updates.clone();
+        resolved.repository = updates.effective_repository_or(&self.default_repository).to_owned();
+        resolved
     }
 
     pub fn mode(&self) -> InstallMode {
@@ -226,11 +238,11 @@ impl Updater {
 
     /// Starts a check on a background thread. Without a source this does nothing at all.
     pub fn check(&mut self, config: &Config, manual: bool) {
-        if self.is_checking() || !config.updates.has_source() {
+        if self.is_checking() || !config.updates.has_source_or(&self.default_repository) {
             return;
         }
         self.status = Status::Checking;
-        let updates = config.updates.clone();
+        let updates = self.resolved(&config.updates);
         let current = self.current.clone();
         let sender = self.sender.clone();
         let spawned = std::thread::Builder::new().name("update-check".into()).spawn(move || {
@@ -318,8 +330,12 @@ impl Updater {
         }
         self.op = Op::Running(Running::default());
         self.cancel.store(false, Ordering::Relaxed);
-        let (kind, updates, sender, cancel) =
-            (self.kind.clone(), config.updates.clone(), self.sender.clone(), Arc::clone(&self.cancel));
+        let (kind, updates, sender, cancel) = (
+            self.kind.clone(),
+            self.resolved(&config.updates),
+            self.sender.clone(),
+            Arc::clone(&self.cancel),
+        );
         let spawned = std::thread::Builder::new().name("update-install".into()).spawn(move || {
             let progress_sender = sender.clone();
             let mut progress = move |p: Progress| {
@@ -580,7 +596,7 @@ impl Updater {
                 AboutState::Available { version: r.version.to_string(), prerelease: r.prerelease }
             }
             (_, Status::Error(e)) => AboutState::Error(e.clone()),
-            _ if !u.has_source() => AboutState::NoSource,
+            _ if !u.has_source_or(&self.default_repository) => AboutState::NoSource,
             (_, Status::UpToDate) => AboutState::UpToDate,
             (_, Status::Idle) => AboutState::NeverChecked,
         };
@@ -721,15 +737,37 @@ mod tests {
 
     #[test]
     fn nothing_is_checked_without_a_source() {
-        let mut config = Config::default();
-        config.updates.repository.clear();
+        let config = Config::default();
         let mut updater = Updater::new();
+        updater.default_repository.clear();
         updater.check(&config, true);
         assert!(!updater.is_checking());
         assert!(updater.poll().is_empty());
         let about = updater.about(&config, None);
         assert_eq!(about.state, AboutState::NoSource);
         assert!(about.last_checked.is_empty());
+    }
+
+    #[test]
+    fn the_about_state_follows_the_effective_repository() {
+        let mut updater = Updater::new();
+        let mut config = Config::default();
+        // Default applies while nothing is typed.
+        updater.default_repository = "def/ault".into();
+        assert_eq!(updater.about(&config, None).state, AboutState::NeverChecked);
+        assert_eq!(updater.resolved(&config.updates).repository, "def/ault");
+        // A typed repository overrides it.
+        config.updates.set_repository("me/fork");
+        assert_eq!(updater.resolved(&config.updates).repository, "me/fork");
+        assert_eq!(updater.about(&config, None).state, AboutState::NeverChecked);
+        // Cleared again: the default; with no default either, no source.
+        config.updates.set_repository("");
+        assert_eq!(updater.resolved(&config.updates).repository, "def/ault");
+        updater.default_repository.clear();
+        assert_eq!(updater.about(&config, None).state, AboutState::NoSource);
+        // A manifest alone is a source.
+        config.updates.manifest_url = "https://example.org/latest.json".into();
+        assert_eq!(updater.about(&config, None).state, AboutState::NeverChecked);
     }
 
     #[test]

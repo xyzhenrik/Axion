@@ -5,8 +5,8 @@
 //! installation kind (see [`install`]). The crate has no UI and no global state; the app runs
 //! it on a background thread.
 //!
-//! **Inert until a source is set**: with `updates.repository` and `updates.manifest_url` empty
-//! ([`axion_config::DEFAULT_REPOSITORY`]) nothing here touches the network. No telemetry: a
+//! **Inert until a source is set**: the source is `updates.manifest_url`, else `updates.repository`,
+//! else [`axion_config::DEFAULT_REPOSITORY`]; while all are empty nothing here touches the network. No telemetry: a
 //! check is one GET with `Axion/<version>` as the user agent.
 
 mod checksum;
@@ -56,7 +56,16 @@ pub struct CheckReport {
 ///
 /// `Err(UpdateError::NoSource)` while no repository or manifest is set — nothing is sent then.
 pub fn check(updates: &Updates, current: &Version) -> Result<CheckReport, UpdateError> {
-    let source = Source::from_config(updates)?;
+    check_with_default(updates, current, axion_config::DEFAULT_REPOSITORY)
+}
+
+/// [`check`] with another default repository (tests).
+fn check_with_default(
+    updates: &Updates,
+    current: &Version,
+    default_repository: &str,
+) -> Result<CheckReport, UpdateError> {
+    let source = Source::from_config_or(updates, default_repository)?;
     let http = Http::new(updates, &user_agent(&current.to_string()));
     let latest = source.provider().latest(&http, updates.channel)?;
     let update = newer_than(latest.clone(), current);
@@ -87,8 +96,11 @@ mod tests {
     #[test]
     fn no_source_means_no_request() {
         let server = TestServer::start(Vec::new());
-        let updates = Updates { api_url: server.url(""), repository: String::new(), ..Updates::default() };
-        assert!(matches!(check(&updates, &Version::new(0, 0, 1)), Err(UpdateError::NoSource)));
+        let updates = Updates { api_url: server.url(""), ..Updates::default() };
+        assert!(matches!(
+            check_with_default(&updates, &Version::new(0, 0, 1), ""),
+            Err(UpdateError::NoSource)
+        ));
         assert_eq!(server.requests(), 0);
     }
 

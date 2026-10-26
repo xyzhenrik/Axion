@@ -1157,7 +1157,8 @@ pub struct Updates {
     /// Master switch for update checks (a no-op while no source is set).
     pub enabled: bool,
     /// `owner/name` of the releases' repository (a full `https://github.com/owner/name`
-    /// address works too). Empty: no source (see [`DEFAULT_REPOSITORY`]).
+    /// address works too). Empty (the default, nothing stored): [`DEFAULT_REPOSITORY`]
+    /// applies; a value here overrides it. Read it through [`Updates::effective_repository`].
     pub repository: String,
     /// A forge without a GitHub-style API: the address of a JSON manifest
     /// (`{"version": "1.2.3", "notes": "…", "url": "release page", "assets": [{"name": "…",
@@ -1193,7 +1194,7 @@ impl Default for Updates {
     fn default() -> Self {
         Self {
             enabled: true,
-            repository: DEFAULT_REPOSITORY.into(),
+            repository: String::new(),
             manifest_url: String::new(),
             api_url: "https://api.github.com".into(),
             channel: UpdateChannel::Stable,
@@ -1212,9 +1213,39 @@ impl Default for Updates {
 }
 
 impl Updates {
-    /// Whether a repository or manifest address is configured.
+    /// The repository in effect: the user's own, or [`DEFAULT_REPOSITORY`] when none is typed.
+    pub fn effective_repository(&self) -> &str {
+        self.effective_repository_or(DEFAULT_REPOSITORY)
+    }
+
+    /// [`Self::effective_repository`] with another default (tests, and a build whose default
+    /// is empty).
+    pub fn effective_repository_or<'a>(&'a self, default: &'a str) -> &'a str {
+        let typed = self.repository.trim();
+        if typed.is_empty() { default.trim() } else { typed }
+    }
+
+    /// Text for the settings field: empty while the default applies, so its placeholder shows.
+    pub fn repository_field_text(&self) -> &str {
+        let typed = self.repository.trim();
+        if typed == DEFAULT_REPOSITORY.trim() { "" } else { typed }
+    }
+
+    /// Stores what the user typed. Blank, or the default itself, returns to the default and
+    /// stores nothing.
+    pub fn set_repository(&mut self, typed: &str) {
+        let typed = typed.trim();
+        self.repository = if typed == DEFAULT_REPOSITORY.trim() { String::new() } else { typed.into() };
+    }
+
+    /// Whether a repository (typed or default) or manifest address is configured.
     pub fn has_source(&self) -> bool {
-        !self.repository.trim().is_empty() || !self.manifest_url.trim().is_empty()
+        self.has_source_or(DEFAULT_REPOSITORY)
+    }
+
+    /// [`Self::has_source`] with another default repository.
+    pub fn has_source_or(&self, default: &str) -> bool {
+        !self.effective_repository_or(default).is_empty() || !self.manifest_url.trim().is_empty()
     }
 }
 

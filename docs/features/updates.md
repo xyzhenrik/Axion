@@ -37,8 +37,9 @@ Anything that changes your installation first shows a confirmation that says wha
 
 ## Where Axion looks: the Repository field
 
-**Repository** in **Settings > About & Updates** holds the project's name as `owner/name`. Empty
-means updates are off and Axion never contacts a server. If your copy points to a different project,
+**Repository** in **Settings > About & Updates** holds the project's name as `owner/name`. The
+field is empty and shows the default (`xyzhenrik/Axion`) as a placeholder; clear it to go back to
+the default. If your copy points to a different project,
 or to a self-hosted site that offers a GitHub-compatible API, change it here or in `config.toml`
 (`updates.repository`, `updates.api_url`).
 
@@ -113,7 +114,7 @@ All in the `[updates]` section of `config.toml`:
 | Key | Meaning | Default |
 |---|---|---|
 | `enabled` | Master switch for update checks. | `true` |
-| `repository` | `owner/name` of the releases. | `xyzhenrik/Axion` |
+| `repository` | `owner/name` of the releases; empty uses the default `xyzhenrik/Axion`. | empty |
 | `manifest_url` | Address of a `latest.json`; wins over `repository`. | empty |
 | `api_url` | The hosting site's GitHub-compatible API. | `https://api.github.com` |
 | `channel` | `stable` or `prerelease`. | `stable` |

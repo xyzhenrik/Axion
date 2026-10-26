@@ -159,6 +159,44 @@ mod tests {
     }
 
     #[test]
+    fn the_default_repository_is_never_stored() {
+        use crate::DEFAULT_REPOSITORY;
+        let paths = ConfigPaths::in_dir(temp_dir("repository"));
+        let mut config = Config::default();
+        assert_eq!(config.updates.effective_repository(), DEFAULT_REPOSITORY);
+        assert_eq!(config.updates.repository_field_text(), "");
+
+        config.updates.set_repository("  me/fork ");
+        save_config(&paths, &config).unwrap();
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(text.contains("repository = \"me/fork\""), "{text}");
+        let loaded = load_config(&paths).unwrap();
+        assert_eq!(loaded.updates.effective_repository(), "me/fork");
+        assert_eq!(loaded.updates.repository_field_text(), "me/fork");
+
+        // Clearing returns to the default and stores nothing.
+        config.updates.set_repository("   ");
+        save_config(&paths, &config).unwrap();
+        let text = std::fs::read_to_string(&paths.config).unwrap_or_default();
+        assert!(!text.contains("repository"), "{text}");
+        assert_eq!(load_config(&paths).unwrap().updates.effective_repository(), DEFAULT_REPOSITORY);
+
+        // Typing the default itself is the same as clearing.
+        config.updates.set_repository(DEFAULT_REPOSITORY);
+        assert_eq!(config.updates.repository, "");
+        // A config that still carries the default explicitly reads as "default" too.
+        config.updates.repository = DEFAULT_REPOSITORY.into();
+        assert_eq!(config.updates.repository_field_text(), "");
+        // The default can be replaced for a build without one.
+        let mut other = Config::default();
+        assert_eq!(other.updates.effective_repository_or(""), "");
+        assert!(!other.updates.has_source_or(""));
+        other.updates.manifest_url = "https://example.org/latest.json".into();
+        assert!(other.updates.has_source_or(""));
+        std::fs::remove_dir_all(&paths.dir).unwrap();
+    }
+
+    #[test]
     fn parse_errors_name_the_file() {
         let paths = ConfigPaths::in_dir(temp_dir("bad"));
         std::fs::create_dir_all(&paths.dir).unwrap();
