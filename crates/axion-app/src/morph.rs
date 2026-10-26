@@ -148,7 +148,7 @@ impl SheetMorph {
         self.bridge_depth = config.glass.bezel_width.max(0.0);
         let proxy = self.proxy(ui, origin.plane);
         if let Some(w) = ui.widget_mut(proxy.bridge) {
-            w.glass_merge = Some(config.glass.popover_bridge_fillet.max(0.0));
+            w.glass_merge = Some(config.glass.popover_bridge_fillet());
         }
         glass.map_or(Frame { origin: origin.point, size: Vec2::ZERO }, |(f, _)| f)
     }
@@ -230,9 +230,10 @@ impl SheetMorph {
         }
         let frame = self.drip.frame();
         let growth = self.drip.growth();
-        let near = phase != Phase::Open && growth < HANDOFF && current.is_some();
+        // Flat mode has no drop to hand off: the sheet itself fades in and out.
+        let near = phase != Phase::Open && growth < HANDOFF && current.is_some() && !ui.theme().flat();
         ui.set_visual_frame(self.sheet, Some(frame));
-        ui.set_opacity(self.sheet, if near { 0.0 } else { 1.0 });
+        ui.set_opacity(self.sheet, if near { 0.0 } else { self.drip.fade() });
         if let Some(proxy) = current {
             ui.set_visible(proxy.glass, near);
             ui.set_visual_frame(proxy.glass, near.then_some(frame));

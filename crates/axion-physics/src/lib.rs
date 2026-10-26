@@ -51,8 +51,17 @@ impl Spring {
     /// Calm, no overshoot, for large panels and layout changes.
     pub const SMOOTH: Spring = Spring::new(0.5, 1.0);
 
+    /// Quick and critically damped: appear/disappear and small moves without any overshoot
+    /// (the flat, glass-free mode).
+    pub const CRISP: Spring = Spring::new(0.2, 1.0);
+
     pub const fn new(response: f32, damping_ratio: f32) -> Self {
         Self { response, damping_ratio }
+    }
+
+    /// The same spring, but never under-damped: it settles without overshoot.
+    pub fn critical(self) -> Self {
+        Self { damping_ratio: self.damping_ratio.max(1.0), ..self }
     }
 
     fn angular_frequency(&self) -> f32 {
@@ -204,6 +213,21 @@ mod tests {
         for _ in 0..240 {
             a.step(1.0 / 120.0);
             assert!(a.value <= 1.0 + 1e-4, "overshot to {}", a.value);
+        }
+    }
+
+    #[test]
+    fn critical_preset_never_bounces_whatever_the_spring_was() {
+        assert_eq!(Spring::BOUNCY.critical().damping_ratio, 1.0);
+        assert_eq!(Spring::new(0.4, 1.3).critical().damping_ratio, 1.3, "over-damped stays");
+        assert_eq!(Spring::BOUNCY.critical().response, Spring::BOUNCY.response);
+        for spring in [Spring::CRISP, Spring::SNAPPY.critical(), Spring::INTERACTIVE.critical()] {
+            let mut a = Animated::new(0.0_f32, spring);
+            a.target = 1.0;
+            for _ in 0..240 {
+                a.step(1.0 / 120.0);
+                assert!(a.value <= 1.0 + 1e-4, "overshot to {}", a.value);
+            }
         }
     }
 

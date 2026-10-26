@@ -127,7 +127,7 @@ impl Popover {
         self.find_join(ui, anchor);
         self.bridge_depth = config.glass.bezel_width.max(0.0);
         if let Some(w) = ui.widget_mut(self.bridge) {
-            w.glass_merge = Some(config.glass.popover_bridge_fillet.max(0.0));
+            w.glass_merge = Some(config.glass.popover_bridge_fillet());
         }
         self.drip.show(config, anchor, target);
         self.animate(ui, 0.0);
@@ -179,8 +179,13 @@ impl Popover {
         self.find_join(ui, self.drip.anchor());
         let frame = self.drip.frame();
         ui.set_visual_frame(self.root, Some(frame));
-        let mut bridge =
-            self.join.and_then(|(join, r)| bridge_frame(join, r, frame, self.radius, self.bridge_depth));
+        // Flat mode fades the card in and out instead (1 otherwise: nothing changes).
+        ui.set_opacity(self.root, self.drip.fade());
+        // Flat mode has no bridges: the card is just a card.
+        let mut bridge = self
+            .join
+            .filter(|_| !ui.theme().flat())
+            .and_then(|(join, r)| bridge_frame(join, r, frame, self.radius, self.bridge_depth));
         if self.detach {
             // Narrower the further it has flowed away from its anchor, gone when open.
             let from = self.drip.anchor();

@@ -104,7 +104,7 @@ fn spring(config: &Config) -> Spring {
     if config.glass.reduce_motion {
         Spring::new(0.15, 1.0)
     } else {
-        Spring::new(motion.snappy.response * motion.speed, motion.snappy.damping)
+        Spring::new(motion.snappy.response * motion.speed, config.glass.damping(motion.snappy.damping))
     }
 }
 
@@ -239,15 +239,17 @@ impl TabDrag {
 
         active.lens.spring = spring(config);
         active.lens.target = active.pointer - active.grab;
-        if config.glass.reduce_motion {
+        // Reduce Motion and flat mode: the tab follows the pointer plainly, without a spring.
+        if config.glass.reduce_motion || config.glass.is_flat() {
             active.lens.snap(active.lens.target);
         }
         active.lens.step(dt);
         let speed = active.lens.velocity;
-        let stretch = (speed.length() * STRETCH_PER_SPEED).min(config.glass.squash.max(0.0));
+        let stretch = (speed.length() * STRETCH_PER_SPEED).min(config.glass.squash());
         let dir = if speed.length() > 0.0 { (speed / speed.length()).abs() } else { Vec2::ZERO };
         // Longer along the motion, a little narrower across it.
-        let scale = Vec2::splat(LIFT) * (Vec2::ONE + dir * stretch)
+        let lift = if config.glass.is_flat() { 1.0 } else { LIFT };
+        let scale = Vec2::splat(lift) * (Vec2::ONE + dir * stretch)
             / (Vec2::ONE + Vec2::new(dir.y, dir.x) * stretch * 0.5);
         let mut style = ui.style(self.lens);
         let origin = active.lens.value;

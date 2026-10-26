@@ -1794,7 +1794,7 @@ impl Chrome {
         self.presentation_k.spring = if config.glass.reduce_motion {
             Spring::new(0.2, 1.0)
         } else {
-            Spring::new(motion.smooth.response * motion.speed, motion.smooth.damping)
+            Spring::new(motion.smooth.response * motion.speed, config.glass.damping(motion.smooth.damping))
         };
         self.presentation_k.target = if on { 1.0 } else { 0.0 };
         true
@@ -1933,7 +1933,7 @@ impl Chrome {
         widths.pinned = l.pinned_tab_width;
         widths.reduce_motion = config.glass.reduce_motion;
         widths.width.spring =
-            Spring::new(config.motion.smooth.response * config.motion.speed, config.motion.smooth.damping);
+            Spring::new(config.motion.smooth.response * config.motion.speed, config.glass.damping(config.motion.smooth.damping));
         widths.applied = -1.0;
         let mut address = ui.style(self.address);
         if separate {
@@ -1964,7 +1964,7 @@ impl Chrome {
         self.slide.spring = if config.glass.reduce_motion {
             Spring::new(0.2, 1.0)
         } else {
-            Spring::new(motion.smooth.response * motion.speed, motion.smooth.damping)
+            Spring::new(motion.smooth.response * motion.speed, config.glass.damping(motion.smooth.damping))
         };
         self.group_spring = self.slide.spring;
         let mut side = ui.style(self.sidebar);

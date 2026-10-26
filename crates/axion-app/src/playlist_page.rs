@@ -784,7 +784,7 @@ impl PlaylistPage {
             search_field,
             search_width: Animated::new(
                 TOP_BUTTON,
-                Spring::new(SEARCH_SPRING.0 * config.motion.speed, SEARCH_SPRING.1),
+                Spring::new(SEARCH_SPRING.0 * config.motion.speed, config.glass.damping(SEARCH_SPRING.1)),
             ),
             search_open: false,
             video_box,
@@ -898,7 +898,7 @@ impl PlaylistPage {
     }
 
     fn apply_search_spring(&mut self, config: &Config) {
-        self.search_width.spring = Spring::new(SEARCH_SPRING.0 * config.motion.speed, SEARCH_SPRING.1);
+        self.search_width.spring = Spring::new(SEARCH_SPRING.0 * config.motion.speed, config.glass.damping(SEARCH_SPRING.1));
     }
 
     /// The width of the list column (logical px).

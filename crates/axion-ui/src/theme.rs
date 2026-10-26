@@ -73,6 +73,33 @@ const LENS_SHADOW: f32 = 0.45;
 /// colour (lighter in dark, darker in light), so text on it keeps its contrast.
 const LENS_OPAQUE_MIX: f32 = 0.14;
 
+/// Flat mode: how opaque a card of each level is (a hint of the page shows through the thin ones,
+/// never blurred) and its shadow (logical px: offset, blur; strength in light / dark chrome).
+const FLAT_OPACITY: [f32; 3] = [0.94, 0.97, 1.0];
+const FLAT_SHADOW: [(f32, f32, [f32; 2]); 3] =
+    [(1.0, 6.0, [0.10, 0.34]), (2.0, 14.0, [0.12, 0.40]), (4.0, 28.0, [0.16, 0.50])];
+/// Width of a flat card's border (logical px).
+pub const FLAT_BORDER: f32 = 1.0;
+/// A tinted (primary) button in flat mode: the colour, almost solid.
+const FLAT_TINTED_OPACITY: f32 = 0.96;
+/// A lens-level background (a hovered sidebar row's highlight) in flat mode: the label colour at
+/// this strength, over whatever it lies on.
+const FLAT_HIGHLIGHT_ALPHA: f32 = 0.08;
+
+/// A flat card: what `Background::Glass(level)` is painted as without glass (see
+/// [`Theme::flat_paint`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlatPaint {
+    pub fill: [f32; 4],
+    /// The 1px outline; fully transparent for none.
+    pub border: [f32; 4],
+    /// Shadow colour (black with its strength as alpha), offset and blur in logical px.
+    /// Nested cards have none.
+    pub shadow: [f32; 4],
+    pub shadow_dy: f32,
+    pub shadow_blur: f32,
+}
+
 /// Tint strength of every glass level under Reduce Transparency (nearly opaque).
 const REDUCED_TRANSPARENCY_OPACITY: f32 = 0.94;
 
@@ -174,6 +201,67 @@ impl Theme {
         let base = self.material().tint.to_f32();
         let label = self.color(Paint::Label);
         [0, 1, 2].map(|i| base[i] * (1.0 - LENS_OPAQUE_MIX) + label[i] * LENS_OPAQUE_MIX)
+    }
+
+    /// Flat mode (`glass.style = "flat"`): nothing is drawn as glass, merged or animated like
+    /// glass. This is the one switch the painter, the popover code and the physics read.
+    pub fn flat(&self) -> bool {
+        self.config.glass.is_flat()
+    }
+
+    /// What `Background::Glass(level)` is painted as in flat mode: a solid themed card (the
+    /// scheme's surface colour; a hint translucent only for thin cards, never blurred) with a
+    /// hairline border and a soft shadow. `nested` (glass inside glass: a card on the sidebar,
+    /// a field in the bar) is an inset in the ground colour without a shadow, so it stands out
+    /// from the card it lies on in both schemes.
+    pub fn flat_paint(&self, level: GlassLevel, nested: bool) -> FlatPaint {
+        let i = match level {
+            GlassLevel::Thin | GlassLevel::Lens => 0,
+            GlassLevel::Regular => 1,
+            GlassLevel::Thick => 2,
+        };
+        let hairline = self.color(Paint::Hairline);
+        if level == GlassLevel::Lens {
+            // A highlight, not a surface: a tint of the label colour that keeps contrast.
+            let label = self.color(Paint::Label);
+            return FlatPaint {
+                fill: [label[0], label[1], label[2], FLAT_HIGHLIGHT_ALPHA],
+                border: [0.0; 4],
+                shadow: [0.0; 4],
+                shadow_dy: 0.0,
+                shadow_blur: 0.0,
+            };
+        }
+        if nested {
+            let ground = self.color(Paint::Ground);
+            return FlatPaint {
+                fill: [ground[0], ground[1], ground[2], 1.0],
+                border: [hairline[0], hairline[1], hairline[2], hairline[3] * 0.6],
+                shadow: [0.0; 4],
+                shadow_dy: 0.0,
+                shadow_blur: 0.0,
+            };
+        }
+        let surface = self.color(Paint::Surface);
+        let (dy, blur, strength) = FLAT_SHADOW[i];
+        FlatPaint {
+            fill: [surface[0], surface[1], surface[2], FLAT_OPACITY[i]],
+            border: hairline,
+            shadow: [0.0, 0.0, 0.0, strength[usize::from(self.dark)]],
+            shadow_dy: dy,
+            shadow_blur: blur,
+        }
+    }
+
+    /// A tinted card (a primary button) in flat mode: the colour, no outline, no shadow.
+    pub fn flat_tinted(&self, tint: [f32; 4]) -> FlatPaint {
+        FlatPaint {
+            fill: [tint[0], tint[1], tint[2], FLAT_TINTED_OPACITY],
+            border: [0.0; 4],
+            shadow: [0.0; 4],
+            shadow_dy: 0.0,
+            shadow_blur: 0.0,
+        }
     }
 
     /// The tint strength of `level` (see [`Theme::glass`]).

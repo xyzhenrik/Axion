@@ -58,17 +58,33 @@ pub struct Quad {
     pub color: [f32; 4],
     /// 0 for a crisp, anti-aliased edge; otherwise the blur radius of a shadow.
     pub softness: f32,
+    /// Draw only a ring of this width (physical px) inside the edge, e.g. a card's border.
+    /// 0: filled.
+    pub ring: f32,
+    /// A shadow that is trimmed where its shape lies, so a translucent card above it doesn't
+    /// darken.
+    pub knockout: bool,
 }
 
 impl Quad {
     pub fn fill(rect: Rect, radius: f32, color: [f32; 4]) -> Self {
-        Self { rect, radius, color, softness: 0.0 }
+        Self { rect, radius, color, softness: 0.0, ring: 0.0, knockout: false }
     }
 
     /// CSS-like `box-shadow: 0 offset_y blur color`.
     pub fn shadow(rect: Rect, radius: f32, offset_y: f32, blur: f32, color: [f32; 4]) -> Self {
         let rect = Rect { origin: rect.origin + Vec2::new(0.0, offset_y), size: rect.size };
-        Self { rect, radius, color, softness: blur }
+        Self { rect, radius, color, softness: blur, ring: 0.0, knockout: false }
+    }
+
+    /// A shadow for a card that is not drawn under the card's own shape.
+    pub fn card_shadow(rect: Rect, radius: f32, offset_y: f32, blur: f32, color: [f32; 4]) -> Self {
+        Self { knockout: true, ..Self::shadow(rect, radius, offset_y, blur, color) }
+    }
+
+    /// An outline `width` px wide, drawn inside the edge of `rect`.
+    pub fn ring(rect: Rect, radius: f32, width: f32, color: [f32; 4]) -> Self {
+        Self { rect, radius, color, softness: 0.0, ring: width.max(0.0), knockout: false }
     }
 }
 
@@ -425,7 +441,7 @@ impl Compositor {
             .map(|q| QuadInstance {
                 rect: [q.rect.origin.x, q.rect.origin.y, q.rect.size.x, q.rect.size.y],
                 color: q.color,
-                params: [q.radius, q.softness, 0.0, 0.0],
+                params: [q.radius, q.softness, q.ring, if q.knockout { 1.0 } else { 0.0 }],
             })
             .collect();
         let quad_buffer = (!instances.is_empty()).then(|| {

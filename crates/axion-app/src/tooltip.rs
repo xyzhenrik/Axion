@@ -157,6 +157,9 @@ impl Tooltip {
         if self.anchor.is_none() {
             return;
         }
+        // Flat mode: the same quick fade and slight scale, without the spring's overshoot.
+        self.presence.spring =
+            if config.glass.is_flat() { crate::drip::spring(config, config.motion.snappy) } else { Spring::SNAPPY };
         self.presence.step(dt);
         self.place(ui, window);
     }

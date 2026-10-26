@@ -221,6 +221,23 @@ pub const INDEX: &[Entry] = &[
         "Appearance",
         &["dark mode", "light mode", "theme", "night", "dunkel", "hell", "design"],
     ),
+    page(
+        C::Appearance,
+        "Glass",
+        &[
+            "flat",
+            "no glass",
+            "liquid glass",
+            "solid",
+            "performance",
+            "weak gpu",
+            "fast",
+            "transparency",
+            "glas",
+            "flach",
+            "leistung",
+        ],
+    ),
     page(C::Appearance, "Accent colour", &["color", "accent", "highlight", "akzentfarbe", "farbe", "tint"]),
     page(
         C::Appearance,
