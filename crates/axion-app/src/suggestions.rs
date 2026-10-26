@@ -40,6 +40,14 @@ pub struct Suggestion {
     pub url: String,
 }
 
+/// Which page's icon the address field shows while the user edits the address: the selected
+/// suggestion's, else the top one's (a search has no site: globe). `None` = globe. Cache lookups
+/// only (`favicon_node` falls back to the globe for unknown hosts).
+pub fn typing_icon_url<'a>(selected: Option<&'a Suggestion>, items: &'a [Suggestion]) -> Option<&'a str> {
+    let pick = selected.or_else(|| items.first())?;
+    (pick.kind != Kind::Search).then_some(pick.url.as_str())
+}
+
 /// Suggestions for `input`, best first. The first one is always what the input means itself.
 pub fn suggest(input: &str, store: Option<&Store>, search_url: &str, now: i64) -> Vec<Suggestion> {
     let query = input.trim();
@@ -260,6 +268,11 @@ impl SuggestionList {
         self.selected.and_then(|i| self.items.get(i))
     }
 
+    /// The icon source for the address field while typing (see `typing_icon_url`).
+    pub fn typing_icon_url(&self) -> Option<&str> {
+        typing_icon_url(self.selected(), &self.items)
+    }
+
     pub fn selected(&self) -> Option<&Suggestion> {
         self.selected.and_then(|i| self.items.get(i))
     }
@@ -281,6 +294,24 @@ impl SuggestionList {
 
 #[cfg(test)]
 mod tests {
+    fn sug(kind: Kind, url: &str) -> Suggestion {
+        Suggestion { kind, title: String::new(), url: url.into() }
+    }
+
+    #[test]
+    fn typing_icon_choice() {
+        let items = [
+            sug(Kind::Search, "https://s/?q=x"),
+            sug(Kind::History, "https://a.com/"),
+            sug(Kind::Address, "https://b.com/"),
+        ];
+        assert_eq!(typing_icon_url(None, &items), None);
+        assert_eq!(typing_icon_url(Some(&items[1]), &items), Some("https://a.com/"));
+        assert_eq!(typing_icon_url(Some(&items[0]), &items), None);
+        assert_eq!(typing_icon_url(None, &items[2..]), Some("https://b.com/"));
+        assert_eq!(typing_icon_url(None, &[]), None);
+    }
+
     use super::*;
 
     const SEARCH: &str = "https://search.example/?q={}";
