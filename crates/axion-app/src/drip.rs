@@ -272,6 +272,19 @@ impl Drip {
         }
     }
 
+    /// How far it has grown along the axis it travels furthest on (0 at the anchor, 1 at the
+    /// target): unlike [`Drip::growth`] it is not held at 0 by an axis that doesn't grow (a
+    /// menu as wide as, or narrower than, the row it flows out of).
+    pub fn progress(&self) -> f32 {
+        if self.phase == Phase::Closed {
+            return 0.0;
+        }
+        let travel = (self.target.size - self.anchor.size).abs();
+        let axis = if travel.y >= travel.x { 1 } else { 0 };
+        let grown = (self.frame().size[axis] - self.anchor.size[axis]) / travel[axis].max(1.0);
+        grown.abs().clamp(0.0, 1.0)
+    }
+
     /// Where it flows out of (and back into).
     pub fn anchor(&self) -> Frame {
         self.anchor

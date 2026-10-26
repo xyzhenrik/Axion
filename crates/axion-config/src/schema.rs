@@ -299,6 +299,9 @@ pub struct Glass {
     /// or menu to the bar or button it flows out of: how wide the concave fillets at the
     /// junction's ends are (at most `merge_distance` has no extra effect).
     pub popover_bridge_fillet: f32,
+    /// Opacity (0–1) of the soft plate under a menu's rows: menus carry text, so their glass is
+    /// made denser than thick glass in the middle while the edges still refract.
+    pub menu_plate_opacity: f32,
     /// Extra tint opacity over busy or mid-grey backdrops, to keep labels legible.
     pub adaptive_opacity: f32,
     /// Replace glass with opaque surfaces.
@@ -333,6 +336,7 @@ impl Default for Glass {
             merge_distance: 20.0,
             squash: 0.08,
             popover_bridge_fillet: 30.0,
+            menu_plate_opacity: 0.6,
             adaptive_opacity: 0.12,
             reduce_transparency: false,
             reduce_motion: false,

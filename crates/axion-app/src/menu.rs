@@ -38,6 +38,9 @@ const SUBMENU_GAP: f32 = 12.0;
 /// Kept free at the window's edges.
 const WINDOW_MARGIN: f32 = 8.0;
 const RADIUS: f32 = 22.0;
+/// The plate's distance from the glass's edge, and the blur of its own edge (logical px).
+const PLATE_INSET: f32 = 14.0;
+const PLATE_BLUR: f32 = 26.0;
 const AVATAR: f32 = 26.0;
 /// The row whose submenu is open stays highlighted (label colour at this opacity).
 const OPEN_ROW_HIGHLIGHT: f32 = 0.08;
@@ -77,6 +80,10 @@ pub enum Placement {
     Above,
     /// Below, left-aligned with the button (a tab's or a bookmark's context menu).
     BelowStart,
+    /// Over the button, left-aligned: the menu grows out of it and covers it (a row in the
+    /// sidebar, whose glass is another material than the menu's and so can't be bridged to
+    /// it). It grows upward from the button's bottom edge when it doesn't fit below.
+    Over,
 }
 
 /// A compact button in a row of buttons (the zoom submenu's − 100% +).
@@ -175,6 +182,26 @@ impl MenuItem {
     }
 }
 
+/// The soft plate under a menu's rows (see [`Background::Soft`]): inset from the glass's edge
+/// so its bezel still refracts, and fading out towards it and towards the neck the menu flows
+/// out of, so there is no hard edge anywhere.
+fn plate(ui: &mut Ui, panel: NodeId, config: &Config) {
+    let inset = length(PLATE_INSET);
+    ui.add(
+        panel,
+        Widget::container().with_background(Background::Soft(
+            Paint::Ground,
+            config.glass.menu_plate_opacity.clamp(0.0, 1.0),
+            PLATE_BLUR,
+        )),
+        Style {
+            position: Position::Absolute,
+            inset: Rect { left: inset, right: inset, top: inset, bottom: inset },
+            ..Default::default()
+        },
+    );
+}
+
 /// What a click in a menu means.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MenuClick {
@@ -262,6 +289,11 @@ impl Menu {
         self.popover.set_covered(ui, node);
     }
 
+    /// See [`Popover::set_covered_nodes`].
+    pub fn set_covered_nodes(&mut self, ui: &mut Ui, nodes: Vec<NodeId>) {
+        self.popover.set_covered_nodes(ui, nodes);
+    }
+
     /// Opens next to `anchor` (logical px, see [`Placement`]), kept inside the window.
     pub fn open(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, window: Vec2, items: Vec<MenuItem>) {
         self.close_submenu(ui, config);
@@ -271,6 +303,7 @@ impl Menu {
         self.rows.clear();
         self.labels.clear();
         self.window = window;
+        plate(ui, root, config);
         let mut height = 2.0 * PADDING;
         for (i, mut item) in items.into_iter().enumerate() {
             if self.slots.len() >= MAX_ITEMS {
@@ -292,6 +325,8 @@ impl Menu {
         self.parent_labels = self.labels.len();
         let width = match self.placement {
             Placement::Below | Placement::BelowStart => WIDTH,
+            // As wide as the row it covers, so none of the row pokes out at the sides.
+            Placement::Over => anchor.size.x.max(WIDTH),
             Placement::Above => anchor.size.x.max(WIDTH * 0.75),
         };
         let max_left = (window.x - width - WINDOW_MARGIN).max(WINDOW_MARGIN);
@@ -304,8 +339,27 @@ impl Menu {
             }
             Placement::BelowStart => {
                 let left = anchor.origin.x.clamp(WINDOW_MARGIN, max_left);
-                let max_top = (window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN);
-                let top = (anchor.origin.y + anchor.size.y + GAP_TO_ANCHOR).min(max_top);
+                let below = anchor.origin.y + anchor.size.y + GAP_TO_ANCHOR;
+                let above = anchor.origin.y - GAP_TO_ANCHOR - height;
+                // Below the anchor; flips above it when it would run off the window's bottom
+                // and fits there; else it is pushed up as far as it must.
+                let top = if below + height + WINDOW_MARGIN <= window.y || above < WINDOW_MARGIN {
+                    let max_top = (window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN);
+                    below.min(max_top)
+                } else {
+                    above
+                };
+                Frame::new(left, top, width, height)
+            }
+            Placement::Over => {
+                let left = anchor.origin.x.clamp(WINDOW_MARGIN, max_left);
+                let bottom_up = anchor.origin.y + anchor.size.y - height;
+                let top = if anchor.origin.y + height + WINDOW_MARGIN <= window.y || bottom_up < WINDOW_MARGIN
+                {
+                    anchor.origin.y.min((window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN))
+                } else {
+                    bottom_up
+                };
                 Frame::new(left, top, width, height)
             }
             Placement::Above => {
@@ -477,6 +531,7 @@ impl Menu {
         let items = std::mem::take(items);
         let panel = self.sub.root();
         ui.clear_children(panel);
+        plate(ui, panel, config);
         self.slots.truncate(self.parent_slots);
         self.labels.truncate(self.parent_labels);
         let mut height = 2.0 * PADDING;

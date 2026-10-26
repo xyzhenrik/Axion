@@ -42,7 +42,7 @@ pub struct Popover {
     /// Glass of the same pass that the open popover lies over (the Now Playing card under
     /// the account menu): it would merge into the popover and its content would show through,
     /// so it fades out as the popover grows.
-    covered: Option<NodeId>,
+    covered: Vec<NodeId>,
     /// The bridge thins out as the popover settles and is gone once it is open: it only
     /// joins it to its anchor while it flows out and back (the find bar).
     detach: bool,
@@ -86,7 +86,7 @@ impl Popover {
             radius,
             join: None,
             bridge_depth: 0.0,
-            covered: None,
+            covered: Vec::new(),
             detach: false,
             target: Frame::default(),
         }
@@ -108,10 +108,16 @@ impl Popover {
 
     /// See [`Popover::covered`]. Set before opening.
     pub fn set_covered(&mut self, ui: &mut Ui, node: Option<NodeId>) {
-        if let Some(old) = self.covered.take() {
+        self.set_covered_nodes(ui, node.into_iter().collect());
+    }
+
+    /// Like [`Popover::set_covered`], for several nodes (the content of the row a context
+    /// menu flows out of, which would otherwise poke out of the menu's neck).
+    pub fn set_covered_nodes(&mut self, ui: &mut Ui, nodes: Vec<NodeId>) {
+        for old in std::mem::take(&mut self.covered) {
             ui.set_opacity(old, 1.0);
         }
-        self.covered = node;
+        self.covered = nodes;
     }
 
     /// Drips out of `anchor` to `target` (logical px); if already open it glides there, and if
@@ -165,7 +171,7 @@ impl Popover {
             if ui.is_visible(self.root) {
                 ui.set_visible(self.root, false);
                 ui.set_visible(self.bridge, false);
-                if let Some(node) = self.covered {
+                for &node in &self.covered {
                     ui.set_opacity(node, 1.0);
                 }
             }
@@ -192,8 +198,8 @@ impl Popover {
         }
         ui.set_visible(self.bridge, bridge.is_some());
         ui.set_visual_frame(self.bridge, bridge);
-        if let Some(node) = self.covered {
-            ui.set_opacity(node, 1.0 - self.drip.growth());
+        for &node in &self.covered {
+            ui.set_opacity(node, 1.0 - self.drip.progress());
         }
         phase
     }
