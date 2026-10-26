@@ -1093,7 +1093,10 @@ impl Ui {
         if self.theme.config().glass.reduce_motion {
             Spring::new(0.15, 1.0)
         } else {
-            Spring::new(motion.liquid.response * motion.speed, self.theme.config().glass.damping(motion.liquid.damping))
+            Spring::new(
+                motion.liquid.response * motion.speed,
+                self.theme.config().glass.damping(motion.liquid.damping),
+            )
         }
     }
 
@@ -1473,7 +1476,10 @@ impl Ui {
         if self.theme.config().glass.reduce_motion {
             Spring::new(0.15, 1.0)
         } else {
-            Spring::new(motion.snappy.response * motion.speed, self.theme.config().glass.damping(motion.liquid.damping))
+            Spring::new(
+                motion.snappy.response * motion.speed,
+                self.theme.config().glass.damping(motion.liquid.damping),
+            )
         }
     }
 
@@ -2732,6 +2738,53 @@ mod tests {
         assert!((value(&events) - 0.8).abs() < 1e-3);
         ui.handle(UiInput::PointerUp);
         assert!(!ui.is_holding());
+    }
+
+    fn flat_ui() -> Ui {
+        let mut config = axion_config::Config::default();
+        config.glass.style = axion_config::GlassStyle::Flat;
+        let mut ui = Ui::new(Theme::new(&config, false), 1.0);
+        ui.set_viewport(Vec2::new(800.0, 600.0), 1.0);
+        ui
+    }
+
+    #[test]
+    fn flat_mode_paints_no_glass_layers_at_all() {
+        let mut ui = flat_ui();
+        row(&mut ui);
+        ui.layout();
+        let mut layers = Vec::new();
+        ui.paint(&mut layers);
+        assert!(layers.iter().all(|l| !matches!(l, Layer::Glass { .. })), "flat mode skips glass passes");
+        // The bar became a card: a shadow, a fill and a one-px ring.
+        let quads: Vec<&Quad> = layers
+            .iter()
+            .filter_map(|l| if let Layer::Content(c) = l { Some(c.quads.iter()) } else { None })
+            .flatten()
+            .collect();
+        assert!(quads.iter().any(|q| q.knockout && q.softness > 0.0), "a shadow");
+        assert!(quads.iter().any(|q| q.ring >= 1.0), "a border");
+        assert!(quads.iter().any(|q| q.ring == 0.0 && q.softness == 0.0 && q.color[3] > 0.9), "a solid fill");
+    }
+
+    #[test]
+    fn liquid_mode_still_paints_glass() {
+        let mut ui = ui();
+        row(&mut ui);
+        ui.layout();
+        let mut layers = Vec::new();
+        ui.paint(&mut layers);
+        assert!(layers.iter().any(|l| matches!(l, Layer::Glass { .. })));
+    }
+
+    #[test]
+    fn flat_mode_stops_presses_stretch_and_merging() {
+        let mut ui = flat_ui();
+        let (_, button, _) = row(&mut ui);
+        ui.layout();
+        assert!(ui.press_target(button).is_none(), "no lens, no swell");
+        assert_eq!(ui.squash(), 0.0);
+        assert_eq!(ui.theme().config().glass.merge_distance(), 0.0);
     }
 
     #[test]

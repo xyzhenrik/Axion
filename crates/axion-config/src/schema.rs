@@ -1454,6 +1454,17 @@ mod glass_style_tests {
     }
 
     #[test]
+    fn flat_mode_lays_the_chrome_out_as_one_toolbar_with_a_full_bleed_page() {
+        let mut c = Config::default();
+        assert_eq!(c.effective_layout(), c.layout, "liquid uses the layout as configured");
+        c.glass.style = GlassStyle::Flat;
+        let l = c.effective_layout();
+        assert!(l.margin <= FLAT_MARGIN);
+        assert_eq!((l.page_margin, l.page_corner_radius), (0.0, 0.0));
+        assert_eq!(l.sidebar_width, c.layout.sidebar_width, "everything else is as configured");
+    }
+
+    #[test]
     fn reduce_motion_also_stops_the_squash() {
         let glass = Glass { reduce_motion: true, ..Glass::default() };
         assert_eq!(glass.squash(), 0.0);

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
-    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, Keymap, PlaylistSort,
-    GlassStyle, RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode,
+    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, GlassStyle, Keymap,
+    PlaylistSort, RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode,
 };
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
@@ -1382,7 +1382,8 @@ impl SettingsSheet {
                     ("Liquid Glass", SettingsAction::GlassStyle(GlassStyle::Liquid).id()),
                     ("Flat", SettingsAction::GlassStyle(GlassStyle::Flat).id()),
                 ];
-                let current = [GlassStyle::Liquid, GlassStyle::Flat].iter().position(|&m| m == config.glass.style);
+                let current =
+                    [GlassStyle::Liquid, GlassStyle::Flat].iter().position(|&m| m == config.glass.style);
                 segmented(ui, row_node, &styles, current);
                 self.note(
                     ui,
@@ -3007,6 +3008,8 @@ mod tests {
             SettingsAction::Close,
             SettingsAction::Category(Category::Privacy),
             SettingsAction::Theme(ThemeMode::Dark),
+            SettingsAction::GlassStyle(GlassStyle::Liquid),
+            SettingsAction::GlassStyle(GlassStyle::Flat),
             SettingsAction::IconWeight(2),
             SettingsAction::SearchEngine(4),
             SettingsAction::Accent(5),

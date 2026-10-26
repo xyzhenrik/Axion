@@ -1957,8 +1957,10 @@ impl Chrome {
         widths.min = l.tab_min_width;
         widths.pinned = l.pinned_tab_width;
         widths.reduce_motion = config.glass.reduce_motion;
-        widths.width.spring =
-            Spring::new(config.motion.smooth.response * config.motion.speed, config.glass.damping(config.motion.smooth.damping));
+        widths.width.spring = Spring::new(
+            config.motion.smooth.response * config.motion.speed,
+            config.glass.damping(config.motion.smooth.damping),
+        );
         widths.applied = -1.0;
         let mut address = ui.style(self.address);
         if separate {

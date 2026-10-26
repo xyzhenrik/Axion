@@ -524,7 +524,10 @@ fn spring(config: &Config) -> Spring {
     if config.glass.reduce_motion {
         Spring::new(0.15, 1.0)
     } else {
-        Spring::new(config.motion.snappy.response * config.motion.speed, config.glass.damping(config.motion.snappy.damping))
+        Spring::new(
+            config.motion.snappy.response * config.motion.speed,
+            config.glass.damping(config.motion.snappy.damping),
+        )
     }
 }
 

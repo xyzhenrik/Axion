@@ -325,6 +325,64 @@ impl Theme {
 }
 
 #[cfg(test)]
+mod flat_tests {
+    use super::*;
+
+    fn theme(dark: bool, flat: bool) -> Theme {
+        let mut config = Config::default();
+        if flat {
+            config.glass.style = axion_config::GlassStyle::Flat;
+        }
+        Theme::new(&config, dark)
+    }
+
+    #[test]
+    fn only_the_flat_style_is_flat() {
+        assert!(!theme(false, false).flat());
+        assert!(theme(false, true).flat());
+    }
+
+    #[test]
+    fn glass_levels_map_to_ever_more_solid_cards_with_more_shadow() {
+        for dark in [false, true] {
+            let t = theme(dark, true);
+            let [thin, regular, thick] =
+                [GlassLevel::Thin, GlassLevel::Regular, GlassLevel::Thick].map(|l| t.flat_paint(l, false));
+            assert!(thin.fill[3] < regular.fill[3] && regular.fill[3] < thick.fill[3]);
+            assert_eq!(thick.fill[3], 1.0);
+            assert!(thin.shadow[3] < regular.shadow[3] && regular.shadow[3] < thick.shadow[3]);
+            assert!(thin.shadow_blur < thick.shadow_blur);
+            // The scheme's own surface and hairline.
+            assert_eq!(thick.fill[..3], t.color(Paint::Surface)[..3]);
+            assert_eq!(thick.border, t.color(Paint::Hairline));
+        }
+    }
+
+    #[test]
+    fn nested_cards_are_shadowless_insets_in_the_ground_colour() {
+        for dark in [false, true] {
+            let t = theme(dark, true);
+            let inset = t.flat_paint(GlassLevel::Thin, true);
+            assert_eq!(inset.fill[..3], t.color(Paint::Ground)[..3]);
+            assert_eq!(inset.fill[3], 1.0);
+            assert_eq!(inset.shadow[3], 0.0);
+            assert_ne!(inset.fill[..3], t.flat_paint(GlassLevel::Thin, false).fill[..3]);
+        }
+    }
+
+    #[test]
+    fn highlights_and_tinted_cards_keep_contrast() {
+        let t = theme(false, true);
+        let lens = t.flat_paint(GlassLevel::Lens, true);
+        assert_eq!(lens.fill[..3], t.color(Paint::Label)[..3]);
+        assert!(lens.fill[3] < 0.15, "a faint tint of the label colour, text stays readable");
+        assert_eq!(lens.border[3], 0.0);
+        let tinted = t.flat_tinted([0.2, 0.4, 1.0, 1.0]);
+        assert!(tinted.fill[3] > 0.9 && tinted.shadow[3] == 0.0 && tinted.border[3] == 0.0);
+    }
+}
+
+#[cfg(test)]
 mod icon_stroke_tests {
     use super::*;
 
