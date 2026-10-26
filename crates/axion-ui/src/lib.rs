@@ -167,8 +167,9 @@ pub struct Ui {
     pointer: Option<Vec2>,
     hover: Option<NodeId>,
     pressed: Option<NodeId>,
-    /// A text field whose selection follows the held pointer.
-    field_select: Option<NodeId>,
+    /// A text field whose selection follows the held pointer, and how: by characters, or by
+    /// whole words from the word a double click picked (its start, end).
+    field_select: Option<(NodeId, Option<(usize, usize)>)>,
     /// The last click in a text field: when, where, and how many in a row.
     last_click: Option<(Instant, Vec2, u8)>,
     /// Glass that swells while a button on it is held, springing back on release.
@@ -810,10 +811,13 @@ impl Ui {
                     }
                     return (true, events);
                 }
-                if let Some(node) = self.field_select
+                if let Some((node, word)) = self.field_select
                     && let Some(index) = self.field_index_at(node, p)
                 {
-                    self.edit_field(node, |e| e.move_to(index, true));
+                    match word {
+                        Some((start, end)) => self.edit_field(node, |e| e.extend_by_words(start, end, index)),
+                        None => self.edit_field(node, |e| e.move_to(index, true)),
+                    }
                     return (true, events);
                 }
                 self.pull_glass(p);
@@ -916,9 +920,13 @@ impl Ui {
                     match count {
                         1 => {
                             self.edit_field(hit, |e| e.move_to(index, false));
-                            self.field_select = Some(hit);
+                            self.field_select = Some((hit, None));
                         }
-                        2 => self.edit_field(hit, |e| e.select_word_at(index)),
+                        2 => {
+                            self.edit_field(hit, |e| e.select_word_at(index));
+                            let word = self.field_editor(hit).map(|e| e.word_at(index));
+                            self.field_select = word.map(|w| (hit, Some(w)));
+                        }
                         _ => self.edit_field(hit, Editor::select_all),
                     }
                 }
@@ -935,6 +943,13 @@ impl Ui {
             self.press_anchor = Some((held, p));
         }
         true
+    }
+
+    fn field_editor(&self, node: NodeId) -> Option<&Editor> {
+        match &self.widget(node)?.kind {
+            WidgetKind::TextField(field) => Some(&field.editor),
+            _ => None,
+        }
     }
 
     /// The text index under `p` (logical px) in text field `node`.

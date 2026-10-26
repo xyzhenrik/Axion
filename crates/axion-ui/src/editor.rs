@@ -30,6 +30,13 @@ impl Editor {
     /// Selects the word around byte index `at` (letters and digits; URL punctuation such as
     /// `/`, `.`, `:` and `?` ends a word, so a double click picks one part of an address).
     pub fn select_word_at(&mut self, at: usize) {
+        let (start, end) = self.word_at(at);
+        self.anchor = Some(start);
+        self.cursor = end;
+    }
+
+    /// The word around byte index `at` (start, end), as [`Editor::select_word_at`] sees words.
+    pub fn word_at(&self, at: usize) -> (usize, usize) {
         let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
         let at = at.min(self.text.len());
         let start = self.text[..at]
@@ -41,8 +48,20 @@ impl Editor {
             .char_indices()
             .find(|&(_, c)| !is_word(c))
             .map_or(self.text.len(), |(i, _)| at + i);
-        self.anchor = Some(start);
-        self.cursor = end.max(start);
+        (start, end.max(start))
+    }
+
+    /// Selects from the word picked by a double click (`start..end`) to the word at `at`, whole
+    /// words at both ends (dragging after a double click).
+    pub fn extend_by_words(&mut self, start: usize, end: usize, at: usize) {
+        let (word_start, word_end) = self.word_at(at);
+        if at < start {
+            self.anchor = Some(end);
+            self.cursor = word_start;
+        } else {
+            self.anchor = Some(start);
+            self.cursor = word_end.max(end);
+        }
     }
 
     pub fn select_all(&mut self) {
@@ -242,5 +261,15 @@ mod tests {
         assert_eq!(e.selected_text(), Some("rust-lang"));
         e.select_word_at(28);
         assert_eq!(e.selected_text(), Some("learn"));
+    }
+
+    #[test]
+    fn dragging_after_a_double_click_selects_whole_words() {
+        let mut e = editor("one two three four");
+        let (start, end) = e.word_at(5);
+        e.extend_by_words(start, end, 10);
+        assert_eq!(e.selected_text(), Some("two three"));
+        e.extend_by_words(start, end, 1);
+        assert_eq!(e.selected_text(), Some("one two"));
     }
 }
