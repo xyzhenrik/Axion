@@ -69,7 +69,11 @@ impl ThumbCache {
             self.queue.write_texture(
                 texture.as_image_copy(),
                 img.as_raw(),
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * w),
+                    rows_per_image: Some(h),
+                },
                 size,
             );
             (texture.create_view(&Default::default()), (w, h))
@@ -133,9 +137,11 @@ fn item_detail(item: &PlaylistItem, progress: Option<Option<f32>>) -> String {
         parts.push(length);
     }
     match (item.dl_state.as_str(), progress) {
-        (dl::DOWNLOADING | dl::QUEUED, Some(Some(p))) => parts.push(format!("Downloading {:.0} %", p * 100.0)),
+        (dl::DOWNLOADING | dl::QUEUED, Some(Some(p))) => {
+            parts.push(format!("Downloading {:.0} %", p * 100.0))
+        }
         (dl::DOWNLOADING | dl::QUEUED, _) => parts.push("Downloading".to_owned()),
-        (dl::DONE, _) => parts.push(format!("Downloaded · {}", downloads::human_size(item.dl_size))),
+        (dl::DONE, _) => parts.push(downloads::human_size(item.dl_size)),
         (dl::FAILED, _) => parts.push("Download failed".to_owned()),
         (dl::STREAMING, _) => parts.push("Streaming only".to_owned()),
         _ => {}
@@ -184,8 +190,8 @@ impl Browser {
             }
             _ => Vec::new(),
         };
-        let state = (!candidates.is_empty())
-            .then(|| candidates.iter().any(|c| self.playlist.contains(c).is_some()));
+        let state =
+            (!candidates.is_empty()).then(|| candidates.iter().any(|c| self.playlist.contains(c).is_some()));
         self.playlist_ui.candidates = candidates;
         if Some(state) != self.playlist_ui.button {
             self.playlist_ui.button = Some(state);
@@ -257,14 +263,17 @@ impl Browser {
     pub(super) fn playlist_popover_action(&mut self, action: AddAction) {
         match action {
             AddAction::Add { video, download } => {
-                if let (Some(c), Some(view)) = (self.playlist_ui.candidates.get(video).cloned(), self.active_view())
+                if let (Some(c), Some(view)) =
+                    (self.playlist_ui.candidates.get(video).cloned(), self.active_view())
                 {
                     self.playlist_ui.popover.close(&mut self.ui, &self.config);
                     self.add_to_playlist(view, c, download);
                 }
             }
             AddAction::Remove(video) => {
-                if let Some(id) = self.playlist_ui.candidates.get(video).and_then(|c| self.playlist.contains(c)) {
+                if let Some(id) =
+                    self.playlist_ui.candidates.get(video).and_then(|c| self.playlist.contains(c))
+                {
                     self.playlist_ui.popover.close(&mut self.ui, &self.config);
                     self.remove_playlist_items(&[id]);
                     self.show_toast(Icon::Trash, "Removed from Playlist");
@@ -425,7 +434,11 @@ impl Browser {
             source,
             wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) },
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(h),
+                },
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
@@ -433,7 +446,8 @@ impl Browser {
         buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
         let data = buffer.slice(..).get_mapped_range().ok()?;
-        let bgra = matches!(texture.format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let bgra =
+            matches!(texture.format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
         let mut pixels = Vec::with_capacity((4 * w * h) as usize);
         for y in 0..h as usize {
             let line = &data[y * row as usize..y * row as usize + 4 * w as usize];
@@ -589,7 +603,8 @@ impl Browser {
     /// The engine reports a download; returns whether it is one of the Playlist's (those
     /// don't open by themselves when done).
     pub(super) fn playlist_download_update(&mut self, info: &DownloadInfo) -> bool {
-        let id = [&info.original_url, &info.url].into_iter().find_map(|u| self.playlist.downloads.get(u).copied());
+        let id =
+            [&info.original_url, &info.url].into_iter().find_map(|u| self.playlist.downloads.get(u).copied());
         let Some(id) = id else { return false };
         let (state, path, size, note) = playlist::download_update(info);
         let progress = (info.total_bytes > 0).then(|| info.received_bytes as f32 / info.total_bytes as f32);
@@ -608,7 +623,12 @@ impl Browser {
                 self.playlist.dirty = true;
             } else if let Some(item) = self.playlist.item(id).cloned() {
                 let detail = item_detail(&item, self.playlist.progress.get(&id).copied());
-                self.playlist_ui.page.update_row(&mut self.ui, id, &detail, self.playlist.progress.get(&id).copied());
+                self.playlist_ui.page.update_row(
+                    &mut self.ui,
+                    id,
+                    &detail,
+                    self.playlist.progress.get(&id).copied(),
+                );
             }
         }
         true
@@ -770,7 +790,8 @@ impl Browser {
                     watched: item.watched,
                     playing: playing == Some(item.id),
                     selected: self.playlist.selected.contains(&item.id),
-                    progress: progress.filter(|_| matches!(item.dl_state.as_str(), dl::DOWNLOADING | dl::QUEUED)),
+                    progress: progress
+                        .filter(|_| matches!(item.dl_state.as_str(), dl::DOWNLOADING | dl::QUEUED)),
                 }
             })
             .collect();
@@ -860,7 +881,9 @@ impl Browser {
             })
         });
         let (elapsed, duration, playing) =
-            player.as_ref().map_or((item.position, item.duration, false), |p| (p.time, p.duration.max(item.duration), p.is_playing()));
+            player.as_ref().map_or((item.position, item.duration, false), |p| {
+                (p.time, p.duration.max(item.duration), p.is_playing())
+            });
         let note = if picture.is_none() || (player.is_none() && opened.elapsed() < Duration::from_secs(1)) {
             Some("Loading…")
         } else {
@@ -918,8 +941,7 @@ impl Browser {
             self.mark_thumb_done();
         }
         // The end: sleep, repeat, the next.
-        let ended = player.ended
-            && self.playlist.playback.as_ref().is_some_and(|p| !p.ended_handled);
+        let ended = player.ended && self.playlist.playback.as_ref().is_some_and(|p| !p.ended_handled);
         if ended {
             if let Some(pb) = &mut self.playlist.playback {
                 pb.ended_handled = true;
@@ -989,7 +1011,14 @@ impl Browser {
         let shown = self.playlist_ui.shown.clone();
         let current = shown.iter().position(|&i| i == id);
         let random = self.playlist.random();
-        match playlist::step_index(shown.len(), current, true, self.playlist.shuffle, self.playlist.repeat, random) {
+        match playlist::step_index(
+            shown.len(),
+            current,
+            true,
+            self.playlist.shuffle,
+            self.playlist.repeat,
+            random,
+        ) {
             Some(next) if Some(next) == current => {
                 // The same video again.
                 self.playlist_media(MediaAction::Seek(0.0));
@@ -1076,7 +1105,11 @@ impl Browser {
             }
             PageAction::ListMenu => {
                 let anchor = self.playlist_ui.page.name_frame(&self.ui);
-                let mut item = MenuItem::new(Icon::Playlist, &self.config.playlist.list_name.clone(), MenuAction::Playlist(Command::List(0)));
+                let mut item = MenuItem::new(
+                    Icon::Playlist,
+                    &self.config.playlist.list_name.clone(),
+                    MenuAction::Playlist(Command::List(0)),
+                );
                 item.checked = true;
                 let window = self.logical_size();
                 self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, vec![item]);
@@ -1096,16 +1129,20 @@ impl Browser {
             PageAction::Shuffle => self.playlist.shuffle = !self.playlist.shuffle,
             PageAction::Repeat => self.playlist.repeat = self.playlist.repeat.next(),
             PageAction::Previous | PageAction::Next => {
-                let current = self
-                    .playlist
-                    .playback
-                    .as_ref()
-                    .and_then(|p| ids.iter().position(|&i| i == p.item));
+                let current =
+                    self.playlist.playback.as_ref().and_then(|p| ids.iter().position(|&i| i == p.item));
                 let random = self.playlist.random();
                 let forward = action == PageAction::Next;
                 // Wrapping at the ends is what the buttons do (repeat only matters when a
                 // video ends).
-                let next = playlist::step_index(ids.len(), current, forward, self.playlist.shuffle, Repeat::All, random);
+                let next = playlist::step_index(
+                    ids.len(),
+                    current,
+                    forward,
+                    self.playlist.shuffle,
+                    Repeat::All,
+                    random,
+                );
                 if let Some(&id) = next.and_then(|n| ids.get(n)) {
                     self.playlist_play(id);
                 }
@@ -1119,13 +1156,18 @@ impl Browser {
             }
             PageAction::Speed => {
                 let anchor = self.playlist_ui.page.frame_of(&self.ui, PageAction::Speed);
-                let mut speeds: Vec<(usize, f32)> = self.config.media.playback_speeds.iter().copied().enumerate().collect();
+                let mut speeds: Vec<(usize, f32)> =
+                    self.config.media.playback_speeds.iter().copied().enumerate().collect();
                 speeds.sort_by(|a, b| b.1.total_cmp(&a.1));
                 let rate = self.playlist.rate;
                 let items = speeds
                     .into_iter()
                     .map(|(i, s)| {
-                        let mut item = MenuItem::new(Icon::Gauge, &format!("{s}×"), MenuAction::Playlist(Command::Speed(i)));
+                        let mut item = MenuItem::new(
+                            Icon::Gauge,
+                            &format!("{s}×"),
+                            MenuAction::Playlist(Command::Speed(i)),
+                        );
                         item.checked = (f64::from(s) - rate).abs() < 0.01;
                         item
                     })
@@ -1136,7 +1178,8 @@ impl Browser {
             PageAction::Sleep => {
                 let anchor = self.playlist_ui.page.frame_of(&self.ui, PageAction::Sleep);
                 let sleep = self.playlist.sleep;
-                let mut items = vec![MenuItem::new(Icon::Moon, "Off", MenuAction::Playlist(Command::SleepOff))];
+                let mut items =
+                    vec![MenuItem::new(Icon::Moon, "Off", MenuAction::Playlist(Command::SleepOff))];
                 items[0].checked = sleep == Sleep::Off;
                 for (i, minutes) in self.config.playlist.sleep_timer_minutes.iter().enumerate() {
                     items.push(MenuItem::new(
@@ -1145,7 +1188,8 @@ impl Browser {
                         MenuAction::Playlist(Command::SleepAfter(i)),
                     ));
                 }
-                let mut end = MenuItem::new(Icon::Media, "End of video", MenuAction::Playlist(Command::SleepEnd));
+                let mut end =
+                    MenuItem::new(Icon::Media, "End of video", MenuAction::Playlist(Command::SleepEnd));
                 end.checked = sleep == Sleep::EndOfVideo;
                 items.push(end);
                 let window = self.logical_size();
@@ -1160,11 +1204,13 @@ impl Browser {
                 self.playlist.dirty = true;
             }
             PageAction::DeleteSelected => {
-                let selected: Vec<i64> = ids.iter().copied().filter(|i| self.playlist.selected.contains(i)).collect();
+                let selected: Vec<i64> =
+                    ids.iter().copied().filter(|i| self.playlist.selected.contains(i)).collect();
                 self.remove_playlist_items(&selected);
             }
             PageAction::DownloadSelected => {
-                let selected: Vec<i64> = ids.iter().copied().filter(|i| self.playlist.selected.contains(i)).collect();
+                let selected: Vec<i64> =
+                    ids.iter().copied().filter(|i| self.playlist.selected.contains(i)).collect();
                 for id in selected {
                     self.playlist_download(id, false);
                 }
@@ -1195,7 +1241,8 @@ impl Browser {
                 }
             }
             PageAction::RowMenu(i) => {
-                if let (Some(&id), Some(anchor)) = (ids.get(i), self.playlist_ui.page.row_frame(&self.ui, i)) {
+                if let (Some(&id), Some(anchor)) = (ids.get(i), self.playlist_ui.page.row_frame(&self.ui, i))
+                {
                     self.open_row_menu(id, anchor);
                 }
             }
@@ -1216,22 +1263,43 @@ impl Browser {
         let file = downloaded_file(&item);
         match playlist::plan_download(&item) {
             _ if file.is_some() => {
-                items.push(MenuItem::new(Icon::Trash, "Remove Download", MenuAction::Playlist(Command::RemoveDownload(id))));
-                items.push(MenuItem::new(Icon::Folder, "Show in Folder", MenuAction::Playlist(Command::Reveal(id))));
+                items.push(MenuItem::new(
+                    Icon::Trash,
+                    "Remove Download",
+                    MenuAction::Playlist(Command::RemoveDownload(id)),
+                ));
+                items.push(MenuItem::new(
+                    Icon::Folder,
+                    "Show in Folder",
+                    MenuAction::Playlist(Command::Reveal(id)),
+                ));
             }
             DownloadPlan::Start(_) => {
-                items.push(MenuItem::new(Icon::Download, "Download", MenuAction::Playlist(Command::Download(id))));
+                items.push(MenuItem::new(
+                    Icon::Download,
+                    "Download",
+                    MenuAction::Playlist(Command::Download(id)),
+                ));
             }
             _ => {
-                let mut stream = MenuItem::new(Icon::Download, "Streaming only", MenuAction::Playlist(Command::Download(id)));
+                let mut stream = MenuItem::new(
+                    Icon::Download,
+                    "Streaming only",
+                    MenuAction::Playlist(Command::Download(id)),
+                );
                 stream.detail = Some("can’t download".to_owned());
                 items.push(stream);
             }
         }
-        items.push(MenuItem::new(Icon::Globe, "Open Page", MenuAction::Playlist(Command::OpenPage(id))).separated());
+        items.push(
+            MenuItem::new(Icon::Globe, "Open Page", MenuAction::Playlist(Command::OpenPage(id))).separated(),
+        );
         items.push(MenuItem::new(Icon::Close, "Remove", MenuAction::Playlist(Command::Remove(id))));
         // Opens beside the "…" button, at the row's right edge.
-        let anchor = Rect { origin: Vec2::new(row.origin.x + row.size.x - 40.0, row.origin.y), size: Vec2::new(40.0, row.size.y) };
+        let anchor = Rect {
+            origin: Vec2::new(row.origin.x + row.size.x - 40.0, row.origin.y),
+            size: Vec2::new(40.0, row.size.y),
+        };
         let window = self.logical_size();
         self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items);
     }
@@ -1259,7 +1327,8 @@ impl Browser {
             Command::SleepEnd => self.playlist.sleep = Sleep::EndOfVideo,
             Command::SleepAfter(i) => {
                 if let Some(&minutes) = self.config.playlist.sleep_timer_minutes.get(i) {
-                    self.playlist.sleep = Sleep::At(Instant::now() + Duration::from_secs(u64::from(minutes) * 60));
+                    self.playlist.sleep =
+                        Sleep::At(Instant::now() + Duration::from_secs(u64::from(minutes) * 60));
                 }
             }
             Command::List(_) => {}
@@ -1334,7 +1403,9 @@ impl Browser {
         let Some(item) = self.playlist.item_for_url(&tab.url).cloned() else { return };
         let interval = f64::from(self.config.playlist.position_save_seconds.max(0.5));
         let due = self.playlist.tracked.get(&view).is_none_or(|t| {
-            t.item != item.id || (player.time - t.last_time).abs() >= interval && t.saved_at.elapsed().as_secs_f64() >= interval
+            t.item != item.id
+                || (player.time - t.last_time).abs() >= interval
+                    && t.saved_at.elapsed().as_secs_f64() >= interval
         });
         if due && (player.is_playing() || player.ended) && player.time > 0.0 {
             self.save_item_progress(item.id, &player);
@@ -1349,7 +1420,8 @@ impl Browser {
     pub(super) fn playlist_flush_tab(&mut self, view: ViewId) {
         self.playlist.pending.remove(&view);
         let Some(tracked) = self.playlist.tracked.remove(&view) else { return };
-        let player = find_tab(&self.tabs, &self.parked, view).and_then(|t| t.media.as_ref()?.primary().cloned());
+        let player =
+            find_tab(&self.tabs, &self.parked, view).and_then(|t| t.media.as_ref()?.primary().cloned());
         if let Some(player) = player {
             self.save_item_progress(tracked.item, &player);
         }
@@ -1392,11 +1464,15 @@ impl Browser {
                     winit::event::MouseButton::Right => MouseButton::Right,
                     _ => return false,
                 };
-                let click_count = if pressed { self.clicks.press(winit_button, p) } else { self.clicks.current() };
+                let click_count =
+                    if pressed { self.clicks.press(winit_button, p) } else { self.clicks.current() };
                 if pressed {
                     self.engine.set_focus(view, true);
                 }
-                self.engine.send_input(view, &InputEvent::MouseButton { pos, button, pressed, click_count, modifiers });
+                self.engine.send_input(
+                    view,
+                    &InputEvent::MouseButton { pos, button, pressed, click_count, modifiers },
+                );
             }
         }
         true

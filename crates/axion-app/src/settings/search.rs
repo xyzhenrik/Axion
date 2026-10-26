@@ -235,6 +235,34 @@ pub const INDEX: &[Entry] = &[
         "Sites that keep their own player",
         &["youtube", "twitch", "trusted", "exceptions", "ausnahmen"],
     ),
+    control(
+        C::Media,
+        S::PlaylistQuickAction,
+        &[
+            "playlist",
+            "watch later",
+            "save video",
+            "button",
+            "wiedergabeliste",
+            "später ansehen",
+            "video merken",
+        ],
+    ),
+    control(
+        C::Media,
+        S::PlaylistAutoDownload,
+        &["playlist", "offline", "download video", "herunterladen", "wiedergabeliste", "offline ansehen"],
+    ),
+    control(
+        C::Media,
+        S::PlaylistDeleteFiles,
+        &["playlist", "remove", "delete files", "löschen", "dateien löschen", "wiedergabeliste", "entfernen"],
+    ),
+    page(
+        C::Media,
+        "Playlist downloads",
+        &["playlist", "folder", "directory", "ordner", "wiedergabeliste", "speicherort", "download location"],
+    ),
     control(C::Media, S::HardwareDecoding, &["gpu", "vaapi", "acceleration", "hardware", "beschleunigung"]),
     control(C::Media, S::DesktopIntegration, &["mpris", "media keys", "medientasten", "lock screen", "kde"]),
     page(

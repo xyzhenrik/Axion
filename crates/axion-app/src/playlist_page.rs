@@ -135,6 +135,8 @@ const SELECT_CIRCLE: f32 = 24.0;
 /// Average width of a character of the row titles (14 px type), for wrapping them.
 const CHAR_WIDTH: f32 = 7.4;
 const TOP_BUTTON: f32 = 42.0;
+/// Wide enough that the glass circles stay separate drops.
+const TOP_GAP: f32 = 18.0;
 const SEARCH_WIDTH: f32 = 280.0;
 const VIDEO_RADIUS: f32 = 20.0;
 const VIDEO_MIN_HEIGHT: f32 = 140.0;
@@ -405,8 +407,11 @@ impl PlaylistPage {
             Style { size: Size { width: auto(), height: length(26.0) }, ..row(4.0) },
         );
         let header_name = ui.add_label(name_row, "", TextStyle::Title2, shrinking());
-        let header_chevron =
-            ui.add(name_row, Widget::icon(Icon::ChevronDown, 16.0).with_paint(Paint::Secondary), Style::default());
+        let header_chevron = ui.add(
+            name_row,
+            Widget::icon(Icon::ChevronDown, 16.0).with_paint(Paint::Secondary),
+            Style::default(),
+        );
         let header_count = dim_label(ui, titles, "", TextStyle::Footnote);
         let edit = ui.add(
             header,
@@ -443,7 +448,12 @@ impl PlaylistPage {
         let viewport = ui.add(
             list_col,
             Widget::container().with_clip(),
-            Style { flex_grow: 1.0, flex_shrink: 1.0, size: Size { width: percent(1.0), height: auto() }, ..column(0.0) },
+            Style {
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                size: Size { width: percent(1.0), height: auto() },
+                ..column(0.0)
+            },
         );
         let list = ui.add(
             viewport,
@@ -474,7 +484,12 @@ impl PlaylistPage {
             Style::default(),
         );
         secondary(ui, hint);
-        let hint2 = ui.add_label(empty, "in the address field to save it here.", TextStyle::Footnote, Style::default());
+        let hint2 = ui.add_label(
+            empty,
+            "in the address field to save it here.",
+            TextStyle::Footnote,
+            Style::default(),
+        );
         secondary(ui, hint2);
         ui.set_visible(empty, false);
 
@@ -498,10 +513,18 @@ impl PlaylistPage {
                 size: Size { width: percent(1.0), height: length(TOP_BUTTON) },
                 flex_shrink: 0.0,
                 justify_content: JustifyContent::END,
-                ..row(10.0)
+                ..row(TOP_GAP)
             },
         );
-        glass_circle(ui, top, PageAction::PictureInPicture, Icon::PictureInPicture, TOP_BUTTON, 20.0, "Picture in Picture");
+        glass_circle(
+            ui,
+            top,
+            PageAction::PictureInPicture,
+            Icon::PictureInPicture,
+            TOP_BUTTON,
+            20.0,
+            "Picture in Picture",
+        );
         let search_box = ui.add(
             top,
             Widget::container()
@@ -517,12 +540,20 @@ impl PlaylistPage {
                 ..row(8.0)
             },
         );
-        ui.add(search_box, Widget::icon(Icon::Search, 20.0), Style { flex_shrink: 0.0, ..Default::default() });
+        ui.add(
+            search_box,
+            Widget::icon(Icon::Search, 20.0),
+            Style { flex_shrink: 0.0, ..Default::default() },
+        );
         let search_field = ui.add_text_field(
             search_box,
             "Search",
             TextStyle::Body,
-            Style { flex_grow: 1.0, size: Size { width: auto(), height: length(22.0) }, ..Default::default() },
+            Style {
+                flex_grow: 1.0,
+                size: Size { width: auto(), height: length(22.0) },
+                ..Default::default()
+            },
         );
         glass_circle(ui, top, PageAction::Close, Icon::Close, TOP_BUTTON, 18.0, "Close Playlist");
 
@@ -544,11 +575,8 @@ impl PlaylistPage {
         );
         let video = ui.add(video_box, Widget::image(), Style::default());
         ui.set_visible(video, false);
-        let note_box = ui.add(
-            video_box,
-            Widget::container(),
-            Style { position: Position::Absolute, align_items: AlignItems::CENTER, ..column(10.0) },
-        );
+        let note_box =
+            ui.add(video_box, Widget::container(), Style { align_items: AlignItems::CENTER, ..column(10.0) });
         ui.add(
             note_box,
             Widget::icon(Icon::Playlist, 40.0).with_paint(Paint::Fixed(Color::rgb(0x8E8E93))),
@@ -581,7 +609,11 @@ impl PlaylistPage {
         let scrubber = ui.add(
             scrub,
             Widget::line_slider(0.0),
-            Style { flex_grow: 1.0, min_size: Size { width: length(40.0), height: auto() }, ..Default::default() },
+            Style {
+                flex_grow: 1.0,
+                min_size: Size { width: length(40.0), height: auto() },
+                ..Default::default()
+            },
         );
         let remaining = dim_label(ui, scrub, "−0:00", TextStyle::Caption);
 
@@ -598,8 +630,15 @@ impl PlaylistPage {
         let (_, shuffle_icon) =
             plain_button(ui, transport, PageAction::Shuffle, Icon::Shuffle, CONTROL_SMALL, 22.0, "Shuffle");
         plain_button(ui, transport, PageAction::Previous, Icon::Previous, CONTROL_MEDIUM, 26.0, "Previous");
-        let (_, play_icon) =
-            glass_circle(ui, transport, PageAction::PlayPause, Icon::Play, CONTROL_BIG, 30.0, "Play or Pause");
+        let (_, play_icon) = glass_circle(
+            ui,
+            transport,
+            PageAction::PlayPause,
+            Icon::Play,
+            CONTROL_BIG,
+            30.0,
+            "Play or Pause",
+        );
         plain_button(ui, transport, PageAction::Next, Icon::Next, CONTROL_MEDIUM, 26.0, "Next");
         let (repeat_button, repeat_icon) =
             plain_button(ui, transport, PageAction::Repeat, Icon::Repeat, CONTROL_SMALL, 22.0, "Repeat");
@@ -607,7 +646,11 @@ impl PlaylistPage {
             repeat_button,
             "1",
             TextStyle::Caption,
-            Style { position: Position::Absolute, inset: Rect { left: auto(), right: length(6.0), top: length(4.0), bottom: auto() }, ..Default::default() },
+            Style {
+                position: Position::Absolute,
+                inset: Rect { left: auto(), right: length(6.0), top: length(4.0), bottom: auto() },
+                ..Default::default()
+            },
         );
         ui.set_visible(repeat_one, false);
 
@@ -736,7 +779,8 @@ impl PlaylistPage {
         self.rect = rect;
         self.toggle_inset = toggle_inset;
         let mut style = ui.style(self.root);
-        style.inset = Rect { left: length(rect.origin.x), right: auto(), top: length(rect.origin.y), bottom: auto() };
+        style.inset =
+            Rect { left: length(rect.origin.x), right: auto(), top: length(rect.origin.y), bottom: auto() };
         style.size = Size { width: length(rect.size.x), height: length(rect.size.y) };
         ui.set_style(self.root, style);
         if let Some(w) = ui.widget_mut(self.root) {
@@ -797,7 +841,8 @@ impl PlaylistPage {
     pub fn set_rows(&mut self, ui: &mut Ui, models: &[RowModel], editing: bool, favicons: &Favicons) {
         ui.clear_children(self.list);
         self.rows.clear();
-        let width = self.list_width() - 2.0 * PAD - 2.0 * ROW_PADDING - THUMB.x - ROW_GAP - MENU_BUTTON - ROW_GAP;
+        let width =
+            self.list_width() - 2.0 * PAD - 2.0 * ROW_PADDING - THUMB.x - ROW_GAP - MENU_BUTTON - ROW_GAP;
         let chars = (width / CHAR_WIDTH).floor().max(8.0) as usize;
         for (i, m) in models.iter().take(MAX_ROWS).enumerate() {
             let nodes = self.build_row(ui, i, m, editing, chars, favicons);
@@ -826,7 +871,10 @@ impl PlaylistPage {
         };
         let row_node = ui.add(
             self.list,
-            Widget::container().with_action(PageAction::Row(i).id()).with_radius(ROW_RADIUS).with_background(background),
+            Widget::container()
+                .with_action(PageAction::Row(i).id())
+                .with_radius(ROW_RADIUS)
+                .with_background(background),
             Style {
                 size: Size { width: percent(1.0), height: length(ROW_HEIGHT) },
                 flex_shrink: 0.0,
@@ -845,7 +893,12 @@ impl PlaylistPage {
                     } else {
                         Background::Fill(Paint::Label, 0.12)
                     }),
-                Style { size: square(SELECT_CIRCLE), flex_shrink: 0.0, justify_content: JustifyContent::CENTER, ..row(0.0) },
+                Style {
+                    size: square(SELECT_CIRCLE),
+                    flex_shrink: 0.0,
+                    justify_content: JustifyContent::CENTER,
+                    ..row(0.0)
+                },
             );
             if m.selected {
                 ui.add(
@@ -860,7 +913,10 @@ impl PlaylistPage {
         // The thumbnail, or the site's icon on a neutral glass tile.
         let thumb = ui.add(
             row_node,
-            Widget::container().with_background(Background::Fill(Paint::Label, 0.07)).with_radius(THUMB_RADIUS).with_clip(),
+            Widget::container()
+                .with_background(Background::Fill(Paint::Label, 0.07))
+                .with_radius(THUMB_RADIUS)
+                .with_clip(),
             Style {
                 size: Size { width: length(THUMB.x), height: length(THUMB.y) },
                 flex_shrink: 0.0,
@@ -874,7 +930,10 @@ impl PlaylistPage {
                 let node = ui.add(
                     thumb,
                     Widget::image(),
-                    Style { size: Size { width: length(THUMB.x), height: length(THUMB.y) }, ..Default::default() },
+                    Style {
+                        size: Size { width: length(THUMB.x), height: length(THUMB.y) },
+                        ..Default::default()
+                    },
                 );
                 ui.set_image(node, Some(image.clone()));
                 ui.set_image_crop(node, Some(cover(image.1, THUMB)));
@@ -882,8 +941,15 @@ impl PlaylistPage {
             None => {
                 let tile = ui.add(
                     thumb,
-                    Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(14.0),
-                    Style { size: square(46.0), justify_content: JustifyContent::CENTER, align_items: AlignItems::CENTER, ..Default::default() },
+                    Widget::container()
+                        .with_background(Background::Glass(GlassLevel::Thin))
+                        .with_radius(14.0),
+                    Style {
+                        size: square(46.0),
+                        justify_content: JustifyContent::CENTER,
+                        align_items: AlignItems::CENTER,
+                        ..Default::default()
+                    },
                 );
                 favicon_or(ui, tile, &m.site_url, 28.0, favicons, Icon::Media);
             }
@@ -891,7 +957,9 @@ impl PlaylistPage {
         if m.downloaded || m.watched {
             let badge = ui.add(
                 thumb,
-                Widget::container().with_background(Background::Fill(Paint::Fixed(Color::rgb(0x000000)), 0.55)).with_radius(CAPSULE),
+                Widget::container()
+                    .with_background(Background::Fill(Paint::Fixed(Color::rgb(0x000000)), 0.55))
+                    .with_radius(CAPSULE),
                 Style {
                     position: Position::Absolute,
                     inset: Rect { left: length(5.0), right: auto(), top: auto(), bottom: length(5.0) },
@@ -901,10 +969,18 @@ impl PlaylistPage {
                 },
             );
             if m.downloaded {
-                ui.add(badge, Widget::icon(Icon::Download, 11.0).with_paint(Paint::Fixed(Color::rgb(0xFFFFFF))), Style::default());
+                ui.add(
+                    badge,
+                    Widget::icon(Icon::Download, 11.0).with_paint(Paint::Fixed(Color::rgb(0xFFFFFF))),
+                    Style::default(),
+                );
             }
             if m.watched {
-                ui.add(badge, Widget::icon(Icon::Check, 11.0).with_paint(Paint::Fixed(Color::rgb(0xFFFFFF))), Style::default());
+                ui.add(
+                    badge,
+                    Widget::icon(Icon::Check, 11.0).with_paint(Paint::Fixed(Color::rgb(0xFFFFFF))),
+                    Style::default(),
+                );
             }
         }
 
@@ -924,7 +1000,11 @@ impl PlaylistPage {
                 text,
                 &line,
                 TextStyle::Callout,
-                Style { size: Size { width: auto(), height: length(TITLE_LINE_HEIGHT) }, flex_shrink: 0.0, ..Default::default() },
+                Style {
+                    size: Size { width: auto(), height: length(TITLE_LINE_HEIGHT) },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
             );
         }
         let detail = dim_label(ui, text, &m.detail, TextStyle::Footnote);
@@ -934,7 +1014,12 @@ impl PlaylistPage {
                 Widget::progress(Paint::Accent),
                 Style {
                     size: Size { width: percent(1.0), height: length(3.0) },
-                    margin: Rect { left: length(0.0), right: length(0.0), top: length(3.0), bottom: length(0.0) },
+                    margin: Rect {
+                        left: length(0.0),
+                        right: length(0.0),
+                        top: length(3.0),
+                        bottom: length(0.0),
+                    },
                     ..Default::default()
                 },
             );
@@ -944,21 +1029,41 @@ impl PlaylistPage {
 
         if editing {
             let arrows = ui.add(row_node, Widget::container(), Style { flex_shrink: 0.0, ..column(0.0) });
-            for (action, icon) in [(PageAction::RowUp(i), Icon::ChevronUp), (PageAction::RowDown(i), Icon::ChevronDown)] {
+            for (action, icon) in
+                [(PageAction::RowUp(i), Icon::ChevronUp), (PageAction::RowDown(i), Icon::ChevronDown)]
+            {
                 let b = ui.add(
                     arrows,
                     Widget::container().with_action(action.id()).with_radius(CAPSULE),
-                    Style { size: Size { width: length(MENU_BUTTON), height: length(MENU_BUTTON * 0.8) }, justify_content: JustifyContent::CENTER, ..row(0.0) },
+                    Style {
+                        size: Size { width: length(MENU_BUTTON), height: length(MENU_BUTTON * 0.8) },
+                        justify_content: JustifyContent::CENTER,
+                        ..row(0.0)
+                    },
                 );
                 ui.add(b, Widget::icon(icon, 16.0).with_paint(Paint::Secondary), Style::default());
             }
         } else {
             let more = ui.add(
                 row_node,
-                Widget::container().with_action(PageAction::RowMenu(i).id()).with_radius(CAPSULE).with_tooltip("More", None),
-                Style { size: square(MENU_BUTTON), flex_shrink: 0.0, justify_content: JustifyContent::CENTER, ..row(0.0) },
+                Widget::container()
+                    .with_action(PageAction::RowMenu(i).id())
+                    .with_radius(CAPSULE)
+                    .with_tooltip("More", None),
+                Style {
+                    size: square(MENU_BUTTON),
+                    flex_shrink: 0.0,
+                    justify_content: JustifyContent::CENTER,
+                    ..row(0.0)
+                },
             );
-            ui.add(more, Widget::icon(Icon::More, 20.0).with_paint(Paint::Secondary).with_icon_weight(IconWeight::Heavy), Style::default());
+            ui.add(
+                more,
+                Widget::icon(Icon::More, 20.0)
+                    .with_paint(Paint::Secondary)
+                    .with_icon_weight(IconWeight::Heavy),
+                Style::default(),
+            );
         }
         RowNodes { id: m.id, row: row_node, detail, progress }
     }
@@ -1015,7 +1120,8 @@ impl PlaylistPage {
         let max = (self.content_height - visible).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max);
         let mut style = ui.style(self.list);
-        style.margin = Rect { left: length(0.0), right: length(0.0), top: length(-self.scroll), bottom: length(0.0) };
+        style.margin =
+            Rect { left: length(0.0), right: length(0.0), top: length(-self.scroll), bottom: length(0.0) };
         ui.set_style(self.list, style);
     }
 
@@ -1032,7 +1138,14 @@ impl PlaylistPage {
     }
 
     /// Menus (rows, list, speed, sleep timer) opening from `anchor`.
-    pub fn open_menu(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, window: Vec2, items: Vec<MenuItem>) {
+    pub fn open_menu(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        anchor: Frame,
+        window: Vec2,
+        items: Vec<MenuItem>,
+    ) {
         self.menu.open(ui, config, anchor, window, items);
     }
 
@@ -1045,9 +1158,14 @@ impl PlaylistPage {
         ui.set_text(self.title, m.title);
         ui.set_text(self.site, m.site);
         ui.set_text(self.elapsed, &format_time(m.elapsed));
-        let remaining = if m.duration > 0.0 { format!("−{}", format_time(m.duration - m.elapsed)) } else { String::new() };
+        let remaining = if m.duration > 0.0 {
+            format!("−{}", format_time(m.duration - m.elapsed))
+        } else {
+            String::new()
+        };
         ui.set_text(self.remaining, &remaining);
-        let scrubbing = ui.dragging() == Some(self.scrubber) || self.scrubbed_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
+        let scrubbing = ui.dragging() == Some(self.scrubber)
+            || self.scrubbed_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
         if !scrubbing && m.duration > 0.0 {
             ui.set_value(self.scrubber, (m.elapsed / m.duration).clamp(0.0, 1.0) as f32);
         }
@@ -1076,6 +1194,10 @@ impl PlaylistPage {
                 }
                 let bounds = ui.frame(self.video_box).size;
                 let fit = fit_aspect(bounds, video.aspect);
+                // A picture that fills the area shares its rounded corners.
+                if let Some(w) = ui.widget_mut(self.video) {
+                    w.radius = if (fit - bounds).abs().max_element() < 1.5 { VIDEO_RADIUS } else { 0.0 };
+                }
                 let mut style = ui.style(self.video);
                 let wanted = Size { width: length(fit.x), height: length(fit.y) };
                 if style.size != wanted {
@@ -1113,7 +1235,9 @@ impl PlaylistPage {
         } else {
             self.search_width.step(dt);
         }
-        if !self.search_width.is_settled(SEARCH_SETTLED) || ui.style(self.search_box).size.width != length(self.search_width.target) {
+        if !self.search_width.is_settled(SEARCH_SETTLED)
+            || ui.style(self.search_box).size.width != length(self.search_width.target)
+        {
             let w = self.search_width.value.max(TOP_BUTTON);
             let mut style = ui.style(self.search_box);
             style.size.width = length(w);

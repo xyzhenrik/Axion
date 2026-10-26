@@ -75,7 +75,14 @@ impl PlaylistPopover {
     }
 
     /// Opens below `anchor` (the Playlist button), or refreshes the content if already open.
-    pub fn open(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, window_width: f32, videos: &[VideoInfo]) {
+    pub fn open(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        anchor: Frame,
+        window_width: f32,
+        videos: &[VideoInfo],
+    ) {
         let videos = &videos[..videos.len().min(MAX_VIDEOS)];
         self.fill(ui, videos);
         let mut height = 2.0 * (PADDING + INSET) + HEADER;
@@ -85,7 +92,7 @@ impl PlaylistPopover {
                 height += GAP + NOTE;
             }
         }
-        let left = (anchor.origin.x - WIDTH + anchor.size.x + PADDING + 8.0).clamp(8.0, (window_width - WIDTH - 8.0).max(8.0));
+        let left = (anchor.origin.x - PADDING - 8.0).clamp(8.0, (window_width - WIDTH - 8.0).max(8.0));
         let target = Frame::new(left, anchor.origin.y + anchor.size.y + GAP_BELOW_ANCHOR, WIDTH, height);
         self.popover.open(ui, config, anchor, target);
     }
@@ -96,7 +103,8 @@ impl PlaylistPopover {
         let any_added = videos.iter().any(|v| v.added);
         ui.add(
             header,
-            Widget::icon(if any_added { Icon::Playlist } else { Icon::PlaylistAdd }, 24.0).with_paint(Paint::Accent),
+            Widget::icon(if any_added { Icon::Playlist } else { Icon::PlaylistAdd }, 24.0)
+                .with_paint(Paint::Accent),
             Style::default(),
         );
         let heading = if any_added && videos.len() == 1 { "In your Playlist" } else { "Add to Playlist" };
@@ -119,21 +127,47 @@ impl PlaylistPopover {
                 let box_node = ui.add(
                     self.plate,
                     Widget::container(),
-                    Style { size: Size { width: auto(), height: length(NOTE) }, flex_shrink: 0.0, ..row(8.0) },
+                    Style {
+                        size: Size { width: auto(), height: length(NOTE) },
+                        flex_shrink: 0.0,
+                        ..row(8.0)
+                    },
                 );
-                ui.add(box_node, Widget::icon(Icon::Globe, 16.0).with_paint(Paint::Secondary), Style { flex_shrink: 0.0, ..Default::default() });
+                ui.add(
+                    box_node,
+                    Widget::icon(Icon::Globe, 16.0).with_paint(Paint::Secondary),
+                    Style { flex_shrink: 0.0, ..Default::default() },
+                );
                 // Labels are one line: the note is cut in two.
                 let (a, b) = split_note(note, 40);
-                let col = ui.add(box_node, Widget::container(), Style { flex_direction: FlexDirection::Column, ..Default::default() });
+                let col = ui.add(
+                    box_node,
+                    Widget::container(),
+                    Style { flex_direction: FlexDirection::Column, ..Default::default() },
+                );
                 secondary(ui, col, &a, TextStyle::Footnote);
                 secondary(ui, col, &b, TextStyle::Footnote);
             }
             let buttons = ui.add(self.plate, Widget::container(), fixed_row(BUTTONS, 8.0));
             if v.added {
-                button(ui, buttons, PopoverAction::OpenPlaylist.id_for(i), Icon::Playlist, "Open Playlist", false);
+                button(
+                    ui,
+                    buttons,
+                    PopoverAction::OpenPlaylist.id_for(i),
+                    Icon::Playlist,
+                    "Open Playlist",
+                    false,
+                );
                 button(ui, buttons, PopoverAction::Remove(i).id_for(i), Icon::Trash, "Remove", false);
             } else {
-                button(ui, buttons, PopoverAction::Add { video: i, download: false }.id_for(i), Icon::PlaylistAdd, "Add", !v.can_download);
+                button(
+                    ui,
+                    buttons,
+                    PopoverAction::Add { video: i, download: false }.id_for(i),
+                    Icon::PlaylistAdd,
+                    "Add",
+                    !v.can_download,
+                );
                 if v.can_download {
                     button(
                         ui,
@@ -179,7 +213,9 @@ impl PopoverAction {
     /// The id of the button for video `video` (the Open button is shared).
     fn id_for(self, video: usize) -> ActionId {
         match self {
-            PopoverAction::Add { download, .. } => ActionId(ACTION_BASE + video as u32 * 4 + u32::from(download)),
+            PopoverAction::Add { download, .. } => {
+                ActionId(ACTION_BASE + video as u32 * 4 + u32::from(download))
+            }
             PopoverAction::Remove(_) => ActionId(ACTION_BASE + video as u32 * 4 + 2),
             PopoverAction::OpenPlaylist => OPEN,
         }

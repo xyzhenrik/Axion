@@ -68,12 +68,15 @@ impl RowButton {
 struct Jobs {
     cache_size: Option<u64>,
     folder: Option<PathBuf>,
+    playlist_folder: Option<PathBuf>,
 }
 
 /// What background work finished.
 pub enum Event {
     CacheSize(u64),
     FolderChosen(PathBuf),
+    /// The folder chosen for the Playlist's downloads.
+    PlaylistFolderChosen(PathBuf),
 }
 
 /// Where download rows are shown.
@@ -372,6 +375,20 @@ impl Downloads {
         });
     }
 
+    /// Like [`Self::choose_folder`], for the Playlist's downloads.
+    pub fn choose_playlist_folder(&self) {
+        let jobs = Arc::clone(&self.jobs);
+        spawn("choose-playlist-folder", move || match choose_portal("Playlist Folder", Choose::Folder) {
+            Ok(Some(folder)) => {
+                if let Ok(mut jobs) = jobs.lock() {
+                    jobs.playlist_folder = Some(folder);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("folder chooser unavailable: {e}"),
+        });
+    }
+
     /// Results of background work since the last call.
     pub fn poll(&mut self) -> Vec<Event> {
         let Ok(mut jobs) = self.jobs.lock() else { return Vec::new() };
@@ -381,6 +398,9 @@ impl Downloads {
         }
         if let Some(folder) = jobs.folder.take() {
             events.push(Event::FolderChosen(folder));
+        }
+        if let Some(folder) = jobs.playlist_folder.take() {
+            events.push(Event::PlaylistFolderChosen(folder));
         }
         events
     }

@@ -2253,7 +2253,11 @@ impl Browser {
         }
         items.insert(
             items.len() - 1,
-            MenuItem::new(Icon::Playlist, "Show Playlist", MenuAction::Playlist(crate::playlist::Command::Show)),
+            MenuItem::new(
+                Icon::Playlist,
+                "Show Playlist",
+                MenuAction::Playlist(crate::playlist::Command::Show),
+            ),
         );
         self.account_menu.close(&mut self.ui, &self.config);
         let anchor = self.chrome.page_menu_frame(&self.ui);
@@ -2715,7 +2719,8 @@ impl Browser {
                     self.passwords_outcome(outcome);
                 }
                 UiEvent::Clicked { action, .. }
-                    if self.playlist_open() && crate::playlist_page::PageAction::from_id(action).is_some() =>
+                    if self.playlist_open()
+                        && crate::playlist_page::PageAction::from_id(action).is_some() =>
                 {
                     if let Some(action) = crate::playlist_page::PageAction::from_id(action) {
                         self.playlist_ui.page.menu().close(&mut self.ui, &self.config);
@@ -3307,7 +3312,13 @@ impl Browser {
                 EngineEvent::Closed { view } => self.page_colors.closed(view),
                 EngineEvent::DownloadUpdated(info) => {
                     let playlist_download = self.playlist_download_update(&info);
-                    self.downloads.update(info, self.store.as_ref(), &self.config, unix_now(), !playlist_download);
+                    self.downloads.update(
+                        info,
+                        self.store.as_ref(),
+                        &self.config,
+                        unix_now(),
+                        !playlist_download,
+                    );
                     downloads_changed = true;
                 }
                 EngineEvent::SiteData(sites) => {
@@ -3445,6 +3456,7 @@ impl Browser {
                 self.engine.request_site_data();
             }
             Outcome::ChooseDownloadFolder => self.downloads.choose_folder(),
+            Outcome::ChoosePlaylistFolder => self.downloads.choose_playlist_folder(),
             Outcome::ChooseBackground => self.home.choose_background(),
             Outcome::AddBackground(path) => {
                 if self.home.add_background(&path, &mut self.config) {
@@ -3500,6 +3512,10 @@ impl Browser {
                 downloads::Event::CacheSize(size) => self.settings.set_cache_size(Some(size)),
                 downloads::Event::FolderChosen(folder) => {
                     self.config.downloads.directory = downloads::short_path(&folder);
+                    self.settings_outcome(Outcome::Changed);
+                }
+                downloads::Event::PlaylistFolderChosen(folder) => {
+                    self.config.playlist.directory = downloads::short_path(&folder);
                     self.settings_outcome(Outcome::Changed);
                 }
             }
@@ -3850,7 +3866,8 @@ impl Browser {
                     && self.pointer.is_some_and(|p| self.playlist_ui.page.list_contains(&self.ui, p))
                 {
                     self.playlist_ui.page.scroll_by(&mut self.ui, delta.y);
-                } else if self.playlist_open() && self.pointer.is_some_and(|p| self.playlist_wheel(p, delta)) {
+                } else if self.playlist_open() && self.pointer.is_some_and(|p| self.playlist_wheel(p, delta))
+                {
                 } else if self.pointer.is_some_and(|p| self.chrome.panel_contains(&self.ui, p)) {
                     self.chrome.scroll_panel(&mut self.ui, delta.y);
                 } else if self.pointer.is_some_and(|p| self.chrome.sections_contains(&self.ui, p)) {

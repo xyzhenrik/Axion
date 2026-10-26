@@ -71,7 +71,9 @@ pub struct Candidate {
 
 /// The videos of a page worth saving: every `<video>`, and audio with a known length.
 pub fn candidates(page_url: &str, tab_title: &str, media: &PageMedia, max_title: usize) -> Vec<Candidate> {
-    if !(page_url.starts_with("http://") || page_url.starts_with("https://") || page_url.starts_with("file://"))
+    if !(page_url.starts_with("http://")
+        || page_url.starts_with("https://")
+        || page_url.starts_with("file://"))
     {
         return Vec::new();
     }
@@ -673,7 +675,10 @@ mod tests {
 
     #[test]
     fn sources_are_classified() {
-        assert_eq!(classify("https://x.org/a/v.mp4?token=1"), Source::Direct("https://x.org/a/v.mp4?token=1".into()));
+        assert_eq!(
+            classify("https://x.org/a/v.mp4?token=1"),
+            Source::Direct("https://x.org/a/v.mp4?token=1".into())
+        );
         assert!(matches!(classify("https://x.org/live/master.M3U8?x=1"), Source::Streaming(_)));
         assert!(matches!(classify("https://x.org/m.mpd"), Source::Streaming(_)));
         assert!(matches!(classify("blob:https://x.org/uuid"), Source::Streaming(_)));

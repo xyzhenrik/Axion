@@ -496,11 +496,7 @@ impl Store {
     pub fn playlist_item(&self, id: i64) -> Result<Option<PlaylistItem>> {
         Ok(self
             .conn
-            .query_row(
-                &format!("SELECT {PLAYLIST_COLUMNS} FROM playlist WHERE id = ?1"),
-                [id],
-                playlist_item,
-            )
+            .query_row(&format!("SELECT {PLAYLIST_COLUMNS} FROM playlist WHERE id = ?1"), [id], playlist_item)
             .optional()?)
     }
 
@@ -529,7 +525,14 @@ impl Store {
     }
 
     /// Records a download's state (one of [`dl`]), file and size, and a note for people.
-    pub fn set_playlist_download(&self, id: i64, state: &str, path: &str, size: i64, note: &str) -> Result<()> {
+    pub fn set_playlist_download(
+        &self,
+        id: i64,
+        state: &str,
+        path: &str,
+        size: i64,
+        note: &str,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE playlist SET dl_state = ?2, dl_path = ?3, dl_size = ?4, dl_note = ?5 WHERE id = ?1",
             params![id, state, path, size, note],
@@ -544,9 +547,7 @@ impl Store {
 
     /// Swaps an item's place with its neighbour in `list` (`up`: towards the top).
     pub fn move_playlist_item(&mut self, id: i64, up: bool) -> Result<()> {
-        let items = self.playlist_items(
-            &self.playlist_item(id)?.map(|i| i.list).unwrap_or_default(),
-        )?;
+        let items = self.playlist_items(&self.playlist_item(id)?.map(|i| i.list).unwrap_or_default())?;
         let Some(at) = items.iter().position(|i| i.id == id) else { return Ok(()) };
         let other = if up { at.checked_sub(1) } else { Some(at + 1).filter(|&n| n < items.len()) };
         let Some(other) = other else { return Ok(()) };
