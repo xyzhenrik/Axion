@@ -14,6 +14,7 @@ use axion_config::{
 };
 use axion_engine::cef::{CefEngine, CefOptions};
 use axion_engine::{CursorKind, Engine, EngineEvent, InputEvent, MouseButton, NewViewKind, ViewId, ViewSize};
+use axion_i18n::{tr, tr_fmt, tr_mark};
 use axion_shields::Level;
 use axion_tabs::{Lifecycle, MemoryMonitor, TabInfo, Transition};
 use axion_ui::{Paint, Theme, Ui, UiCursor, UiEvent, UiInput};
@@ -168,8 +169,8 @@ const PANEL_HISTORY_LIMIT: usize = 300;
 /// Most bookmarks a sidebar search lists.
 const PANEL_SEARCH_LIMIT: usize = 1000;
 /// The History panel's clear button, and what it says while asking to confirm.
-const CLEAR_HISTORY: &str = "Clear History…";
-const CLEAR_HISTORY_CONFIRM: &str = "Click Again to Clear";
+const CLEAR_HISTORY: &str = tr_mark("Clear History…");
+const CLEAR_HISTORY_CONFIRM: &str = tr_mark("Click Again to Clear");
 /// Chromium's zoom levels are powers of this factor.
 const ZOOM_BASE: f64 = 1.2;
 /// Pixels per wheel notch.
@@ -1179,10 +1180,10 @@ impl Browser {
                 )
             })
             .collect();
-        items.push(MenuItem::new(Icon::PersonAdd, "Add Account…", MenuAction::AddAccount).separated());
-        items.push(MenuItem::new(Icon::Settings, "Account Settings…", MenuAction::AccountSettings));
+        items.push(MenuItem::new(Icon::PersonAdd, tr("Add Account…"), MenuAction::AddAccount).separated());
+        items.push(MenuItem::new(Icon::Settings, tr("Account Settings…"), MenuAction::AccountSettings));
         if self.passwords.has_password() {
-            let mut lock = MenuItem::new(Icon::Lock, "Lock", MenuAction::LockAccount);
+            let mut lock = MenuItem::new(Icon::Lock, tr("Lock"), MenuAction::LockAccount);
             if let Some(chord) = self.keymap.chords_for(Action::Lock).first() {
                 lock = lock.with_detail(chord.to_string());
             }
@@ -2311,7 +2312,7 @@ impl Browser {
     fn sync_overview_mode(&mut self) {
         let normal = if self.private_mode { self.parked.len() } else { self.tabs.len() };
         self.overview.set_mode(&mut self.ui, self.private_mode, normal);
-        let note = self.is_locked().then_some("“Private Browsing” is locked");
+        let note = self.is_locked().then_some(tr("“Private Browsing” is locked"));
         self.overview.set_note(&mut self.ui, note);
     }
 
@@ -2379,24 +2380,24 @@ impl Browser {
             }
         };
         let title = match panel {
-            Panel::Bookmarks => "Bookmarks",
-            Panel::History => "History",
-            Panel::ReadingList => "Reading List",
-            Panel::Downloads => "Downloads",
+            Panel::Bookmarks => tr("Bookmarks"),
+            Panel::History => tr("History"),
+            Panel::ReadingList => tr("Reading List"),
+            Panel::Downloads => tr("Downloads"),
         };
         self.panel_urls = items.iter().map(|i| i.url.clone()).collect();
         let clear = match panel {
-            Panel::History => (!items.is_empty() && query.is_empty()).then_some(CLEAR_HISTORY),
-            Panel::Downloads => self.downloads.has_finished().then_some("Clear List"),
+            Panel::History => (!items.is_empty() && query.is_empty()).then_some(tr(CLEAR_HISTORY)),
+            Panel::Downloads => self.downloads.has_finished().then_some(tr("Clear List")),
             _ => None,
         };
         self.panel = Some((panel, false));
         self.panel_query = query.clone();
         self.chrome.set_panel_searchable(&mut self.ui, panel != Panel::Downloads);
         self.chrome.set_panel_empty_text(if query.is_empty() {
-            "Nothing here yet".into()
+            tr("Nothing here yet").into()
         } else {
-            format!("No results for “{query}”")
+            tr_fmt!("No results for “{query}”", query = query)
         });
         // History days fold away, except while a search lists its matches.
         let foldable = (panel == Panel::History && query.is_empty())
@@ -2415,7 +2416,7 @@ impl Browser {
         let Some((Panel::History, confirming)) = self.panel else { return };
         if !confirming {
             self.panel = Some((Panel::History, true));
-            self.chrome.set_panel_clear_label(&mut self.ui, CLEAR_HISTORY_CONFIRM);
+            self.chrome.set_panel_clear_label(&mut self.ui, tr(CLEAR_HISTORY_CONFIRM));
             return;
         }
         if let Some(store) = &self.store
@@ -2450,30 +2451,30 @@ impl Browser {
         let zoom = zoom_label(tab.zoom);
         let items = vec![
             if bookmarked {
-                MenuItem::new(Icon::Bookmark, "Remove Bookmark", MenuAction::RemoveBookmark)
+                MenuItem::new(Icon::Bookmark, tr("Remove Bookmark"), MenuAction::RemoveBookmark)
             } else {
-                MenuItem::new(Icon::Bookmark, "Add Bookmark", MenuAction::AddBookmark)
+                MenuItem::new(Icon::Bookmark, tr("Add Bookmark"), MenuAction::AddBookmark)
             },
-            MenuItem::new(Icon::Share, "Copy Link", MenuAction::CopyLink),
-            MenuItem::new(Icon::Search, "Find on Page", MenuAction::FindOnPage),
-            MenuItem::new(Icon::ZoomIn, "Zoom", MenuAction::Zoom).with_detail(zoom.clone()).with_submenu(
+            MenuItem::new(Icon::Share, tr("Copy Link"), MenuAction::CopyLink),
+            MenuItem::new(Icon::Search, tr("Find on Page"), MenuAction::FindOnPage),
+            MenuItem::new(Icon::ZoomIn, tr("Zoom"), MenuAction::Zoom).with_detail(zoom.clone()).with_submenu(
                 vec![
                     MenuItem::controls(vec![
                         MenuControl::icon(Icon::Minus, MenuAction::ZoomOut),
                         MenuControl::text(zoom, MenuAction::ZoomReset),
                         MenuControl::icon(Icon::Plus, MenuAction::ZoomIn),
                     ])
-                    .with_caption("Zoom"),
+                    .with_caption(tr("Zoom")),
                 ],
             ),
-            MenuItem::new(Icon::Reload, "Reload Without Cache", MenuAction::HardReload),
-            MenuItem::new(Icon::Settings, "Settings", MenuAction::Settings),
+            MenuItem::new(Icon::Reload, tr("Reload Without Cache"), MenuAction::HardReload),
+            MenuItem::new(Icon::Settings, tr("Settings"), MenuAction::Settings),
         ];
         let mut items = items;
         if !self.playlist_ui.candidates.is_empty() {
             let add = MenuItem::new(
                 Icon::PlaylistAdd,
-                "Add to Playlist",
+                tr("Add to Playlist"),
                 MenuAction::Playlist(crate::playlist::Command::Add),
             );
             items.insert(2, add);
@@ -2482,7 +2483,7 @@ impl Browser {
             items.len() - 1,
             MenuItem::new(
                 Icon::Playlist,
-                "Show Playlist",
+                tr("Show Playlist"),
                 MenuAction::Playlist(crate::playlist::Command::Show),
             ),
         );
@@ -3620,8 +3621,10 @@ impl Browser {
             Outcome::SetAccountPassword { current, new } => {
                 let (ui, config) = (&mut self.ui, &self.config);
                 let (result, done) = match &current {
-                    Some(old) => (self.passwords.change_password(ui, config, old, &new), "Password changed."),
-                    None => (self.passwords.set_up_password(ui, config, &new), "Password set."),
+                    Some(old) => {
+                        (self.passwords.change_password(ui, config, old, &new), tr("Password changed."))
+                    }
+                    None => (self.passwords.set_up_password(ui, config, &new), tr("Password set.")),
                 };
                 let status = match result {
                     Ok(()) => {
@@ -3634,7 +3637,7 @@ impl Browser {
                         done.to_owned()
                     }
                     Err(axion_vault::VaultError::WrongPassword) => {
-                        "The current password is wrong.".to_owned()
+                        tr("The current password is wrong.").to_owned()
                     }
                     Err(e) => {
                         tracing::error!("setting the account password failed: {e}");
@@ -3733,7 +3736,8 @@ impl Browser {
                     }
                     self.settings_outcome(Outcome::Changed);
                 } else {
-                    let status = self.home.add_error().unwrap_or("That file can't be used as a background.");
+                    let status =
+                        self.home.add_error().unwrap_or(tr("That file can't be used as a background."));
                     self.settings.set_background_status(Some(status.to_owned()));
                 }
                 self.sync_backgrounds();
@@ -3795,7 +3799,7 @@ impl Browser {
         let (Some(url), Some(clipboard)) = (url, &mut self.clipboard) else { return };
         if clipboard.set_text(url).is_ok() {
             tracing::info!("address copied");
-            self.show_toast(Icon::Check, "Link copied");
+            self.show_toast(Icon::Check, tr("Link copied"));
         }
     }
 
@@ -3953,7 +3957,7 @@ impl Browser {
                 let text = match e {
                     axion_accounts::AccountsError::AvatarTooLarge { .. }
                     | axion_accounts::AccountsError::AvatarUnreadable => e.to_string(),
-                    _ => "That picture couldn't be read.".to_owned(),
+                    _ => tr("That picture couldn't be read.").to_owned(),
                 };
                 match target {
                     PhotoFor::NewAccount => self.add_account.show_error(&mut self.ui, &text),
@@ -3979,7 +3983,7 @@ impl Browser {
                     }
                     Err(e) => {
                         tracing::error!("saving the profile picture failed: {e}");
-                        self.settings.set_photo_status(Some("The picture couldn't be saved.".to_owned()));
+                        self.settings.set_photo_status(Some(tr("The picture couldn't be saved.").to_owned()));
                     }
                 }
                 self.avatars.forget(&self.account_id);
