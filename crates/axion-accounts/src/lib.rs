@@ -24,6 +24,11 @@ const ACCOUNTS_DIR: &str = "accounts";
 const CONFIG_FILES: [&str; 2] = ["config.toml", "keymap.toml"];
 /// Chromium's marker of a profile that a running browser uses.
 const IN_USE_MARKER: &str = "SingletonLock";
+/// The stored profile picture's file name.
+pub const AVATAR_FILE: &str = "avatar.png";
+/// A picture may unpack to at most this many bytes while it is decoded (a small file can still
+/// hold a gigantic image).
+const AVATAR_DECODE_LIMIT: u64 = 512 * 1024 * 1024;
 /// The first account's name when the system's user name is unknown.
 const FALLBACK_NAME: &str = "Default";
 /// Account names are cut to this many characters.
@@ -45,6 +50,12 @@ pub enum AccountsError {
     Unknown(String),
     #[error("the only account can't be deleted")]
     LastAccount,
+    #[error("The picture is larger than {max_mb} MB.")]
+    AvatarTooLarge { max_mb: u32 },
+    #[error("That file isn't a picture Axion can read.")]
+    AvatarUnreadable,
+    #[error("saving the picture failed: {0}")]
+    AvatarSave(std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, AccountsError>;
@@ -64,6 +75,10 @@ pub struct Account {
     pub profile_dir: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<PathBuf>,
+    /// The profile picture's file name inside the account's configuration directory (a copy
+    /// Axion made; never a path to the user's own file). `None`: the coloured initials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 
 impl Account {
@@ -171,6 +186,7 @@ impl Accounts {
             created: now,
             profile_dir: None,
             config_dir: None,
+            avatar: None,
         };
         let mut transient = false;
         let profile_entries = entries(&bases.profile, |name| name != ACCOUNTS_DIR);
@@ -295,6 +311,7 @@ impl Accounts {
             created: now,
             profile_dir: None,
             config_dir: None,
+            avatar: None,
         });
         if self.file.last_used.is_none() {
             self.file.last_used = Some(id.clone());
@@ -320,6 +337,56 @@ impl Accounts {
         self.save()
     }
 
+    /// The stored profile picture of account `id`, if it has one and the file is there.
+    pub fn avatar_path(&self, id: &str) -> Option<PathBuf> {
+        let name = self.get(id)?.avatar.as_deref()?;
+        if !valid_avatar_name(name) {
+            return None;
+        }
+        let path = self.paths(id).ok()?.config.join(name);
+        path.is_file().then_some(path)
+    }
+
+    /// Makes `picture` (already cropped and scaled, see [`load_avatar`]) the profile picture of
+    /// account `id`: stored as PNG in the account's directory, replacing (and deleting) the
+    /// old one.
+    pub fn set_avatar(&mut self, id: &str, picture: &image::RgbaImage) -> Result<()> {
+        let dir = self.paths(id)?.config;
+        std::fs::create_dir_all(&dir).map_err(AccountsError::AvatarSave)?;
+        let target = dir.join(AVATAR_FILE);
+        let tmp = dir.join(format!("{AVATAR_FILE}.tmp"));
+        let saved = picture
+            .save_with_format(&tmp, image::ImageFormat::Png)
+            .map_err(|e| AccountsError::AvatarSave(std::io::Error::other(e)))
+            .and_then(|()| std::fs::rename(&tmp, &target).map_err(AccountsError::AvatarSave));
+        if saved.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        saved?;
+        let old = self.account_mut(id)?.avatar.replace(AVATAR_FILE.to_owned());
+        // A file under another name (older versions, hand edits) is replaced too.
+        if let Some(old) = old.filter(|o| o != AVATAR_FILE && valid_avatar_name(o)) {
+            let _ = std::fs::remove_file(dir.join(old));
+        }
+        self.save()
+    }
+
+    /// Picks `source` (crop, scale, copy; see [`load_avatar`]) as the profile picture.
+    pub fn set_avatar_from_file(&mut self, id: &str, source: &Path, size_px: u32, max_mb: u32) -> Result<()> {
+        let picture = load_avatar(source, size_px, max_mb)?;
+        self.set_avatar(id, &picture)
+    }
+
+    /// Back to the coloured initials; deletes the stored picture.
+    pub fn remove_avatar(&mut self, id: &str) -> Result<()> {
+        let dir = self.paths(id)?.config;
+        if let Some(name) = self.account_mut(id)?.avatar.take() {
+            remove_avatar_file(&dir, &name);
+            self.save()?;
+        }
+        Ok(())
+    }
+
     fn account_mut(&mut self, id: &str) -> Result<&mut Account> {
         self.file
             .accounts
@@ -336,6 +403,11 @@ impl Accounts {
             return Err(AccountsError::LastAccount);
         }
         let paths = self.paths(id)?;
+        // Normally inside the config directory that goes below; an account whose settings
+        // stayed in the base directory must not leave its picture behind.
+        if let Some(name) = self.get(id).and_then(|a| a.avatar.clone()) {
+            remove_avatar_file(&paths.config, &name);
+        }
         self.file.accounts.retain(|a| a.id != id);
         for dir in [paths.profile, paths.config] {
             if self.is_account_dir(&dir) {
@@ -386,6 +458,56 @@ impl Accounts {
             tracing::warn!("{e}");
         }
     }
+}
+
+/// Only plain file names of ours: no paths, no hidden files.
+fn valid_avatar_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with('.')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+fn remove_avatar_file(dir: &Path, name: &str) {
+    if !valid_avatar_name(name) {
+        return;
+    }
+    match std::fs::remove_file(dir.join(name)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!("removing the profile picture failed: {e}"),
+    }
+}
+
+/// Reads a picture (PNG, JPEG, WebP, GIF: its first frame) for use as a profile picture: cut
+/// to a centred square and scaled to `size_px` per side (small pictures are scaled up, so every
+/// avatar has the same size). Files over `max_mb` are refused before they are decoded.
+pub fn load_avatar(source: &Path, size_px: u32, max_mb: u32) -> Result<image::RgbaImage> {
+    let max_bytes = u64::from(max_mb) * 1024 * 1024;
+    let meta = std::fs::metadata(source)
+        .map_err(|source_err| AccountsError::Read { path: source.to_path_buf(), source: source_err })?;
+    if meta.len() > max_bytes {
+        return Err(AccountsError::AvatarTooLarge { max_mb });
+    }
+    let mut reader = image::ImageReader::open(source)
+        .and_then(|r| r.with_guessed_format())
+        .map_err(|_| AccountsError::AvatarUnreadable)?;
+    // The decoded size is limited too: a small file can still unpack to gigabytes.
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(AVATAR_DECODE_LIMIT);
+    reader.limits(limits);
+    let decoded = reader.decode().map_err(|_| AccountsError::AvatarUnreadable)?;
+    Ok(square_avatar(&decoded, size_px))
+}
+
+/// The centred square of `picture`, scaled to `size_px` per side (at least 1).
+pub fn square_avatar(picture: &image::DynamicImage, size_px: u32) -> image::RgbaImage {
+    use image::GenericImageView;
+    let size = size_px.max(1);
+    let (w, h) = picture.dimensions();
+    let side = w.min(h).max(1);
+    let cropped = picture.crop_imm((w - side) / 2, (h - side) / 2, side, side);
+    image::imageops::resize(&cropped.to_rgba8(), size, size, image::imageops::FilterType::Lanczos3)
 }
 
 /// The names in `dir` that `keep` accepts (none if `dir` doesn't exist).
@@ -463,6 +585,7 @@ fn new_id(taken: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::GenericImageView;
 
     fn temp_bases(name: &str) -> Bases {
         let root = std::env::temp_dir().join(format!("axion-accounts-test-{name}-{}", std::process::id()));
@@ -599,11 +722,136 @@ mod tests {
             created: 0,
             profile_dir: None,
             config_dir: None,
+            avatar: None,
         };
         assert_eq!(account("henrik").initials(), "H");
         assert_eq!(account("Ada Lovelace Byron").initials(), "AL");
         assert_eq!(account("").initials(), "?");
         assert_eq!(clean_name(&"x".repeat(100)).map(|n| n.len()), Some(MAX_NAME_CHARS));
         assert_eq!(clean_name("  "), None);
+    }
+
+    fn gradient(w: u32, h: u32) -> image::RgbaImage {
+        image::RgbaImage::from_fn(w, h, |x, y| image::Rgba([(x % 256) as u8, (y % 256) as u8, 40, 255]))
+    }
+
+    fn two_accounts(name: &str) -> (Bases, Accounts, String, String) {
+        let bases = temp_bases(name);
+        let mut accounts = Accounts::load(bases.clone(), 1).unwrap();
+        let first = accounts.all()[0].id.clone();
+        let second = accounts.add("Second", 2).unwrap();
+        (bases, accounts, first, second)
+    }
+
+    #[test]
+    fn avatars_are_cropped_to_a_centred_square() {
+        // 300x100: the centre square is x 100..200.
+        let wide = image::RgbaImage::from_fn(300, 100, |x, _| {
+            if (100..200).contains(&x) {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 0, 255, 255])
+            }
+        });
+        let square = square_avatar(&image::DynamicImage::ImageRgba8(wide), 64);
+        assert_eq!(square.dimensions(), (64, 64));
+        assert!(square.pixels().all(|p| p.0 == [255, 0, 0, 255]), "only the centre remains");
+        let tall = image::DynamicImage::ImageRgba8(gradient(40, 400));
+        assert_eq!(square_avatar(&tall, 256).dimensions(), (256, 256), "small pictures grow to size");
+        assert_eq!(square_avatar(&tall, 0).dimensions(), (1, 1));
+    }
+
+    #[test]
+    fn avatar_file_is_copied_and_survives_the_original() {
+        let (bases, mut accounts, id, other) = two_accounts("avatar-copy");
+        let source = bases.config.parent().unwrap().join("Downloads/me.jpg");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        image::DynamicImage::ImageRgba8(gradient(800, 500)).to_rgb8().save(&source).unwrap();
+        assert!(accounts.avatar_path(&id).is_none());
+
+        accounts.set_avatar_from_file(&id, &source, 128, 5).unwrap();
+        let stored = accounts.avatar_path(&id).unwrap();
+        assert_eq!(stored, accounts.paths(&id).unwrap().config.join(AVATAR_FILE));
+        assert_eq!(image::open(&stored).unwrap().dimensions(), (128, 128));
+        assert_eq!(accounts.get(&id).unwrap().avatar.as_deref(), Some(AVATAR_FILE));
+        assert!(accounts.avatar_path(&other).is_none(), "other accounts keep their initials");
+
+        std::fs::remove_file(&source).unwrap();
+        assert!(accounts.avatar_path(&id).is_some(), "deleting the original keeps the avatar");
+        // Reloading (a relaunch) keeps it too.
+        let again = Accounts::load(bases.clone(), 3).unwrap();
+        assert!(again.avatar_path(&id).is_some());
+        cleanup(&bases);
+    }
+
+    #[test]
+    fn avatar_limits_and_bad_files() {
+        let (bases, mut accounts, id, _) = two_accounts("avatar-limits");
+        let dir = bases.config.parent().unwrap();
+        let big = dir.join("big.png");
+        // Two MB of noise over a 1 MB limit is refused before decoding.
+        std::fs::write(&big, vec![7u8; 2 * 1024 * 1024]).unwrap();
+        assert!(matches!(
+            accounts.set_avatar_from_file(&id, &big, 64, 1),
+            Err(AccountsError::AvatarTooLarge { max_mb: 1 })
+        ));
+        assert!(matches!(
+            accounts.set_avatar_from_file(&id, &big, 64, 5),
+            Err(AccountsError::AvatarUnreadable)
+        ));
+        assert!(matches!(
+            accounts.set_avatar_from_file(&id, &dir.join("missing.png"), 64, 5),
+            Err(AccountsError::Read { .. })
+        ));
+        assert!(accounts.get(&id).unwrap().avatar.is_none());
+        cleanup(&bases);
+    }
+
+    #[test]
+    fn replacing_and_removing_delete_the_stored_file() {
+        let (bases, mut accounts, id, _) = two_accounts("avatar-replace");
+        let dir = accounts.paths(&id).unwrap().config;
+        accounts.set_avatar(&id, &gradient(32, 32)).unwrap();
+        // An avatar under an older name goes when the next one is stored.
+        write(&dir.join("old-avatar.png"), "x");
+        accounts.account_mut(&id).unwrap().avatar = Some("old-avatar.png".into());
+        accounts.set_avatar(&id, &gradient(48, 48)).unwrap();
+        assert!(!dir.join("old-avatar.png").exists());
+        assert_eq!(image::open(dir.join(AVATAR_FILE)).unwrap().dimensions(), (48, 48));
+        assert!(!dir.join("avatar.png.tmp").exists());
+
+        accounts.remove_avatar(&id).unwrap();
+        assert!(!dir.join(AVATAR_FILE).exists() && accounts.avatar_path(&id).is_none());
+        assert!(accounts.get(&id).unwrap().avatar.is_none());
+        accounts.remove_avatar(&id).unwrap();
+        cleanup(&bases);
+    }
+
+    #[test]
+    fn deleting_an_account_deletes_its_avatar() {
+        let (bases, mut accounts, _, second) = two_accounts("avatar-delete");
+        accounts.set_avatar(&second, &gradient(32, 32)).unwrap();
+        let stored = accounts.avatar_path(&second).unwrap();
+        accounts.remove(&second).unwrap();
+        assert!(!stored.exists());
+        cleanup(&bases);
+    }
+
+    #[test]
+    fn avatar_in_accounts_file_round_trips() {
+        let (bases, mut accounts, id, other) = two_accounts("avatar-toml");
+        accounts.set_avatar(&id, &gradient(16, 16)).unwrap();
+        let text = std::fs::read_to_string(bases.config.join(ACCOUNTS_FILE)).unwrap();
+        assert_eq!(text.matches("avatar = ").count(), 1, "only the account with a picture has the key");
+        assert!(text.contains("avatar = \"avatar.png\""));
+        let again = Accounts::load(bases.clone(), 5).unwrap();
+        assert_eq!(again.get(&id).unwrap().avatar.as_deref(), Some(AVATAR_FILE));
+        assert_eq!(again.get(&other).unwrap().avatar, None);
+        // Files from before profile pictures load as before.
+        let legacy: File =
+            toml::from_str("[[account]]\nid = \"a\"\nname = \"A\"\ncolor = \"#E2457A\"\ncreated = 1\n")
+                .unwrap();
+        assert_eq!(legacy.accounts[0].avatar, None);
+        cleanup(&bases);
     }
 }

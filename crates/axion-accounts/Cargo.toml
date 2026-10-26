@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 axion-config.workspace = true
 directories = "6"
+image.workspace = true
 serde = { version = "1", features = ["derive"] }
 thiserror.workspace = true
 toml = "1"

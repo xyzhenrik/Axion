@@ -605,6 +605,8 @@ fn uri_path(uri: &str) -> Option<PathBuf> {
 pub enum Choose {
     Folder,
     Image,
+    /// Pictures only (profile photos).
+    Photo,
 }
 
 /// The XDG desktop portal's file chooser (`FileChooser.OpenFile`, for a folder with
@@ -628,6 +630,10 @@ pub fn choose_portal(title: &str, what: Choose) -> zbus::Result<Option<PathBuf>>
     match what {
         Choose::Folder => {
             options.insert("directory", Value::from(true));
+        }
+        Choose::Photo => {
+            let filters = vec![("Images".to_owned(), vec![(1u32, "image/*".to_owned())])];
+            options.insert("filters", Value::from(filters));
         }
         Choose::Image => {
             // (name, [(1 = MIME type, pattern)])

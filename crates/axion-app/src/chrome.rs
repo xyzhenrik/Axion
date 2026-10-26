@@ -341,6 +341,8 @@ pub struct Chrome {
     account: NodeId,
     account_avatar: NodeId,
     account_initials: NodeId,
+    /// The profile picture over the initials (hidden without one).
+    account_picture: NodeId,
     account_name: NodeId,
     now_playing: NowPlayingCard,
     mode: Mode,
@@ -969,6 +971,17 @@ impl Chrome {
         if let Some(w) = ui.widget_mut(account_initials) {
             w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
         }
+        let account_picture = ui.add(
+            account_avatar,
+            Widget::image().with_radius(ACCOUNT_AVATAR / 2.0),
+            Style {
+                position: Position::Absolute,
+                inset: Rect { left: length(0.0), right: auto(), top: length(0.0), bottom: auto() },
+                size: square(ACCOUNT_AVATAR),
+                ..Default::default()
+            },
+        );
+        ui.set_visible(account_picture, false);
         let account_name = ui.add_label(account, "", TextStyle::BodyEmphasis, shrinking_label());
         ui.add(
             account,
@@ -1194,6 +1207,7 @@ impl Chrome {
             account,
             account_avatar,
             account_initials,
+            account_picture,
             account_name,
             now_playing,
             mode: Mode::Wide,
@@ -2061,9 +2075,21 @@ impl Chrome {
     }
 
     /// Shows the current account on the account button.
-    pub fn set_account(&self, ui: &mut Ui, name: &str, initials: &str, color: Color) {
+    pub fn set_account(
+        &self,
+        ui: &mut Ui,
+        name: &str,
+        initials: &str,
+        color: Color,
+        picture: Option<&crate::home::Image>,
+    ) {
         ui.set_text(self.account_name, name);
         ui.set_text(self.account_initials, initials);
+        ui.set_visible(self.account_initials, picture.is_none());
+        ui.set_visible(self.account_picture, picture.is_some());
+        if let Some(picture) = picture {
+            ui.set_image(self.account_picture, Some(picture.clone()));
+        }
         if let Some(w) = ui.widget_mut(self.account_avatar) {
             w.background = Background::Fill(Paint::Fixed(color), 1.0);
         }

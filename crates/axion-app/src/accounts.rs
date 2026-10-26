@@ -17,6 +17,10 @@ use glam::Vec2;
 
 const CREATE: ActionId = ActionId(9100);
 const CANCEL: ActionId = ActionId(9101);
+const CHOOSE_PHOTO: ActionId = ActionId(9102);
+const REMOVE_PHOTO: ActionId = ActionId(9103);
+/// The picture preview at the top of the sheet.
+const PREVIEW: f32 = 64.0;
 const WIDTH: f32 = 340.0;
 const RADIUS: f32 = 22.0;
 /// The sheet grows from this size as it appears.
@@ -29,6 +33,8 @@ const ERROR: Color = Color::rgb(0xD0362B);
 pub enum SheetAction {
     Create,
     Cancel,
+    ChoosePhoto,
+    RemovePhoto,
 }
 
 /// A small glass sheet asking for the new account's name (a password can be set later).
@@ -37,6 +43,11 @@ pub struct AddAccountSheet {
     alert: NodeId,
     field: NodeId,
     error: NodeId,
+    /// The person icon in the preview, hidden while a picture shows.
+    icon: NodeId,
+    /// The chosen profile picture, over the preview.
+    picture: NodeId,
+    remove_photo: NodeId,
     open: bool,
     appear: Animated<f32>,
 }
@@ -59,6 +70,26 @@ fn capsule_button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, pri
     if primary && let Some(w) = ui.widget_mut(label) {
         w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
     }
+}
+
+/// A thin-glass capsule button (the sheet's photo buttons).
+fn glass_button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str) -> NodeId {
+    let button = ui.add(
+        parent,
+        Widget::container()
+            .with_action(action)
+            .with_radius(CAPSULE)
+            .with_background(Background::Glass(GlassLevel::Thin)),
+        Style {
+            size: Size { width: auto(), height: length(34.0) },
+            padding: Rect { left: length(14.0), right: length(14.0), top: length(0.0), bottom: length(0.0) },
+            justify_content: JustifyContent::CENTER,
+            align_items: AlignItems::CENTER,
+            ..Default::default()
+        },
+    );
+    ui.add_label(button, text, TextStyle::Callout, Style::default());
+    button
 }
 
 fn secondary(ui: &mut Ui, parent: NodeId, text: &str) {
@@ -101,10 +132,44 @@ impl AddAccountSheet {
                 ..Default::default()
             },
         );
-        ui.add(alert, Widget::icon(Icon::PersonAdd, 30.0).with_paint(Paint::Accent), Style::default());
+        let preview = ui.add(
+            alert,
+            Widget::container().with_background(Background::Fill(Paint::Accent, 0.16)).with_radius(CAPSULE),
+            Style {
+                size: Size { width: length(PREVIEW), height: length(PREVIEW) },
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        let icon =
+            ui.add(preview, Widget::icon(Icon::PersonAdd, 30.0).with_paint(Paint::Accent), Style::default());
+        let picture = ui.add(
+            preview,
+            Widget::image().with_radius(PREVIEW / 2.0),
+            Style {
+                position: Position::Absolute,
+                inset: Rect { left: length(0.0), right: auto(), top: length(0.0), bottom: auto() },
+                size: Size { width: length(PREVIEW), height: length(PREVIEW) },
+                ..Default::default()
+            },
+        );
+        ui.set_visible(picture, false);
         ui.add_label(alert, "Add Account", TextStyle::BodyEmphasis, Style::default());
         secondary(ui, alert, "Its own tabs, history, passwords and settings.");
         secondary(ui, alert, "A password can be set later in Account Settings.");
+        let photo_buttons = ui.add(
+            alert,
+            Widget::container(),
+            Style {
+                margin: Rect { left: length(0.0), right: length(0.0), top: length(4.0), bottom: length(0.0) },
+                gap: Size { width: length(14.0), height: length(0.0) },
+                ..Default::default()
+            },
+        );
+        glass_button(ui, photo_buttons, CHOOSE_PHOTO, "Choose Photo…");
+        let remove_photo = glass_button(ui, photo_buttons, REMOVE_PHOTO, "Remove Photo");
+        ui.set_visible(remove_photo, false);
         let field_box = ui.add(
             alert,
             Widget::container().with_background(Background::Fill(Paint::Label, 0.07)).with_radius(12.0),
@@ -148,7 +213,17 @@ impl AddAccountSheet {
         capsule_button(ui, buttons, CANCEL, "Cancel", false);
         capsule_button(ui, buttons, CREATE, "Add and Switch", true);
         ui.set_visible(root, false);
-        Self { root, alert, field, error, open: false, appear: Animated::new(0.0, Spring::SNAPPY) }
+        Self {
+            root,
+            alert,
+            field,
+            error,
+            icon,
+            picture,
+            remove_photo,
+            open: false,
+            appear: Animated::new(0.0, Spring::SNAPPY),
+        }
     }
 
     pub fn is_open(&self) -> bool {
@@ -163,6 +238,8 @@ impl AddAccountSheet {
         match id {
             CREATE => Some(SheetAction::Create),
             CANCEL => Some(SheetAction::Cancel),
+            CHOOSE_PHOTO => Some(SheetAction::ChoosePhoto),
+            REMOVE_PHOTO => Some(SheetAction::RemovePhoto),
             _ => None,
         }
     }
@@ -184,6 +261,7 @@ impl AddAccountSheet {
         self.appear.snap(0.0);
         self.appear.target = 1.0;
         ui.set_field_text(self.field, "");
+        self.set_photo(ui, None);
         ui.set_visible(self.error, false);
         ui.set_visible(self.root, true);
         ui.focus(self.field)
@@ -198,8 +276,25 @@ impl AddAccountSheet {
     /// The name typed, trimmed; shows an error while it is empty.
     pub fn name(&self, ui: &mut Ui) -> Option<String> {
         let name = ui.field_text(self.field).unwrap_or_default().trim().to_owned();
+        ui.set_text(self.error, "Enter a name.");
         ui.set_visible(self.error, name.is_empty());
         (!name.is_empty()).then_some(name)
+    }
+
+    /// Says why the chosen picture was refused.
+    pub fn show_error(&self, ui: &mut Ui, text: &str) {
+        ui.set_text(self.error, text);
+        ui.set_visible(self.error, true);
+    }
+
+    /// Shows the chosen profile picture (or none) in the preview.
+    pub fn set_photo(&self, ui: &mut Ui, photo: Option<&crate::home::Image>) {
+        ui.set_visible(self.picture, photo.is_some());
+        ui.set_visible(self.icon, photo.is_none());
+        ui.set_visible(self.remove_photo, photo.is_some());
+        if let Some(photo) = photo {
+            ui.set_image(self.picture, Some(photo.clone()));
+        }
     }
 
     /// Capture aid: types a name.
