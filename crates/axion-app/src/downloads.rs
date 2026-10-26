@@ -16,6 +16,8 @@ use jiff::tz::TimeZone;
 use zbus::blocking::{Connection, MessageIterator};
 use zbus::zvariant::{OwnedValue, Value};
 
+use axion_i18n::{tr, tr_fmt};
+
 use crate::chrome::PanelItem;
 use crate::history::{day_label, local_date};
 use crate::url::display_host;
@@ -224,7 +226,7 @@ impl Downloads {
         let mut current: Option<Option<Date>> = None;
         let mut section = |day: Option<Date>| {
             let heading = (current != Some(day))
-                .then(|| day.map_or_else(|| "Earlier".to_owned(), |d| day_label(d, today)));
+                .then(|| day.map_or_else(|| tr("Earlier").to_owned(), |d| day_label(d, today)));
             current = Some(day);
             heading
         };
@@ -254,9 +256,9 @@ impl Downloads {
             let host = display_host(&d.url);
             let detail = match d.state.as_str() {
                 "complete" if exists => format!("{} · {host}", human_size(d.size)),
-                "complete" => format!("Moved or deleted · {host}"),
-                "cancelled" => format!("Cancelled · {host}"),
-                _ => format!("Failed · {host}"),
+                "complete" => tr_fmt!("Moved or deleted · {host}", host = host),
+                "cancelled" => tr_fmt!("Cancelled · {host}", host = host),
+                _ => tr_fmt!("Failed · {host}", host = host),
             };
             items.push(PanelItem {
                 title: d.file_name.clone(),
@@ -364,7 +366,7 @@ impl Downloads {
     /// as [`Event::FolderChosen`].
     pub fn choose_folder(&self) {
         let jobs = Arc::clone(&self.jobs);
-        spawn("choose-folder", move || match choose_portal("Download Folder", Choose::Folder) {
+        spawn("choose-folder", move || match choose_portal(tr("Download Folder"), Choose::Folder) {
             Ok(Some(folder)) => {
                 if let Ok(mut jobs) = jobs.lock() {
                     jobs.folder = Some(folder);
@@ -378,7 +380,7 @@ impl Downloads {
     /// Like [`Self::choose_folder`], for the Playlist's downloads.
     pub fn choose_playlist_folder(&self) {
         let jobs = Arc::clone(&self.jobs);
-        spawn("choose-playlist-folder", move || match choose_portal("Playlist Folder", Choose::Folder) {
+        spawn("choose-playlist-folder", move || match choose_portal(tr("Playlist Folder"), Choose::Folder) {
             Ok(Some(folder)) => {
                 if let Ok(mut jobs) = jobs.lock() {
                     jobs.playlist_folder = Some(folder);
@@ -495,14 +497,16 @@ fn running_detail(d: &DownloadInfo) -> String {
     let amount = if d.total_bytes > 0 {
         let (received, total) = (human_size(d.received_bytes), human_size(d.total_bytes));
         match (received.split_once(' '), total.split_once(' ')) {
-            (Some((r, unit)), Some((_, total_unit))) if unit == total_unit => format!("{r} of {total}"),
-            _ => format!("{received} of {total}"),
+            (Some((r, unit)), Some((_, total_unit))) if unit == total_unit => {
+                tr_fmt!("{received} of {total}", received = r, total = total)
+            }
+            _ => tr_fmt!("{received} of {total}", received = received, total = total),
         }
     } else {
         human_size(d.received_bytes)
     };
     match d.state {
-        DownloadState::Paused => format!("Paused · {amount}"),
+        DownloadState::Paused => tr_fmt!("Paused · {amount}", amount = amount),
         _ if d.speed > 0 => format!("{amount} · {}/s", human_size(d.speed)),
         _ => amount,
     }
@@ -632,13 +636,13 @@ pub fn choose_portal(title: &str, what: Choose) -> zbus::Result<Option<PathBuf>>
             options.insert("directory", Value::from(true));
         }
         Choose::Photo => {
-            let filters = vec![("Images".to_owned(), vec![(1u32, "image/*".to_owned())])];
+            let filters = vec![(tr("Images").to_owned(), vec![(1u32, "image/*".to_owned())])];
             options.insert("filters", Value::from(filters));
         }
         Choose::Image => {
             // (name, [(1 = MIME type, pattern)])
             let filters = vec![(
-                "Images and videos".to_owned(),
+                tr("Images and videos").to_owned(),
                 vec![(1u32, "image/*".to_owned()), (1, "video/mp4".to_owned()), (1, "video/webm".to_owned())],
             )];
             options.insert("filters", Value::from(filters));

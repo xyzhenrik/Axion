@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
 use axion_engine::ViewId;
+use axion_i18n::tr;
 use axion_media::{Action, Command, Kind, PageMedia, Player, format_time};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
@@ -580,7 +581,7 @@ impl PlayerOverlay {
         ui.set_icon(self.mute_icon, if silent { Icon::Muted } else { Icon::Volume });
         ui.set_text(self.time, &format_time(player.time));
         let remaining = if player.live {
-            "Live".to_owned()
+            tr("Live").to_owned()
         } else {
             format!("−{}", format_time(player.duration - player.time))
         };
@@ -624,7 +625,7 @@ impl PlayerOverlay {
         ui.clear_children(self.speed_menu);
         let header = ui.add_label(
             self.speed_menu,
-            "Playback Speed",
+            tr("Playback Speed"),
             TextStyle::Footnote,
             Style {
                 margin: Rect {
