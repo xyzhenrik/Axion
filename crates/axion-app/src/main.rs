@@ -202,7 +202,10 @@ impl ApplicationHandler for App {
 /// `--check-update`: the account's `[updates]` settings, one check, the answer on stdout.
 fn check_update_cli(args: &[String]) -> i32 {
     let load = || -> Result<axion_config::Config> {
-        let mut accounts = axion_accounts::Accounts::load(axion_accounts::Bases::discover()?, i64::try_from(update::now()).unwrap_or(0))?;
+        let mut accounts = axion_accounts::Accounts::load(
+            axion_accounts::Bases::discover()?,
+            i64::try_from(update::now()).unwrap_or(0),
+        )?;
         let wanted = args.iter().find_map(|a| a.strip_prefix("--account=")).map(str::to_owned);
         let id = accounts.select(wanted.as_deref())?;
         let paths = axion_config::ConfigPaths::in_dir(accounts.paths(&id)?.config);

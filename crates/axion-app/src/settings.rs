@@ -521,8 +521,11 @@ impl Setting {
             Setting::PlaylistDeleteFiles => c.playlist.delete_files_on_remove = on,
             Setting::AutoCheckUpdates => c.updates.auto_check_on_start = on,
             Setting::UpdatePrereleases => {
-                c.updates.channel =
-                    if on { axion_config::UpdateChannel::Prerelease } else { axion_config::UpdateChannel::Stable };
+                c.updates.channel = if on {
+                    axion_config::UpdateChannel::Prerelease
+                } else {
+                    axion_config::UpdateChannel::Stable
+                };
             }
             Setting::ClearClipboardAfter => c.passwords.clear_clipboard_seconds = (v / 5.0).round() * 5.0,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds = (v * 2.0).round() / 2.0,
@@ -1110,7 +1113,11 @@ impl SettingsSheet {
                         .with_background(Background::Fill(Paint::Fixed(UPDATE_DOT), 1.0))
                         .with_radius(CAPSULE)
                         .without_feedback(),
-                    Style { size: Size { width: length(9.0), height: length(9.0) }, flex_shrink: 0.0, ..Default::default() },
+                    Style {
+                        size: Size { width: length(9.0), height: length(9.0) },
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    },
                 );
                 ui.set_visible(dot, false);
                 about_badge = Some(dot);
@@ -2057,7 +2064,11 @@ impl SettingsSheet {
         let version = if about.build.is_empty() {
             tr_fmt!("Version {version}", version = about.version.as_str())
         } else {
-            tr_fmt!("Version {version} ({build})", version = about.version.as_str(), build = about.build.as_str())
+            tr_fmt!(
+                "Version {version} ({build})",
+                version = about.version.as_str(),
+                build = about.build.as_str()
+            )
         };
         let secondary = |ui: &mut Ui, text_node: NodeId, line: &str| {
             let label = ui.add_label(text_node, line, TextStyle::Footnote, Style::default());
@@ -2104,8 +2115,11 @@ impl SettingsSheet {
         }
         if source_set {
             let row_node = self.row(ui, tr("Last checked"));
-            let when =
-                if about.last_checked.is_empty() { tr("Never").to_owned() } else { about.last_checked.clone() };
+            let when = if about.last_checked.is_empty() {
+                tr("Never").to_owned()
+            } else {
+                about.last_checked.clone()
+            };
             let label = ui.add_label(row_node, &when, TextStyle::Callout, Style::default());
             if let Some(w) = ui.widget_mut(label) {
                 w.set_paint(Paint::Secondary);
@@ -2246,7 +2260,8 @@ impl SettingsSheet {
         }
         self.notes_scroll = next;
         let mut style = ui.style(content);
-        style.margin = Rect { left: length(0.0), right: length(0.0), top: length(-next), bottom: length(0.0) };
+        style.margin =
+            Rect { left: length(0.0), right: length(0.0), top: length(-next), bottom: length(0.0) };
         ui.set_style(content, style);
         true
     }
@@ -3108,8 +3123,12 @@ impl SettingsSheet {
             SettingsAction::OpenReleasePage => return Outcome::OpenReleasePage,
             SettingsAction::RelaunchNow => return Outcome::RelaunchNow,
             SettingsAction::SaveRepository => {
-                let text =
-                    self.repository_field.and_then(|f| ui.field_text(f)).unwrap_or_default().trim().to_owned();
+                let text = self
+                    .repository_field
+                    .and_then(|f| ui.field_text(f))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned();
                 if text.is_empty() {
                     config.updates.repository.clear();
                     self.repository_draft = None;

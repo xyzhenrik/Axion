@@ -30,6 +30,8 @@ use crate::now_playing::{Art, NowPlayingCard};
 /// The dot on the account button that says an update is available (Apple's notification red).
 const UPDATE_BADGE: Color = Color::rgb(0xFF3B30);
 const UPDATE_BADGE_SIZE: f32 = 11.0;
+/// How far the dot sticks out of the avatar's top right corner.
+const UPDATE_BADGE_OVERHANG: f32 = 3.0;
 /// The account button at the bottom of the sidebar, and its avatar.
 const ACCOUNT_HEIGHT: f32 = 48.0;
 const ACCOUNT_AVATAR: f32 = 30.0;
@@ -1052,7 +1054,12 @@ impl Chrome {
                 .without_feedback(),
             Style {
                 position: Position::Absolute,
-                inset: Rect { left: auto(), right: length(-3.0), top: length(-3.0), bottom: auto() },
+                inset: Rect {
+                    left: length(ACCOUNT_AVATAR - UPDATE_BADGE_SIZE + UPDATE_BADGE_OVERHANG),
+                    right: auto(),
+                    top: length(-UPDATE_BADGE_OVERHANG),
+                    bottom: auto(),
+                },
                 size: square(UPDATE_BADGE_SIZE),
                 ..Default::default()
             },

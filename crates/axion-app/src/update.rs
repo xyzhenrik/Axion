@@ -16,8 +16,8 @@ use axion_compositor::Icon;
 use axion_config::Config;
 use axion_i18n::{tr, tr_fmt};
 use axion_update::{
-    CheckReport, Clock, Http, InstallKind, Progress, Release, Source, Step, SystemClock, UpdateError, Version,
-    plain_notes,
+    CheckReport, Clock, Http, InstallKind, Progress, Release, Source, Step, SystemClock, UpdateError,
+    Version, plain_notes,
 };
 
 use crate::home::Image;
@@ -29,6 +29,8 @@ pub const BUILD: &str = env!("AXION_GIT_DESCRIBE");
 
 /// Output lines kept of a running command (the alert shows the newest few).
 const LOG_KEPT: usize = 400;
+/// Paths in the alert longer than this are shortened.
+const SHORT_PATH_CHARS: usize = 34;
 /// Release notes longer than this are cut (the page shows them in a scrolling box).
 const NOTES_MAX_CHARS: usize = 8000;
 
@@ -65,11 +67,15 @@ enum Op {
     Confirm,
     Running(Running),
     Done(Installed),
-    Failed { message: String, step: Option<Step>, log: Vec<String> },
+    Failed {
+        message: String,
+        step: Option<Step>,
+        log: Vec<String>,
+    },
 }
 
 enum Event {
-    Checked { manual: bool, result: Result<CheckReport, UpdateError> },
+    Checked { manual: bool, result: Result<Box<CheckReport>, UpdateError> },
     Progress(Progress),
     Installed(Result<Installed, UpdateError>),
 }
@@ -109,9 +115,14 @@ pub enum AboutState {
     NeverChecked,
     Checking,
     UpToDate,
-    Available { version: String, prerelease: bool },
+    Available {
+        version: String,
+        prerelease: bool,
+    },
     /// An update was installed in this run; relaunching starts it.
-    Installed { version: String },
+    Installed {
+        version: String,
+    },
     Error(String),
 }
 
@@ -164,13 +175,18 @@ pub struct Updater {
 
 impl Updater {
     pub fn new() -> Self {
+        Self::with_kind(axion_update::detect_current())
+    }
+
+    /// An updater for an installation of this kind (tests pick one; `new` detects it).
+    pub fn with_kind(kind: InstallKind) -> Self {
         let (sender, events) = mpsc::channel();
         Self {
             status: Status::Idle,
             op: Op::Idle,
             events,
             sender,
-            kind: axion_update::detect_current(),
+            kind,
             exe: axion_update::install::current_exe(),
             current: axion_update::running_version(VERSION),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -218,7 +234,7 @@ impl Updater {
         let current = self.current.clone();
         let sender = self.sender.clone();
         let spawned = std::thread::Builder::new().name("update-check".into()).spawn(move || {
-            let result = axion_update::check(&updates, &current);
+            let result = axion_update::check(&updates, &current).map(Box::new);
             // Fails only once the browser is gone.
             let _ = sender.send(Event::Checked { manual, result });
         });
@@ -464,7 +480,10 @@ impl Updater {
                 let size = asset
                     .and_then(|a| a.size)
                     .map_or_else(|| tr("size unknown").to_owned(), |s| crate::downloads::human_size(s as i64));
-                let backup = format!("{}.old", path.display());
+                let backup = format!(
+                    "{}.old",
+                    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                );
                 let checksum = release.checksums_asset().is_some()
                     || asset.is_some_and(|a| a.sha256.is_some());
                 AlertView {
@@ -472,10 +491,10 @@ impl Updater {
                     title: tr_fmt!("Update Axion to {version}?", version = version),
                     lines: vec![
                         tr_fmt!(
-                            "Axion downloads {file} ({size}) and replaces {path}. The current version is kept as {backup}.",
+                            "Axion downloads {file} ({size}) and replaces {path}. The current version is kept next to it as {backup}.",
                             file = file,
                             size = size,
-                            path = path.display().to_string(),
+                            path = short_path(path),
                             backup = backup
                         ),
                         if checksum {
@@ -498,7 +517,7 @@ impl Updater {
                 lines: vec![
                     tr_fmt!(
                         "In {path}, Axion runs “git pull --ff-only” and then “cargo build -p axion-app --release”. This can take several minutes.",
-                        path = root.display().to_string()
+                        path = short_path(root)
                     ),
                     tr("Only a clean working tree whose remote is the configured repository is updated. Nothing is forced or reset.")
                         .to_owned(),
@@ -521,10 +540,9 @@ impl Updater {
                     done = crate::downloads::human_size(done as i64),
                     total = crate::downloads::human_size(total as i64)
                 )),
-                Some((done, None)) => Some(tr_fmt!(
-                    "Downloading… {done}",
-                    done = crate::downloads::human_size(done as i64)
-                )),
+                Some((done, None)) => {
+                    Some(tr_fmt!("Downloading… {done}", done = crate::downloads::human_size(done as i64)))
+                }
                 None => Some(tr("Starting…").to_owned()),
             },
             Some(Step::Verifying) => Some(tr("Verifying the download…").to_owned()),
@@ -589,11 +607,27 @@ impl Updater {
     }
 }
 
+/// A path short enough for a line of the alert: long ones keep their last two parts.
+fn short_path(path: &std::path::Path) -> String {
+    let full = path.display().to_string();
+    if full.chars().count() <= SHORT_PATH_CHARS {
+        return full;
+    }
+    let parts: Vec<String> =
+        path.components().rev().take(2).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    match parts.as_slice() {
+        [name, parent] => format!("…/{parent}/{name}"),
+        _ => full,
+    }
+}
+
 /// Error text for the interface: the common cases translated, the rest as the library words them.
 fn describe(error: &UpdateError) -> String {
     match error {
         UpdateError::NoSource => tr("No update source is set yet.").to_owned(),
-        UpdateError::Network(_) => tr("Couldn't reach the update server. Check your connection and try again.").to_owned(),
+        UpdateError::Network(_) => {
+            tr("Couldn't reach the update server. Check your connection and try again.").to_owned()
+        }
         UpdateError::Parse(_) => tr("The update server sent something Axion doesn't understand.").to_owned(),
         UpdateError::ChecksumMismatch { .. } => {
             tr("The download doesn't match its published checksum, so it was discarded.").to_owned()
@@ -697,6 +731,16 @@ mod tests {
     }
 
     #[test]
+    fn long_paths_are_shortened_for_the_alert() {
+        use std::path::Path;
+        assert_eq!(short_path(Path::new("/opt/Axion.AppImage")), "/opt/Axion.AppImage");
+        assert_eq!(
+            short_path(Path::new("/home/someone/Downloads/applications/Axion-x86_64.AppImage")),
+            "…/applications/Axion-x86_64.AppImage"
+        );
+    }
+
+    #[test]
     fn times_are_formatted_or_empty() {
         assert_eq!(format_time(u64::MAX), "");
         assert_eq!(format_time(0).len(), "1970-01-01 00:00".len());
@@ -704,15 +748,20 @@ mod tests {
 
     #[test]
     fn running_view_shows_progress() {
-        let updater = Updater::new();
-        let running = Running {
-            step: Some(Step::Downloading),
-            download: Some((50, Some(200))),
-            ..Default::default()
-        };
+        let updater = Updater::with_kind(InstallKind::AppImage { path: "/opt/Axion.AppImage".into() });
+        let running =
+            Running { step: Some(Step::Downloading), download: Some((50, Some(200))), ..Default::default() };
         let view = updater.running_view(&running);
         assert_eq!(view.progress, Some(0.25));
         assert!(!view.show_log);
-        assert!(view.secondary.is_some() || matches!(updater.kind, InstallKind::SourceCheckout { .. }));
+        assert!(view.secondary.is_some(), "a download can be cancelled");
+
+        let source = Updater::with_kind(InstallKind::SourceCheckout { root: "/src/axion".into() });
+        let building = Running { step: Some(Step::Building), ..Default::default() };
+        let view = source.running_view(&building);
+        assert!(
+            view.show_log && view.secondary.is_none(),
+            "a source update shows its log and cannot be cancelled"
+        );
     }
 }

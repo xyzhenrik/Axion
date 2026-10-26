@@ -233,8 +233,11 @@ impl UpdateAlert {
             );
             ui.add(
                 badge,
-                Widget::icon(icon, ICON_SIZE)
-                    .with_paint(if view.error { Paint::Fixed(ERROR) } else { Paint::Accent }),
+                Widget::icon(icon, ICON_SIZE).with_paint(if view.error {
+                    Paint::Fixed(ERROR)
+                } else {
+                    Paint::Accent
+                }),
                 Style::default(),
             );
         }
@@ -279,7 +282,9 @@ impl UpdateAlert {
         if let Some(progress) = view.progress {
             let track = ui.add(
                 alert,
-                Widget::container().with_background(Background::Fill(Paint::Label, 0.10)).with_radius(CAPSULE),
+                Widget::container()
+                    .with_background(Background::Fill(Paint::Label, 0.10))
+                    .with_radius(CAPSULE),
                 Style {
                     size: Size { width: percent(1.0), height: length(BAR_HEIGHT) },
                     flex_shrink: 0.0,
@@ -294,7 +299,9 @@ impl UpdateAlert {
             );
             ui.add(
                 track,
-                Widget::container().with_background(Background::Fill(Paint::Accent, 1.0)).with_radius(CAPSULE),
+                Widget::container()
+                    .with_background(Background::Fill(Paint::Accent, 1.0))
+                    .with_radius(CAPSULE),
                 Style {
                     size: Size { width: percent(progress.clamp(0.0, 1.0)), height: length(BAR_HEIGHT) },
                     ..Default::default()

@@ -727,7 +727,7 @@
 "Repository" = "Repository"
 
 # crates/axion-app/src/update.rs
-"Axion downloads {file} ({size}) and replaces {path}. The current version is kept as {backup}." = "Axion lädt {file} ({size}) herunter und ersetzt {path}. Die aktuelle Version bleibt als {backup} erhalten."
+"Axion downloads {file} ({size}) and replaces {path}. The current version is kept next to it as {backup}." = "Axion lädt {file} ({size}) herunter und ersetzt {path}. Die aktuelle Version bleibt daneben als {backup} erhalten."
 "Axion was updated from Git" = "Axion wurde per Git aktualisiert"
 "Axion {version} is installed" = "Axion {version} ist installiert"
 "Building Axion… this takes a while." = "Axion wird gebaut… das dauert eine Weile."

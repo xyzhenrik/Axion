@@ -65,10 +65,10 @@ use crate::suggestions::{SuggestionList, suggest};
 use crate::tabdrag::{TabDrag, Target};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
 use crate::toast::Toast;
-use crate::update::{InstallMode, Notice, Phase, Updater};
-use crate::update_alert::{AlertAction, UpdateAlert};
 use crate::tooltip::Tooltip;
 use crate::typing_probe;
+use crate::update::{InstallMode, Notice, Phase, Updater};
+use crate::update_alert::{AlertAction, UpdateAlert};
 use crate::url::display_host;
 use crate::url::resolve_input;
 
@@ -4024,12 +4024,11 @@ impl Browser {
         self.show_panel(Panel::Downloads);
     }
 
-    /// Rebuilds the open settings page (after data it shows arrived).
     // ---- updates ----
 
     /// Gives Settings the current update state (and the badge on the account button).
     fn sync_about(&mut self) {
-        if self.about_icon.is_none() && self.settings.is_open() {
+        if self.about_icon.is_none() {
             self.about_icon = crate::app_icon::image().map(|icon| self.avatars.upload(&icon));
         }
         let info = self.updater.about(&self.config, self.about_icon.clone());
@@ -4083,12 +4082,17 @@ impl Browser {
                     // Once per version, and never for a skipped one or while reminded later.
                     if let Some(release) = update
                         && !manual
-                        && axion_update::may_notify(&self.config.updates, &release, &axion_update::SystemClock)
+                        && axion_update::may_notify(
+                            &self.config.updates,
+                            &release,
+                            &axion_update::SystemClock,
+                        )
                         && self.config.updates.notified_version != release.version.to_string()
                     {
                         self.config.updates.notified_version = release.version.to_string();
                         self.config_dirty_since.get_or_insert(Instant::now());
-                        let text = tr_fmt!("Axion {version} is available", version = release.version.to_string());
+                        let text =
+                            tr_fmt!("Axion {version} is available", version = release.version.to_string());
                         self.show_toast_with_action(Icon::Download, &text, tr("Update"));
                     }
                 }
@@ -4186,6 +4190,7 @@ impl Browser {
         self.settings.notes_point(&self.ui)
     }
 
+    /// Rebuilds the open settings page (after data it shows arrived).
     fn refresh_settings(&mut self) {
         if self.settings.is_open() {
             self.settings.show(&mut self.ui, &self.config, &self.keymap);
@@ -4863,7 +4868,9 @@ impl Browser {
             self.account_menu.close(&mut self.ui, &self.config);
             return false;
         }
-        if pressed && self.update_alert.is_dismissable() && input::key(event) == Some(Key::Named("Escape".into()))
+        if pressed
+            && self.update_alert.is_dismissable()
+            && input::key(event) == Some(Key::Named("Escape".into()))
         {
             self.update_alert_action(AlertAction::Backdrop);
             return false;
@@ -5082,6 +5089,15 @@ impl Browser {
                 "update-install" => self.request_update_install(),
                 "update-confirm" => self.update_alert_action(AlertAction::Primary),
                 "update-cancel" => self.update_alert_action(AlertAction::Secondary),
+                // Capture aid: a real pointer click on the toast's Update button.
+                "toast-click" => {
+                    let at = self.toast.button_center(&self.ui);
+                    let _ = self.ui.handle(UiInput::PointerMove(at));
+                    let (_, events) = self.ui.handle(UiInput::PointerDown);
+                    self.handle_ui_events(events);
+                    let (_, events) = self.ui.handle(UiInput::PointerUp);
+                    self.handle_ui_events(events);
+                }
                 "about-notes-scroll" => {
                     let point = self.settings_notes_point();
                     let scrolled = self.settings.scroll_notes(&mut self.ui, -60.0, point);

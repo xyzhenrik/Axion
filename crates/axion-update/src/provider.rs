@@ -117,7 +117,7 @@ impl GitHub {
         format!("{web}/{}/{}", self.repository.owner, self.repository.name)
     }
 
-    fn from_tags(&self, http: &Http, channel: UpdateChannel) -> Result<Option<Release>, UpdateError> {
+    fn latest_tag(&self, http: &Http, channel: UpdateChannel) -> Result<Option<Release>, UpdateError> {
         let tags: Vec<GhTag> = parse_json(&http.get_text(&format!("{}/tags?per_page=50", self.base()))?)?;
         let newest = tags
             .into_iter()
@@ -159,7 +159,7 @@ impl Provider for GitHub {
         };
         match found {
             Some(release) => Ok(Some(release)),
-            None => self.from_tags(http, channel),
+            None => self.latest_tag(http, channel),
         }
     }
 }

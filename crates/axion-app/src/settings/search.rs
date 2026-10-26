@@ -475,7 +475,17 @@ pub const INDEX: &[Entry] = &[
     page(
         C::About,
         tr_mark("About & Updates"),
-        &["about", "version", "update", "updates", "upgrade", "über", "info", "aktualisieren", "aktualisierung"],
+        &[
+            "about",
+            "version",
+            "update",
+            "updates",
+            "upgrade",
+            "über",
+            "info",
+            "aktualisieren",
+            "aktualisierung",
+        ],
     ),
     page(
         C::About,

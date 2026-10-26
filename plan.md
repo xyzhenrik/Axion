@@ -246,6 +246,75 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   (it remembers the last size/position); the frontend's own language/theme follow Chromium, not
   Axion's appearance.
 
+### 2.10 Updater (Settings › About & Updates)
+User request: update Axion from the project's Git hosting. The repository does not exist yet, so the
+whole feature is **inert until a source is configured** and the source is one constant/config key.
+- **Crate `axion-update`** (no UI/rendering deps; `ureq`, `semver`, `sha2`, `serde_json`): `Source`
+  (from `[updates]`) -> `Provider` trait with two impls: `GitHub` (`/repos/{o}/{r}/releases/latest` for
+  stable, `/releases` for pre-releases, `/tags` as fallback when a repository has tags but no
+  releases; `updates.api_url` points the same code at Gitea/Forgejo/GitHub Enterprise-compatible
+  hosts) and `Manifest` (`updates.manifest_url`: a `latest.json` `{version, notes, url, prerelease,
+  assets:[{name,url,size,sha256}]}` on any web server, relative asset URLs resolve against it; wins
+  over `repository`). `Http` = plain ureq, `Axion/<version>` user agent, `updates.timeout_seconds`,
+  nothing else sent (no telemetry, no identifiers); it runs on a background thread (`update.rs`
+  `Updater`, results drained per frame), same pattern as the Shields list updater.
+- **Config `[updates]`**: `enabled` (true, but a no-op while `repository` and `manifest_url` are
+  empty), `repository` (`owner/name` or a web/SSH address; default `DEFAULT_REPOSITORY` in
+  `axion-config/src/schema.rs` - **the one place to fill in once the repo exists**), `manifest_url`,
+  `api_url`, `channel` (`stable`/`prerelease`), `check_interval_hours` (24), `auto_check_on_start`
+  (true), `startup_delay_seconds` (8), `remind_later_hours` (24), `timeout_seconds` (10),
+  `max_download_mb` (1024); written by Axion: `last_checked`, `skipped_version`, `remind_until`,
+  `notified_version`. Also `toast.action_duration_seconds` (8).
+- **Versions**: SemVer (`v` prefix and `1.2` tolerated), compared with the running
+  `CARGO_PKG_VERSION`; a pre-release is older than its release. `build.rs` embeds `git describe
+  --tags --always --dirty` (`AXION_GIT_DESCRIBE`, empty outside a checkout) for the About page.
+- **Install kinds** (`install::detect`): AppImage (`APPIMAGE` env names an existing file), source
+  checkout (`<root>/target/<profile>/axion` with `<root>/.git` and `Cargo.toml`), other (packages).
+  - AppImage: pick the asset for `std::env::consts::ARCH`, download to `.<name>.axion-update` next
+    to the image (progress, cancel, `max_download_mb`), verify against the release's `SHA256SUMS`
+    (an entry for the file is mandatory when that file exists; else the manifest's per-asset
+    `sha256`; a release without any checksum installs but the alert says so), require the ELF magic,
+    `chmod 755`, then hard-link the old image to `<name>.old` and `rename` the new one over it
+    (never a moment without a working file). Relaunch runs the AppImage path.
+  - Source checkout ("Update from Git"): only if `git status --porcelain` is empty, HEAD is on a
+    branch whose configured remote's last two path parts equal `updates.repository` (so
+    `repository` must be set, even with a manifest), then `git pull --ff-only` and `cargo build -p
+    axion-app --release` in the checkout, output streamed line by line into the alert's log panel.
+    Never `--force`, `reset`, merge or stash; stops at the first failing command (a failed build
+    leaves the previous binary in place); `GIT_TERMINAL_PROMPT=0` so it can't hang on credentials.
+    Relaunch runs `target/release/axion` as started (with a trailing " (deleted)" stripped).
+  - Other: release notes + "Open Release Page" (opens a tab).
+  Every path that changes anything first shows the glass alert (`update_alert.rs`: confirm ->
+  progress -> Relaunch / failure) naming what will happen.
+- **Notices**: after `startup_delay_seconds` (only when `auto_check_due`: enabled, source set,
+  interval passed) one check; a newer, not skipped, not reminded-later version raises a toast
+  "Axion X is available" with an *Update* button (once per version via `notified_version`), a red dot
+  on the account button and on the About entry. A manual check (About page, page menu "Check for
+  Updates...", `axion --check-update`) always shows its result and never toasts.
+- **About & Updates page**: icon, version (+ commit), install kind; status line with *Check for
+  Updates* (No update source set yet / Checking / up to date / Update available / installed -
+  Relaunch / error), last checked, release notes (Markdown stripped to plain text, own scrolling
+  box), *Update* / *Update from Git* / *Open Release Page*, *Skip This Version*, *Remind Me Later*,
+  auto-check and pre-release switches, repository field (validated; empty turns updates off).
+- Tests: version/semver, both providers' JSON, checksum verify, install-type detection, git-clean
+  check, skip/remind persistence through `config.toml`, interval logic with an injected `Clock`, AppImage
+  install against an in-process HTTP server, the Git flow in throwaway repositories (bare remote +
+  clone + developer clone, stub `cargo`) - never the user's repository.
+- Manual testing: `tools/update-mock/` (`make_site.py` + `mock_server.py`: python `http.server` with a
+  manifest, a GitHub-like `repos/mock/axion/releases/latest`, a fake AppImage + `SHA256SUMS`, slow and
+  throttled paths, broken variants; `setup_fake_checkout.sh`: bare remote + clone with the release
+  binary and a stub `cargo` for the Git flow). Set `updates.manifest_url` (or `repository` +
+  `api_url`) in a throwaway `config.toml`; `AXION_PROFILE_DIR`/`AXION_CONFIG_DIR` as always; an
+  `APPIMAGE=<file>` environment makes any build behave as that AppImage install. Capture aids:
+  `--open=about` / `about-check` / `update-install` / `update-confirm` / `toast-click` (steps are
+  spaced `OPEN_STEP_INTERVAL` apart: pass `--lead=MS` so later steps fit before the capture).
+- **To enable once the repository exists**: set `DEFAULT_REPOSITORY = "owner/name"` in
+  `crates/axion-config/src/schema.rs`, or per user `[updates] repository = "owner/name"`
+  (non-GitHub forge: `manifest_url = "https://…/latest.json"`). Publish releases as tags `vX.Y.Z` with
+  an `Axion-X.Y.Z-x86_64.AppImage` and a `SHA256SUMS` asset.
+- Left: signature (minisign/GPG) verification beyond SHA-256 (the checksum file travels the same TLS
+  channel as the image); delta updates; AUR/Flatpak users update through their package manager.
+
 ## 3. Out of scope for v0.1
 Extensions, sync, reader mode, Windows/macOS builds, touchscreen polish.
 
@@ -490,7 +559,8 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
       *Open:* native Wayland file drops (winit 0.30 has no Wayland drag and drop; winit 0.31
       or our own `wl_data_device`); copying *from* pages on native Wayland doesn't reach the
       desktop clipboard yet (same cause); the find bar can cover the selected match.
-- [ ] Packaging: AUR / Flatpak / AppImage.
+- [ ] Packaging: AUR / Flatpak / AppImage. (The updater, section 2.10, already updates an AppImage in place.)
+- [x] Updater (section 2.10): `axion-update`, Settings › About & Updates, inert until the repository is set.
 - [ ] Crash handling, logging, first-run onboarding.
 
 ### Safari parity pass (2026-10-25, from the user's recordings — docs/reference/safari-ipados26.md)

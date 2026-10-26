@@ -83,7 +83,12 @@ impl Toast {
                     top: length(0.0),
                     bottom: length(0.0),
                 },
-                margin: Rect { left: length(4.0), right: length(-8.0), top: length(0.0), bottom: length(0.0) },
+                margin: Rect {
+                    left: length(4.0),
+                    right: length(-8.0),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
                 justify_content: JustifyContent::CENTER,
                 align_items: AlignItems::CENTER,
                 ..Default::default()
@@ -137,9 +142,17 @@ impl Toast {
         let left = (right - width).clamp(WINDOW_MARGIN, max_left);
         let target = Frame::new(left, anchor.origin.y + anchor.size.y + GAP_BELOW_ANCHOR, width, HEIGHT);
         self.popover.open(ui, config, anchor, target);
-        let seconds =
-            if action.is_some() { config.toast.action_duration_seconds } else { config.toast.duration_seconds };
+        let seconds = if action.is_some() {
+            config.toast.action_duration_seconds
+        } else {
+            config.toast.duration_seconds
+        };
         self.remaining = Some(seconds.max(0.0));
+    }
+
+    /// The centre of the toast's button (capture aid for clicking it).
+    pub fn button_center(&self, ui: &Ui) -> glam::Vec2 {
+        ui.frame(self.button).center()
     }
 
     /// Whether `id` is the click id of the toast's button.
