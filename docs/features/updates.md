@@ -75,15 +75,60 @@ notes and downloads. Update it the same way you installed it.
 
 ## For maintainers
 
-Publish each version as a release on the project's hosting:
+A release is what the updater reads. Axion looks at the repository's newest **published** release
+(drafts are invisible), takes its tag `vX.Y.Z` as the version, picks the asset whose name ends in
+`.AppImage` and contains `x86_64` (or `amd64`), downloads it, and checks it against the entry for that
+file name in the release's `SHA256SUMS`. So a release needs exactly:
 
-1. Tag it `vX.Y.Z` (for example `v0.3.1`). Versions use SemVer; a pre-release such as `v0.4.0-beta.1`
-   counts as older than the final `v0.4.0`. Mark pre-releases as such.
-2. Attach an AppImage named `Axion-X.Y.Z-x86_64.AppImage`.
-3. Attach a `SHA256SUMS` file with the checksum of every file, for example from
-   `sha256sum Axion-*.AppImage > SHA256SUMS`. A release without checksums still installs, but the
-   confirmation says that it could not be verified.
-4. Put the release notes in the release description.
+- the tag `vX.Y.Z` (SemVer; a pre-release such as `v0.4.0-beta.1` counts as older than `v0.4.0` and
+  must be marked as a pre-release),
+- `Axion-X.Y.Z-x86_64.AppImage`,
+- `SHA256SUMS` with a line per file (`sha256sum`'s format). Without it the update still installs, but
+  the confirmation says it could not be verified,
+- the release notes in the description (shown in the update message).
+
+`tools/package.sh` makes the files; the tarball `Axion-X.Y.Z-linux-x86_64.tar.gz` is for people who
+install by hand.
+
+**1. Build the release on your machine** (with the custom CEF, so H.264/AAC play):
+
+```bash
+# bump [workspace.package] version in Cargo.toml (and Cargo.lock), commit
+tools/package.sh --version 0.1.0 --cef-path ~/cef-dist --out dist
+tools/package.sh --notes > dist/notes.md       # skeleton from `git log`; edit it
+```
+
+`--cef-path` takes the folder that holds `libcef.so` or a folder in the layout of `third_party/cef`
+(default: `$CEF_PATH`, else `third_party/cef`). The result in `dist/` is the AppImage, the tarball
+and `SHA256SUMS`. The AppImage needs `appimagetool` in `PATH` (or `APPIMAGETOOL=...`), or
+`mksquashfs` plus an AppImage runtime file in `~/.cache/axion/appimage-runtime-x86_64`; without
+either the script still makes the tarball and says what is missing. Add `--debug-symbols` to keep the
+symbols in a separate `.debug` file.
+
+**2. Publish it** (a draft first, so you can look before the updater can see it):
+
+```bash
+git tag v0.1.0 && git push origin main v0.1.0
+gh release create v0.1.0 --draft --title "Axion 0.1.0" --notes-file dist/notes.md \
+  dist/Axion-0.1.0-x86_64.AppImage dist/Axion-0.1.0-linux-x86_64.tar.gz dist/SHA256SUMS
+# check the draft on GitHub, then publish it:
+gh release edit v0.1.0 --draft=false
+```
+
+**Without the custom CEF (GitHub does the work).** Pushing the tag is enough: the workflow
+`.github/workflows/release.yml` builds on GitHub with the **stock** engine (no H.264/AAC), runs
+`tools/package.sh` and creates a **draft** release with the three files and a notes skeleton.
+Edit the notes and publish the draft. To ship the codec-enabled build instead, let the workflow
+create the draft, then replace the AppImage and checksums with your local ones:
+
+```bash
+gh release upload v0.1.0 dist/Axion-0.1.0-x86_64.AppImage dist/Axion-0.1.0-linux-x86_64.tar.gz dist/SHA256SUMS --clobber
+```
+
+Make `SHA256SUMS` from the files you actually upload (`tools/package.sh` does): a stale checksum makes every update fail
+("has no entry" or a mismatch), which is the intended safety net.
+
+Details of the files and what a system needs: [Install](../install.md).
 
 **Without GitHub-style releases**, host a `latest.json` on any web server and give its address in
 `updates.manifest_url`:

@@ -7,7 +7,8 @@ These pages explain what it can do and, above all, what each setting does.
 
 ## Start here
 
-- [Getting started](getting-started.md) - build or install Axion, the first launch, and the basics.
+- [Install](install.md) - the AppImage and the tarball, what your system needs, the sandbox, uninstalling.
+- [Getting started](getting-started.md) - get Axion, the first launch, and the basics.
 - [Settings reference](settings.md) - every setting, page by page, with defaults.
 - [Keyboard shortcuts](keyboard-shortcuts.md) - the default keys and how to change them.
 

@@ -2,17 +2,18 @@
 
 ## Get Axion
 
-Axion is early software. There are two ways to run it today.
+Axion is early software. You can install a release or build it yourself. All the details for a
+release (what your system needs, the sandbox, uninstalling) are on the [Install](install.md) page.
 
-**From a release (AppImage).** If the project publishes an AppImage for your version, download it,
-make it executable and start it:
+**From a release (AppImage or tarball).** Download the AppImage, make it executable and start it:
 
 ```bash
 chmod +x Axion-*.AppImage
 ./Axion-*.AppImage
 ```
 
-Axion can then update that file for you. See [Updates](features/updates.md).
+or unpack the tarball and run `./install.sh` for a menu entry and an `axion` command. Axion can
+update an AppImage for you. See [Updates](features/updates.md).
 
 **From source.** You need Rust (stable), `cmake`, `ninja`, a C++ compiler and a Vulkan-capable
 graphics card. Wayland and X11 both work.

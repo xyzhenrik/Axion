@@ -1,0 +1,108 @@
+name: Release
+
+# Pushing a tag `vX.Y.Z` builds the AppImage and the tarball and creates a DRAFT release with
+# them and SHA256SUMS. Review the draft on GitHub, edit the notes, then publish it: only a
+# published release is seen by Axion's updater.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# CI builds against the stock CEF (no H.264/AAC). Releases with proprietary codecs are built
+# locally (tools/package.sh with the custom CEF) and attached with `gh release upload`;
+# see docs/install.md, "Publishing a release".
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build, e.g. v0.1.0'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  APPIMAGETOOL_VERSION: '1.9.0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the release and upload its files; nothing else needs it
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0 # the release notes skeleton reads the log since the previous tag
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang libclang-dev pkg-config libtss2-dev \
+            libwayland-dev libxkbcommon-dev libx11-dev squashfs-tools desktop-file-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: CEF version
+        id: cef
+        run: echo "version=$(grep -A1 '^name = "cef-dll-sys"' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')" >>"$GITHUB_OUTPUT"
+
+      - name: Cache CEF
+        uses: actions/cache@v4
+        with:
+          path: third_party/cef
+          key: cef-${{ runner.os }}-${{ steps.cef.outputs.version }}
+
+      - name: The tag must match the version in Cargo.toml
+        run: |
+          want=${TAG#v}
+          have=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' Cargo.toml | head -n1)
+          if [ "$want" != "$have" ]; then
+            echo "::error::tag $TAG does not match the workspace version $have in Cargo.toml"
+            exit 1
+          fi
+
+      # appimagetool is itself an AppImage; run it without FUSE.
+      - name: appimagetool
+        run: |
+          curl -fsSL -o appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          chmod +x appimagetool
+          echo "APPIMAGETOOL=$PWD/appimagetool" >>"$GITHUB_ENV"
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >>"$GITHUB_ENV"
+
+      - name: Package
+        run: tools/package.sh --version "${TAG#v}" --out dist
+
+      - name: Release notes skeleton
+        run: tools/package.sh --notes > dist/notes.md
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=(--draft --title "Axion ${TAG#v}" --notes-file dist/notes.md --verify-tag)
+          # Pre-releases (v0.4.0-beta.1) are hidden from the updater unless the user opts in.
+          case $TAG in *-*) flags+=(--prerelease) ;; esac
+          files=(dist/Axion-*.AppImage dist/Axion-*.tar.gz dist/SHA256SUMS)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # A re-run: replace the files of the existing release.
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" "${flags[@]}"
+          fi

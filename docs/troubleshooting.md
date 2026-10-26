@@ -142,6 +142,30 @@ The lines to look at are marked `stall`:
 A stall of a few hundred milliseconds while Axion starts is normal. `AXION_STALL_LOG=400` reports
 only stalls longer than 400 ms.
 
+## The AppImage does not start
+
+- **"dlopen(): error loading libfuse.so.2" or "failed to utilize FUSE"**: AppImages mount themselves
+  with FUSE. Install FUSE 2 (`libfuse2`, on Ubuntu 24.04 `libfuse2t64`; on Fedora `fuse-libs`; on
+  Arch `fuse2`), or skip the mount and unpack to a temporary folder on every start:
+
+  ```bash
+  ./Axion-X.Y.Z-x86_64.AppImage --appimage-extract-and-run
+  ```
+
+  You can also unpack once (`--appimage-extract` makes `squashfs-root/`) and start
+  `squashfs-root/AppRun`. The tarball needs no FUSE at all.
+- **"Axion cannot start: your system does not allow Chromium's sandbox"**: your system blocks the user
+  namespaces Chromium's sandbox uses (Ubuntu 23.10 and newer do this by default). Axion refuses to run
+  without the sandbox. The fixes, from safest to least safe, are in
+  [Install](install.md#the-sandbox).
+- **The AppImage starts but the menu entry or its icon is wrong**: Axion writes the entry for the
+  file you started. If you moved the AppImage, start it once from its new place; the entry is
+  rewritten.
+- **An update says it cannot replace the file**: the updater needs write access to the AppImage's
+  folder (it saves the new file next to the old one). Move the AppImage to a folder you own.
+- **Error about `GLIBC_2.39 not found`**: the release needs a newer system (glibc 2.39 or later, for
+  example Ubuntu 24.04). Build from source on your system instead.
+
 ## The window has no icon on Wayland
 
 On Wayland, the desktop takes the window and taskbar icon from a desktop entry (`axion.desktop`), not

@@ -16,6 +16,7 @@
 
 [Features](#features) ·
 [Screenshots](#screenshots) ·
+[Install](#install) ·
 [Build and run](#build-and-run) ·
 [Documentation](#documentation) ·
 [Configuration](#configuration) ·
@@ -163,7 +164,23 @@ User documentation lives in [`docs/`](docs/README.md):
   media and Playlist, appearance, hardware acceleration, updates.
 - [Configuration files](docs/configuration.md) and [Troubleshooting](docs/troubleshooting.md).
 
+## Install
+
+Download the AppImage or the tarball from the
+[releases page](https://github.com/xyzhenrik/Axion/releases), then:
+
+```bash
+chmod +x Axion-*.AppImage && ./Axion-*.AppImage            # AppImage: one file, updates itself
+tar -xzf Axion-*-linux-x86_64.tar.gz && cd Axion-*-linux-x86_64 && ./install.sh   # per-user install
+```
+
+No root needed. The installer puts Axion in `~/.local/opt/axion`, adds `~/.local/bin/axion`, a menu
+entry and the icons (`./install.sh --uninstall` removes them again). What your system needs, the
+sandbox on Ubuntu 24.04 and how releases are made: [docs/install.md](docs/install.md).
+
 ## Requirements
+
+To **build from source** you need:
 
 - **Linux** with **Wayland** (primary) or **X11**. Windows and macOS are not supported.
 - A **Vulkan-capable GPU** (NVIDIA, AMD or Intel; integrated GPUs are a design target).
