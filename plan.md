@@ -413,6 +413,28 @@ Windows/macOS, touchscreen-first mode.
 - 2026-10-26: Favicons are cached **per colour scheme** (`<host>.png`, `<host>.dark.png`, with
   the source URL in `.url`); the engine reports icon links with their `media` queries
   (`EngineEvent::PageMetaChanged`), and a scheme switch re-resolves open pages' icons.
+- 2026-10-26 (user feedback, small UI decisions):
+  - Chromium runs with `--password-store=basic`: it must never open the desktop keyring
+    (KWallet prompts); Axion's own vault holds passwords.
+  - The window tint keeps the page's hue but always takes the current mode's tone (light in
+    light mode, dark in dark mode), so switching the mode switches it.
+  - Toolbar: a home button next to back/forward (`layout.home_button`); empty or the old
+    DuckDuckGo homepage become `axion://home/`; on the start page the address shows its
+    placeholder in grey.
+  - Separate tab bar: equal-width tabs (`layout.tab_width` 260), centred, the strip only as
+    wide as its tabs; the bookmarks bar spans the full width and hides while empty.
+  - Popovers drain back into their anchor in two stages: plunge with an underdamped spring and
+    recoil out once (`motion.drain`), then flow into the anchor (`motion.drain_absorb`).
+    Settings opened from the page menu grow out of its Settings row and drain into the address
+    field. The find bar floats below the tab/bookmarks bars and is joined to the address
+    field only while it flows (`Popover::detached`); Escape closes it from anywhere.
+  - Pressing a button inside a glass group moves the whole group as one lens (icons carried);
+    standalone buttons are their own lens.
+  - Settings has a search field with aliases (English + German) in `settings/search.rs`;
+    every new setting needs an entry there.
+  - Text fields: click places the caret, drag selects, double click selects a word (URL
+    punctuation ends words) and dragging then extends by words, triple click selects all.
+  - In small windows the floating sidebar lies above the toolbar.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)
