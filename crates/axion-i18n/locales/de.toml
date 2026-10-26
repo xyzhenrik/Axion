@@ -627,3 +627,9 @@
 
 # crates/axion-app/src/settings/search.rs
 "Glass" = "Glas"
+
+# crates/axion-app/src/settings.rs
+"Developer" = ""
+"Developer console" = ""
+"Developer tools" = ""
+"View source" = ""

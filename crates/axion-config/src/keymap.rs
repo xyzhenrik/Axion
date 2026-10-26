@@ -66,6 +66,12 @@ pub enum Action {
     ZoomReset,
     OpenSettings,
     ToggleFullscreen,
+    /// Chromium's developer tools for the page (toggles).
+    DevTools,
+    /// The developer tools, on the Console panel.
+    DevToolsConsole,
+    /// The page's source in a new tab (`view-source:`).
+    ViewSource,
     Quit,
     // Media keys: only while a video plays fullscreen with Axion's controls, so plain keys
     // like Space keep reaching the page otherwise.
@@ -132,6 +138,9 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::ZoomReset, "zoom_reset"),
     (Action::OpenSettings, "open_settings"),
     (Action::ToggleFullscreen, "toggle_fullscreen"),
+    (Action::DevTools, "devtools"),
+    (Action::DevToolsConsole, "devtools_console"),
+    (Action::ViewSource, "view_source"),
     (Action::Quit, "quit"),
     (Action::MediaPlayPause, "media_play_pause"),
     (Action::MediaSeekBack, "media_seek_back"),
@@ -405,6 +414,9 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::ZoomReset, &["Ctrl+0"]);
     bind(Action::OpenSettings, &["Ctrl+S", "Ctrl+,"]);
     bind(Action::ToggleFullscreen, &["F11"]);
+    bind(Action::DevTools, &["F12", "Ctrl+Shift+I"]);
+    bind(Action::DevToolsConsole, &["Ctrl+Shift+J"]);
+    bind(Action::ViewSource, &["Ctrl+U"]);
     bind(Action::Quit, &["Ctrl+Q"]);
     bind(Action::MediaPlayPause, &["Space", "K"]);
     bind(Action::MediaSeekBack, &["Left", "J"]);
@@ -485,6 +497,10 @@ mod tests {
             ("Ctrl+Shift+Tab", Action::PreviousTab),
             ("Ctrl+S", Action::OpenSettings),
             ("Ctrl+,", Action::OpenSettings),
+            ("F12", Action::DevTools),
+            ("Ctrl+Shift+I", Action::DevTools),
+            ("Ctrl+Shift+J", Action::DevToolsConsole),
+            ("Ctrl+U", Action::ViewSource),
         ] {
             assert_eq!(keymap.action_for(&chord(keys)), Some(action), "{keys}");
         }

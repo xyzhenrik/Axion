@@ -150,6 +150,7 @@ enum Setting {
     HomeStats,
     HomeLive,
     HomeLiveIgnoreReduceMotion,
+    DevTools,
     HomeDim,
     HomeBlur,
     TintFromPage,
@@ -213,6 +214,7 @@ impl Setting {
             Setting::HomeStats => tr_mark("Shields statistics"),
             Setting::HomeLive => tr_mark("Live wallpapers (animated images and videos)"),
             Setting::HomeLiveIgnoreReduceMotion => tr_mark("Play live wallpapers with Reduce Motion"),
+            Setting::DevTools => tr_mark("Developer tools"),
             Setting::HomeDim => tr_mark("Dim background image"),
             Setting::HomeBlur => tr_mark("Blur background image"),
             Setting::TintFromPage => tr_mark("Colour in tab bar"),
@@ -272,6 +274,7 @@ impl Setting {
                 | Setting::HomeStats
                 | Setting::HomeLive
                 | Setting::HomeLiveIgnoreReduceMotion
+                | Setting::DevTools
                 | Setting::TintFromPage
                 | Setting::FloatSidebar
                 | Setting::AdaptToPage
@@ -387,6 +390,7 @@ impl Setting {
             Setting::HomeLiveIgnoreReduceMotion => {
                 return c.home.live_wallpapers_ignore_reduce_motion as u8 as f32;
             }
+            Setting::DevTools => return c.devtools.enabled as u8 as f32,
             Setting::HomeDim => c.home.background_dim,
             Setting::HomeBlur => c.home.background_blur,
             Setting::TintFromPage => return c.appearance.tint_from_page as u8 as f32,
@@ -450,6 +454,7 @@ impl Setting {
             Setting::HomeStats => c.home.show_stats = on,
             Setting::HomeLive => c.home.live_wallpapers = on,
             Setting::HomeLiveIgnoreReduceMotion => c.home.live_wallpapers_ignore_reduce_motion = on,
+            Setting::DevTools => c.devtools.enabled = on,
             Setting::HomeDim => c.home.background_dim = (v * 20.0).round() / 20.0,
             Setting::HomeBlur => c.home.background_blur = v.round(),
             Setting::TintFromPage => c.appearance.tint_from_page = on,
@@ -1409,6 +1414,13 @@ impl SettingsSheet {
                          frame."),
                     );
                 }
+                self.section(ui, "Developer");
+                self.control(ui, config, Setting::DevTools);
+                self.note(
+                    ui,
+                    "Chromium's own developer tools (F12, Ctrl+Shift+I) open in a window of their own; \
+                     Ctrl+U shows the page source. Off, none of these shortcuts do anything.",
+                );
             }
             Category::Appearance => {
                 let row_node = self.row(ui, tr("Appearance"));
@@ -2946,6 +2958,9 @@ fn shortcut_actions() -> Vec<KeyAction> {
         ToggleFullscreen,
         Quit,
         Lock,
+        DevTools,
+        DevToolsConsole,
+        ViewSource,
         MediaPlayPause,
         MediaSeekBack,
         MediaSeekForward,
@@ -2971,6 +2986,7 @@ fn shortcut_group(action: KeyAction) -> &'static str {
         BookmarkPage | ShowBookmarks | ShowHistory | OpenPlaylist | PlaylistAdd | OpenPasswords
         | ToggleSidebar => tr("Panels"),
         Lock => tr("Privacy"),
+        DevTools | DevToolsConsole | ViewSource => tr("Developer"),
         OpenSettings | ToggleFullscreen | Quit => tr("Window"),
         _ => tr("Media (fullscreen video)"),
     }
@@ -3018,6 +3034,9 @@ fn shortcut_source_name(action: KeyAction) -> &'static str {
         ToggleFullscreen => tr_mark("Toggle fullscreen"),
         Quit => tr_mark("Quit"),
         Lock => tr_mark("Lock"),
+        DevTools => tr_mark("Developer tools"),
+        DevToolsConsole => tr_mark("Developer console"),
+        ViewSource => tr_mark("View source"),
         MediaPlayPause => tr_mark("Media play pause"),
         MediaSeekBack => tr_mark("Media seek back"),
         MediaSeekForward => tr_mark("Media seek forward"),

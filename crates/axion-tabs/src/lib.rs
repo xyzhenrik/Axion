@@ -47,6 +47,9 @@ pub struct TabInfo<K> {
     pub playing_media: bool,
     /// Still loading: freezing now would leave it half-loaded.
     pub loading: bool,
+    /// Its developer tools are open (or it is the tools): like media tabs it is never frozen
+    /// or discarded, whatever the policy says.
+    pub devtools_open: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +76,7 @@ pub fn plan<K: Copy + PartialEq>(
                 && t.hidden_since.is_some()
                 && !t.loading
                 && !(policy.keep_media_awake && t.playing_media)
+                && !t.devtools_open
         })
         .collect();
     let mut out = Vec::new();
@@ -119,6 +123,7 @@ mod tests {
             hidden_since: hidden_for.map(|d| now - d),
             playing_media: false,
             loading: false,
+            devtools_open: false,
         }
     }
 
@@ -133,6 +138,24 @@ mod tests {
             tab(4, Lifecycle::Frozen, Some(10 * MIN), now),
         ];
         assert_eq!(plan(&policy(), &tabs, now, Some(10)), [Transition::Freeze(2), Transition::Discard(3)]);
+    }
+
+    #[test]
+    fn tabs_with_devtools_stay_awake_even_over_budget() {
+        let now = Instant::now() + 120 * MIN;
+        let mut inspected = tab(1, Lifecycle::Background, Some(90 * MIN), now);
+        inspected.devtools_open = true;
+        let mut tools = tab(2, Lifecycle::Frozen, Some(90 * MIN), now);
+        tools.devtools_open = true;
+        let idle = tab(3, Lifecycle::Background, Some(7 * MIN), now);
+        assert!(plan(&policy(), &[inspected, tools], now, Some(5000)).is_empty());
+        // Over budget the idle tab goes, never the one with tools open.
+        let planned = plan(&policy(), &[inspected, tools, idle], now, Some(5000));
+        assert_eq!(planned, [Transition::Discard(3)]);
+        // Not even with "keep media awake" off.
+        let mut lax = policy();
+        lax.keep_media_awake = false;
+        assert!(plan(&lax, &[inspected], now, None).is_empty());
     }
 
     #[test]

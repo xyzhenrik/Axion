@@ -79,6 +79,23 @@ pub enum NewViewKind {
     Popup,
 }
 
+/// The DevTools panel to start on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DevToolsPanel {
+    /// Chromium's default (Elements).
+    #[default]
+    Default,
+    Console,
+}
+
+/// How [`Engine::open_devtools`] opens the developer tools.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DevToolsOptions {
+    pub panel: DevToolsPanel,
+    /// Selects the element at this point of the page (logical pixels, page coordinates).
+    pub inspect_at: Option<(i32, i32)>,
+}
+
 /// Something that happened in a view.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EngineEvent {
@@ -265,6 +282,21 @@ pub trait Engine {
     /// costs nothing until [`Engine::restore`].
     fn create_discarded_view(&mut self, url: &str, size: ViewSize, private: bool) -> ViewId;
     fn set_focus(&mut self, view: ViewId, focused: bool);
+
+    /// Opens Chromium's own developer tools for `view`, unchanged, in a window of their own
+    /// (Chromium creates and manages it; it is not part of Axion's frame and cannot be
+    /// captured with it). The window closes with the view. Already open: only switches to
+    /// `options.panel` when that is not the default. Does nothing for a discarded view.
+    fn open_devtools(&mut self, view: ViewId, options: &DevToolsOptions) -> Result<(), EngineError>;
+    /// Closes the developer tools of `view`.
+    fn close_devtools(&mut self, view: ViewId);
+    /// Whether the developer tools of `view` are open.
+    fn devtools_open(&self, view: ViewId) -> bool;
+    /// Opens the developer tools with the element at (`x`, `y`) of the page selected (the
+    /// context menu's "Inspect"); with the tools open already, selects the element in them.
+    fn inspect_element(&mut self, view: ViewId, x: i32, y: i32) -> Result<(), EngineError> {
+        self.open_devtools(view, &DevToolsOptions { inspect_at: Some((x, y)), ..DevToolsOptions::default() })
+    }
     /// Mouse and keyboard input. While the page drags something of its own (text, a link, an
     /// image) the engine runs the drag itself: mouse moves, leaving and the release drive it.
     fn send_input(&mut self, view: ViewId, event: &InputEvent);
