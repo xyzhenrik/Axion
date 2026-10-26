@@ -37,7 +37,9 @@ use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
 use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::filedrop::{DropOutcome, FileDrop};
 use crate::find::{FindAction, FindBar};
+use crate::frame_rate::{self, RefreshWatch};
 use crate::home::{HomeAction, HomePage, REFRESH_SCRIPT, is_home_url};
+use crate::import::Importer;
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
 use crate::lockscreen::LockScreen;
@@ -52,6 +54,7 @@ use crate::onboarding::Onboarding;
 use crate::overview::{Overview, OverviewAction};
 use crate::page_color::{PageTint, TintParams, lightness};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
+use crate::perf_log::{FrameOutcome, PerfLog};
 use crate::pip::{PipControl, PipOutcome, PipWindow};
 use crate::platform::clipboard::ClipboardReader;
 use crate::platform::pointer::PointerProbe;
@@ -77,6 +80,7 @@ use crate::url::resolve_input;
 use crate::window_resize::{Debounce, ResizePacer};
 
 mod context;
+mod import;
 mod onboarding;
 mod page_context;
 mod permissions;
@@ -198,8 +202,6 @@ const SLIDE_ANCHOR_CENTRED: f32 = 0.5;
 const PAGE_LAG_SMOOTHING: f32 = 0.25;
 /// Opacity below which the page's frame from before a sidebar slide is gone (see `slide_fade`).
 const SLIDE_FADE_DONE: f32 = 0.01;
-/// Pages' frame rate when the display's refresh rate is unknown.
-const FALLBACK_FRAME_RATE: u32 = 60;
 /// The chrome turns dark on pages whose colour is darker than this.
 const DARK_BELOW: f32 = 0.5;
 
@@ -317,6 +319,8 @@ pub struct Browser {
     panel: Option<(Panel, bool)>,
     favicons: Favicons,
     downloads: Downloads,
+    /// Importing from other browsers into this account's store.
+    importer: Importer,
     /// History and bookmarks; `None` if the database couldn't be opened (browsing still works).
     store: Option<axion_store::Store>,
     /// Search text the overview's cards were last built for.
@@ -412,6 +416,8 @@ pub struct Browser {
     engine_icons: Option<std::sync::mpsc::Receiver<crate::engine_icons::EngineIcon>>,
     /// Icons of the saved logins' sites being fetched for the Passwords list.
     password_icons: Option<std::sync::mpsc::Receiver<crate::engine_icons::EngineIcon>>,
+    /// SVG site icons being rewritten for the chrome's colour scheme.
+    svg_icons: crate::svg_icons::SvgIcons,
     /// The page menu row clicked last (where a sheet it opens comes out of).
     menu_click_frame: Option<Rect>,
     /// Capture aid "sweep:X1:Y1:X2:Y2:N": the pointer moves from one point to the other in N
@@ -454,6 +460,8 @@ pub struct Browser {
     shown_layers: Vec<u64>,
     idle_redraw_at: Option<Instant>,
     frame_interval: Duration,
+    /// Notices the window's monitor's refresh rate changing (see `frame_rate`).
+    refresh_watch: RefreshWatch,
     frames_skipped: u64,
     frames_presented: u64,
     /// The engine's page frame count at the last pump.
@@ -469,6 +477,10 @@ pub struct Browser {
     resize_log_enabled: bool,
     resize_counters: ResizeCounters,
     frame_times: FrameTimes,
+    /// `AXION_PERF_LOG=1`: a line per second about frames, pages, GPU and CPU (see `perf_log`).
+    perf_log: Option<PerfLog>,
+    /// The swapchain's present mode as configured, for the perf log.
+    present_mode: String,
 }
 
 impl Browser {
@@ -493,6 +505,9 @@ impl Browser {
             .inspect_err(|e| tracing::warn!("live config reload unavailable: {e}"))
             .ok();
 
+        // Wayland shows the icon of `axion.desktop` (matched by the app id below): make sure a
+        // current one exists before the window does (not for capture runs: they are test runs).
+        crate::desktop_integration::ensure(config.general.desktop_integration && options.capture.is_none());
         let attributes = Window::default_attributes()
             .with_title("Axion")
             .with_window_icon(crate::app_icon::window_icon())
@@ -534,6 +549,19 @@ impl Browser {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &surface_config);
+        // `AutoVsync` is what wgpu turns into FifoRelaxed where the surface has it, else Fifo.
+        let present_mode = match surface_config.present_mode {
+            wgpu::PresentMode::AutoVsync if caps.present_modes.contains(&wgpu::PresentMode::FifoRelaxed) => {
+                "FifoRelaxed".to_owned()
+            }
+            wgpu::PresentMode::AutoVsync => "Fifo".to_owned(),
+            mode => format!("{mode:?}"),
+        };
+        let mut perf_log = PerfLog::from_env();
+        if let Some(log) = &mut perf_log {
+            log.enable_gpu_timer(&device, &queue);
+            tracing::info!(modes = ?caps.present_modes, chosen = %present_mode, "perf log on: present modes");
+        }
 
         let info = adapter.get_info();
         let can_import = adapter.features().contains(axion_engine::cef::required_features());
@@ -567,6 +595,7 @@ impl Browser {
         let store = axion_store::Store::open(&profile.join("axion.sqlite"))
             .inspect_err(|e| tracing::error!("history unavailable: {e}"))
             .ok();
+        let store_path = store.as_ref().map(|_| profile.join("axion.sqlite"));
         PrivateLock::drop_old_password(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
         let downloads = Downloads::new(profile.clone());
@@ -641,6 +670,7 @@ impl Browser {
         let lock = PrivateLock::new();
         let mut favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         favicons.set_dark(dark);
+        favicons.set_contrast(config.appearance.favicon_contrast);
         let mut home = HomePage::new(&profile, favicons.dir().map(Into::into));
         // The single background image of older versions moves into the backgrounds directory.
         let migrated = home.migrate(&mut config);
@@ -750,6 +780,7 @@ impl Browser {
             store,
             favicons,
             downloads,
+            importer: Importer::new(store_path),
             overview_query: String::new(),
             last_frame: Instant::now(),
             window_tint: None,
@@ -821,7 +852,8 @@ impl Browser {
             shown_layers: Vec::new(),
             page_view: None,
             idle_redraw_at: None,
-            frame_interval: Duration::from_secs_f64(1.0 / f64::from(FALLBACK_FRAME_RATE)),
+            frame_interval: frame_rate::display_interval(None),
+            refresh_watch: RefreshWatch::default(),
             frames_skipped: 0,
             frames_presented: 0,
             pumped_page_frames: 0,
@@ -833,9 +865,12 @@ impl Browser {
             resize_log_enabled: std::env::var_os("AXION_RESIZE_LOG").is_some(),
             resize_counters: ResizeCounters::default(),
             frame_times: FrameTimes::default(),
+            perf_log,
+            present_mode,
             sheet_origin: None,
             engine_icons: None,
             password_icons: None,
+            svg_icons: crate::svg_icons::SvgIcons::new(),
             menu_click_frame: None,
             open_at: options.open.clone().filter(|_| options.capture.is_some()).map(|what| {
                 (
@@ -858,7 +893,7 @@ impl Browser {
         };
         browser.show_account();
         browser.start_permissions();
-        browser.frame_interval = display_frame_interval(&browser.window);
+        browser.sync_frame_rate();
         browser.update_layout();
         browser.start_onboarding(&options, accounts_file, config_file);
         browser.playlist_start();
@@ -2570,7 +2605,12 @@ impl Browser {
                 .unwrap_or_default()
                 .into_iter()
                 .map(|b| PanelItem {
-                    detail: display_host(&b.url),
+                    // Imported bookmarks keep their old folder ("Dev / Rust · docs.rs").
+                    detail: if b.folder_path.is_empty() {
+                        display_host(&b.url)
+                    } else {
+                        format!("{} · {}", b.folder_path, display_host(&b.url))
+                    },
                     title: b.title,
                     url: b.url,
                     section: None,
@@ -3623,12 +3663,45 @@ impl Browser {
             self.idle_redraw_at = None;
         }
         let took = started.elapsed();
+        if let Some(log) = &mut self.perf_log {
+            log.wakeup(took);
+        }
+        if self.perf_log.as_ref().is_some_and(PerfLog::due) {
+            let snapshot = self.perf_snapshot();
+            if let Some(log) = &mut self.perf_log {
+                log.log(&snapshot);
+            }
+        }
         let recorders = [
             self.resize_bench.as_mut().and_then(|b| b.recorder.as_mut()),
             self.resize_log.as_mut().map(|(r, _)| r),
         ];
         for recorder in recorders.into_iter().flatten() {
             recorder.wakeup(took);
+        }
+    }
+
+    /// What the perf log reports about the window and pages (`AXION_PERF_LOG`).
+    fn perf_snapshot(&self) -> crate::perf_log::Snapshot {
+        let monitor = self.window.current_monitor();
+        crate::perf_log::Snapshot {
+            surface: (self.surface_config.width, self.surface_config.height),
+            scale: self.window.scale_factor(),
+            present_mode: self.present_mode.clone(),
+            monitor: monitor.as_ref().and_then(|m| m.name()),
+            refresh_mhz: monitor.as_ref().and_then(|m| m.refresh_rate_millihertz()),
+            page_rate: self.engine.frame_rate(),
+            window_fullscreen: self.window.fullscreen().is_some(),
+            presentation: self.chrome.presentation(),
+            page_fullscreen: self.chrome.page_fullscreen(),
+            page_frame: self
+                .display_view()
+                .and_then(|v| self.engine.frame(v))
+                .map(|f| (f.texture.width(), f.texture.height())),
+            gpu_frames: self.engine.is_accelerated(),
+            engine: self.engine.counters(),
+            memory: self.engine.frame_memory(),
+            skip_unchanged: self.config.ui.skip_unchanged_frames,
         }
     }
 
@@ -3679,6 +3752,7 @@ impl Browser {
     }
 
     fn pump_engine(&mut self) {
+        self.watch_refresh_rate();
         // The desktop switched light/dark (winit doesn't report it on most Linux desktops).
         let desktop_dark = self.desktop_theme.dark();
         if desktop_dark != self.desktop_dark {
@@ -3757,7 +3831,7 @@ impl Browser {
                         && let Some(icon) = self.favicons.page_loaded(&page)
                     {
                         tracing::debug!("fetching icon {icon}");
-                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                        self.fetch_icon(view, &page, &icon);
                     }
                     if loading
                         && self.find.view() == Some(view)
@@ -3854,7 +3928,7 @@ impl Browser {
                         && let Some(icon) = self.favicons.icon_urls(&page, &urls)
                     {
                         tracing::debug!("fetching icon {icon}");
-                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                        self.fetch_icon(view, &page, &icon);
                     }
                 }
                 EngineEvent::PageMetaChanged { view, meta } => {
@@ -3864,7 +3938,7 @@ impl Browser {
                         && let Some(icon) = self.favicons.icon_links(&page, &meta.icons)
                     {
                         tracing::debug!("fetching icon {icon}");
-                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                        self.fetch_icon(view, &page, &icon);
                     }
                 }
                 EngineEvent::InternalMessage { view, host, message } => {
@@ -3884,7 +3958,7 @@ impl Browser {
                         && let Some(icon) = self.favicons.failed(&page, &url)
                     {
                         tracing::debug!("fetching icon {icon}");
-                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                        self.fetch_icon(view, &page, &icon);
                     }
                 }
                 EngineEvent::FaviconReady { view, url, width, height, rgba } => {
@@ -3944,6 +4018,7 @@ impl Browser {
         self.downloads_pump(downloads_changed);
         self.check_capture_stops();
         self.apply_permission_defaults();
+        self.import_pump();
         self.playlist_housekeeping();
         self.update_home();
         self.update_photos();
@@ -4105,7 +4180,9 @@ impl Browser {
             Outcome::DataPage => {
                 self.downloads.measure_cache();
                 self.engine.request_site_data();
+                self.import_page_opened();
             }
+            Outcome::Import(request) => self.import_request(request),
             Outcome::ChooseDownloadFolder => self.downloads.choose_folder(),
             Outcome::ChoosePlaylistFolder => self.downloads.choose_playlist_folder(),
             Outcome::ChooseBackground => self.home.choose_background(),
@@ -4740,6 +4817,26 @@ impl Browser {
         }
     }
 
+    /// Has Chromium download a site icon. SVGs go through `svg_icons` first: their
+    /// `prefers-color-scheme` rules are decided for the chrome.
+    fn fetch_icon(&mut self, view: ViewId, page: &str, url: &str) {
+        if self.favicons.is_svg(page, url) {
+            self.svg_icons.request(view, url, self.favicons.is_dark());
+        } else {
+            self.engine.fetch_favicon(view, url, FETCH_SIZE);
+        }
+    }
+
+    /// SVG icons that were rewritten: Chromium rasterises them now.
+    fn poll_svg_icons(&mut self) {
+        for icon in self.svg_icons.poll() {
+            if icon.fetch != icon.url {
+                self.favicons.alias(&icon.fetch, &icon.url);
+            }
+            self.engine.fetch_favicon(icon.view, &icon.fetch, FETCH_SIZE);
+        }
+    }
+
     fn apply_theme(&mut self) {
         if let Some(pip) = &mut self.pip {
             pip.set_theme(&self.config);
@@ -4749,6 +4846,7 @@ impl Browser {
         self.engine.set_color_scheme(self.dark);
         let delay = self.page_color_delay();
         self.page_colors.set_dark(self.dark, self.active_view(), delay);
+        let contrast_changed = self.favicons.set_contrast(self.config.appearance.favicon_contrast);
         if self.favicons.set_dark(self.dark) {
             // Sites with their own icon for the scheme show it at once.
             let pages: Vec<(ViewId, String)> = self
@@ -4761,9 +4859,14 @@ impl Browser {
                 .collect();
             for (view, page) in pages {
                 if let Some(icon) = self.favicons.resolve(&page) {
-                    self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                    self.fetch_icon(view, &page, &icon);
                 }
             }
+            self.tabs_changed = true;
+            if self.overview.is_open() {
+                self.rebuild_overview();
+            }
+        } else if contrast_changed {
             self.tabs_changed = true;
             if self.overview.is_open() {
                 self.rebuild_overview();
@@ -5323,7 +5426,20 @@ impl Browser {
 
     fn redraw(&mut self) -> Result<()> {
         let started = Instant::now();
+        let (presented, skipped) = (self.frames_presented, self.frames_skipped);
         let result = self.redraw_frame();
+        if let Some(log) = &mut self.perf_log {
+            let mut times = self.frame_times;
+            times.total = ms_since(started);
+            let outcome = if self.frames_presented != presented {
+                FrameOutcome::Presented
+            } else if self.frames_skipped != skipped {
+                FrameOutcome::Skipped
+            } else {
+                FrameOutcome::NoImage
+            };
+            log.frame(times, outcome);
+        }
         let serial = self.active_view().and_then(|v| self.engine.frame(v)).map_or(0, |f| f.serial);
         self.frame_stats.record(started.elapsed(), serial);
         // Resize events are applied inside the frame (`apply_window_size`).
@@ -5730,6 +5846,20 @@ impl Browser {
                         self.start_pip(view, player);
                     }
                 }
+                // Capture aid: the page's main video goes fullscreen (as its own fullscreen
+                // button would; Axion's player takes over), again to leave it.
+                "video-fullscreen" => {
+                    let target = self
+                        .active_view()
+                        .zip(self.active_view().and_then(|v| self.primary_player(v)).cloned());
+                    if let Some((view, player)) = target {
+                        let on = !self.chrome.page_fullscreen();
+                        self.media_command(
+                            view,
+                            &axion_media::Command::new(&player.id, axion_media::Action::Fullscreen(on)),
+                        );
+                    }
+                }
                 // Capture aid: open the player's speed menu.
                 // Capture aid: scroll the page down by 600 px.
                 "toggle-sidebar" => self.run(Action::ToggleSidebar),
@@ -5857,6 +5987,9 @@ impl Browser {
                     }
                 }
                 "settings-scroll" => self.settings.scroll_by(&mut self.ui, -400.0),
+                // Capture aids for the import group: "import:source:N" (toggle a browser),
+                // "import:bookmarks" / "import:history" (toggle), "import:run", "import:file:PATH".
+                import if import.starts_with("import:") => self.import_capture(&import["import:".len()..]),
                 // Capture aids for Settings › Hardware: a change that needs a restart, and the
                 // AMD confirmation.
                 "hardware-change" => {
@@ -6187,6 +6320,7 @@ impl Browser {
         let window = self.logical_size();
         self.tooltip.animate(&mut self.ui, &self.config, &self.keymap, window, blocked, dt);
         self.take_engine_icons();
+        self.poll_svg_icons();
         if self.now_art.poll(&self.favicons) {
             self.update_now_playing();
         }
@@ -6409,7 +6543,13 @@ impl Browser {
         };
         let output = surface.texture.create_view(&Default::default());
         let started = Instant::now();
+        if let Some(log) = &mut self.perf_log {
+            log.gpu_begin(&self.device, &self.queue);
+        }
         self.compositor.render(&scene, &mut self.ui.fonts(), &output, size);
+        if let Some(log) = &mut self.perf_log {
+            log.gpu_end(&self.device, &self.queue);
+        }
         self.frame_times.render = ms_since(started);
         // Kept until the next comparison: no new texture view can take one of these identities.
         self.shown_textures = scene.textures();
@@ -6553,8 +6693,21 @@ impl Browser {
 
     /// Pages render at the refresh rate of the window's monitor (or the configured rate).
     fn sync_frame_rate(&mut self) {
+        let refresh = monitor_refresh(&self.window);
         self.engine.set_frame_rate(page_frame_rate(&self.config, &self.window));
-        self.frame_interval = display_frame_interval(&self.window);
+        self.frame_interval = frame_rate::display_interval(refresh);
+        self.refresh_watch.applied(refresh, Instant::now());
+    }
+
+    /// Follows the refresh rate of the window's monitor: unknown on Wayland until the window
+    /// is shown, and it changes when the window moves to another monitor (which Wayland
+    /// doesn't report as a move).
+    fn watch_refresh_rate(&mut self) {
+        let now = Instant::now();
+        if self.refresh_watch.due(now) && self.refresh_watch.changed(monitor_refresh(&self.window), now) {
+            self.sync_frame_rate();
+            tracing::debug!(interval = ?self.frame_interval, "monitor refresh rate changed");
+        }
     }
 
     /// When the next frame should run, if not at once: after a frame that was skipped (nothing
@@ -6751,7 +6904,10 @@ impl Browser {
         }
     }
 
-    pub fn request_redraw(&self) {
+    pub fn request_redraw(&mut self) {
+        if let Some(log) = &mut self.perf_log {
+            log.redraw_requested();
+        }
         self.window.request_redraw();
     }
 }
@@ -6967,25 +7123,19 @@ fn push_slide_page<'a>(
     layers.push(Layer::Image(image));
 }
 
-/// Frames per second pages render at: `tabs.max_frame_rate`, or the window's monitor's
-/// refresh rate.
-/// One refresh of the window's monitor.
-fn display_frame_interval(window: &Window) -> Duration {
-    let hz = window
-        .current_monitor()
-        .and_then(|m| m.refresh_rate_millihertz())
-        .map_or(FALLBACK_FRAME_RATE as f64, |mhz| f64::from(mhz) / 1000.0);
-    Duration::from_secs_f64(1.0 / hz.max(1.0))
+/// The refresh rate (millihertz) of the window's monitor, if known (on Wayland only once the
+/// window has been shown, see `frame_rate`).
+fn monitor_refresh(window: &Window) -> Option<u32> {
+    window.current_monitor().and_then(|m| m.refresh_rate_millihertz())
 }
 
+/// Frames per second pages render at (see `frame_rate::page_frame_rate`).
 fn page_frame_rate(config: &Config, window: &Window) -> u32 {
-    if config.tabs.max_frame_rate > 0 {
-        return config.tabs.max_frame_rate;
-    }
-    window
-        .current_monitor()
-        .and_then(|m| m.refresh_rate_millihertz())
-        .map_or(FALLBACK_FRAME_RATE, |mhz| mhz.div_ceil(1000))
+    frame_rate::page_frame_rate(
+        config.tabs.max_frame_rate,
+        config.tabs.max_frame_rate_cap,
+        monitor_refresh(window),
+    )
 }
 
 fn is_dark(config: &Config, window: &Window, desktop_dark: Option<bool>) -> bool {

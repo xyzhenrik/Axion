@@ -54,6 +54,7 @@ passwords, website data and settings. More in [Accounts and privacy](features/ac
 | **Homepage** | The page that opens in new windows and tabs. Leave the field empty for Axion's own start page. | Axion Home (`axion://home/`) | `general.homepage` |
 | **Search engine** | Where searches typed in the address field and on the start page go. Choices: DuckDuckGo, Google, Brave, Startpage, Ecosia. | DuckDuckGo | `general.search_url` |
 | **Language** | The language of Axion's own interface: System, English or Deutsch. Applies after you restart Axion. | System | `general.language` (`system`, `en`, `de`) |
+| **Add Axion to the application menu** | Linux: adds Axion's desktop entry and icons for your user, which gives the window its icon in the taskbar and the application menu (on Wayland this is the only way). Applies after you restart Axion. | On | `general.desktop_integration` |
 | **Welcome tour** (**Show Welcome Tour**) | Runs the first-start introduction again. | - | `general.onboarding_done` |
 | **Show home button** | Puts a home button next to back and forward. It opens your homepage. | On | `layout.home_button` |
 
@@ -99,6 +100,7 @@ How Axion looks. See [Appearance and Liquid Glass](features/appearance-and-glass
 | **Glass** | **Liquid Glass** is the full glass look. **Flat** uses solid cards without refraction, blur or bounce. It is much lighter on weak graphics hardware. | Liquid Glass | `glass.style` (`liquid`, `flat`) |
 | **Accent colour** | The colour of selections, focus rings and primary buttons. Six swatches. | Blue | `appearance.accent` (a colour such as `"#2E6BFF"`) |
 | **Icon weight** | The line thickness of icons: **Regular**, **Medium** or **Bold**. | Medium | `appearance.icon_stroke_light`, `appearance.icon_stroke_dark` |
+| **Favicon contrast** (config only) | What happens to website icons that would be hard to see on the current bar (for example a black icon on the dark bar): `invert` flips single-colour icons, `backing` puts them on a light or dark tile, `off` leaves them as they are. | `invert` | `appearance.favicon_contrast` |
 | **Light or dark chrome to match the page** | Switches the toolbar between light and dark to match the page's top edge. Off: it follows **Appearance** only. | Off | `appearance.adapt_to_page` |
 | **Text size** | Scales all of Axion's own text. 85 to 130 %. Web pages have their own zoom (Ctrl++, Ctrl+-). | 100 % | `appearance.text_scale` |
 | **Page corner radius** | How round the corners of the page card are. 0 to 24 px. | 10 px | `layout.page_corner_radius` |
@@ -125,7 +127,7 @@ How tabs look and how Axion saves memory. See [Tabs and memory](features/tabs-an
 
 | Setting | What it does | Default | Config key |
 |---|---|---|---|
-| Tab bar picture (**Separate** / **Compact**) | **Separate** puts tabs in their own row below the address bar. **Compact** uses one row where the current tab holds the address. | Separate | `layout.tab_bar` (`separate`, `compact`) |
+| Tab bar picture (**Separate** / **Compact**) | **Separate** puts tabs in their own row below the address bar. **Compact** uses one row where all tabs are the same width and the current tab holds the address; the address field widens while you type (`layout.compact_address_width`). | Separate | `layout.tab_bar` (`separate`, `compact`) |
 | **Colour in tab bar** | Tints the window around the page with a colour taken from the page, like Safari. | Off | `appearance.tint_from_page` |
 | **Page colour** (**Extreme** / **Dominant**) | Shown when **Colour in tab bar** is on. **Extreme** takes the darkest or lightest prominent colour. **Dominant** takes the main colour, evened out. Turning the colour on switches from neutral to **Extreme**. | Neutral (page colour off) | `appearance.tint_mode` (`neutral`, `extreme`, `dominant`) |
 | **Open new tabs in background** | Tabs opened from links do not take over the screen. | On | `tabs.open_links_in_background` |
@@ -245,6 +247,32 @@ listed here.
 | **Ask where to save each file** | Shows a file chooser for each download. Off: saves straight into the download location. | On | `downloads.ask_where_to_save` |
 | **Open “safe” files after downloading** | Opens pictures, movies, sounds, PDF and text documents when they finish. | Off | `downloads.open_safe_files` |
 | **Remove download list items** | When finished downloads leave the list: **Manually**, **After One Day**, **When Axion Quits**. | Manually | `downloads.remove_list_items` (`manually`, `after_one_day`, `on_quit`) |
+
+### Import from another browser
+
+Brings bookmarks and history from the other browsers on this computer into the current account.
+Axion only reads the other browser's files (it copies its databases to a temporary file first, so a
+running browser is no problem) and never changes them. Passwords and cookies are not imported:
+other browsers encrypt them with the desktop keyring. Export your passwords there as a CSV file and
+import it under [Settings > Passwords](#import-and-export).
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| Browser list | The browsers and profiles found (Chrome, Chromium, Brave, Edge, Vivaldi, Opera; Firefox, LibreWolf, Zen, Waterfox, Floorp; also their Flatpak and Snap versions), each with the number of bookmarks and history entries. Tick the ones to import; the most recently used one is ticked at first. | - | - |
+| **Bookmarks**, **History** | What to import from the ticked browsers. | Both | - |
+| **Import** | Starts the import in the background. The result is shown under the list (for example “Imported 312 bookmarks and 8,450 history entries; 40 already existed”) and as a notification. The sidebar lists, the bookmarks bar and the start page's top sites update by themselves. | - | - |
+| **Import from File…** | Imports bookmarks from a file: the HTML export every browser can make (**Export bookmarks**), a Chromium `Bookmarks` file or a Firefox JSON backup. | - | - |
+| **Open Passwords** | Goes to the Passwords page. | - | - |
+| Limit for history | At most this many history entries are imported per browser profile, the most recently visited first. | 20000 | `import.max_history_items` |
+| Limit for bookmarks | At most this many bookmarks per profile or file. | 50000 | `import.max_bookmarks` |
+| Size limit for databases | Larger browser databases are skipped (MB). They are copied to a temporary file, so this much space is needed. | 512 | `import.max_database_mb` |
+| Size limit for files | Larger bookmark files are refused (MB). | 64 | `import.max_file_mb` |
+
+Entries you already have (same address) are kept as they are and counted as “already existed”, so
+importing twice is safe. Bookmarks from a browser's bookmarks bar land on Axion's bookmarks bar; those
+in other folders appear in the sidebar's Bookmarks list with their old folder (for example
+“Dev / Rust”). Imports always go into the account that is open. The limits have no controls in
+Settings; change them in `config.toml`.
 
 ### Clear browsing data
 

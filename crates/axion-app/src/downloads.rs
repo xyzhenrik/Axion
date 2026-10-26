@@ -611,6 +611,8 @@ pub enum Choose {
     Image,
     /// Pictures only (profile photos).
     Photo,
+    /// Bookmark files to import (HTML or JSON).
+    Bookmarks,
 }
 
 /// The XDG desktop portal's file chooser (`FileChooser.OpenFile`, for a folder with
@@ -637,6 +639,21 @@ pub fn choose_portal(title: &str, what: Choose) -> zbus::Result<Option<PathBuf>>
         }
         Choose::Photo => {
             let filters = vec![(tr("Images").to_owned(), vec![(1u32, "image/*".to_owned())])];
+            options.insert("filters", Value::from(filters));
+        }
+        Choose::Bookmarks => {
+            // (name, [(0 = glob pattern / 1 = MIME type, pattern)])
+            let filters = vec![(
+                tr("Bookmark files").to_owned(),
+                vec![
+                    (1u32, "text/html".to_owned()),
+                    (1, "application/json".to_owned()),
+                    (0, "*.html".to_owned()),
+                    (0, "*.htm".to_owned()),
+                    (0, "*.json".to_owned()),
+                    (0, "Bookmarks".to_owned()),
+                ],
+            )];
             options.insert("filters", Value::from(filters));
         }
         Choose::Image => {

@@ -47,6 +47,33 @@ use Setting as S;
 
 pub const INDEX: &[Entry] = &[
     page(
+        C::Data,
+        tr_mark("Import bookmarks and history"),
+        &[
+            "import",
+            "migrate",
+            "transfer",
+            "chrome",
+            "chromium",
+            "brave",
+            "edge",
+            "firefox",
+            "vivaldi",
+            "opera",
+            "librewolf",
+            "zen",
+            "other browser",
+            "switch browser",
+            "bookmarks file",
+            "importieren",
+            "lesezeichen",
+            "verlauf",
+            "browser wechseln",
+            "anderer browser",
+            "übernehmen",
+        ],
+    ),
+    page(
         C::Account,
         tr_mark("Account"),
         &["accounts", "profile", "profiles", "user", "konto", "konten", "profil", "benutzer", "nutzer"],
@@ -362,6 +389,11 @@ pub const INDEX: &[Entry] = &[
         C::Media,
         S::HardwareDecoding,
         &["gpu", "vaapi", "acceleration", "hardware", "beschleunigung", "video", "decoding", "dekodierung"],
+    ),
+    control(
+        C::General,
+        S::AppMenuEntry,
+        &["desktop", "icon", "launcher", "menu", "taskbar", "symbol", "startmenü"],
     ),
     control(C::Media, S::DesktopIntegration, &["mpris", "media keys", "medientasten", "lock screen", "kde"]),
     control(

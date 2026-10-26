@@ -49,13 +49,15 @@ impl ViewSize {
 }
 
 /// One `<link rel="icon">` (or apple-touch-icon) of a page.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IconLink {
     pub url: String,
     /// The link's `media` attribute (empty: all), e.g. `(prefers-color-scheme: dark)`.
     pub media: String,
     /// The link's `sizes` attribute (empty if none).
     pub sizes: String,
+    /// The link's `type` attribute, e.g. `image/svg+xml` (empty if none).
+    pub mime: String,
 }
 
 /// A `<meta name="theme-color">` of a page.

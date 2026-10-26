@@ -906,3 +906,44 @@
 "Site Permissions" = "Website-Berechtigungen"
 "{n} decision remembered" = "{n} Entscheidung gemerkt"
 "{n} decisions remembered" = "{n} Entscheidungen gemerkt"
+# crates/axion-app/src/browser/import.rs
+"Bookmarks and history" = "Lesezeichen und Verlauf"
+"Import failed: {error}" = "Import fehlgeschlagen: {error}"
+
+# crates/axion-app/src/downloads.rs
+"Bookmark files" = "Lesezeichen-Dateien"
+
+# crates/axion-app/src/import.rs
+"Import Bookmarks" = "Lesezeichen importieren"
+"Imported {items}" = "{items} importiert"
+"Nothing new to import; {count} already existed" = "Nichts Neues zu importieren; {count} waren schon vorhanden"
+"Nothing to import" = "Nichts zu importieren"
+"{first} and {second}" = "{first} und {second}"
+"{n} bookmark" = "{n} Lesezeichen"
+"{n} bookmarks" = "{n} Lesezeichen"
+"{n} history entries" = "{n} Verlaufseinträge"
+"{n} history entry" = "{n} Verlaufseintrag"
+"{summary}; {count} already existed" = "{summary}; {count} waren schon vorhanden"
+
+# crates/axion-app/src/onboarding.rs
+"Bring your bookmarks" = "Deine Lesezeichen mitbringen"
+"Import bookmarks and history from the browsers on this computer. They are only read, never changed." = "Importiere Lesezeichen und Verlauf aus den Browsern auf diesem Computer. Sie werden nur gelesen, nie verändert."
+"You can import more later in Settings › Data & Downloads." = "Mehr kannst du später unter Einstellungen › Daten & Downloads importieren."
+"{count} more can be imported later in Settings › Data & Downloads." = "{count} weitere kannst du später unter Einstellungen › Daten & Downloads importieren."
+
+# crates/axion-app/src/settings/import.rs
+"Bookmarks file (HTML or JSON)" = "Lesezeichen-Datei (HTML oder JSON)"
+"Import" = "Importieren"
+"Import from File…" = "Aus Datei importieren…"
+"Import from another browser" = "Aus einem anderen Browser importieren"
+"Importing…" = "Importiere…"
+"Looking for other browsers…" = "Suche nach anderen Browsern…"
+"No other browsers found" = "Keine anderen Browser gefunden"
+"Passwords are encrypted by the other browser and can't be read from here. Export them there as a CSV file and import it in Passwords." = "Passwörter verschlüsselt der andere Browser; von hier aus lassen sie sich nicht lesen. Exportiere sie dort als CSV-Datei und importiere sie unter Passwörter."
+"Reads bookmarks and history without changing the other browser. Entries you already have are kept as they are." = "Liest Lesezeichen und Verlauf, ohne den anderen Browser zu verändern. Einträge, die du schon hast, bleiben unverändert."
+
+# crates/axion-app/src/settings/search.rs
+"Import bookmarks and history" = "Lesezeichen und Verlauf importieren"
+
+"Add Axion to the application menu" = "Axion zum Anwendungsmenü hinzufügen"
+"Gives Axion its icon in the taskbar and the application menu. Applies after restarting Axion." = "Gibt Axion sein Symbol in der Taskleiste und im Anwendungsmenü. Wird nach einem Neustart von Axion übernommen."

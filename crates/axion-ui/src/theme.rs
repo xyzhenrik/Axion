@@ -67,13 +67,18 @@ impl TextStyle {
     }
 }
 
-/// Contrast a tinted glass button's label must keep (WCAG AA for text).
-pub const TINTED_LABEL_CONTRAST: f32 = 4.5;
+/// Contrast a tinted glass button's label must keep over the darkest and brightest backdrop (WCAG AA for
+/// large or bold text and UI components, which a button label is). The glass stays translucent;
+/// a higher bar would force it back towards an opaque, desaturated plate.
+pub const TINTED_LABEL_CONTRAST: f32 = 3.0;
 /// The dark label colour on tinted glass.
 const TINTED_INK: [f32; 3] = [0.07, 0.07, 0.08];
 /// A white label is kept while the tint needs at most this much darkening for it.
 const TINTED_WHITE_MAX_SHIFT: f32 = 0.25;
 const TINT_SHIFT_STEPS: u32 = 50;
+/// The backdrops (grey levels) a tinted button's label must stay legible over: very dark and
+/// very bright pages (pure black or white backdrops are rarer than this and the glass blurs them).
+pub const TINTED_BACKDROPS: [f32; 2] = [0.1, 0.85];
 
 /// WCAG relative luminance of an sRGB colour.
 fn luminance(c: [f32; 3]) -> f32 {
@@ -172,6 +177,11 @@ impl Theme {
         .to_f32()
     }
 
+    /// The rim light multiplier of tinted glass (`glass.tinted_rim`).
+    pub fn tinted_rim(&self) -> f32 {
+        self.config.glass.tinted_rim.clamp(0.0, 4.0)
+    }
+
     /// The tint strength of tinted glass (`glass.tinted_opacity`).
     pub fn tinted_opacity(&self) -> f32 {
         self.config.glass.tinted_opacity.clamp(0.0, 1.0)
@@ -190,7 +200,7 @@ impl Theme {
             for step in 0..=TINT_SHIFT_STEPS {
                 let m = step as f32 / TINT_SHIFT_STEPS as f32;
                 let c = [0, 1, 2].map(|i| rgb[i] * (1.0 - m) + toward[i] * m);
-                let worst = [0.0, 1.0]
+                let worst = TINTED_BACKDROPS
                     .into_iter()
                     .map(|b| contrast(label, c.map(|v| v * k + b * (1.0 - k))))
                     .fold(f32::INFINITY, f32::min);
@@ -499,7 +509,7 @@ mod tinted_tests {
             assert!(k < 0.95, "tinted glass must keep some backdrop");
             for tint in &tints {
                 let (glass, label) = theme.tinted_glass(tint.to_f32());
-                for backdrop in [0.0_f32, 1.0] {
+                for backdrop in TINTED_BACKDROPS {
                     let under = [0, 1, 2].map(|i| glass[i] * k + backdrop * (1.0 - k));
                     let c = contrast([label[0], label[1], label[2]], under);
                     assert!(c >= TINTED_LABEL_CONTRAST - 0.05, "{tint:?} over {backdrop}: {c:.2}");

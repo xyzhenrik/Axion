@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn nothing_happens_without_a_source() {
-        let updates = Updates::default();
+        let updates = Updates { repository: String::new(), ..Updates::default() };
         assert!(!updates.has_source());
         assert!(!auto_check_due(&updates, &Fixed(10 * DAY)));
     }
@@ -148,11 +148,11 @@ mod tests {
     }
 
     #[test]
-    fn the_default_config_is_inert_and_documented_keys_parse() {
+    fn the_default_config_follows_the_default_repository_and_documented_keys_parse() {
         let defaults = Updates::default();
         assert!(defaults.enabled);
         assert_eq!(defaults.repository, axion_config::DEFAULT_REPOSITORY);
-        assert!(!defaults.has_source());
+        assert_eq!(defaults.has_source(), !axion_config::DEFAULT_REPOSITORY.is_empty());
         let parsed: axion_config::Config = toml::from_str(
             "[updates]\nrepository = \"o/n\"\nchannel = \"prerelease\"\ncheck_interval_hours = 6\n",
         )

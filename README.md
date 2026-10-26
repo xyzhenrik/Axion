@@ -110,7 +110,9 @@ genuinely refracts whatever is underneath it.
 
 ### Productivity and developer tools
 
-- **Bookmarks and history** in SQLite, with session restore.
+- **Bookmarks and history** in SQLite, with session restore, and import of both from Chrome,
+  Chromium, Brave, Edge, Vivaldi, Opera, Firefox, LibreWolf, Zen and Waterfox (also Flatpak and Snap
+  installs, and exported bookmark files), in Settings and in the first-run tour.
 - **Downloads** list with progress and a popover.
 - **DevTools** - Chromium's own developer tools (`F12`, console on `Ctrl+Shift+J`, view source on
   `Ctrl+U`).
@@ -231,6 +233,7 @@ and quits - handy for screenshots and visual regression checks without touching 
 | `AXION_GPU=low` | Use the integrated GPU (the performance budget case). |
 | `AXION_OSR=software\|gpu` | Force page frame sharing off or on. Default: GPU (dma-buf) import on NVIDIA only; the AMD path is still being investigated, so do not force `gpu` there. |
 | `AXION_CONFIG_DIR` | Base directory for settings (default `~/.config/axion`). |
+| `AXION_IMPORT_HOME` | A fake home directory the import from other browsers looks in instead of `$HOME` (tests and captures; `cargo run -p axion-import --example fake_home -- DIR` writes one). |
 | `AXION_PROFILE_DIR` | Base directory for browsing data (history, cookies, ...). |
 | `AXION_DEVICE_KEY_DIR` | Where the password vault's device key lives (default `~/.local/share/axion`). |
 | `AXION_MONITOR=HDMI-A-1` | Open the window on that monitor (X11/XWayland only: run with `env -u WAYLAND_DISPLAY`). |
@@ -341,6 +344,7 @@ non-rendering crates (`engine`, `shields`, `tabs`, `store`, `config`, `accounts`
 | `axion-config` | Settings schema with design-token defaults, TOML load/save, live reload, keymap. |
 | `axion-shields` | `adblock-rust` engine, filter-list cache, popup/redirect/cookie policy, tracking parameters. |
 | `axion-store` | SQLite storage: history, bookmarks, session, downloads, top sites, playlist, per-site settings. |
+| `axion-import` | Reads bookmarks and history of other browsers (Chromium and Firefox families, exported files) and writes them into the store. |
 | `axion-accounts` | Local accounts, per-account directories and migration. |
 | `axion-vault` | The password manager's encrypted, device-bound vault (Argon2id, XChaCha20-Poly1305, TPM sealing). |
 | `axion-tabs` | Tab lifecycle planner (freeze/discard by idle time and memory budget) and the memory monitor. |
@@ -372,8 +376,7 @@ Known gaps and ideas:
 - **H.264/AAC** requires a self-built CEF (see above); some streaming sites will not play without it.
 - HLS/DASH streams cannot be downloaded for offline viewing (they can be watched online).
 - Switching accounts relaunches Axion instead of switching in-process.
-- Share sheet, reading-list entries beyond the basics, importing bookmarks and history from other
-  browsers, a few page-menu items (translate, reader mode, request mobile site).
+- Share sheet, reading-list entries beyond the basics, a few page-menu items (translate, reader mode, request mobile site).
 - Touch-screen polish; touchpad and mouse are the primary inputs.
 - Packaging (AUR, Flatpak, AppImage) and crash handling.
 - Later: a subset of Chrome extensions, encrypted sync, reader mode, an alternative engine behind

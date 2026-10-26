@@ -23,7 +23,10 @@ use crate::passwords::MIN_MASTER_LENGTH;
 use crate::permissions::Group;
 use crate::update::{AboutInfo, AboutState, InstallMode};
 
+mod import;
 mod search;
+
+pub use import::{ImportAction, ImportRequest, ImportSource, ImportStatus, ImportView};
 
 const ACTION_BASE: u32 = 8000;
 const SHEET_MAX: Vec2 = Vec2::new(920.0, 660.0);
@@ -209,6 +212,7 @@ enum Setting {
     HardwareEnabled,
     GpuRasterization,
     DesktopIntegration,
+    AppMenuEntry,
     AskWhereToSave,
     OpenSafeFiles,
     ClearCookiesOnQuit,
@@ -277,6 +281,7 @@ impl Setting {
             Setting::HardwareEnabled => tr_mark("Use hardware acceleration"),
             Setting::GpuRasterization => tr_mark("Smooth WebGL, canvas and GPU rasterization"),
             Setting::DesktopIntegration => tr_mark("Desktop media controls and media keys (after restart)"),
+            Setting::AppMenuEntry => tr_mark("Add Axion to the application menu"),
             Setting::AskWhereToSave => tr_mark("Ask where to save each file"),
             Setting::OpenSafeFiles => tr_mark("Open “safe” files after downloading"),
             Setting::ClearCookiesOnQuit => tr_mark("Clear cookies and site data when Axion quits"),
@@ -327,6 +332,7 @@ impl Setting {
                 | Setting::HardwareEnabled
                 | Setting::GpuRasterization
                 | Setting::DesktopIntegration
+                | Setting::AppMenuEntry
                 | Setting::AskWhereToSave
                 | Setting::OpenSafeFiles
                 | Setting::ClearCookiesOnQuit
@@ -450,6 +456,7 @@ impl Setting {
             Setting::HardwareEnabled => return c.hardware.enabled as u8 as f32,
             Setting::GpuRasterization => return c.hardware.gpu_rasterization as u8 as f32,
             Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
+            Setting::AppMenuEntry => return c.general.desktop_integration as u8 as f32,
             Setting::AskWhereToSave => return c.downloads.ask_where_to_save as u8 as f32,
             Setting::OpenSafeFiles => return c.downloads.open_safe_files as u8 as f32,
             Setting::ClearCookiesOnQuit => return c.data.clear_cookies_on_quit as u8 as f32,
@@ -525,6 +532,7 @@ impl Setting {
             Setting::HardwareEnabled => c.hardware.enabled = on,
             Setting::GpuRasterization => c.hardware.gpu_rasterization = on,
             Setting::DesktopIntegration => c.media.desktop_integration = on,
+            Setting::AppMenuEntry => c.general.desktop_integration = on,
             Setting::AskWhereToSave => c.downloads.ask_where_to_save = on,
             Setting::OpenSafeFiles => c.downloads.open_safe_files = on,
             Setting::ClearCookiesOnQuit => c.data.clear_cookies_on_quit = on,
@@ -653,6 +661,8 @@ pub enum SettingsAction {
     /// Forget one remembered site decision (index into the listed ones), or all of them.
     ForgetPermission(usize),
     ResetPermissions,
+    /// Data & Downloads: importing from other browsers.
+    Import(ImportAction),
 }
 
 /// Privacy › Site Permissions: the defaults' segments, "Reset All", then one forget button per
@@ -865,6 +875,7 @@ impl SettingsAction {
                     SettingsAction::OpenReleasePage => UPDATE_BASE + 4,
                     SettingsAction::SaveRepository => UPDATE_BASE + 5,
                     SettingsAction::RelaunchNow => UPDATE_BASE + 6,
+                    SettingsAction::Import(action) => action.id(),
                     SettingsAction::PageFrames(f) => HARDWARE_BASE + page_frames_index(f),
                     SettingsAction::GpuCard(g) => HARDWARE_BASE + 3 + gpu_card_index(g),
                     SettingsAction::CopyDiagnostics => HARDWARE_BASE + 6,
@@ -960,6 +971,7 @@ impl SettingsAction {
                 SettingsAction::SaveRepository,
                 SettingsAction::RelaunchNow,
             ][(n - UPDATE_BASE) as usize],
+            n if ImportAction::from_id(n).is_some() => SettingsAction::Import(ImportAction::from_id(n)?),
             _ => return None,
         })
     }
@@ -1028,6 +1040,8 @@ pub enum Outcome {
     CopyDiagnostics,
     /// Hardware: relaunch Axion to apply the changed settings.
     RestartAxion,
+    /// Data & Downloads: import from another browser or a file.
+    Import(ImportRequest),
     /// Hardware: ask before "Shared GPU memory" is used on AMD graphics.
     ConfirmGpuFrames,
     /// The repository changed (`config.updates.repository`); save it and look for updates.
@@ -1088,6 +1102,8 @@ pub struct SettingsSheet {
     /// All" asks for confirmation.
     site_permissions: Vec<(String, PermissionKind, bool)>,
     confirm_reset_permissions: bool,
+    /// Data page: the browsers to import from and what the import group shows.
+    import: ImportView,
     open: bool,
     /// The search field above the categories, and what it held when the page was built.
     search: NodeId,
@@ -1312,6 +1328,7 @@ impl SettingsSheet {
             confirm_remove_all: false,
             site_permissions: Vec::new(),
             confirm_reset_permissions: false,
+            import: ImportView::default(),
             open: false,
             search,
             query: String::new(),
@@ -1648,6 +1665,13 @@ impl SettingsSheet {
                 let current = LANGUAGES.iter().position(|&(_, l)| l == config.general.language);
                 segmented(ui, row_node, &languages, current);
                 self.note(ui, tr("Applies after restarting Axion."));
+                if cfg!(target_os = "linux") {
+                    self.control(ui, config, Setting::AppMenuEntry);
+                    self.note(
+                        ui,
+                        tr("Gives Axion its icon in the taskbar and the application menu. Applies after restarting Axion."),
+                    );
+                }
                 let row_node = self.row(ui, tr("Welcome tour"));
                 glass_pill(ui, row_node, tr("Show Welcome Tour"), SettingsAction::ShowWelcomeTour);
                 self.control(ui, config, Setting::HomeButton);
@@ -2448,6 +2472,8 @@ impl SettingsSheet {
         let current = REMOVE_DOWNLOADS.iter().position(|(_, r)| *r == config.downloads.remove_list_items);
         segmented(ui, row_node, &options, current);
         self.note(ui, tr("“Safe” files are pictures, movies, sounds, PDF and text documents."));
+
+        self.import_group(ui, config);
 
         self.section(ui, tr("Clear browsing data"));
         let row_node = self.row(ui, tr("Time range"));
@@ -3504,6 +3530,7 @@ impl SettingsSheet {
             }
             SettingsAction::CopyDiagnostics => return Outcome::CopyDiagnostics,
             SettingsAction::RestartAxion => return Outcome::RestartAxion,
+            SettingsAction::Import(action) => self.import_action(action),
             SettingsAction::SaveRepository => {
                 let text = self
                     .repository_field

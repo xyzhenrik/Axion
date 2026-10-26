@@ -28,13 +28,13 @@ while. The full requirements and build options are in the [README](../README.md#
 
 **Optional extras**
 
-- A desktop icon on Wayland: run `tools/install-desktop.sh` (see [Troubleshooting](troubleshooting.md)).
+- A desktop icon on Wayland: Axion installs its own desktop entry at start (the first start may still show the generic icon; see [Troubleshooting](troubleshooting.md)).
 - Video from sites that use H.264/AAC: needs a special engine build (see [Troubleshooting](troubleshooting.md)).
 
 ## The first launch
 
-On a fresh install Axion shows a short introduction in five steps. Your choices apply live, so you
-see the result right away.
+On a fresh install Axion shows a short introduction in five steps (six when other browsers are
+installed). Your choices apply live, so you see the result right away.
 
 ![The first-run tour](../assets/screenshots/onboarding-light.webp)
 
@@ -44,7 +44,11 @@ see the result right away.
    (**Compact**), and a **Docked** or **Floating** sidebar.
 4. **Glass or flat** - **Liquid Glass**, or **Flat** for weaker graphics hardware. You can also turn
    on **Reduce transparency** and **Reduce motion** here.
-5. **Your account** - name, picture and an optional password.
+5. **Bring your bookmarks** - only shown when Axion finds other browsers (Chrome, Firefox, Brave and
+   so on) on this computer. Tick the ones to import bookmarks and history from; the most recently
+   used one is ticked. Continue starts the import in the background. Nothing is changed in the other
+   browsers.
+6. **Your account** - name, picture and an optional password. (Step 5 without other browsers.)
 
 You can skip the tour at any time. To see it again, open **Settings > General** and press
 **Show Welcome Tour**. Everything the tour sets can be changed later in [Settings](settings.md).
@@ -121,5 +125,7 @@ again. See [Accounts and privacy](features/accounts-and-privacy.md).
 Press **Ctrl+,** (or **Ctrl+S**) to open Settings. The search field at the top finds a setting by
 name. Every change is saved at once. The full list is in the [Settings reference](settings.md).
 
-Importing bookmarks and history from other browsers does not exist yet. Passwords can be imported
-from a CSV file; see [Passwords](features/passwords.md).
+Bookmarks and history of other browsers can be imported in **Settings > Data & Downloads > Import
+from another browser** (see the [Settings reference](settings.md#import-from-another-browser)), or
+from an exported bookmarks file. Passwords can be imported from a CSV file; see
+[Passwords](features/passwords.md).

@@ -448,6 +448,9 @@ pub struct Chrome {
     pub address_field: NodeId,
     reload_icon: NodeId,
     page_menu: NodeId,
+    /// The page menu button of the actions group: in the compact tab bar the open segment is
+    /// only as wide as the other tabs, so the menu lives here instead of in the segment.
+    page_menu_bar: NodeId,
     shield: NodeId,
     share: NodeId,
     shield_glyph: NodeId,
@@ -459,6 +462,14 @@ pub struct Chrome {
     /// The recording indicator (microphone, camera, screen) and its glyph.
     capture_button: NodeId,
     capture_icon: NodeId,
+    /// The active tab records (the indicator wants to be shown).
+    capture_wanted: bool,
+    /// Whether the speaker / Playlist button want to be shown (the squeezed compact segment
+    /// may still hide them, see `apply_address_fit`).
+    audio_wanted: bool,
+    playlist_wanted: bool,
+    /// The address is being edited (the compact segment expands).
+    editing: bool,
     /// The Playlist button in the address field, and its glyph.
     playlist_button: NodeId,
     playlist_icon: NodeId,
@@ -498,6 +509,15 @@ struct TabWidths {
     /// each is pinned (pinned tabs have their own, fixed width).
     pills: Vec<(NodeId, bool)>,
     width: Animated<f32>,
+    /// The open segment's width in the compact bar (equal to `width` at rest; wider while the
+    /// address is edited).
+    address_width: Animated<f32>,
+    /// Compact bar: the widest a segment gets (infinite = fill), and the editing width.
+    compact_max: f32,
+    editing_width: f32,
+    /// What the open segment last applied: its width and the parts it showed.
+    address_applied: f32,
+    address_fit: Option<(AddressFit, bool, bool)>,
     /// The width was set once (the first one snaps instead of springing from nothing).
     ready: bool,
     applied: f32,
@@ -581,6 +601,87 @@ pub fn distribute_tab_widths(
     let taken = pinned as f32 * (pinned_width + gap);
     let flexible = equal_tab_width(span - taken, flexible, gap, preferred, floor);
     TabSizes { flexible, pinned: pinned_width }
+}
+
+/// The compact bar's tab widths: every tab, the open one included, is equally wide at rest;
+/// while the address is edited the open one grows to `editing` and the others shrink equally.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CompactSizes {
+    /// The open tab's segment (it hosts the address).
+    pub active: f32,
+    /// Every other unpinned tab.
+    pub others: f32,
+    /// Every pinned tab.
+    pub pinned: f32,
+}
+
+/// Distributes `span` px over `pinned` pinned tabs, `others` unpinned ones and the open tab
+/// (`gap` apart). At rest all unpinned tabs share one width (`preferred` at most, `floor` at
+/// least). With `editing` (`Some(wanted width)`) the open tab takes `wanted` (never less than
+/// its resting width, never so much that the others fall under `floor`) and the others share
+/// what is left, equally.
+#[allow(clippy::too_many_arguments)] // The same inputs as `distribute_tab_widths`, plus the editing width.
+pub fn distribute_compact_widths(
+    span: f32,
+    pinned: usize,
+    others: usize,
+    gap: f32,
+    preferred: f32,
+    floor: f32,
+    pinned_width: f32,
+    editing: Option<f32>,
+) -> CompactSizes {
+    let rest = distribute_tab_widths(span, pinned, others + 1, gap, preferred, floor, pinned_width);
+    let at_rest = CompactSizes { active: rest.flexible, others: rest.flexible, pinned: pinned_width };
+    let Some(wanted) = editing else { return at_rest };
+    let room = span - pinned as f32 * (pinned_width + gap);
+    let k = others as f32;
+    let most = room - k * (floor + gap);
+    let active = wanted.min(most).max(rest.flexible);
+    if others == 0 {
+        return CompactSizes { active, ..at_rest };
+    }
+    let share = ((room - active - k * gap) / k).clamp(floor, rest.flexible.max(floor));
+    CompactSizes { active, others: share, pinned: pinned_width }
+}
+
+/// Which parts of the open segment fit at a given width (the compact bar's address field is
+/// only as wide as a tab). Dropped from the right: the close button first, then reload, then
+/// the shield, then the host text; the site's icon always stays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AddressFit {
+    pub close: bool,
+    pub shield: bool,
+    pub reload: bool,
+    pub text: bool,
+    /// Room for the speaker and Playlist buttons too.
+    pub extras: bool,
+}
+
+impl AddressFit {
+    pub const ALL: Self = Self { close: true, shield: true, reload: true, text: true, extras: true };
+}
+
+/// Padding and gap of the open segment, and the smallest useful text width.
+const ADDRESS_PAD: f32 = 6.0;
+const ADDRESS_GAP: f32 = 4.0;
+const ADDRESS_TEXT_MIN: f32 = 56.0;
+/// Space the speaker and Playlist buttons need beside the rest.
+const ADDRESS_EXTRAS_ROOM: f32 = 60.0 + 2.0 * ADDRESS_GAP;
+
+pub fn address_fit(width: f32) -> AddressFit {
+    let mut used = 2.0 * ADDRESS_PAD + ADDRESS_FAVICON;
+    let mut fits = [false; 4];
+    for (slot, w) in fits.iter_mut().zip([ADDRESS_TEXT_MIN, 30.0, 34.0, 32.0]) {
+        let next = used + ADDRESS_GAP + w;
+        if next > width {
+            break;
+        }
+        used = next;
+        *slot = true;
+    }
+    let [text, shield, reload, close] = fits;
+    AddressFit { close, shield, reload, text, extras: close && used + ADDRESS_EXTRAS_ROOM <= width }
 }
 
 /// How many of the bookmarks bar's items (natural `widths`, `gap` apart) fit into `available`
@@ -1214,6 +1315,11 @@ impl Chrome {
         );
 
         let actions = glass_group(ui, bar);
+        // Compact tab bar: the page menu moves out of the (narrow) open segment to here.
+        let (page_menu_bar, _) =
+            icon_button(ui, actions, ChromeAction::PageMenu, Widget::icon(Icon::Menu, 20.0), BUTTON);
+        tip(ui, page_menu_bar, tr("Page Menu"), None);
+        ui.set_visible(page_menu_bar, false);
         // Separate tab bar: the row of tabs under the toolbar.
         let tab_strip = ui.add(
             root,
@@ -1384,6 +1490,7 @@ impl Chrome {
             address_field,
             reload_icon,
             page_menu,
+            page_menu_bar,
             shield,
             share: share_button,
             shield_glyph,
@@ -1393,6 +1500,10 @@ impl Chrome {
             audio_icon,
             capture_button,
             capture_icon,
+            capture_wanted: false,
+            audio_wanted: false,
+            playlist_wanted: false,
+            editing: false,
             playlist_button,
             playlist_icon,
             actions,
@@ -1410,6 +1521,11 @@ impl Chrome {
             tab_widths: TabWidths {
                 pills: Vec::new(),
                 width: Animated::new(layout.tab_width, Spring::SMOOTH),
+                address_width: Animated::new(layout.tab_width, Spring::SMOOTH),
+                compact_max: f32::INFINITY,
+                editing_width: layout.compact_address_width,
+                address_applied: -1.0,
+                address_fit: None,
                 ready: false,
                 applied: -1.0,
                 preferred: layout.tab_width,
@@ -1428,6 +1544,15 @@ impl Chrome {
         };
         chrome.apply_layout(ui, config, Vec2::new(1440.0, 900.0));
         chrome
+    }
+
+    /// The compact bar shows every tab, the open one with the address included, equally wide.
+    /// Narrow windows and the locked view show the address alone instead.
+    fn tiled(&self) -> bool {
+        self.tab_bar == TabBarStyle::Compact
+            && self.mode != Mode::Narrow
+            && !self.locked
+            && !self.playlist_page
     }
 
     fn sidebar_docked(&self, config: &Config) -> bool {
@@ -2035,6 +2160,12 @@ impl Chrome {
         self.layout_bookmarks_bar(ui, config, bar_left, window.x);
         let widths = &mut self.tab_widths;
         widths.preferred = l.tab_width;
+        widths.compact_max =
+            if l.compact_tab_max_width > 0.0 { l.compact_tab_max_width } else { f32::INFINITY };
+        widths.editing_width = l.compact_address_width;
+        widths.address_width.spring = widths.width.spring;
+        widths.address_applied = -1.0;
+        widths.address_fit = None;
         widths.min = l.tab_min_width;
         widths.floor = l.tab_icon_width.min(l.tab_min_width);
         widths.pinned = l.pinned_tab_width;
@@ -2043,7 +2174,9 @@ impl Chrome {
             config.motion.smooth.response * config.motion.speed,
             config.glass.damping(config.motion.smooth.damping),
         );
+        widths.address_width.spring = widths.width.spring;
         widths.applied = -1.0;
+        let widths_floor = l.tab_icon_width.min(l.tab_min_width);
         let mut address = ui.style(self.address);
         if separate {
             address.flex_grow = 1.0;
@@ -2053,10 +2186,18 @@ impl Chrome {
             address.size.height = length(BAR_CAPSULE);
         } else {
             address.size.height = length(SEGMENT_HEIGHT);
-            // The other tabs are as wide as the tab width; the address takes the rest.
-            address.flex_grow = ACTIVE_SEGMENT_GROW;
             address.max_size = Size { width: auto(), height: auto() };
-            address.min_size = Size { width: length(ACTIVE_SEGMENT_MIN), height: auto() };
+            if self.tiled() {
+                // As wide as every other tab (`animate_tab_widths` sets the width).
+                address.flex_grow = 0.0;
+                address.flex_basis = auto();
+                address.min_size = Size { width: length(widths_floor), height: auto() };
+            } else {
+                // Alone in the capsule (narrow window, locked): it takes the room.
+                address.flex_grow = ACTIVE_SEGMENT_GROW;
+                address.flex_basis = length(0.0);
+                address.min_size = Size { width: length(ACTIVE_SEGMENT_MIN), height: auto() };
+            }
         }
         ui.set_style(self.address, address);
 
@@ -2125,6 +2266,10 @@ impl Chrome {
             ui.set_visible(pill, !narrow);
         }
         ui.set_visible(self.overview, !narrow);
+        // Compact bar: the page menu sits in the actions group, not in the (tab-wide) segment.
+        let bar_menu = !separate && !narrow;
+        ui.set_visible(self.page_menu_bar, bar_menu);
+        ui.set_visible(self.page_menu, !bar_menu);
         ui.set_visible(self.tab_count, narrow);
         // With the sidebar open (its header holds the toggle) a locked bar's left group would
         // be an empty sliver.
@@ -2205,7 +2350,7 @@ impl Chrome {
 
     /// The page menu button's frame (logical px), for anchoring the menu.
     pub fn page_menu_frame(&self, ui: &Ui) -> Frame {
-        ui.frame(self.page_menu)
+        ui.frame(if ui.is_visible(self.page_menu_bar) { self.page_menu_bar } else { self.page_menu })
     }
 
     /// Shows the current account on the account button.
@@ -2308,8 +2453,10 @@ impl Chrome {
 
     /// The Playlist button of the address field: hidden (`None`), or add (`Some(false)`) /
     /// already saved (`Some(true)`).
-    pub fn set_playlist_button(&self, ui: &mut Ui, state: Option<bool>) {
-        ui.set_visible(self.playlist_button, state.is_some());
+    pub fn set_playlist_button(&mut self, ui: &mut Ui, state: Option<bool>) {
+        self.playlist_wanted = state.is_some();
+        let room = self.extras_fit() && !(self.capture_wanted && self.tab_widths.address_fit.is_some());
+        ui.set_visible(self.playlist_button, self.playlist_wanted && room);
         if let Some(added) = state {
             ui.set_icon(self.playlist_icon, if added { Icon::Playlist } else { Icon::PlaylistAdd });
             if let Some(w) = ui.widget_mut(self.playlist_icon) {
@@ -2336,16 +2483,21 @@ impl Chrome {
         BUTTON + 2.0 * self.bar_top.max(8.0)
     }
 
-    pub fn set_audio(&self, ui: &mut Ui, playing: bool, muted: bool) {
-        ui.set_visible(self.audio_button, (playing || muted) && !self.locked);
+    pub fn set_audio(&mut self, ui: &mut Ui, playing: bool, muted: bool) {
+        self.audio_wanted = (playing || muted) && !self.locked;
+        ui.set_visible(self.audio_button, self.audio_wanted && self.extras_fit());
         ui.set_icon(self.audio_icon, if muted { Icon::Muted } else { Icon::Volume });
     }
 
-    /// Green while Shields protect the page, grey when they are off for its site.
-    /// The address field's recording indicator: shown while the active tab records.
-    pub fn set_capture(&self, ui: &mut Ui, capture: crate::permissions::Capture) {
+    /// The address field's recording indicator: shown while the active tab records. In a
+    /// squeezed segment it takes the shield's place (see `apply_address_fit`).
+    pub fn set_capture(&mut self, ui: &mut Ui, capture: crate::permissions::Capture) {
         let shown = crate::permission_prompt::capture_icon(capture).filter(|_| !self.locked);
-        ui.set_visible(self.capture_button, shown.is_some());
+        self.capture_wanted = shown.is_some();
+        match self.tab_widths.address_fit {
+            Some((fit, editing, tiled)) => self.apply_address_fit(ui, fit, editing, tiled),
+            None => ui.set_visible(self.capture_button, self.capture_wanted),
+        }
         if let Some((icon, color)) = shown {
             ui.set_icon(self.capture_icon, icon);
             if let Some(w) = ui.widget_mut(self.capture_icon) {
@@ -2359,6 +2511,7 @@ impl Chrome {
         ui.frame(self.capture_button)
     }
 
+    /// Green while Shields protect the page, grey when they are off for its site.
     pub fn set_shield_active(&self, ui: &mut Ui, active: bool) {
         if let Some(w) = ui.widget_mut(self.shield_glyph) {
             w.set_paint(if active { Paint::Shield } else { Paint::Secondary });
@@ -2514,6 +2667,7 @@ impl Chrome {
         self.tab_widths.hideable.clear();
         self.tab_widths.labels_shown = true;
         self.tab_widths.applied = -1.0;
+        self.tab_widths.address_fit = None;
         self.tab_widths.separators.clear();
         self.tab_widths.separator_hover = None;
         let narrow = self.mode == Mode::Narrow;
@@ -2580,7 +2734,12 @@ impl Chrome {
                 let label = ui.add_label(pill, &tab.label(), style, shrinking_label());
                 self.tab_widths.hideable.push(label);
             }
-            capture_dot(ui, pill, tab);
+            // Pinned tabs are just their icon; a squeezed tab hides the dot with its title.
+            if !tab.pinned
+                && let Some(dot) = capture_dot(ui, pill, tab)
+            {
+                self.tab_widths.hideable.push(dot);
+            }
             if separate {
                 // A hairline before every tab but the first (shown by `update_separators`).
                 let separator = (!order.is_empty()).then(|| {
@@ -2756,8 +2915,11 @@ impl Chrome {
 
     /// Switches the active segment between showing the host and editing the full URL.
     pub fn set_editing(&mut self, ui: &mut Ui, editing: bool) -> Vec<UiEvent> {
+        self.editing = editing;
         ui.set_visible(self.address_label, !editing);
         ui.set_visible(self.address_field, editing);
+        // The compact segment grows to its editing width (see `animate_tab_widths`).
+        self.tab_widths.address_fit = None;
         if editing { ui.focus(self.address_field) } else { ui.blur() }
     }
 }
@@ -2819,15 +2981,16 @@ fn sidebar_tab_row(
     row_node
 }
 
-/// The recording indicator of a tab in the tab bar and the sidebar: a small dot in the colour
-/// of what it records (screen, camera, microphone), nothing while it records nothing.
-fn capture_dot(ui: &mut Ui, parent: NodeId, tab: &Tab) {
-    let Some((_, color)) = crate::permission_prompt::capture_icon(tab.capture) else { return };
-    ui.add(
+/// The recording indicator of a tab in the tab bar and the sidebar: a small dot after the
+/// title in the colour of what it records (screen, camera, microphone), nothing while it
+/// records nothing.
+fn capture_dot(ui: &mut Ui, parent: NodeId, tab: &Tab) -> Option<NodeId> {
+    let (_, color) = crate::permission_prompt::capture_icon(tab.capture)?;
+    Some(ui.add(
         parent,
         Widget::container().with_background(Background::Fill(Paint::Fixed(color), 1.0)).with_radius(CAPSULE),
         Style { size: square(CAPTURE_DOT), flex_shrink: 0.0, ..Default::default() },
-    );
+    ))
 }
 
 impl BookmarkRow {
@@ -2914,13 +3077,19 @@ impl TabWidths {
 
 impl Chrome {
     /// Springs the tabs' shared width towards what fits now (all tabs equally wide: the
-    /// preferred width, or less when they don't fit), and gives it to every tab segment.
+    /// preferred width, or less when they don't fit), and gives it to every tab segment. In
+    /// the compact bar the open segment (the address) is one of them; while the address is
+    /// edited it springs wider and the others shrink equally (see `distribute_compact_widths`).
     fn animate_tab_widths(&mut self, ui: &mut Ui, dt: f32) {
         let separate = self.tab_bar == TabBarStyle::Separate;
+        let tiled = self.tiled();
+        let editing = self.editing && tiled;
         let (container, inner_padding, reserved) = if separate {
             (self.tab_strip, TAB_STRIP_PADDING, 0.0)
+        } else if tiled {
+            (self.tab_capsule, TAB_CAPSULE_PADDING, 0.0)
         } else {
-            // The address segment keeps at least its minimum.
+            // Alone with the address (narrow, locked): it keeps at least its minimum.
             (self.tab_capsule, TAB_CAPSULE_PADDING, ACTIVE_SEGMENT_MIN + TAB_GAP)
         };
         // The separate strip shrinks to its tabs, so it measures its span, not itself.
@@ -2932,22 +3101,43 @@ impl Chrome {
         let widths = &mut self.tab_widths;
         let pinned = widths.pills.iter().filter(|(_, pinned)| *pinned).count();
         let flexible = widths.pills.len() - pinned;
-        let sizes = distribute_tab_widths(
-            outer - 2.0 * inner_padding - reserved,
-            pinned,
-            flexible,
-            TAB_GAP,
-            widths.preferred,
-            widths.floor,
-            widths.pinned_side(height),
-        );
+        let span = outer - 2.0 * inner_padding - reserved;
+        let sizes = if tiled {
+            let s = distribute_compact_widths(
+                span,
+                pinned,
+                flexible,
+                TAB_GAP,
+                widths.compact_max,
+                widths.floor,
+                widths.pinned_side(height),
+                editing.then_some(widths.editing_width),
+            );
+            widths.address_width.target = s.active;
+            TabSizes { flexible: s.others, pinned: s.pinned }
+        } else {
+            let s = distribute_tab_widths(
+                span,
+                pinned,
+                flexible,
+                TAB_GAP,
+                widths.preferred,
+                widths.floor,
+                widths.pinned_side(height),
+            );
+            widths.address_width.target = s.flexible;
+            s
+        };
         let target = sizes.flexible;
         widths.width.target = target;
         if !widths.ready || widths.reduce_motion {
             widths.width.snap(target);
+            let at = widths.address_width.target;
+            widths.address_width.snap(at);
             widths.ready = true;
         } else {
             widths.width.step(dt);
+            widths.address_width.step(dt);
         }
         let width = widths.width.value.max(0.0);
         if separate {
@@ -2968,6 +3158,34 @@ impl Chrome {
                 ui.set_style(self.tab_strip, style);
             }
         }
+        if tiled {
+            let address_width = widths.address_width.value.max(0.0);
+            if (address_width - widths.address_applied).abs() > 0.05 {
+                widths.address_applied = address_width;
+                tracing::debug!(
+                    active = address_width,
+                    others = widths.width.value,
+                    tabs = widths.pills.len() + 1,
+                    "compact tab widths"
+                );
+                let floor = widths.floor.min(address_width);
+                let mut style = ui.style(self.address);
+                style.size.width = length(address_width);
+                style.min_size.width = length(floor);
+                ui.set_style(self.address, style);
+            }
+        }
+        let wanted = if tiled {
+            let mut fit = address_fit(self.tab_widths.address_width.value);
+            fit.text |= editing;
+            fit
+        } else {
+            AddressFit::ALL
+        };
+        if self.tab_widths.address_fit != Some((wanted, editing, tiled)) {
+            self.apply_address_fit(ui, wanted, editing, tiled);
+        }
+        let widths = &mut self.tab_widths;
         // Narrower than `tab_min_width`: favicon only, centred.
         let labels = width >= widths.min - 0.5;
         if (width - widths.applied).abs() < 0.05 && labels == widths.labels_shown {
@@ -2997,6 +3215,37 @@ impl Chrome {
             }
             ui.set_style(pill, style);
         }
+    }
+
+    /// Whether the speaker / Playlist buttons have room in the open segment.
+    fn extras_fit(&self) -> bool {
+        self.tab_widths.address_fit.is_none_or(|(fit, _, _)| fit.extras)
+    }
+
+    /// Shows the parts of the open segment that fit (see [`address_fit`]); when only the icon
+    /// does, it is centred.
+    fn apply_address_fit(&mut self, ui: &mut Ui, fit: AddressFit, editing: bool, tiled: bool) {
+        self.tab_widths.address_fit = Some((fit, editing, tiled));
+        let separate = self.tab_bar == TabBarStyle::Separate;
+        ui.set_visible(self.address_close, !separate && fit.close);
+        // Recording is shown even in a squeezed segment: the indicator takes the shield's
+        // place when the extras don't fit, and the Playlist button's room when they do.
+        let capture = self.capture_wanted && fit.shield;
+        ui.set_visible(self.shield, fit.shield && !(capture && !fit.extras));
+        ui.set_visible(self.capture_button, capture);
+        if let Some(reload) = ui.parent(self.reload_icon) {
+            ui.set_visible(reload, fit.reload);
+        }
+        ui.set_visible(self.address_label, !editing && fit.text);
+        ui.set_visible(self.address_field, editing);
+        ui.set_visible(self.audio_button, self.audio_wanted && fit.extras);
+        ui.set_visible(self.playlist_button, self.playlist_wanted && fit.extras && !capture);
+        let icon_only = !fit.text;
+        let mut style = ui.style(self.address);
+        style.padding =
+            if icon_only { padding(0.0, 0.0, 0.0, 0.0) } else { padding(ADDRESS_PAD, ADDRESS_PAD, 0.0, 0.0) };
+        style.justify_content = if icon_only { JustifyContent::CENTER } else { JustifyContent::START };
+        ui.set_style(self.address, style);
     }
 
     /// The separate tab bar's hairlines: between two tabs, except next to the open tab and
@@ -3269,6 +3518,79 @@ mod tests {
             chrome.set_locked(&mut ui, &config, false);
             assert!(all.iter().all(|&n| ui.is_visible(n)), "round {round}: unlocked toolbar");
             assert!(ui.is_visible(chrome.tab_capsule));
+        }
+    }
+
+    #[test]
+    fn compact_tabs_are_equal_including_the_open_one() {
+        // Three tabs (the open one among them) in 900 px: all the same width.
+        let s = distribute_compact_widths(900.0, 0, 2, 4.0, f32::INFINITY, 36.0, 36.0, None);
+        assert_eq!(s.active, s.others);
+        assert!((3.0 * s.active + 8.0 - 900.0).abs() < 0.01);
+        // A cap applies to all of them.
+        let s = distribute_compact_widths(900.0, 0, 2, 4.0, 220.0, 36.0, 36.0, None);
+        assert_eq!((s.active, s.others), (220.0, 220.0));
+        // Many tabs bottom out at the floor, the open one too.
+        let s = distribute_compact_widths(300.0, 0, 11, 4.0, f32::INFINITY, 36.0, 36.0, None);
+        assert_eq!((s.active, s.others), (36.0, 36.0));
+        // Pinned tabs keep their square and take their share of the span.
+        let s = distribute_compact_widths(600.0, 2, 3, 4.0, f32::INFINITY, 36.0, 36.0, None);
+        assert_eq!(s.pinned, 36.0);
+        assert!((s.active * 4.0 + 3.0 * 4.0 + 2.0 * 40.0 - 600.0).abs() < 0.01);
+        // A lone tab fills the span.
+        assert_eq!(
+            distribute_compact_widths(700.0, 0, 0, 4.0, f32::INFINITY, 36.0, 36.0, None).active,
+            700.0
+        );
+    }
+
+    #[test]
+    fn editing_expands_the_open_tab_and_shrinks_the_others_equally() {
+        let rest = distribute_compact_widths(900.0, 0, 4, 4.0, f32::INFINITY, 36.0, 36.0, None);
+        let s = distribute_compact_widths(900.0, 0, 4, 4.0, f32::INFINITY, 36.0, 36.0, Some(480.0));
+        assert_eq!(s.active, 480.0);
+        assert!(s.others < rest.others);
+        // Everything still adds up to the span.
+        assert!((s.active + 4.0 * s.others + 4.0 * 4.0 - 900.0).abs() < 0.01);
+        // Never narrower than at rest (few tabs: the resting width already exceeds it).
+        let s = distribute_compact_widths(900.0, 0, 1, 4.0, f32::INFINITY, 36.0, 36.0, Some(480.0));
+        assert_eq!(s.active, s.others.max(s.active));
+        assert!(s.active >= 480.0);
+        let alone = distribute_compact_widths(900.0, 0, 0, 4.0, f32::INFINITY, 36.0, 36.0, Some(480.0));
+        assert_eq!(alone.active, 900.0);
+    }
+
+    #[test]
+    fn editing_width_is_clamped_to_the_span() {
+        // 12 tabs in 500 px: the others keep the icon floor, the open tab gets the rest.
+        let s = distribute_compact_widths(500.0, 0, 11, 4.0, f32::INFINITY, 36.0, 36.0, Some(480.0));
+        assert_eq!(s.others, 36.0);
+        assert!(s.active <= 500.0 - 11.0 * (36.0 + 4.0));
+        assert!(s.active >= 36.0);
+        // A huge wish never exceeds the span.
+        let s = distribute_compact_widths(400.0, 1, 2, 4.0, f32::INFINITY, 36.0, 36.0, Some(5000.0));
+        assert!(s.active + 2.0 * s.others + 3.0 * 4.0 + 36.0 <= 400.0 + 0.01);
+        // No room at all: nothing shrinks below the floor, the open tab keeps its resting width.
+        let s = distribute_compact_widths(100.0, 0, 11, 4.0, f32::INFINITY, 36.0, 36.0, Some(480.0));
+        assert_eq!((s.active, s.others), (36.0, 36.0));
+    }
+
+    #[test]
+    fn address_segment_drops_parts_from_the_right() {
+        assert_eq!(address_fit(500.0), AddressFit::ALL);
+        let at = |w| address_fit(w);
+        assert!(at(260.0).close && at(260.0).reload && !at(260.0).extras);
+        assert!(!at(150.0).close && at(150.0).shield && !at(150.0).reload && at(150.0).text);
+        assert!(!at(90.0).shield && at(90.0).text);
+        let icon = at(36.0);
+        assert!(!icon.text && !icon.shield && !icon.reload && !icon.close);
+        // Monotonic: a wider segment never shows less.
+        let mut last = 0;
+        for w in 20..600 {
+            let f = at(w as f32);
+            let n = [f.text, f.shield, f.reload, f.close, f.extras].iter().filter(|b| **b).count();
+            assert!(n >= last, "width {w}");
+            last = n;
         }
     }
 

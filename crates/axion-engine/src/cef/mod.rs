@@ -298,6 +298,25 @@ impl CefEngine {
         self.shared.stats.counters()
     }
 
+    /// The frame rate views render at now (see `Engine::set_frame_rate`).
+    pub fn frame_rate(&self) -> u32 {
+        self.max_frame_rate
+    }
+
+    /// Whether page frames come as shared GPU buffers (false after the software fallback).
+    pub fn is_accelerated(&self) -> bool {
+        self.accelerated
+    }
+
+    /// Diagnostics: views open, bytes of page-frame textures held over all views, and
+    /// Chromium buffers imported.
+    pub fn frame_memory(&self) -> (usize, u64, usize) {
+        self.views.values().fold((0, 0, 0), |(n, bytes, imports), v| {
+            let (b, i) = v.ctx.frames.memory();
+            (n + 1, bytes + b, imports + i)
+        })
+    }
+
     fn private_context(&mut self) -> Option<RequestContext> {
         if self.private_context.is_none() {
             // An empty cache path makes the context in-memory only.

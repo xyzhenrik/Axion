@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn source_from_config() {
-        let mut updates = Updates::default();
+        let mut updates = Updates { repository: String::new(), ..Updates::default() };
         assert!(matches!(Source::from_config(&updates), Err(UpdateError::NoSource)));
         updates.repository = "henrik/axion".into();
         assert_eq!(

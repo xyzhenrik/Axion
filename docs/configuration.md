@@ -107,6 +107,7 @@ ask_where_to_save = false
 | `downloads`, `data` | Download behaviour, what "Clear Browsing Data" clears. |
 | `passwords` | Saving, filling, generator, clipboard. |
 | `accounts` | Profile picture size and limit. |
+| `import` | Limits of the import from other browsers (history entries, bookmarks, file sizes). |
 | `hardware` | Acceleration, page frames, graphics card. |
 | `devtools`, `find`, `clipboard`, `toast`, `sidebar`, `ui` | Smaller options. |
 | `updates` | Update source and schedule. |
@@ -127,6 +128,7 @@ ask_where_to_save = false
 | `layout.sidebar` | `auto`, `docked` or `overlay`. | `auto` |
 | `tabs.check_interval_seconds` | How often memory is measured and tab rules applied. | `5` |
 | `tabs.max_frame_rate` | Limit pages to N frames per second (0 follows the display). | `0` |
+| `tabs.max_frame_rate_cap` | Following the display, pages draw at most this many frames per second (0: no cap). | `120` |
 | `media.skip_seconds` | How far the skip buttons jump. | `10` |
 | `media.playback_speeds` | The speeds the speed button cycles through. | `[1.0, 1.25, 1.5, 2.0, 0.5, 0.75]` |
 | `passwords.generator_length` | Length of generated passwords. | `20` |
@@ -161,6 +163,7 @@ and tests.
 | Variable | Effect |
 |---|---|
 | `AXION_CONFIG_DIR` | Use this folder instead of `~/.config/axion` for settings. |
+| `AXION_IMPORT_HOME` | Look for other browsers to import from in this folder (a fake home with `.config/…`, `.mozilla/…`) instead of `$HOME`. For tests and screenshots. |
 | `AXION_PROFILE_DIR` | Use this folder instead of `~/.local/share/axion/profile` for browsing data. |
 | `AXION_DEVICE_KEY_DIR` | Use this folder instead of `~/.local/share/axion` for the vault's device secret. |
 | `AXION_GPU` | `low`, `high` or part of a card's name. Overrides **Graphics card**. |
