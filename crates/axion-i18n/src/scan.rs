@@ -7,6 +7,8 @@
 pub enum Dialect {
     Rust,
     Script,
+    /// `data-t` elements (their text) and `data-t-attrs="a,b"` (those attributes), see `html_keys`.
+    Html,
 }
 
 /// One key found in a source text.
@@ -26,6 +28,7 @@ pub fn keys(text: &str, dialect: Dialect) -> Vec<Found> {
     let calls: &[(&str, usize)] = match dialect {
         Dialect::Rust => &RUST_CALLS,
         Dialect::Script => &SCRIPT_CALLS,
+        Dialect::Html => return html_keys(text),
     };
     let bytes = text.as_bytes();
     let mut found = Vec::new();
@@ -36,7 +39,10 @@ pub fn keys(text: &str, dialect: Dialect) -> Vec<Found> {
             let rest = text[i..].trim_start_matches([' ', '\t']);
             line_starts_comment = rest.starts_with("//");
         }
-        if line_starts_comment || !(bytes[i] as char).is_ascii_alphabetic() || (i > 0 && is_ident_or_dot(bytes[i - 1])) {
+        if line_starts_comment
+            || !(bytes[i] as char).is_ascii_alphabetic()
+            || (i > 0 && is_ident_or_dot(bytes[i - 1]))
+        {
             i += 1;
             continue;
         }
@@ -78,6 +84,63 @@ pub fn keys(text: &str, dialect: Dialect) -> Vec<Found> {
         i = at.max(i + 1);
     }
     found
+}
+
+/// Keys in an HTML page: the trimmed text of every element with a `data-t` attribute (up to the
+/// next tag, entities decoded) and the values of the attributes named in `data-t-attrs="a,b"`.
+fn html_keys(text: &str) -> Vec<Found> {
+    let mut found = Vec::new();
+    let mut at = 0;
+    while let Some(open) = text[at..].find('<') {
+        let start = at + open;
+        let Some(len) = text[start..].find('>') else { break };
+        let tag = &text[start..start + len];
+        let after = start + len + 1;
+        at = after;
+        if tag.starts_with("<!--") || tag.starts_with("</") {
+            continue;
+        }
+        let line = |pos: usize| text[..pos].matches('\n').count() + 1;
+        if has_attribute(tag, "data-t") {
+            let end = text[after..].find('<').map_or(text.len(), |e| after + e);
+            let key = decode_entities(text[after..end].trim());
+            if !key.is_empty() {
+                found.push(Found { key, line: line(after) });
+            }
+        }
+        if let Some(names) = attribute_value(tag, "data-t-attrs") {
+            for name in names.split(',').map(str::trim) {
+                if let Some(value) = attribute_value(tag, name) {
+                    found.push(Found { key: decode_entities(value), line: line(start) });
+                }
+            }
+        }
+    }
+    found
+}
+
+fn has_attribute(tag: &str, name: &str) -> bool {
+    tag.match_indices(name).any(|(i, _)| {
+        let before = tag[..i].chars().next_back();
+        let after = tag[i + name.len()..].chars().next();
+        before.is_some_and(char::is_whitespace) && after.is_none_or(|c| c.is_whitespace() || c == '/')
+    })
+}
+
+fn attribute_value<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("{name}=\"");
+    let (i, _) = tag.match_indices(&needle).find(|(i, _)| tag[..*i].ends_with(char::is_whitespace))?;
+    let rest = &tag[i + needle.len()..];
+    Some(&rest[..rest.find('"')?])
+}
+
+fn decode_entities(text: &str) -> String {
+    text.replace("&hellip;", "\u{2026}")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
 }
 
 fn is_ident_or_dot(b: u8) -> bool {
@@ -155,7 +218,9 @@ pub fn placeholders(text: &str) -> Vec<String> {
         match tail.find('}') {
             Some(close)
                 if !tail[..close].is_empty()
-                    && tail[..close].chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') =>
+                    && tail[..close]
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') =>
             {
                 found.push(tail[..close].to_owned());
                 rest = &tail[close + 1..];
@@ -188,6 +253,7 @@ pub fn workspace_keys(root: &std::path::Path) -> Used {
         let dialect = match path.extension().and_then(|e| e.to_str()) {
             Some("rs") => Dialect::Rust,
             Some("js") => Dialect::Script,
+            Some("html") => Dialect::Html,
             _ => continue,
         };
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
@@ -247,7 +313,10 @@ mod tests {
             tr("Con\
                 tinued");
         "#;
-        assert_eq!(rust(src), ["One", "Two {x}", "{n} item", "{n} items", "Mark \"q\" \u{2026}", "Continued"]);
+        assert_eq!(
+            rust(src),
+            ["One", "Two {x}", "{n} item", "{n} items", "Mark \"q\" \u{2026}", "Continued"]
+        );
     }
 
     #[test]
@@ -255,6 +324,14 @@ mod tests {
         let found = keys("x = t(\"Hello\") + not(\"no\") + t('single')", Dialect::Script);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].key, "Hello");
+    }
+
+    #[test]
+    fn html_keys_found() {
+        let html = "<h2 data-t>Start Page</h2>\n<input data-t-attrs=\"placeholder, aria-label\" placeholder=\"Add\" aria-label=\"A &amp; B\">\
+                    <span data-t>trackers &amp; ads</span><p data-thing>no</p>";
+        let keys: Vec<String> = keys(html, Dialect::Html).into_iter().map(|f| f.key).collect();
+        assert_eq!(keys, ["Start Page", "Add", "A & B", "trackers & ads"]);
     }
 
     #[test]

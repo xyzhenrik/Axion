@@ -127,6 +127,20 @@ pub fn tr_dyn(english: &str) -> String {
     lookup(english).unwrap_or(english).to_owned()
 }
 
+/// The current language's translations of the keys used by the given page sources (the start
+/// page's HTML and script), for handing to the page. Empty for English.
+pub fn page_catalog(sources: &[(&str, scan::Dialect)]) -> std::collections::BTreeMap<String, String> {
+    let mut map = std::collections::BTreeMap::new();
+    for (text, dialect) in sources {
+        for found in scan::keys(text, *dialect) {
+            if let Some(translation) = lookup(&found.key) {
+                map.insert(found.key, translation.to_owned());
+            }
+        }
+    }
+    map
+}
+
 /// Marks a literal as translatable without translating it (for `const`/`static` tables; the
 /// text is translated with [`tr`] where it is shown). Identity at runtime; the extractor sees it.
 pub const fn tr_mark(english: &'static str) -> &'static str {

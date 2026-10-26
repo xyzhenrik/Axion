@@ -108,7 +108,11 @@ impl General {
 
 impl Default for General {
     fn default() -> Self {
-        Self { homepage: START_PAGE_URL.into(), search_url: "https://duckduckgo.com/?q={}".into(), language: UiLanguage::System }
+        Self {
+            homepage: START_PAGE_URL.into(),
+            search_url: "https://duckduckgo.com/?q={}".into(),
+            language: UiLanguage::System,
+        }
     }
 }
 
