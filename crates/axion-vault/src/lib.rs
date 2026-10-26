@@ -45,6 +45,7 @@ pub mod site;
 use std::cell::RefCell;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -123,6 +124,8 @@ pub struct Vault {
     related: site::Related,
     /// Site tags read from the index, for the locked-state check (see [`Vault::site_known`]).
     index: RefCell<Option<Vec<[u8; crypto::SITE_TAG_LEN]>>>,
+    /// A background load of the device key is running (see [`Vault::load_device_key_in_background`]).
+    loading_device_key: Arc<AtomicBool>,
     /// Tests: make the format upgrade fail just before it commits.
     #[cfg(test)]
     fail_upgrade: bool,
@@ -156,6 +159,7 @@ impl Vault {
             last_activity: Instant::now(),
             related: site::Related::default(),
             index: RefCell::new(None),
+            loading_device_key: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             fail_upgrade: false,
         })
@@ -490,16 +494,43 @@ impl Vault {
         }
     }
 
+    /// Whether the device key is loaded, so that [`Vault::site_known`] answers without waiting.
+    pub fn device_ready(&self) -> bool {
+        self.device.ready_secret().is_some()
+    }
+
+    /// Loads the device key on a thread of its own: unsealing it with the TPM takes most of a
+    /// second, which the UI thread must not wait for. One load at a time; a failed one may be
+    /// started again.
+    pub fn load_device_key_in_background(&self) {
+        if self.device_ready() || self.loading_device_key.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let device = Arc::clone(&self.device);
+        let loading = Arc::clone(&self.loading_device_key);
+        let spawned = std::thread::Builder::new().name("vault-device-key".into()).spawn(move || {
+            if let Err(e) = device.secret() {
+                tracing::warn!("loading the device key failed: {e}");
+            }
+            loading.store(false, Ordering::Release);
+        });
+        if let Err(e) = spawned {
+            self.loading_device_key.store(false, Ordering::Release);
+            tracing::warn!("loading the device key failed: {e}");
+        }
+    }
+
     /// Whether a login is saved for the site of `page_url` (or a related one), answered
     /// without unlocking, from the keyed index. `None` if the vault has no index yet (it is
-    /// made on the next unlock) or the device key can't be read.
+    /// made on the next unlock) or the device key isn't at hand: it never waits for the TPM
+    /// (see [`Vault::load_device_key_in_background`]).
     pub fn site_known(&self, page_url: &str) -> Option<bool> {
         if self.index.borrow().is_none() {
             let raw = self.meta("site_index").ok().flatten()?;
             let tags = raw.as_chunks::<{ crypto::SITE_TAG_LEN }>().0.to_vec();
             *self.index.borrow_mut() = Some(tags);
         }
-        let device = self.device.secret().ok()?;
+        let device = self.device.ready_secret()?;
         let index = self.index.borrow();
         let tags = index.as_ref()?;
         Some(
@@ -704,6 +735,55 @@ mod tests {
         v.delete(&id).unwrap();
         v.lock();
         assert_eq!(v.site_known("https://youtube.com/"), Some(false));
+    }
+
+    /// A device key that takes a while to load, like the TPM's.
+    struct SlowDevice {
+        secret: [u8; crypto::KEY_LEN],
+        loaded: std::sync::Mutex<bool>,
+    }
+
+    impl DeviceKey for SlowDevice {
+        fn secret(&self) -> std::result::Result<device::DeviceSecret, DeviceKeyError> {
+            let mut loaded = self.loaded.lock().unwrap();
+            if !*loaded {
+                std::thread::sleep(Duration::from_millis(300));
+                *loaded = true;
+            }
+            Ok(zeroize::Zeroizing::new(self.secret))
+        }
+
+        fn ready_secret(&self) -> Option<device::DeviceSecret> {
+            (*self.loaded.try_lock().ok()?).then(|| zeroize::Zeroizing::new(self.secret))
+        }
+    }
+
+    /// Regression: the locked-state check on a sign-in form unsealed the device key with the
+    /// TPM on the UI thread (most of a second, every time while the TPM failed).
+    #[test]
+    fn the_site_check_never_waits_for_the_device_key() {
+        let path = scratch_file("slow-device");
+        let slow = || Arc::new(SlowDevice { secret: [7; crypto::KEY_LEN], loaded: Default::default() });
+        {
+            let mut v = Vault::open(&path, slow()).unwrap();
+            v.setup_with("test-only-pass", KdfParams::TEST).unwrap();
+            v.add(login("https://example.org", "me", "pw")).unwrap();
+        }
+        let v = Vault::open(&path, slow()).unwrap();
+        assert!(!v.device_ready());
+        let started = Instant::now();
+        assert_eq!(v.site_known("https://example.org/"), None, "not loaded: no answer yet");
+        assert!(started.elapsed() < Duration::from_millis(200), "it waited for the device key");
+        v.load_device_key_in_background();
+        v.load_device_key_in_background();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !v.device_ready() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(v.device_ready());
+        assert_eq!(v.site_known("https://example.org/"), Some(true));
+        assert_eq!(v.site_known("https://example.com/"), Some(false));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

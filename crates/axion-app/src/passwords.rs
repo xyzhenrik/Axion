@@ -580,6 +580,11 @@ impl Passwords {
     pub fn build(ui: &mut Ui, bar: NodeId, path: &Path, device: Arc<dyn DeviceKey>, account: &str) -> Self {
         let vault =
             Vault::open(path, device).inspect_err(|e| tracing::error!("passwords unavailable: {e}")).ok();
+        // Sign-in forms are checked against the vault's site index with the device key: have
+        // it loaded (the TPM takes most of a second) before the first one, off this thread.
+        if let Some(vault) = vault.as_ref().filter(|v| v.is_set_up()) {
+            vault.load_device_key_in_background();
+        }
         let prompt = Prompt::build(ui, bar);
         let root = ui.add(
             ui.root(),
@@ -1988,7 +1993,11 @@ impl Passwords {
                     // logins (or has no index yet, a vault from before it: the first unlock
                     // builds it). Sites without saved logins never prompt, unless the user
                     // said "Not Now" for this site.
-                    if vault.is_set_up()
+                    if vault.is_set_up() && !vault.device_ready() {
+                        // Not loaded yet (or the TPM failed): no prompt now rather than the UI
+                        // waiting for the TPM; the next form asks again.
+                        vault.load_device_key_in_background();
+                    } else if vault.is_set_up()
                         && vault.site_known(url) != Some(false)
                         && !self.unlock_dismissed.contains(&site::display_host(url))
                     {
