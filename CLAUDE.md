@@ -92,6 +92,11 @@ Glass is the product's identity. It must:
 - adapt contrast for legibility on any backdrop (light, dark, busy);
 - hold **120 fps on an integrated GPU** at 1440p. Profile before adding passes.
 
+**Every glass button is full glass (user rule, always).** No grey/opaque fill, plate or halo
+behind a glass button or any glass control: only the refractive glass layer (tint goes through
+the glass tint parameters, never through a background fill). Check every new button on light
+and dark backdrops with `--capture` before calling it done.
+
 Provide a "Reduce Transparency" / "Reduce Motion" setting that degrades gracefully.
 
 ## Conventions
