@@ -415,6 +415,11 @@ pub struct Chrome {
     download_state: Option<(bool, Option<u8>)>,
     tab_widths: TabWidths,
     bookmarks: BookmarkRow,
+    /// Toolbar parts that stay hidden while locked private browsing is shown (only the sidebar
+    /// button and the overview button remain).
+    lock_hidden: Vec<NodeId>,
+    /// The window size of the last `apply_layout`.
+    window: Vec2,
 }
 
 /// Tab segment widths: every tab of the bar is equally wide (the preferred width, shrinking
@@ -1074,8 +1079,10 @@ impl Chrome {
             Style { size: Size { width: percent(0.0), height: percent(1.0) }, ..Default::default() },
         );
         ui.set_visible(downloads, false);
-        icon_button(ui, actions, ChromeAction::Share, Widget::icon(Icon::Share, 21.0), BUTTON);
-        icon_button(ui, actions, ChromeAction::NewTab, Widget::icon(Icon::Plus, 22.0), BUTTON);
+        let (share_button, _) =
+            icon_button(ui, actions, ChromeAction::Share, Widget::icon(Icon::Share, 21.0), BUTTON);
+        let (new_tab_button, _) =
+            icon_button(ui, actions, ChromeAction::NewTab, Widget::icon(Icon::Plus, 22.0), BUTTON);
         let (overview, _) =
             icon_button(ui, actions, ChromeAction::Overview, Widget::icon(Icon::Overview, 20.0), BUTTON);
         // Narrow windows: the overview button shows the tab count instead.
@@ -1130,6 +1137,17 @@ impl Chrome {
             slide: Animated::new(0.0, Spring::SMOOTH),
             private_row: ui.parent(private_label).unwrap_or(sidebar),
             private_lock: private_lock.unwrap_or(sidebar),
+            lock_hidden: vec![
+                tab_capsule,
+                address_slot,
+                back,
+                forward,
+                home_button,
+                share_button,
+                new_tab_button,
+                downloads,
+            ],
+            window: Vec2::new(1280.0, 800.0),
             private_chevron,
             private_chevron_icon,
             private_section_open: true,
@@ -1427,7 +1445,7 @@ impl Chrome {
             return;
         }
         self.download_state = Some(state);
-        ui.set_visible(self.downloads, shown);
+        ui.set_visible(self.downloads, shown && !self.locked);
         ui.set_visible(self.download_track, progress.is_some());
         let mut style = ui.style(self.download_fill);
         style.size.width = percent(progress.unwrap_or(0.0).clamp(0.0, 1.0));
@@ -1513,8 +1531,10 @@ impl Chrome {
     }
 
     /// While private browsing is locked, tab titles and the address stay hidden.
-    pub fn set_locked(&mut self, ui: &mut Ui, locked: bool) {
+    pub fn set_locked(&mut self, ui: &mut Ui, config: &Config, locked: bool) {
         self.locked = locked;
+        // The address bar and the toolbar's page buttons go (or come back).
+        self.apply_layout(ui, config, self.window);
         self.update_tab_lists(ui);
         for &pill in &self.pills {
             ui.set_visible(pill, !locked && self.mode != Mode::Narrow);
@@ -1623,6 +1643,7 @@ impl Chrome {
 
     /// Positions the toolbar and sidebar for the window size (logical px).
     pub fn apply_layout(&mut self, ui: &mut Ui, config: &Config, window: Vec2) {
+        self.window = window;
         let l = &config.layout;
         self.mode = if window.x >= l.wide_from {
             Mode::Wide
@@ -1724,6 +1745,14 @@ impl Chrome {
         }
         ui.set_visible(self.overview, !narrow);
         ui.set_visible(self.tab_count, narrow);
+        if self.locked {
+            // Locked private browsing shows no address bar, tab row or page buttons.
+            for &node in &self.lock_hidden {
+                ui.set_visible(node, false);
+            }
+            ui.set_visible(self.tab_strip, false);
+            ui.set_visible(self.bookmarks.bar, false);
+        }
     }
 
     /// The page's rectangle (logical px): below the toolbar, beside a docked sidebar, with a
