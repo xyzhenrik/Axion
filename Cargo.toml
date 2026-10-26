@@ -7,6 +7,8 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.90"
 publish = false
+license = "MIT"
+repository = "https://github.com/xyzhenrik/Axion"
 
 [workspace.dependencies]
 ash = "0.38"
@@ -17,6 +19,7 @@ axion-config = { path = "crates/axion-config" }
 axion-engine = { path = "crates/axion-engine" }
 axion-glass = { path = "crates/axion-glass" }
 axion-i18n = { path = "crates/axion-i18n" }
+axion-import = { path = "crates/axion-import" }
 axion-physics = { path = "crates/axion-physics" }
 axion-shields = { path = "crates/axion-shields" }
 axion-tabs = { path = "crates/axion-tabs" }

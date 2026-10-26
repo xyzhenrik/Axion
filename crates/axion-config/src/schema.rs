@@ -17,14 +17,17 @@ pub struct Config {
     pub motion: Motion,
     pub layout: Layout,
     pub privacy: Privacy,
+    pub permissions: Permissions,
     pub shields: Shields,
     pub tabs: Tabs,
     pub media: Media,
+    pub hardware: Hardware,
     pub playlist: Playlist,
     pub downloads: Downloads,
     pub data: Data,
     pub passwords: Passwords,
     pub accounts: Accounts,
+    pub import: Import,
     pub find: Find,
     pub devtools: DevTools,
     pub clipboard: Clipboard,
@@ -33,6 +36,28 @@ pub struct Config {
     pub ui: Ui,
     pub updates: Updates,
     pub extensions: Extensions,
+}
+
+/// Importing bookmarks and history from other browsers (Settings › Data & Downloads).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Import {
+    /// At most this many history entries are imported per browser profile, the most recently
+    /// visited first.
+    pub max_history_items: u32,
+    /// At most this many bookmarks are imported per profile or file.
+    pub max_bookmarks: u32,
+    /// Browser databases larger than this are not imported (MB; they are copied first, so
+    /// this much temporary space is needed).
+    pub max_database_mb: u32,
+    /// Bookmark files (HTML, JSON) larger than this are refused (MB).
+    pub max_file_mb: u32,
+}
+
+impl Default for Import {
+    fn default() -> Self {
+        Self { max_history_items: 20_000, max_bookmarks: 50_000, max_database_mb: 512, max_file_mb: 64 }
+    }
 }
 
 /// Account profile pictures.
@@ -68,6 +93,10 @@ pub struct General {
     /// shows once; Settings › General › Show Welcome Tour runs it again). Accounts that
     /// existed before the tour was added count as done.
     pub onboarding_done: bool,
+    /// Linux: add Axion to the application menu at start (a per-user `axion.desktop` and the
+    /// icon set in `$XDG_DATA_HOME`), which is what gives the window its icon on Wayland.
+    /// Off: Axion leaves the desktop entry alone (and removes nothing).
+    pub desktop_integration: bool,
 }
 
 /// Which language the interface is shown in.
@@ -120,6 +149,7 @@ impl Default for General {
             search_url: "https://duckduckgo.com/?q={}".into(),
             language: UiLanguage::System,
             onboarding_done: false,
+            desktop_integration: true,
         }
     }
 }
@@ -263,6 +293,21 @@ pub enum ThemeMode {
     Auto,
 }
 
+/// What happens to a site icon that would vanish on the chrome (a black glyph on dark chrome,
+/// a white one on light chrome).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FaviconContrast {
+    /// Icons are shown as the site made them.
+    Off,
+    /// A small neutral tile in the opposite tone goes behind the icon.
+    Backing,
+    /// Single-colour glyphs are inverted (white on dark chrome, like Safari and Arc); coloured
+    /// icons that vanish get the tile.
+    #[default]
+    Invert,
+}
+
 /// How the window tint is picked from the page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -292,6 +337,8 @@ pub struct Appearance {
     /// Switch the chrome between light and dark to match the page's brightness (opt-in; off:
     /// the chrome follows `theme` only, so it never depends on the website).
     pub adapt_to_page: bool,
+    /// What to do with site icons that are hard to see on the chrome (see `FaviconContrast`).
+    pub favicon_contrast: FaviconContrast,
     /// Icon stroke weight in the light chrome, as a multiple of the design's base stroke
     /// (1.75 in a 24-unit box). Dark-on-light icons look thinner than light-on-dark ones, so
     /// light defaults a little heavier. Clamped to 0.5-2.0 when used. Only the stroke changes;
@@ -326,6 +373,7 @@ impl Default for Appearance {
             font_family: "Inter".into(),
             text_scale: 1.0,
             adapt_to_page: false,
+            favicon_contrast: FaviconContrast::Invert,
             icon_stroke_light: 1.2,
             icon_stroke_dark: 1.0,
             tint_from_page: false,
@@ -409,6 +457,12 @@ pub struct Glass {
     /// thickness: buttons are pure refractive glass, never a grey plate. Text-bearing panels keep
     /// their level's opacity.
     pub button_opacity: f32,
+    /// Tint opacity (0–1) of tinted (primary, destructive) glass buttons: how much of the accent
+    /// colour the glass takes. The rest is the backdrop, refracted, with the rim light on top.
+    pub tinted_opacity: f32,
+    /// Rim light of tinted glass buttons relative to plain glass (1 = the same): coloured glass
+    /// reads as glass by its bright, refractive edge.
+    pub tinted_rim: f32,
     /// Extra tint opacity over busy or mid-grey backdrops, to keep labels legible.
     pub adaptive_opacity: f32,
     /// Replace glass with opaque surfaces.
@@ -473,6 +527,8 @@ impl Default for Glass {
             popover_bridge_fillet: 30.0,
             menu_plate_opacity: 0.6,
             button_opacity: 0.04,
+            tinted_opacity: 0.65,
+            tinted_rim: 1.6,
             adaptive_opacity: 0.12,
             reduce_transparency: false,
             reduce_motion: false,
@@ -656,6 +712,14 @@ pub struct Layout {
     /// so Chromium's frame of a size arrives as the panel gets there (the first estimate of
     /// Chromium's delay, then measured).
     pub sidebar_slide_lead: f32,
+    /// While the window is being resized: seconds the shown page may take to deliver its
+    /// frame of the size it was last given before it is given the window's newest size anyway
+    /// (sizes in between are skipped; each costs Chromium a layout and a frame). 0 resizes
+    /// the page with every step of the window.
+    pub window_resize_wait: f32,
+    /// Seconds after the window last changed size before the tabs in the background follow
+    /// it (they are not shown meanwhile; resizing them at every step made a resize lag).
+    pub background_resize_delay: f32,
     /// Always float the sidebar over the page as a rounded glass card (it never pushes the
     /// page), whatever the window size.
     pub float_sidebar: bool,
@@ -665,9 +729,15 @@ pub struct Layout {
     pub wide_from: f32,
     /// Below this window width, tabs collapse into a single compact capsule.
     pub narrow_below: f32,
-    /// Preferred width of a tab in the separate tab bar and of the other tabs' segments in the
-    /// compact one; all tabs share it, and they shrink equally when they don't fit.
+    /// Preferred width of a tab in the separate tab bar; all tabs share it, and they shrink
+    /// equally when they don't fit.
     pub tab_width: f32,
+    /// Compact tab bar: the widest a tab segment gets (all segments, the open one with the
+    /// address included, are equally wide); 0 = they fill the capsule.
+    pub compact_tab_max_width: f32,
+    /// Compact tab bar: while the address is being edited, the open segment grows to this width
+    /// (at most the capsule's room); the others shrink equally to make space.
+    pub compact_address_width: f32,
     /// Below this width a tab drops its title (and close button) and shows only its favicon.
     pub tab_min_width: f32,
     /// Tabs shrink no further than this (icon only, logical px); beyond it they overflow.
@@ -722,11 +792,15 @@ impl Default for Layout {
             sidebar_slide_resize: SidebarSlideResize::Live,
             sidebar_slide_resize_step: 2.0,
             sidebar_slide_lead: 0.05,
+            window_resize_wait: 0.1,
+            background_resize_delay: 0.3,
             float_sidebar: false,
             sidebar_corner_radius: 26.0,
             wide_from: 1280.0,
             narrow_below: 800.0,
             tab_width: 260.0,
+            compact_tab_max_width: 0.0,
+            compact_address_width: 480.0,
             tab_min_width: 72.0,
             tab_icon_width: 36.0,
             pinned_tab_width: 0.0,
@@ -769,6 +843,60 @@ pub struct Extensions {
     /// install dialog that has no window to attach to in off-screen mode and crashes Chromium.
     /// Applies after a restart. Default: off.
     pub enabled: bool,
+}
+
+/// What happens when a site asks for a permission nobody has decided for it yet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionDefault {
+    /// Show the prompt.
+    #[default]
+    Ask,
+    /// Refuse without asking.
+    Block,
+}
+
+impl PermissionDefault {
+    pub fn blocks(self) -> bool {
+        self == PermissionDefault::Block
+    }
+}
+
+/// Site permissions: what sites may ask for, and what Axion does when they do. Decisions for
+/// single sites are remembered in the profile (Settings › Privacy › Site Permissions), not here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Permissions {
+    pub microphone: PermissionDefault,
+    pub camera: PermissionDefault,
+    /// Sharing a screen or window (calls, Discord streams). Allowing is never remembered:
+    /// every share asks.
+    pub screen_sharing: PermissionDefault,
+    pub notifications: PermissionDefault,
+    pub location: PermissionDefault,
+    /// Reading the clipboard (writing to it needs no permission).
+    pub clipboard: PermissionDefault,
+    /// Everything else sites can ask for: MIDI devices, the local network, window placement,
+    /// installed fonts, idle detection, pointer and keyboard lock, sensors, several downloads.
+    pub other: PermissionDefault,
+    /// "Stop" in the capture popover ends the page's tracks; if the page still records this
+    /// long after, the page is reloaded (milliseconds).
+    pub stop_reload_after_ms: u32,
+}
+
+impl Default for Permissions {
+    fn default() -> Self {
+        Self {
+            microphone: PermissionDefault::Ask,
+            camera: PermissionDefault::Ask,
+            screen_sharing: PermissionDefault::Ask,
+            notifications: PermissionDefault::Ask,
+            location: PermissionDefault::Ask,
+            clipboard: PermissionDefault::Ask,
+            other: PermissionDefault::Ask,
+            stop_reload_after_ms: 1500,
+        }
+    }
 }
 
 /// When finished downloads leave the Downloads list.
@@ -984,6 +1112,10 @@ pub struct Ui {
     pub onboarding_max_height: f32,
     /// How strongly the window behind the introduction is veiled with the theme's ground colour (0-1); the steps sit directly on it, with no panel of their own.
     pub onboarding_dim: f32,
+    /// A frame that would look exactly like the one on screen is not composited and presented
+    /// again: while nothing moves the GPU rests (the window still checks for changes once per
+    /// display refresh). Off: every frame is drawn.
+    pub skip_unchanged_frames: bool,
 }
 
 impl Default for Ui {
@@ -996,6 +1128,7 @@ impl Default for Ui {
             onboarding_max_width: 880.0,
             onboarding_max_height: 640.0,
             onboarding_dim: 0.84,
+            skip_unchanged_frames: true,
         }
     }
 }
@@ -1004,7 +1137,7 @@ impl Default for Ui {
 /// with a GitHub-compatible releases API via `updates.api_url`). **Fill this in once the
 /// project's repository exists**; while it and `updates.manifest_url` are both empty, the
 /// updater does nothing at all (no network access, no notices).
-pub const DEFAULT_REPOSITORY: &str = "";
+pub const DEFAULT_REPOSITORY: &str = "xyzhenrik/Axion";
 
 /// Which releases the updater offers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1116,6 +1249,54 @@ impl Default for Clipboard {
     }
 }
 
+/// How Chromium hands finished page frames to Axion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PageFrames {
+    /// Share them as GPU textures where that is known to work (NVIDIA's driver on Wayland),
+    /// copy them through memory elsewhere.
+    #[default]
+    Auto,
+    /// Always share GPU memory. On AMD's RADV driver this can crash the GPU driver.
+    Gpu,
+    /// Always copy frames through system memory.
+    Software,
+}
+
+/// Which graphics card Axion draws with (and Chromium is pinned to).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuChoice {
+    /// The discrete card if there is one (`AXION_GPU` can override).
+    #[default]
+    Auto,
+    /// The integrated card (power saving).
+    Low,
+    /// The most powerful card (performance).
+    High,
+}
+
+/// Hardware acceleration. Everything here is read when Axion starts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Hardware {
+    /// Master switch. Off: Chromium renders pages, video and canvas in software and pages are
+    /// painted through system memory. Axion's own interface still needs the GPU (wgpu).
+    pub enabled: bool,
+    /// How page frames reach Axion (`AXION_OSR=software|gpu` overrides it).
+    pub page_frames: PageFrames,
+    /// Which graphics card to use (`AXION_GPU=low` overrides it).
+    pub gpu: GpuChoice,
+    /// GPU rasterization (also what makes WebGL and canvas smooth) and zero-copy uploads.
+    pub gpu_rasterization: bool,
+}
+
+impl Default for Hardware {
+    fn default() -> Self {
+        Self { enabled: true, page_frames: PageFrames::Auto, gpu: GpuChoice::Auto, gpu_rasterization: true }
+    }
+}
+
 /// How hard Shields blocks on a site.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1197,6 +1378,12 @@ pub struct Tabs {
     pub drag_threshold: f32,
     /// Pages draw at most this many frames per second; 0 follows the display's refresh rate.
     pub max_frame_rate: u32,
+    /// Following the display (`max_frame_rate = 0`), pages draw at most this many frames per
+    /// second (0: as many as the display shows). Each page frame costs Chromium a frame of its
+    /// own GPU work and Axion a copy: a busy chat-app-like page (DOM updates, WebGL, canvas,
+    /// video) kept Chromium's processes at 0.75 CPU cores at 60, 1.3 at 120 and 1.55 at 240
+    /// frames per second, for motion that hardly looks smoother.
+    pub max_frame_rate_cap: u32,
     /// GPU-shared page frames are copied this many milliseconds after Chromium hands them over
     /// (0: at once). Chromium reports a frame once its drawing is *submitted*, and the driver
     /// gives no fence to wait for, so a copy made at once can still hold the buffer's previous
@@ -1219,6 +1406,7 @@ impl Default for Tabs {
             check_interval_seconds: 5.0,
             drag_threshold: 6.0,
             max_frame_rate: 0,
+            max_frame_rate_cap: 120,
             gpu_frame_settle_ms: 6.0,
         }
     }
@@ -1248,7 +1436,8 @@ pub struct Media {
     pub volume_step: f32,
     /// The speed button cycles through these.
     pub playback_speeds: Vec<f32>,
-    /// Decode video on the GPU (VA-API).
+    /// Decode video on the GPU (VA-API). Needs `hardware.enabled`; shown in Settings › Media and
+    /// Settings › Hardware (applies after a restart).
     pub hardware_decoding: bool,
     /// Show what plays in the desktop's media controls and take the media keys (MPRIS).
     pub desktop_integration: bool,

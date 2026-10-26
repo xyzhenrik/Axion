@@ -1,6 +1,8 @@
 //! The first-run introduction: a full-window Liquid Glass sheet with five steps, like the
 //! Setup Assistant of macOS or Safari's intro on iPadOS. Welcome and language, appearance,
-//! tabs and sidebar, glass or flat, and the account.
+//! tabs and sidebar, glass or flat, and the account. When other browsers are installed a sixth
+//! step, "Bring your bookmarks", sits before the account: importing there comes right before
+//! the last step, and the account step stays the one that ends with "Start Browsing".
 //!
 //! Every choice is applied to the real interface behind the sheet while the sheet is open
 //! (the browser writes it into the account's config through the usual settings path), so the
@@ -40,12 +42,18 @@ pub enum Step {
     Layout,
     /// Liquid Glass or flat, and the Reduce Transparency / Motion switches.
     Glass,
+    /// Bookmarks and history of the other browsers found on this computer (only offered when
+    /// there are some).
+    Import,
     /// Name, picture and an optional password of the local account.
     Account,
 }
 
 impl Step {
     pub const ALL: [Step; 5] = [Step::Welcome, Step::Appearance, Step::Layout, Step::Glass, Step::Account];
+    /// The steps when there is something to import.
+    pub const WITH_IMPORT: [Step; 6] =
+        [Step::Welcome, Step::Appearance, Step::Layout, Step::Glass, Step::Import, Step::Account];
 }
 
 /// How the introduction ended.
@@ -62,16 +70,26 @@ pub enum Ending {
 pub struct Flow {
     index: usize,
     ending: Option<Ending>,
+    /// Whether the import step is part of the flow.
+    import: bool,
 }
 
 impl Flow {
-    /// Starts at step `index` (counting from 0; clamped to the last step).
-    pub fn at(index: usize) -> Self {
-        Self { index: index.min(Step::ALL.len() - 1), ending: None }
+    /// Starts at step `index` (counting from 0; clamped to the last step); `import`: the
+    /// import step is part of the flow.
+    pub fn at(index: usize, import: bool) -> Self {
+        let mut flow = Self { index: 0, ending: None, import };
+        flow.index = index.min(flow.steps().len() - 1);
+        flow
+    }
+
+    /// The steps of this flow, in order.
+    pub fn steps(&self) -> &'static [Step] {
+        if self.import { &Step::WITH_IMPORT } else { &Step::ALL }
     }
 
     pub fn step(&self) -> Step {
-        Step::ALL[self.index]
+        self.steps()[self.index]
     }
 
     pub fn index(&self) -> usize {
@@ -83,7 +101,7 @@ impl Flow {
     }
 
     pub fn is_last(&self) -> bool {
-        self.index + 1 == Step::ALL.len()
+        self.index + 1 == self.steps().len()
     }
 
     #[cfg(test)]
@@ -125,7 +143,7 @@ impl Flow {
     /// Jumps to a step (capture aid).
     pub fn goto(&mut self, index: usize) {
         if self.ending.is_none() {
-            self.index = index.min(Step::ALL.len() - 1);
+            self.index = index.min(self.steps().len() - 1);
         }
     }
 }
@@ -195,6 +213,9 @@ const ACCENT_BASE: u32 = BASE + 30;
 const TAB_BAR_BASE: u32 = BASE + 40;
 const SIDEBAR_BASE: u32 = BASE + 50;
 const GLASS_BASE: u32 = BASE + 60;
+const IMPORT_BASE: u32 = BASE + 70;
+/// Browsers listed in the import step.
+pub const MAX_SOURCES: usize = 4;
 
 const LANGUAGES: [(&str, UiLanguage); 3] =
     [("System", UiLanguage::System), ("English", UiLanguage::English), ("Deutsch", UiLanguage::German)];
@@ -240,6 +261,8 @@ pub enum Click {
     Skip,
     ChoosePhoto,
     RemovePhoto,
+    /// Selects or deselects the browser at this index in the import step.
+    Import(usize),
     Pick(Pick),
 }
 
@@ -263,6 +286,8 @@ fn click_of(id: ActionId) -> Option<Click> {
                 Click::Pick(Pick::TabBar(TAB_BARS[i]))
             } else if let Some(i) = index(SIDEBAR_BASE, 2) {
                 Click::Pick(Pick::FloatSidebar(i == 1))
+            } else if let Some(i) = index(IMPORT_BASE, MAX_SOURCES) {
+                Click::Import(i)
             } else {
                 let i = index(GLASS_BASE, GLASS_STYLES.len())?;
                 Click::Pick(Pick::Glass(GLASS_STYLES[i]))
@@ -304,6 +329,9 @@ pub enum Reaction {
     Moved,
     ChoosePhoto,
     RemovePhoto,
+    /// The import step was left with these browsers (indexes into the offered ones) selected:
+    /// start importing their bookmarks and history. The step has moved on.
+    Import(Vec<usize>),
     /// The introduction is over.
     End(Ending, Option<AccountChoice>),
 }
@@ -326,7 +354,6 @@ const SLIDE_DISTANCE: f32 = 56.0;
 /// How far the focused tile grows on every side (logical px).
 const FOCUS_GROW: f32 = 4.0;
 const ERROR: Color = Color::rgb(0xD0362B);
-const WHITE: Paint = Paint::Fixed(Color::rgb(0xFFFFFF));
 
 fn spring(config: &Config) -> Spring {
     if config.glass.reduce_motion {
@@ -921,6 +948,17 @@ struct Fields {
     confirm: NodeId,
 }
 
+/// A browser offered in the import step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportChoice {
+    /// "Google Chrome · Person 1".
+    pub label: String,
+    /// What it holds ("Bookmarks and history").
+    pub detail: String,
+    /// Checked at first: the most recently used browser.
+    pub selected: bool,
+}
+
 pub struct Onboarding {
     root: NodeId,
     card: NodeId,
@@ -950,6 +988,10 @@ pub struct Onboarding {
     /// Space between neighbouring glass controls: wider than `glass.merge_distance`, so they
     /// never bridge at rest (only a press merges them).
     apart: f32,
+    /// The other browsers found (the import step exists when there are any) and whether the
+    /// import of the current picks was started already.
+    sources: Vec<ImportChoice>,
+    import_started: bool,
 }
 
 impl Onboarding {
@@ -975,7 +1017,7 @@ impl Onboarding {
             root,
             card,
             body: None,
-            flow: Flow::at(0),
+            flow: Flow::at(0, false),
             open: false,
             window: Vec2::new(1280.0, 800.0),
             appear: Animated::new(0.0, Spring::SNAPPY),
@@ -994,7 +1036,33 @@ impl Onboarding {
             max_size: Vec2::new(880.0, 640.0),
             dim: 0.3,
             apart: 28.0,
+            sources: Vec::new(),
+            import_started: false,
         }
+    }
+
+    /// The browsers whose data can be imported. With none, the introduction has no import
+    /// step; set before [`Self::open`].
+    pub fn set_sources(&mut self, sources: Vec<ImportChoice>) {
+        self.sources = sources;
+        self.import_started = false;
+    }
+
+    /// Indexes of the browsers that are checked (and shown).
+    fn picked(&self) -> Vec<usize> {
+        self.sources
+            .iter()
+            .enumerate()
+            .take(MAX_SOURCES)
+            .filter(|(_, s)| s.selected)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The steps this introduction goes through.
+    #[cfg(test)]
+    pub fn steps(&self) -> &'static [Step] {
+        self.flow.steps()
     }
 
     pub fn root(&self) -> NodeId {
@@ -1022,7 +1090,7 @@ impl Onboarding {
     /// Shows the introduction from the first step (or `step`, a capture aid).
     pub fn open(&mut self, ui: &mut Ui, config: &Config, window: Vec2, step: usize) -> Vec<UiEvent> {
         self.open = true;
-        self.flow = Flow::at(step);
+        self.flow = Flow::at(step, !self.sources.is_empty());
         self.draft = Draft { name: self.account.name.clone(), ..Draft::default() };
         self.error = None;
         self.focus = None;
@@ -1115,7 +1183,17 @@ impl Onboarding {
                         }
                     };
                 }
-                self.go(ui, config, 1)
+                let picks = if self.flow.step() == Step::Import && !self.import_started {
+                    self.picked()
+                } else {
+                    Vec::new()
+                };
+                let reaction = self.go(ui, config, 1);
+                if picks.is_empty() {
+                    return reaction;
+                }
+                self.import_started = true;
+                Reaction::Import(picks)
             }
             Click::Back => {
                 self.sync_draft(ui);
@@ -1132,6 +1210,14 @@ impl Onboarding {
             Click::RemovePhoto => {
                 self.sync_draft(ui);
                 Reaction::RemovePhoto
+            }
+            Click::Import(i) => {
+                if let Some(source) = self.sources.get_mut(i) {
+                    source.selected = !source.selected;
+                    self.import_started = false;
+                }
+                self.rebuild(ui, config);
+                Reaction::Moved
             }
             Click::Pick(pick) => {
                 self.sync_draft(ui);
@@ -1372,6 +1458,7 @@ impl Onboarding {
             Step::Appearance => self.appearance(ui, body, config, inner),
             Step::Layout => self.layout(ui, body, config, inner),
             Step::Glass => self.glass(ui, body, config, inner),
+            Step::Import => self.import_step(ui, body, config, inner),
             Step::Account => self.account_step(ui, body, config, inner),
         }
         self.footer(ui, config);
@@ -1414,7 +1501,7 @@ impl Onboarding {
     fn pill(&mut self, ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, kind: PillKind) -> NodeId {
         let (background, label_paint) = match kind {
             PillKind::Primary | PillKind::Selected => {
-                (Background::TintedGlass(GlassLevel::Thin, Paint::Accent), Some(WHITE))
+                (Background::TintedGlass(GlassLevel::Thin, Paint::Accent), Some(Paint::OnAccent))
             }
             PillKind::Plain | PillKind::Small => (Background::Glass(GlassLevel::Thin), None),
         };
@@ -1481,7 +1568,7 @@ impl Onboarding {
         }
         // The step dots.
         let dots = ui.add(footer, Widget::container(), row(8.0));
-        for i in 0..Step::ALL.len() {
+        for i in 0..self.flow.steps().len() {
             let current = i == self.flow.index();
             ui.add(
                 dots,
@@ -1535,12 +1622,12 @@ impl Onboarding {
         picture(ui, node);
         let name = ui.add_label(node, label, TextStyle::Callout, Style::default());
         if selected && let Some(w) = ui.widget_mut(name) {
-            w.set_paint(WHITE);
+            w.set_paint(Paint::OnAccent);
         }
         if let Some(detail) = detail {
             let note = ui.add_label(node, detail, TextStyle::Footnote, Style::default());
             if let Some(w) = ui.widget_mut(note) {
-                w.set_paint(if selected { WHITE } else { Paint::Secondary });
+                w.set_paint(if selected { Paint::OnAccent } else { Paint::Secondary });
             }
         }
         let mark = ui.add(
@@ -1833,6 +1920,127 @@ impl Onboarding {
         }
     }
 
+    fn import_step(&mut self, ui: &mut Ui, body: NodeId, config: &Config, inner: f32) {
+        let _ = config;
+        self.title(
+            ui,
+            body,
+            tr("Bring your bookmarks"),
+            tr("Import bookmarks and history from the browsers on this computer. They are only read, never changed."),
+            inner,
+        );
+        let width = (inner * 0.8).clamp(300.0, 520.0);
+        let shown = if self.compact() { MAX_SOURCES - 1 } else { MAX_SOURCES };
+        let list = ui.add(
+            body,
+            Widget::container(),
+            Style {
+                align_items: AlignItems::CENTER,
+                margin: margin(0.0, 0.0, 6.0, 0.0),
+                ..column(self.apart)
+            },
+        );
+        let sources = self.sources.clone();
+        for (i, source) in sources.iter().take(shown).enumerate() {
+            self.source_row(ui, list, i, source, width);
+        }
+        if sources.len() > shown {
+            let note = ui.add_label(
+                body,
+                &tr_fmt!(
+                    "{count} more can be imported later in Settings › Data & Downloads.",
+                    count = sources.len() - shown
+                ),
+                TextStyle::Footnote,
+                Style::default(),
+            );
+            if let Some(w) = ui.widget_mut(note) {
+                w.set_paint(Paint::Secondary);
+            }
+        } else {
+            let note = ui.add_label(
+                body,
+                tr("You can import more later in Settings › Data & Downloads."),
+                TextStyle::Footnote,
+                Style::default(),
+            );
+            if let Some(w) = ui.widget_mut(note) {
+                w.set_paint(Paint::Secondary);
+            }
+        }
+    }
+
+    /// A browser to import from: a wide piece of glass with its name, what it holds and a
+    /// selection mark.
+    fn source_row(&mut self, ui: &mut Ui, parent: NodeId, index: usize, source: &ImportChoice, width: f32) {
+        let action = ActionId(IMPORT_BASE + index as u32);
+        let selected = source.selected;
+        let node = ui.add(
+            parent,
+            Widget::container().with_action(action).with_radius(TILE_RADIUS).with_background(if selected {
+                Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
+            } else {
+                Background::Glass(GlassLevel::Thin)
+            }),
+            Style {
+                size: Size { width: length(width), height: length(56.0) },
+                flex_shrink: 0.0,
+                padding: pad(16.0, 8.0),
+                ..row(12.0)
+            },
+        );
+        ui.add(
+            node,
+            Widget::icon(Icon::Globe, 22.0).with_paint(if selected {
+                Paint::OnAccent
+            } else {
+                Paint::Secondary
+            }),
+            Style { flex_shrink: 0.0, ..Default::default() },
+        );
+        let text = ui.add(
+            node,
+            Widget::container(),
+            Style {
+                flex_direction: FlexDirection::Column,
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                min_size: Size { width: length(0.0), height: auto() },
+                ..Default::default()
+            },
+        );
+        let name = ui.add_label(text, &source.label, TextStyle::Callout, Style::default());
+        if selected && let Some(w) = ui.widget_mut(name) {
+            w.set_paint(Paint::OnAccent);
+        }
+        let detail = ui.add_label(text, &source.detail, TextStyle::Footnote, Style::default());
+        if let Some(w) = ui.widget_mut(detail) {
+            w.set_paint(if selected { Paint::OnAccent } else { Paint::Secondary });
+        }
+        let mark = ui.add(
+            node,
+            Widget::container().with_radius(CAPSULE).with_background(if selected {
+                Background::Fill(Paint::Fixed(Color::rgb(0xFFFFFF)), 1.0)
+            } else {
+                Background::Fill(Paint::Label, 0.14)
+            }),
+            Style {
+                size: dims(20.0, 20.0),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                ..row(0.0)
+            },
+        );
+        if selected {
+            ui.add(
+                mark,
+                Widget::icon(Icon::Check, 13.0).with_paint(Paint::Accent).with_icon_weight(IconWeight::Bold),
+                Style::default(),
+            );
+        }
+        self.register(ui, node, Target::Action(action));
+    }
+
     fn account_step(&mut self, ui: &mut Ui, body: NodeId, config: &Config, inner: f32) {
         let _ = config;
         self.title(
@@ -1959,7 +2167,7 @@ mod tests {
 
     #[test]
     fn next_walks_through_the_steps_and_ends_finished() {
-        let mut flow = Flow::at(0);
+        let mut flow = Flow::at(0, false);
         assert_eq!(flow.step(), Step::Welcome);
         for expected in [Step::Appearance, Step::Layout, Step::Glass, Step::Account] {
             assert!(flow.next());
@@ -1978,7 +2186,7 @@ mod tests {
 
     #[test]
     fn back_goes_to_the_previous_step_and_stops_at_the_first() {
-        let mut flow = Flow::at(0);
+        let mut flow = Flow::at(0, false);
         assert!(!flow.back());
         flow.next();
         flow.next();
@@ -1993,7 +2201,7 @@ mod tests {
     #[test]
     fn skip_ends_from_any_step() {
         for start in 0..Step::ALL.len() {
-            let mut flow = Flow::at(start);
+            let mut flow = Flow::at(start, false);
             assert!(flow.skip());
             assert_eq!(flow.ending(), Some(Ending::Skipped));
             assert!(!flow.next());
@@ -2002,10 +2210,95 @@ mod tests {
 
     #[test]
     fn a_start_beyond_the_last_step_is_clamped() {
-        assert_eq!(Flow::at(99).step(), Step::Account);
-        let mut flow = Flow::at(1);
+        assert_eq!(Flow::at(99, false).step(), Step::Account);
+        let mut flow = Flow::at(1, false);
         flow.goto(42);
         assert_eq!(flow.step(), Step::Account);
+    }
+
+    #[test]
+    fn the_import_step_sits_before_the_account_and_only_when_offered() {
+        assert_eq!(Flow::at(0, false).steps(), Step::ALL);
+        assert!(!Flow::at(0, false).steps().contains(&Step::Import));
+        let mut flow = Flow::at(0, true);
+        let mut seen = vec![flow.step()];
+        while !flow.is_last() {
+            flow.next();
+            seen.push(flow.step());
+        }
+        assert_eq!(
+            seen,
+            [Step::Welcome, Step::Appearance, Step::Layout, Step::Glass, Step::Import, Step::Account]
+        );
+        // "Start Browsing" still ends on the account step; a start beyond the end is clamped.
+        assert_eq!(Flow::at(99, true).step(), Step::Account);
+        assert_eq!(Flow::at(4, true).step(), Step::Import);
+        assert_eq!(Flow::at(4, false).step(), Step::Account);
+    }
+
+    fn sheet(sources: Vec<ImportChoice>) -> (Ui, Onboarding) {
+        let config = Config::default();
+        let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+        let mut onboarding = Onboarding::build(&mut ui);
+        onboarding.set_sources(sources);
+        onboarding.open(&mut ui, &config, Vec2::new(1280.0, 800.0), 0);
+        (ui, onboarding)
+    }
+
+    fn choice(label: &str, selected: bool) -> ImportChoice {
+        ImportChoice { label: label.into(), detail: "Bookmarks and history".into(), selected }
+    }
+
+    #[test]
+    fn the_step_is_hidden_without_other_browsers() {
+        let (_ui, onboarding) = sheet(Vec::new());
+        assert_eq!(onboarding.steps(), Step::ALL);
+        let (_ui, onboarding) = sheet(vec![choice("Firefox", true)]);
+        assert_eq!(onboarding.steps(), Step::WITH_IMPORT);
+    }
+
+    #[test]
+    fn continuing_from_the_import_step_imports_the_checked_browsers_once() {
+        let config = Config::default();
+        let (mut ui, mut onboarding) =
+            sheet(vec![choice("Firefox", true), choice("Brave", false), choice("Chrome", false)]);
+        onboarding.goto(&mut ui, &config, 4);
+        assert_eq!(onboarding.flow.step(), Step::Import);
+        // Checking Brave too, then continuing, starts both; the account step follows.
+        assert!(matches!(onboarding.press(&mut ui, &config, Click::Import(1)), Reaction::Moved));
+        match onboarding.press(&mut ui, &config, Click::Continue) {
+            Reaction::Import(picks) => assert_eq!(picks, [0, 1]),
+            _ => panic!("expected an import"),
+        }
+        assert_eq!(onboarding.flow.step(), Step::Account);
+        // Back and on again with the same picks does not import a second time.
+        onboarding.press(&mut ui, &config, Click::Back);
+        assert!(matches!(onboarding.press(&mut ui, &config, Click::Continue), Reaction::Moved));
+        // Changing the picks does.
+        onboarding.press(&mut ui, &config, Click::Back);
+        onboarding.press(&mut ui, &config, Click::Import(1));
+        match onboarding.press(&mut ui, &config, Click::Continue) {
+            Reaction::Import(picks) => assert_eq!(picks, [0]),
+            _ => panic!("expected an import"),
+        }
+    }
+
+    #[test]
+    fn nothing_checked_imports_nothing() {
+        let config = Config::default();
+        let (mut ui, mut onboarding) = sheet(vec![choice("Firefox", false)]);
+        onboarding.goto(&mut ui, &config, 4);
+        assert!(matches!(onboarding.press(&mut ui, &config, Click::Continue), Reaction::Moved));
+    }
+
+    #[test]
+    fn import_clicks_have_their_own_ids() {
+        assert_eq!(click_of(ActionId(IMPORT_BASE)), Some(Click::Import(0)));
+        assert_eq!(
+            click_of(ActionId(IMPORT_BASE + MAX_SOURCES as u32 - 1)),
+            Some(Click::Import(MAX_SOURCES - 1))
+        );
+        assert_eq!(click_of(ActionId(IMPORT_BASE + MAX_SOURCES as u32)), None);
     }
 
     fn fresh() -> FirstRun {

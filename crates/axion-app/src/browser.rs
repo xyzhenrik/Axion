@@ -37,7 +37,9 @@ use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
 use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::filedrop::{DropOutcome, FileDrop};
 use crate::find::{FindAction, FindBar};
+use crate::frame_rate::{self, RefreshWatch};
 use crate::home::{HomeAction, HomePage, REFRESH_SCRIPT, is_home_url};
+use crate::import::Importer;
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
 use crate::lockscreen::LockScreen;
@@ -52,6 +54,7 @@ use crate::onboarding::Onboarding;
 use crate::overview::{Overview, OverviewAction};
 use crate::page_color::{PageTint, TintParams, lightness};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
+use crate::perf_log::{FrameOutcome, PerfLog};
 use crate::pip::{PipControl, PipOutcome, PipWindow};
 use crate::platform::clipboard::ClipboardReader;
 use crate::platform::pointer::PointerProbe;
@@ -60,6 +63,7 @@ use crate::player::{
     PlayerOverlay,
 };
 use crate::private::{PrivateLock, TabDrop};
+use crate::resize_bench::{self, FrameTimes, Recorder, ResizeBench, ResizeCounters};
 use crate::settings::{AccountInfo, Category, Outcome, SettingsAction, SettingsSheet};
 use crate::shields::ShieldsState;
 use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
@@ -70,16 +74,21 @@ use crate::toast::Toast;
 use crate::tooltip::Tooltip;
 use crate::typing_probe;
 use crate::update::{InstallMode, Notice, Phase, Updater};
-use crate::update_alert::{AlertAction, UpdateAlert};
+use crate::update_alert::{AlertAction, AlertView, Tone, UpdateAlert};
 use crate::url::display_host;
 use crate::url::resolve_input;
+use crate::window_resize::{Debounce, ResizePacer};
 
 mod context;
+mod import;
 mod onboarding;
 mod page_context;
+mod permissions;
 mod playlist;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
+/// `AXION_RESIZE_LOG`: a resize's timings are logged once no resize came for this long.
+const RESIZE_LOG_QUIET: Duration = Duration::from_millis(500);
 /// How long before a `--capture --overview` screenshot the overview opens.
 const OVERVIEW_CAPTURE_LEAD: Duration = Duration::from_secs(2);
 /// Settings changes are written to disk once they've been still for this long.
@@ -193,12 +202,8 @@ const SLIDE_ANCHOR_CENTRED: f32 = 0.5;
 const PAGE_LAG_SMOOTHING: f32 = 0.25;
 /// Opacity below which the page's frame from before a sidebar slide is gone (see `slide_fade`).
 const SLIDE_FADE_DONE: f32 = 0.01;
-/// Pages' frame rate when the display's refresh rate is unknown.
-const FALLBACK_FRAME_RATE: u32 = 60;
 /// The chrome turns dark on pages whose colour is darker than this.
 const DARK_BELOW: f32 = 0.5;
-/// PCI vendor id of NVIDIA, the one driver where zero-copy frame import is verified.
-const NVIDIA_VENDOR_ID: u32 = 0x10DE;
 
 pub struct Options {
     /// Tabs to open; the first one is active. Empty opens the homepage.
@@ -224,6 +229,8 @@ pub struct Options {
     pub account: Option<String>,
     /// Show the first-run introduction (`--onboarding`), whatever the profile says.
     pub onboarding: bool,
+    /// Run the scripted resize benchmark (`--bench-resize`, see `resize_bench`), then quit.
+    pub bench_resize: bool,
     /// Wakes the event loop when the engine has work.
     pub waker: Option<axion_engine::cef::Waker>,
 }
@@ -244,9 +251,15 @@ pub struct Browser {
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
     downloads_popover: DownloadsPopover,
+    /// Site permissions: the prompt, the recording indicator's popover and the decisions.
+    permissions: permissions::PermissionsUi,
     toast: Toast,
     updater: Updater,
     update_alert: UpdateAlert,
+    /// The graphics settings' confirmation (shared GPU memory on AMD) is showing in the alert.
+    gpu_confirm: bool,
+    /// What the GPU session actually uses (Settings › Hardware, diagnostics).
+    hardware_status: crate::hardware::Status,
     /// When the first automatic update check runs (a moment after start; none when not due).
     update_check_at: Option<Instant>,
     /// Where the install stood when the About page was last drawn.
@@ -272,6 +285,8 @@ pub struct Browser {
     /// The active page's last reported scroll position (CSS px).
     /// Frames saved so far by the `AXION_CAPTURE_FRAMES` debug aid.
     capture_frame: u32,
+    /// The next frame is audited for glass and glass look-alikes (`flat-audit` capture aid).
+    flat_audit: bool,
     /// Typing latency probe (`AXION_TYPE_PROBE`, see `typing_probe`).
     probe: Option<ProbeRun>,
     /// Those frames, kept in memory until the sequence is complete (saving each one at once
@@ -304,6 +319,8 @@ pub struct Browser {
     panel: Option<(Panel, bool)>,
     favicons: Favicons,
     downloads: Downloads,
+    /// Importing from other browsers into this account's store.
+    importer: Importer,
     /// History and bookmarks; `None` if the database couldn't be opened (browsing still works).
     store: Option<axion_store::Store>,
     /// Search text the overview's cards were last built for.
@@ -399,6 +416,8 @@ pub struct Browser {
     engine_icons: Option<std::sync::mpsc::Receiver<crate::engine_icons::EngineIcon>>,
     /// Icons of the saved logins' sites being fetched for the Passwords list.
     password_icons: Option<std::sync::mpsc::Receiver<crate::engine_icons::EngineIcon>>,
+    /// SVG site icons being rewritten for the chrome's colour scheme.
+    svg_icons: crate::svg_icons::SvgIcons,
     /// The page menu row clicked last (where a sheet it opens comes out of).
     menu_click_frame: Option<Rect>,
     /// Capture aid "sweep:X1:Y1:X2:Y2:N": the pointer moves from one point to the other in N
@@ -426,6 +445,42 @@ pub struct Browser {
     slide_sent: Vec<(Instant, f32)>,
     slide_seen_width: Option<f32>,
     page_lag: Option<f32>,
+    /// `--bench-resize`: the scripted run; `AXION_RESIZE_LOG=1`: frame timings of each real
+    /// resize (logged once it has been still for `RESIZE_LOG_QUIET`), and the counters both use.
+    resize_bench: Option<ResizeBench>,
+    /// What the window shows (see `ui.skip_unchanged_frames`): the presented scene's
+    /// fingerprint and its textures (held so no new view takes their identity), when the next
+    /// frame is due after a skipped one (no present waited for the display), the display's
+    /// frame interval, and the frames skipped so far.
+    shown_fingerprint: Option<u64>,
+    shown_textures: Vec<wgpu::TextureView>,
+    /// The shown page frame's texture and a view of it, kept while the texture is the same.
+    page_view: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The shown scene's layer fingerprints (trace logging only).
+    shown_layers: Vec<u64>,
+    idle_redraw_at: Option<Instant>,
+    frame_interval: Duration,
+    /// Notices the window's monitor's refresh rate changing (see `frame_rate`).
+    refresh_watch: RefreshWatch,
+    frames_skipped: u64,
+    frames_presented: u64,
+    /// The engine's page frame count at the last pump.
+    pumped_page_frames: u64,
+    /// The window's newest size, applied by the next frame (see `apply_window_size`).
+    pending_window_size: Option<winit::dpi::PhysicalSize<u32>>,
+    /// The shown view's resizes, one at a time, and the background tabs' once the window is
+    /// still (see `pace_page_resizes`).
+    page_pacer: ResizePacer,
+    paced_view: Option<ViewId>,
+    background_resize: Debounce,
+    resize_log: Option<(Recorder, Instant)>,
+    resize_log_enabled: bool,
+    resize_counters: ResizeCounters,
+    frame_times: FrameTimes,
+    /// `AXION_PERF_LOG=1`: a line per second about frames, pages, GPU and CPU (see `perf_log`).
+    perf_log: Option<PerfLog>,
+    /// The swapchain's present mode as configured, for the perf log.
+    present_mode: String,
 }
 
 impl Browser {
@@ -450,6 +505,9 @@ impl Browser {
             .inspect_err(|e| tracing::warn!("live config reload unavailable: {e}"))
             .ok();
 
+        // Wayland shows the icon of `axion.desktop` (matched by the app id below): make sure a
+        // current one exists before the window does (not for capture runs: they are test runs).
+        crate::desktop_integration::ensure(config.general.desktop_integration && options.capture.is_none());
         let attributes = Window::default_attributes()
             .with_title("Axion")
             .with_window_icon(crate::app_icon::window_icon())
@@ -470,7 +528,10 @@ impl Browser {
             Some((x, y)) => window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y)),
             None => place_on_monitor(event_loop, &window),
         }
-        let (instance, surface, adapter, device, queue) = crate::gpu::init(event_loop, &window)?;
+        let hardware_env = crate::hardware::Overrides::from_env();
+        let adapter_choice = crate::hardware::adapter_choice(&config.hardware, &hardware_env);
+        let (instance, surface, adapter, device, queue) =
+            crate::gpu::init(event_loop, &window, &adapter_choice)?;
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
         // Pages arrive as 8-bit sRGB-encoded BGRA and the compositor blends in that space, so
@@ -488,18 +549,45 @@ impl Browser {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &surface_config);
+        // `AutoVsync` is what wgpu turns into FifoRelaxed where the surface has it, else Fifo.
+        let present_mode = match surface_config.present_mode {
+            wgpu::PresentMode::AutoVsync if caps.present_modes.contains(&wgpu::PresentMode::FifoRelaxed) => {
+                "FifoRelaxed".to_owned()
+            }
+            wgpu::PresentMode::AutoVsync => "Fifo".to_owned(),
+            mode => format!("{mode:?}"),
+        };
+        let mut perf_log = PerfLog::from_env();
+        if let Some(log) = &mut perf_log {
+            log.enable_gpu_timer(&device, &queue);
+            tracing::info!(modes = ?caps.present_modes, chosen = %present_mode, "perf log on: present modes");
+        }
 
         let info = adapter.get_info();
-        let accelerated = adapter.features().contains(axion_engine::cef::required_features())
-            && match std::env::var("AXION_OSR").as_deref() {
-                Ok("software") => false,
-                Ok("gpu") => true,
-                // Zero-copy import is only verified on NVIDIA's driver so far. On RADV (AMD) it
-                // currently triggers a GPU memory fault and context loss, so other drivers use
-                // software paint until that is understood (see plan.md, Phase 0 follow-ups).
-                // Under X11/XWayland Chromium has no GBM device for shared buffers at all.
-                _ => info.vendor == NVIDIA_VENDOR_ID && std::env::var_os("WAYLAND_DISPLAY").is_some(),
-            };
+        let can_import = adapter.features().contains(axion_engine::cef::required_features());
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        // Zero-copy import is only verified on NVIDIA's driver so far. On RADV (AMD) it
+        // currently triggers a GPU memory fault and context loss, so other drivers use
+        // software paint until that is understood (see plan.md, Phase 0 follow-ups).
+        // Under X11/XWayland Chromium has no GBM device for shared buffers at all.
+        // `hardware::frame_mode` holds the rule (and the setting and AXION_OSR on top).
+        let (frame_mode, frames_source) = crate::hardware::frame_mode(
+            &config.hardware,
+            &hardware_env,
+            crate::hardware::Session { vendor: info.vendor, wayland, can_import },
+        );
+        let accelerated = frame_mode == crate::hardware::FrameMode::Gpu;
+        let hardware_status = crate::hardware::Status {
+            adapters: crate::gpu::adapters(&instance),
+            in_use: crate::hardware::AdapterLine::of(&info),
+            frames: frame_mode,
+            frames_source,
+            video_decoding: crate::hardware::video_decoding(&config),
+            cef_version: axion_engine::cef::cef_version(),
+            wayland,
+            env: hardware_env,
+            startup: crate::hardware::Startup::of(&config),
+        };
         if !accelerated {
             tracing::info!(driver = %info.driver, "using software paint for pages (set AXION_OSR=gpu to force GPU sharing)");
         }
@@ -507,6 +595,7 @@ impl Browser {
         let store = axion_store::Store::open(&profile.join("axion.sqlite"))
             .inspect_err(|e| tracing::error!("history unavailable: {e}"))
             .ok();
+        let store_path = store.as_ref().map(|_| profile.join("axion.sqlite"));
         PrivateLock::drop_old_password(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
         let downloads = Downloads::new(profile.clone());
@@ -517,7 +606,9 @@ impl Browser {
             CefOptions {
                 profile_dir: profile.clone(),
                 accelerated,
-                render_node: if std::env::var_os("AXION_NO_RENDER_NODE").is_some() {
+                render_node: if std::env::var_os("AXION_NO_RENDER_NODE").is_some()
+                    || !crate::hardware::pin_render_node(&config.hardware)
+                {
                     None
                 } else {
                     axion_engine::cef::render_node_for(info.vendor, info.device)
@@ -532,7 +623,8 @@ impl Browser {
                         .max(0.0)
                         / 1000.0,
                 ),
-                hardware_video_decoding: config.media.hardware_decoding,
+                hardware_video_decoding: crate::hardware::video_decoding(&config),
+                extra_switches: crate::hardware::chromium_switches(&config.hardware),
                 extensions_enabled: config.extensions.enabled,
                 waker: options.waker.clone(),
             },
@@ -559,10 +651,12 @@ impl Browser {
         let account_menu = Menu::build(&mut ui, chrome.sidebar_node(), ACCOUNT_MENU_BASE, Placement::Above);
         let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
+        let permissions = permissions::PermissionsUi::build(&mut ui, chrome.bar_node(), store.as_ref());
         let toast = Toast::build(&mut ui, chrome.bar_node());
         let find = FindBar::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
-        let settings = SettingsSheet::build(&mut ui);
+        let mut settings = SettingsSheet::build(&mut ui);
+        settings.set_hardware(hardware_status.clone());
         // The vault's second key factor: this device's key (TPM-sealed or a private file in
         // the user's data directory, never in the profile).
         let device_key: std::sync::Arc<dyn axion_vault::DeviceKey> =
@@ -577,6 +671,7 @@ impl Browser {
         let lock = PrivateLock::new();
         let mut favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         favicons.set_dark(dark);
+        favicons.set_contrast(config.appearance.favicon_contrast);
         let mut home = HomePage::new(&profile, favicons.dir().map(Into::into));
         // The single background image of older versions moves into the backgrounds directory.
         let migrated = home.migrate(&mut config);
@@ -637,9 +732,12 @@ impl Browser {
             shields,
             shields_popover,
             downloads_popover,
+            permissions,
             toast,
             updater: Updater::new(),
             update_alert,
+            gpu_confirm: false,
+            hardware_status,
             update_check_at,
             update_phase: Phase::Idle,
             about_icon: None,
@@ -654,6 +752,7 @@ impl Browser {
             playlist,
             playlist_ui,
             capture_frame: 0,
+            flat_audit: false,
             probe: std::env::var("AXION_TYPE_PROBE")
                 .ok()
                 .and_then(|v| typing_probe::Spec::parse(&v))
@@ -682,6 +781,7 @@ impl Browser {
             store,
             favicons,
             downloads,
+            importer: Importer::new(store_path),
             overview_query: String::new(),
             last_frame: Instant::now(),
             window_tint: None,
@@ -747,9 +847,31 @@ impl Browser {
             slide_sent: Vec::new(),
             slide_seen_width: None,
             page_lag: None,
+            resize_bench: options.bench_resize.then(|| ResizeBench::new(options.capture_after)),
+            shown_fingerprint: None,
+            shown_textures: Vec::new(),
+            shown_layers: Vec::new(),
+            page_view: None,
+            idle_redraw_at: None,
+            frame_interval: frame_rate::display_interval(None),
+            refresh_watch: RefreshWatch::default(),
+            frames_skipped: 0,
+            frames_presented: 0,
+            pumped_page_frames: 0,
+            pending_window_size: None,
+            page_pacer: ResizePacer::default(),
+            paced_view: None,
+            background_resize: Debounce::default(),
+            resize_log: None,
+            resize_log_enabled: std::env::var_os("AXION_RESIZE_LOG").is_some(),
+            resize_counters: ResizeCounters::default(),
+            frame_times: FrameTimes::default(),
+            perf_log,
+            present_mode,
             sheet_origin: None,
             engine_icons: None,
             password_icons: None,
+            svg_icons: crate::svg_icons::SvgIcons::new(),
             menu_click_frame: None,
             open_at: options.open.clone().filter(|_| options.capture.is_some()).map(|what| {
                 (
@@ -771,6 +893,8 @@ impl Browser {
             }),
         };
         browser.show_account();
+        browser.start_permissions();
+        browser.sync_frame_rate();
         browser.update_layout();
         browser.start_onboarding(&options, accounts_file, config_file);
         browser.playlist_start();
@@ -808,6 +932,7 @@ impl Browser {
 
     /// Re-applies the responsive layout and resizes pages when the window or chrome changed.
     fn update_layout(&mut self) {
+        self.resize_counters.layouts += 1;
         let size = self.logical_size();
         self.ui.set_viewport(size, self.scale());
         self.chrome.apply_layout(&mut self.ui, &self.config, size);
@@ -822,10 +947,26 @@ impl Browser {
         // While the sidebar slides, the shown tab's size is managed by the slide (see
         // `redraw_frame`); resizing it here too would make Chromium render an extra size.
         let sliding = self.slide_view_size.map(|(view, _)| view);
-        for tab in self.tabs.all() {
-            if Some(tab.view) != sliding {
-                self.engine.resize(tab.view, view_size);
+        let shown = self.display_view().filter(|v| Some(*v) != sliding);
+        if let Some(view) = shown {
+            self.resize_shown_view(view, view_size);
+        }
+        // The overview shows every tab: they follow at once there. Elsewhere the tabs in the
+        // background follow once the window is still (see `pace_page_resizes`).
+        let background: Vec<ViewId> = self
+            .tabs
+            .all()
+            .iter()
+            .map(|t| t.view)
+            .filter(|v| Some(*v) != sliding && Some(*v) != shown)
+            .collect();
+        if self.overview.is_open() {
+            for view in background {
+                self.engine.resize(view, view_size);
             }
+        } else if !background.is_empty() {
+            let delay = Duration::from_secs_f32(self.config.layout.background_resize_delay.max(0.0));
+            self.background_resize.touch(Instant::now(), delay);
         }
         self.layout_size = size;
     }
@@ -1062,6 +1203,7 @@ impl Browser {
                     self.settings.set_account(self.account_info());
                     self.sync_about();
                     self.settings.set_memory_used(self.memory.used());
+                    self.settings.set_site_permissions(self.permissions.model.remembered());
                     let window = self.logical_size();
                     // Out of what it was opened from (the address field by default).
                     let fallback = self.address_origin();
@@ -2142,6 +2284,7 @@ impl Browser {
                 // A background tab still waiting for its overview snapshot counts as loading.
                 loading: t.loading || t.needs_snapshot,
                 devtools_open: self.engine.devtools_open(t.view),
+                capturing: t.capture.any(),
             })
             .collect();
         self.close_unused_tabs();
@@ -2179,7 +2322,9 @@ impl Browser {
             .all()
             .iter()
             .enumerate()
-            .filter(|(i, t)| *i != active && t.last_viewed < cutoff && !t.playing_media && !t.pinned)
+            .filter(|(i, t)| {
+                *i != active && t.last_viewed < cutoff && !t.playing_media && !t.pinned && !t.capture.any()
+            })
             .map(|(i, _)| i)
             .collect();
         for i in stale.into_iter().rev() {
@@ -2461,7 +2606,12 @@ impl Browser {
                 .unwrap_or_default()
                 .into_iter()
                 .map(|b| PanelItem {
-                    detail: display_host(&b.url),
+                    // Imported bookmarks keep their old folder ("Dev / Rust · docs.rs").
+                    detail: if b.folder_path.is_empty() {
+                        display_host(&b.url)
+                    } else {
+                        format!("{} · {}", b.folder_path, display_host(&b.url))
+                    },
                     title: b.title,
                     url: b.url,
                     section: None,
@@ -2821,6 +2971,7 @@ impl Browser {
         self.account_menu.close(&mut self.ui, &self.config);
         self.shields_popover.close(&mut self.ui, &self.config);
         self.downloads_popover.close(&mut self.ui, &self.config);
+        self.permissions.capture.close(&mut self.ui, &self.config);
         self.suggestions.hide(&mut self.ui, &self.config);
         self.passwords.hide_prompt(None, false);
         if self.settings.is_open() {
@@ -3306,6 +3457,16 @@ impl Browser {
                         None => {}
                     }
                 }
+                UiEvent::Clicked { action, .. } if self.permissions.prompt.action(action).is_some() => {
+                    if let Some(choice) = self.permissions.prompt.action(action) {
+                        self.answer_permission_prompt(choice);
+                    }
+                }
+                UiEvent::Clicked { action, .. } if self.permissions.capture.action(action).is_some() => {
+                    if let Some(action) = self.permissions.capture.action(action) {
+                        self.capture_action(action);
+                    }
+                }
                 UiEvent::Clicked { action, .. } if self.shields_popover.action(action).is_some() => {
                     match self.shields_popover.action(action) {
                         Some(PopoverAction::SetLevel(level)) => self.set_shields_level(level),
@@ -3423,6 +3584,7 @@ impl Browser {
                     Some(ChromeAction::Private) if !self.private_mode => self.toggle_private_mode(),
                     Some(ChromeAction::Private) if self.is_locked() => self.show_unlock_alert(),
                     Some(ChromeAction::Private) => self.chrome.toggle_section(&mut self.ui, Section::Private),
+                    Some(ChromeAction::Capture) => self.toggle_capture_popover(),
                     Some(ChromeAction::MuteTab) => {
                         if let Some(tab) = self.tabs.active_mut() {
                             tab.muted = !tab.muted;
@@ -3493,10 +3655,105 @@ impl Browser {
 
     /// Runs the engine and applies what happened. Call often (every loop iteration).
     pub fn pump(&mut self) {
+        let started = Instant::now();
         self.pump_engine();
+        let page_frames = self.engine.counters().page_frames;
+        if page_frames != self.pumped_page_frames {
+            // A page frame came: shown at once, not one refresh after a skipped frame.
+            self.pumped_page_frames = page_frames;
+            self.idle_redraw_at = None;
+        }
+        let took = started.elapsed();
+        if let Some(log) = &mut self.perf_log {
+            log.wakeup(took);
+        }
+        if self.perf_log.as_ref().is_some_and(PerfLog::due) {
+            let snapshot = self.perf_snapshot();
+            if let Some(log) = &mut self.perf_log {
+                log.log(&snapshot);
+            }
+        }
+        let recorders = [
+            self.resize_bench.as_mut().and_then(|b| b.recorder.as_mut()),
+            self.resize_log.as_mut().map(|(r, _)| r),
+        ];
+        for recorder in recorders.into_iter().flatten() {
+            recorder.wakeup(took);
+        }
+    }
+
+    /// What the perf log reports about the window and pages (`AXION_PERF_LOG`).
+    fn perf_snapshot(&self) -> crate::perf_log::Snapshot {
+        let monitor = self.window.current_monitor();
+        crate::perf_log::Snapshot {
+            surface: (self.surface_config.width, self.surface_config.height),
+            scale: self.window.scale_factor(),
+            present_mode: self.present_mode.clone(),
+            monitor: monitor.as_ref().and_then(|m| m.name()),
+            refresh_mhz: monitor.as_ref().and_then(|m| m.refresh_rate_millihertz()),
+            page_rate: self.engine.frame_rate(),
+            window_fullscreen: self.window.fullscreen().is_some(),
+            presentation: self.chrome.presentation(),
+            page_fullscreen: self.chrome.page_fullscreen(),
+            page_frame: self
+                .display_view()
+                .and_then(|v| self.engine.frame(v))
+                .map(|f| (f.texture.width(), f.texture.height())),
+            gpu_frames: self.engine.is_accelerated(),
+            engine: self.engine.counters(),
+            memory: self.engine.frame_memory(),
+            skip_unchanged: self.config.ui.skip_unchanged_frames,
+        }
+    }
+
+    /// The browser's and the engine's resize/frame counters (benchmarks).
+    fn bench_counters(&self) -> ResizeCounters {
+        let engine = self.engine.counters();
+        ResizeCounters {
+            view_resizes: engine.view_resizes,
+            frame_textures: engine.frame_textures,
+            check_buffers: engine.check_buffers,
+            skipped_frames: self.frames_skipped,
+            page_frames: engine.page_frames,
+            ..self.resize_counters
+        }
+    }
+
+    /// `--bench-resize` and `AXION_RESIZE_LOG`: advances the script, records the frame.
+    fn bench_frame(&mut self) -> Result<()> {
+        let counters = self.bench_counters();
+        let times = std::mem::take(&mut self.frame_times);
+        if let Some((recorder, last)) = &mut self.resize_log {
+            recorder.frame(times);
+            if last.elapsed() >= RESIZE_LOG_QUIET {
+                recorder.log("window resize", counters);
+                self.resize_log = None;
+            }
+        }
+        let Some(bench) = &mut self.resize_bench else { return Ok(()) };
+        if let Some(recorder) = &mut bench.recorder {
+            recorder.frame(times);
+        }
+        match bench.tick(Instant::now(), counters) {
+            resize_bench::Step::Finish => bail!(CaptureDone),
+            resize_bench::Step::Resize(sizes) => {
+                for size in sizes {
+                    let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(size.x, size.y));
+                }
+            }
+            resize_bench::Step::Nothing => {}
+        }
+        let scrolls = bench.phase().scrolls();
+        if scrolls && self.wheel_frames == 0 {
+            self.wheel_frames = u32::MAX / 2;
+        } else if !scrolls && self.wheel_frames > 0 {
+            self.wheel_frames = 0;
+        }
+        Ok(())
     }
 
     fn pump_engine(&mut self) {
+        self.watch_refresh_rate();
         // The desktop switched light/dark (winit doesn't report it on most Linux desktops).
         let desktop_dark = self.desktop_theme.dark();
         if desktop_dark != self.desktop_dark {
@@ -3521,6 +3778,10 @@ impl Browser {
         let events = self.engine.pump();
         let started = Instant::now();
         let count = events.len() as u32;
+        if count > 0 {
+            // Something happened in a page: the next frame runs at once.
+            self.idle_redraw_at = None;
+        }
         for event in events {
             match &event {
                 // Autofill messages may hold a submitted password: never log their content.
@@ -3533,6 +3794,7 @@ impl Browser {
                 EngineEvent::AddressChanged { view, url } => {
                     // The fill offer was for the page that was there (a save offer stays).
                     self.passwords.hide_prompt(Some(view), true);
+                    self.permissions_navigated(view, &url);
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
                         tab.url = url;
                         self.tabs_changed = true;
@@ -3570,7 +3832,7 @@ impl Browser {
                         && let Some(icon) = self.favicons.page_loaded(&page)
                     {
                         tracing::debug!("fetching icon {icon}");
-                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                        self.fetch_icon(view, &page, &icon);
                     }
                     if loading
                         && self.find.view() == Some(view)
@@ -3667,7 +3929,7 @@ impl Browser {
                         && let Some(icon) = self.favicons.icon_urls(&page, &urls)
                     {
                         tracing::debug!("fetching icon {icon}");
-                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                        self.fetch_icon(view, &page, &icon);
                     }
                 }
                 EngineEvent::PageMetaChanged { view, meta } => {
@@ -3677,7 +3939,7 @@ impl Browser {
                         && let Some(icon) = self.favicons.icon_links(&page, &meta.icons)
                     {
                         tracing::debug!("fetching icon {icon}");
-                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                        self.fetch_icon(view, &page, &icon);
                     }
                 }
                 EngineEvent::InternalMessage { view, host, message } => {
@@ -3697,7 +3959,7 @@ impl Browser {
                         && let Some(icon) = self.favicons.failed(&page, &url)
                     {
                         tracing::debug!("fetching icon {icon}");
-                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                        self.fetch_icon(view, &page, &icon);
                     }
                 }
                 EngineEvent::FaviconReady { view, url, width, height, rgba } => {
@@ -3725,7 +3987,15 @@ impl Browser {
                 EngineEvent::MediaSniffed { view, url, mime, referer } => {
                     self.playlist_sniffed(view, url, mime, referer);
                 }
+                EngineEvent::PermissionRequest { view, id, origin, kinds } => {
+                    self.permission_requested(view, id, origin, kinds);
+                }
+                EngineEvent::PermissionCancelled { view, id } => self.permission_cancelled(view, id),
+                EngineEvent::CaptureChanged { view, audio, video } => {
+                    self.capture_changed(view, audio, video)
+                }
                 EngineEvent::Closed { view } => {
+                    self.permissions_closed(view);
                     self.playlist.sniffed.remove(&view);
                     self.page_colors.closed(view);
                 }
@@ -3747,6 +4017,9 @@ impl Browser {
             }
         }
         self.downloads_pump(downloads_changed);
+        self.check_capture_stops();
+        self.apply_permission_defaults();
+        self.import_pump();
         self.playlist_housekeeping();
         self.update_home();
         self.update_photos();
@@ -3794,6 +4067,9 @@ impl Browser {
             Outcome::InstallUpdate => self.request_update_install(),
             Outcome::OpenReleasePage => self.open_release_page(),
             Outcome::RelaunchNow => self.relaunch_for_update(),
+            Outcome::CopyDiagnostics => self.copy_gpu_diagnostics(),
+            Outcome::RestartAxion => self.restart_to_apply_settings(),
+            Outcome::ConfirmGpuFrames => self.confirm_gpu_frames(),
             Outcome::SkipUpdate => {
                 if let Some(release) = self.updater.available() {
                     axion_update::skip(&mut self.config.updates, &release.version);
@@ -3905,7 +4181,9 @@ impl Browser {
             Outcome::DataPage => {
                 self.downloads.measure_cache();
                 self.engine.request_site_data();
+                self.import_page_opened();
             }
+            Outcome::Import(request) => self.import_request(request),
             Outcome::ChooseDownloadFolder => self.downloads.choose_folder(),
             Outcome::ChoosePlaylistFolder => self.downloads.choose_playlist_folder(),
             Outcome::ChooseBackground => self.home.choose_background(),
@@ -3957,6 +4235,7 @@ impl Browser {
                 self.engine.clear_data(&axion_engine::ClearData { cache: false, all_site_data: all, sites });
                 self.engine.request_site_data();
             }
+            Outcome::ForgetPermissions(which) => self.forget_site_permissions(which),
         }
     }
 
@@ -4026,6 +4305,8 @@ impl Browser {
             || self.context_menus.is_open()
             || self.shields_popover.is_open()
             || self.downloads_popover.is_open()
+            || self.permissions.prompt.is_open()
+            || self.permissions.capture.is_open()
             || self.suggestions.is_visible()
             || self.find.is_open()
             || self.overview.is_open()
@@ -4175,7 +4456,65 @@ impl Browser {
         }
     }
 
+    /// Settings › Hardware: copies the GPU summary (adapter, driver, frame mode, VA-API, CEF).
+    fn copy_gpu_diagnostics(&mut self) {
+        let text = self.hardware_status.diagnostics();
+        let Some(clipboard) = &mut self.clipboard else { return };
+        if clipboard.set_text(text).is_ok() {
+            self.show_toast(Icon::Check, tr("Diagnostics copied"));
+        }
+    }
+
+    /// Writes the settings now and starts Axion again (the Hardware settings are read at start).
+    fn restart_to_apply_settings(&mut self) {
+        self.config_dirty_since = None;
+        match axion_config::save_config(&self.paths, &self.config) {
+            Ok(()) => self.last_saved_config = std::fs::read_to_string(&self.paths.config).ok(),
+            Err(e) => {
+                tracing::error!("saving settings failed: {e}");
+                return;
+            }
+        }
+        let account = self.account_id.clone();
+        self.relaunch_into(&account);
+    }
+
+    /// "Shared GPU memory" on AMD graphics asks first: it has crashed the driver there.
+    fn confirm_gpu_frames(&mut self) {
+        self.gpu_confirm = true;
+        self.update_alert.show(
+            &mut self.ui,
+            &self.config,
+            AlertView {
+                icon: Some(Icon::Info),
+                title: tr("Use shared GPU memory on AMD graphics?").to_owned(),
+                lines: vec![
+                    tr("On AMD graphics (RADV) this can crash the graphics driver and freeze the screen \
+                        until it recovers. Pages may also turn black.")
+                    .to_owned(),
+                    tr("Only continue if you know that it works on this computer. It applies after \
+                        restarting Axion.")
+                    .to_owned(),
+                ],
+                primary: Some((tr("Use Anyway").to_owned(), Tone::Plain)),
+                secondary: Some(tr("Cancel").to_owned()),
+                dismissable: true,
+                ..Default::default()
+            },
+        );
+    }
+
     fn update_alert_action(&mut self, action: AlertAction) {
+        if self.gpu_confirm {
+            self.gpu_confirm = false;
+            self.update_alert.close();
+            if action == AlertAction::Primary {
+                self.config.hardware.page_frames = axion_config::PageFrames::Gpu;
+                self.settings_outcome(Outcome::Changed);
+                self.refresh_settings();
+            }
+            return;
+        }
         match self.updater.phase() {
             Phase::Idle => self.update_alert.close(),
             Phase::Confirm => {
@@ -4479,6 +4818,26 @@ impl Browser {
         }
     }
 
+    /// Has Chromium download a site icon. SVGs go through `svg_icons` first: their
+    /// `prefers-color-scheme` rules are decided for the chrome.
+    fn fetch_icon(&mut self, view: ViewId, page: &str, url: &str) {
+        if self.favicons.is_svg(page, url) {
+            self.svg_icons.request(view, url, self.favicons.is_dark());
+        } else {
+            self.engine.fetch_favicon(view, url, FETCH_SIZE);
+        }
+    }
+
+    /// SVG icons that were rewritten: Chromium rasterises them now.
+    fn poll_svg_icons(&mut self) {
+        for icon in self.svg_icons.poll() {
+            if icon.fetch != icon.url {
+                self.favicons.alias(&icon.fetch, &icon.url);
+            }
+            self.engine.fetch_favicon(icon.view, &icon.fetch, FETCH_SIZE);
+        }
+    }
+
     fn apply_theme(&mut self) {
         if let Some(pip) = &mut self.pip {
             pip.set_theme(&self.config);
@@ -4488,6 +4847,7 @@ impl Browser {
         self.engine.set_color_scheme(self.dark);
         let delay = self.page_color_delay();
         self.page_colors.set_dark(self.dark, self.active_view(), delay);
+        let contrast_changed = self.favicons.set_contrast(self.config.appearance.favicon_contrast);
         if self.favicons.set_dark(self.dark) {
             // Sites with their own icon for the scheme show it at once.
             let pages: Vec<(ViewId, String)> = self
@@ -4500,9 +4860,14 @@ impl Browser {
                 .collect();
             for (view, page) in pages {
                 if let Some(icon) = self.favicons.resolve(&page) {
-                    self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                    self.fetch_icon(view, &page, &icon);
                 }
             }
+            self.tabs_changed = true;
+            if self.overview.is_open() {
+                self.rebuild_overview();
+            }
+        } else if contrast_changed {
             self.tabs_changed = true;
             if self.overview.is_open() {
                 self.rebuild_overview();
@@ -4517,15 +4882,25 @@ impl Browser {
 
     /// Returns `false` when the window should close.
     pub fn window_event(&mut self, event: WindowEvent) -> Result<bool> {
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            // Input: the next frame runs at once.
+            self.idle_redraw_at = None;
+        }
         match event {
             WindowEvent::CloseRequested => return Ok(false),
             WindowEvent::Resized(size) => {
+                self.resize_counters.events += 1;
+                if self.resize_log_enabled {
+                    let counters = self.bench_counters();
+                    let log =
+                        self.resize_log.get_or_insert_with(|| (Recorder::new(counters), Instant::now()));
+                    log.1 = Instant::now();
+                }
+                // Applied once, by the next frame: a resize sends a stream of these (dozens
+                // between two frames when the window manager catches up), and reconfiguring
+                // the swapchain and laying everything out for each one froze the window.
                 if size.width > 0 && size.height > 0 {
-                    self.surface_config.width = size.width;
-                    self.surface_config.height = size.height;
-                    self.surface.configure(&self.device, &self.surface_config);
-                    self.update_layout();
-                    self.sync_frame_rate();
+                    self.pending_window_size = Some(size);
                 }
             }
             WindowEvent::ScaleFactorChanged { .. } => {
@@ -4755,6 +5130,9 @@ impl Browser {
             self.downloads_popover.close(&mut self.ui, &self.config);
             return;
         }
+        if pressed && self.permissions_press(p) {
+            return;
+        }
         if pressed && self.shields_popover.is_open() && !self.shields_popover.contains(&self.ui, p) {
             self.shields_popover.close(&mut self.ui, &self.config);
             return;
@@ -4932,6 +5310,9 @@ impl Browser {
             self.downloads_popover.close(&mut self.ui, &self.config);
             return false;
         }
+        if pressed && input::key(event) == Some(Key::Named("Escape".into())) && self.permissions_escape() {
+            return false;
+        }
         if pressed && self.shields_popover.is_open() && input::key(event) == Some(Key::Named("Escape".into()))
         {
             self.shields_popover.close(&mut self.ui, &self.config);
@@ -5046,15 +5427,91 @@ impl Browser {
 
     fn redraw(&mut self) -> Result<()> {
         let started = Instant::now();
+        let (presented, skipped) = (self.frames_presented, self.frames_skipped);
         let result = self.redraw_frame();
+        if let Some(log) = &mut self.perf_log {
+            let mut times = self.frame_times;
+            times.total = ms_since(started);
+            let outcome = if self.frames_presented != presented {
+                FrameOutcome::Presented
+            } else if self.frames_skipped != skipped {
+                FrameOutcome::Skipped
+            } else {
+                FrameOutcome::NoImage
+            };
+            log.frame(times, outcome);
+        }
         let serial = self.active_view().and_then(|v| self.engine.frame(v)).map_or(0, |f| f.serial);
         self.frame_stats.record(started.elapsed(), serial);
-        result
+        // Resize events are applied inside the frame (`apply_window_size`).
+        self.frame_times.total = ms_since(started);
+        result?;
+        self.bench_frame()
+    }
+
+    /// The window's newest size from its `Resized` events since the last frame.
+    fn apply_window_size(&mut self) {
+        let Some(size) = self.pending_window_size.take() else { return };
+        let started = Instant::now();
+        if (size.width, size.height) != (self.surface_config.width, self.surface_config.height) {
+            self.resize_counters.configures += 1;
+            self.surface_config.width = size.width;
+            self.surface_config.height = size.height;
+            self.surface.configure(&self.device, &self.surface_config);
+        }
+        self.frame_times.configure += ms_since(started);
+        let laid = Instant::now();
+        self.update_layout();
+        self.frame_times.layout += ms_since(laid);
+        self.sync_frame_rate();
+        self.frame_times.resize_events += ms_since(started);
+    }
+
+    /// The shown page gets the window's sizes one at a time (see `window_resize`), the
+    /// background tabs once the window has been still for `layout.background_resize_delay`.
+    fn pace_page_resizes(&mut self, now: Instant) {
+        let wait = Duration::from_secs_f32(self.config.layout.window_resize_wait.max(0.0));
+        if let Some(view) = self.paced_view {
+            if let Some(frame) = self.engine.frame(view) {
+                self.page_pacer.frame(frame.texture.width(), frame.texture.height());
+            }
+            if !self.chrome.is_sliding()
+                && Some(view) == self.display_view()
+                && let Some(size) = self.page_pacer.poll(now, wait)
+            {
+                self.engine.resize(view, size);
+            }
+        }
+        if self.background_resize.take_due(now) {
+            let size = self.view_size();
+            let sliding = self.slide_view_size.map(|(view, _)| view);
+            let views: Vec<ViewId> = self.tabs.all().iter().map(|t| t.view).collect();
+            for view in views {
+                if Some(view) != sliding && Some(view) != self.paced_view {
+                    self.engine.resize(view, size);
+                }
+            }
+        }
+    }
+
+    /// Gives the shown view `size`, paced (see `pace_page_resizes`).
+    fn resize_shown_view(&mut self, view: ViewId, size: ViewSize) {
+        if self.paced_view != Some(view) {
+            self.paced_view = Some(view);
+            self.page_pacer.reset();
+        }
+        let wait = Duration::from_secs_f32(self.config.layout.window_resize_wait.max(0.0));
+        if let Some(size) = self.page_pacer.request(size, Instant::now(), wait) {
+            self.engine.resize(view, size);
+        }
     }
 
     fn redraw_frame(&mut self) -> Result<()> {
+        self.apply_window_size();
         if self.logical_size() != self.layout_size {
+            let started = Instant::now();
             self.update_layout();
+            self.frame_times.layout += ms_since(started);
         }
         let tabs_changed = self.tabs_changed;
         if std::mem::take(&mut self.tabs_changed) {
@@ -5066,6 +5523,8 @@ impl Browser {
             self.chrome.sync_tabs(&mut self.ui, &self.tabs, &self.parked, &self.favicons);
             let audio = self.tabs.active().map_or((false, false), |t| (t.playing_media, t.muted));
             self.chrome.set_audio(&mut self.ui, audio.0, audio.1);
+            let capture = self.tabs.active().map(|t| t.capture).unwrap_or_default();
+            self.chrome.set_capture(&mut self.ui, capture);
             let level = self.tabs.active().map(|t| self.shields.level(&t.url));
             self.chrome.set_shield_active(&mut self.ui, level.is_some_and(|l| l != Level::Off));
             // A locked private tab's title stays out of the window title too.
@@ -5101,6 +5560,13 @@ impl Browser {
                 "zoom-in" => self.menu_action(MenuAction::ZoomIn),
                 "close-popups" => self.close_popups(),
                 "shields" => self.toggle_shields_popover(),
+                // Test aids: answer the permission prompt, open the recording indicator's
+                // popover and stop everything the tab records.
+                answer if answer.starts_with("permission-") => self.answer_permission_for_test(answer),
+                "capture-popover" => self.toggle_capture_popover(),
+                "capture-stop" => self.capture_action(crate::permission_prompt::CaptureAction::StopAll),
+                // Test aid: load "navigate:URL" in the shown tab (after "private": a private one).
+                url if url.starts_with("navigate:") => self.navigate_to(url["navigate:".len()..].to_owned()),
                 "history" => self.show_panel(Panel::History),
                 "downloads" => self.show_panel(Panel::Downloads),
                 "downloads-popover" => self.toggle_downloads_popover(),
@@ -5381,6 +5847,20 @@ impl Browser {
                         self.start_pip(view, player);
                     }
                 }
+                // Capture aid: the page's main video goes fullscreen (as its own fullscreen
+                // button would; Axion's player takes over), again to leave it.
+                "video-fullscreen" => {
+                    let target = self
+                        .active_view()
+                        .zip(self.active_view().and_then(|v| self.primary_player(v)).cloned());
+                    if let Some((view, player)) = target {
+                        let on = !self.chrome.page_fullscreen();
+                        self.media_command(
+                            view,
+                            &axion_media::Command::new(&player.id, axion_media::Action::Fullscreen(on)),
+                        );
+                    }
+                }
                 // Capture aid: open the player's speed menu.
                 // Capture aid: scroll the page down by 600 px.
                 "toggle-sidebar" => self.run(Action::ToggleSidebar),
@@ -5483,6 +5963,10 @@ impl Browser {
                     }
                 }
                 "paste" => self.run(Action::Paste),
+                // Capture aid: audits the next frame of a flat-mode window for glass or anything
+                // that imitates it (a glass pass, a rim, a knocked-out or heavy shadow) and logs
+                // every finding ("flat-audit: ...").
+                "flat-audit" => self.flat_audit = true,
                 // Capture aid: logs every text of the visible chrome that does not fit its box
                 // (a translation too long for its layout).
                 "i18n-overflow" => {
@@ -5504,6 +5988,17 @@ impl Browser {
                     }
                 }
                 "settings-scroll" => self.settings.scroll_by(&mut self.ui, -400.0),
+                // Capture aids for the import group: "import:source:N" (toggle a browser),
+                // "import:bookmarks" / "import:history" (toggle), "import:run", "import:file:PATH".
+                import if import.starts_with("import:") => self.import_capture(&import["import:".len()..]),
+                // Capture aids for Settings › Hardware: a change that needs a restart, and the
+                // AMD confirmation.
+                "hardware-change" => {
+                    self.config.hardware.gpu_rasterization = false;
+                    self.settings_outcome(Outcome::Changed);
+                    self.refresh_settings();
+                }
+                "hardware-confirm" => self.confirm_gpu_frames(),
                 "player-speed" => {
                     let _ = self.player.click(&mut self.ui, PlayerControl::Speed, &self.config);
                 }
@@ -5794,6 +6289,7 @@ impl Browser {
         self.settings.animate(&mut self.ui, dt);
         let address = self.chrome.address_frame(&self.ui);
         self.passwords.animate(&mut self.ui, &self.config, dt, address);
+        self.animate_permissions(dt, address);
         self.update_player(dt);
         self.update_playlist_buttons();
         self.playlist_ui.popover.animate(&mut self.ui, dt);
@@ -5825,6 +6321,7 @@ impl Browser {
         let window = self.logical_size();
         self.tooltip.animate(&mut self.ui, &self.config, &self.keymap, window, blocked, dt);
         self.take_engine_icons();
+        self.poll_svg_icons();
         if self.now_art.poll(&self.favicons) {
             self.update_now_playing();
         }
@@ -5839,28 +6336,30 @@ impl Browser {
         let hovered = if self.tab_drag.is_dragging() { None } else { self.ui.hovered() };
         self.chrome.update_hover(&mut self.ui, hovered);
         self.update_tab_drag(dt);
+        let started = Instant::now();
+        self.pace_page_resizes(now);
+        self.frame_times.layout += ms_since(started);
+        let started = Instant::now();
         self.ui.layout();
+        self.frame_times.ui_layout = ms_since(started);
         self.tab_drag.animate_rows(&mut self.ui, &self.chrome, &self.config, dt);
         if let Some(view) = self.display_view() {
             self.engine.request_frame(view);
         }
         self.snapshot_background_tabs();
 
-        let surface = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.surface_config);
-                return Ok(());
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
-            wgpu::CurrentSurfaceTexture::Validation => bail!("surface validation error"),
-        };
-        let output = surface.texture.create_view(&Default::default());
-
         // Locked private pages aren't drawn at all (the lock screen covers their place).
         let frame = self.display_view().filter(|_| !self.is_locked()).and_then(|v| self.engine.frame(v));
         self.probe_page_frame(frame.as_ref());
-        let page_view = frame.as_ref().map(|f| f.texture.create_view(&Default::default()));
+        // The same view while the frame texture stays: an unchanged scene keeps its fingerprint.
+        let page_view = frame.as_ref().map(|f| match &self.page_view {
+            Some((texture, view)) if *texture == f.texture => view.clone(),
+            _ => {
+                let view = f.texture.create_view(&Default::default());
+                self.page_view = Some((f.texture.clone(), view.clone()));
+                view
+            }
+        });
         let slide_frame = frame.as_ref().and_then(|f| self.slide_page_frame(&f.texture));
         let slide_view = slide_frame.as_ref().map(|t| t.create_view(&Default::default()));
         let fade = self.slide_fade.as_ref().filter(|_| frame.is_some()).map(|(t, a)| (t.clone(), a.value));
@@ -5957,7 +6456,20 @@ impl Browser {
                 }
             }
         }
+        let started = Instant::now();
         self.ui.paint(&mut layers);
+        self.frame_times.paint = ms_since(started);
+        if std::mem::take(&mut self.flat_audit) {
+            if self.config.glass.is_flat() {
+                let found = axion_ui::flat_violations(&layers, s);
+                tracing::info!("flat-audit: {} findings", found.len());
+                for line in found {
+                    tracing::warn!("flat-audit: {line}");
+                }
+            } else {
+                tracing::warn!("flat-audit: the window is not in flat mode (glass.style)");
+            }
+        }
         if tracing::enabled!(tracing::Level::TRACE) {
             let kinds: Vec<String> = layers
                 .iter()
@@ -5985,10 +6497,73 @@ impl Browser {
             .unwrap_or(theme.color(Paint::Ground));
         let scene = Scene { clear, layers };
         let size = (self.surface_config.width, self.surface_config.height);
+        // A frame that would look like the one on screen isn't drawn again (see
+        // `ui.skip_unchanged_frames`): the scene's fingerprint, the window's size and every
+        // page frame so far (pages' textures change content without changing identity).
+        let fingerprint = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::hash::DefaultHasher::new();
+            scene.fingerprint().hash(&mut h);
+            size.hash(&mut h);
+            self.engine.counters().page_frames.hash(&mut h);
+            h.finish()
+        };
+        let capture_due = self.capture.as_ref().is_some_and(|(_, at)| Instant::now() >= *at);
+        if self.config.ui.skip_unchanged_frames && self.shown_fingerprint == Some(fingerprint) && !capture_due
+        {
+            drop(scene);
+            self.frames_skipped += 1;
+            self.idle_redraw_at = Some(now + self.frame_interval);
+            return Ok(());
+        }
+        self.idle_redraw_at = None;
+        if tracing::enabled!(tracing::Level::TRACE) {
+            // Debug aid: which layers changed since the frame shown (why it was drawn).
+            let layers = scene.layer_fingerprints();
+            let changed: Vec<usize> = (0..layers.len().max(self.shown_layers.len()))
+                .filter(|&i| layers.get(i) != self.shown_layers.get(i))
+                .collect();
+            tracing::trace!(?changed, count = layers.len(), "frame drawn: layers changed");
+            self.shown_layers = layers;
+        }
+        let started = Instant::now();
+        let acquired = self.surface.get_current_texture();
+        self.frame_times.acquire = ms_since(started);
+        let surface = match acquired {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.surface_config);
+                self.shown_fingerprint = None;
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                self.shown_fingerprint = None;
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Validation => bail!("surface validation error"),
+        };
+        let output = surface.texture.create_view(&Default::default());
+        let started = Instant::now();
+        if let Some(log) = &mut self.perf_log {
+            log.gpu_begin(&self.device, &self.queue);
+        }
         self.compositor.render(&scene, &mut self.ui.fonts(), &output, size);
+        if let Some(log) = &mut self.perf_log {
+            log.gpu_end(&self.device, &self.queue);
+        }
+        self.frame_times.render = ms_since(started);
+        // Kept until the next comparison: no new texture view can take one of these identities.
+        self.shown_textures = scene.textures();
         drop(scene);
+        let started = Instant::now();
         self.window.pre_present_notify();
         self.queue.present(surface);
+        self.frame_times.present = ms_since(started);
+        if self.shown_fingerprint.is_none() && self.frames_presented == 0 {
+            tracing::info!("first frame presented");
+        }
+        self.frames_presented += 1;
+        self.shown_fingerprint = Some(fingerprint);
         self.probe_presented();
 
         if let Some((path, at)) = &self.capture
@@ -6119,7 +6694,27 @@ impl Browser {
 
     /// Pages render at the refresh rate of the window's monitor (or the configured rate).
     fn sync_frame_rate(&mut self) {
+        let refresh = monitor_refresh(&self.window);
         self.engine.set_frame_rate(page_frame_rate(&self.config, &self.window));
+        self.frame_interval = frame_rate::display_interval(refresh);
+        self.refresh_watch.applied(refresh, Instant::now());
+    }
+
+    /// Follows the refresh rate of the window's monitor: unknown on Wayland until the window
+    /// is shown, and it changes when the window moves to another monitor (which Wayland
+    /// doesn't report as a move).
+    fn watch_refresh_rate(&mut self) {
+        let now = Instant::now();
+        if self.refresh_watch.due(now) && self.refresh_watch.changed(monitor_refresh(&self.window), now) {
+            self.sync_frame_rate();
+            tracing::debug!(interval = ?self.frame_interval, "monitor refresh rate changed");
+        }
+    }
+
+    /// When the next frame should run, if not at once: after a frame that was skipped (nothing
+    /// changed, nothing presented, so nothing waited for the display), one display refresh later.
+    pub fn redraw_at(&self) -> Option<Instant> {
+        self.idle_redraw_at
     }
 
     /// While the sidebar slides: the frame to show for the page, drawn from the page
@@ -6251,6 +6846,8 @@ impl Browser {
             if let Some(probe) = &mut self.probe {
                 probe.tracker.sent(now);
             }
+            // Like a key event: the next frame runs at once.
+            self.idle_redraw_at = None;
             return;
         }
         let total = probe.spec.text.chars().count();
@@ -6308,7 +6905,10 @@ impl Browser {
         }
     }
 
-    pub fn request_redraw(&self) {
+    pub fn request_redraw(&mut self) {
+        if let Some(log) = &mut self.perf_log {
+            log.redraw_requested();
+        }
         self.window.request_redraw();
     }
 }
@@ -6479,6 +7079,11 @@ fn zoom_label(zoom: f64) -> String {
     format!("{:.0}%", ZOOM_BASE.powf(zoom) * 100.0)
 }
 
+/// Milliseconds since `started` (frame timings).
+fn ms_since(started: Instant) -> f32 {
+    started.elapsed().as_secs_f32() * 1000.0
+}
+
 fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
@@ -6519,16 +7124,19 @@ fn push_slide_page<'a>(
     layers.push(Layer::Image(image));
 }
 
-/// Frames per second pages render at: `tabs.max_frame_rate`, or the window's monitor's
-/// refresh rate.
+/// The refresh rate (millihertz) of the window's monitor, if known (on Wayland only once the
+/// window has been shown, see `frame_rate`).
+fn monitor_refresh(window: &Window) -> Option<u32> {
+    window.current_monitor().and_then(|m| m.refresh_rate_millihertz())
+}
+
+/// Frames per second pages render at (see `frame_rate::page_frame_rate`).
 fn page_frame_rate(config: &Config, window: &Window) -> u32 {
-    if config.tabs.max_frame_rate > 0 {
-        return config.tabs.max_frame_rate;
-    }
-    window
-        .current_monitor()
-        .and_then(|m| m.refresh_rate_millihertz())
-        .map_or(FALLBACK_FRAME_RATE, |mhz| mhz.div_ceil(1000))
+    frame_rate::page_frame_rate(
+        config.tabs.max_frame_rate,
+        config.tabs.max_frame_rate_cap,
+        monitor_refresh(window),
+    )
 }
 
 fn is_dark(config: &Config, window: &Window, desktop_dark: Option<bool>) -> bool {
@@ -6575,6 +7183,7 @@ mod tests {
                 ChromeAction::from_id(id).is_some(),
                 OverviewAction::from_id(id).is_some(),
                 Passwords::owns_action(id),
+                crate::permission_prompt::PermissionPrompt::owns(id),
                 LockScreen::is_lock_action(id),
                 SettingsAction::from_id(id).is_some(),
                 PlayerControl::from_id(id).is_some(),

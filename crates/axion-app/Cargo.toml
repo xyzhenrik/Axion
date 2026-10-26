@@ -19,6 +19,7 @@ axion-compositor.workspace = true
 axion-config.workspace = true
 axion-engine.workspace = true
 axion-i18n.workspace = true
+axion-import.workspace = true
 axion-media.workspace = true
 axion-physics.workspace = true
 axion-shields.workspace = true

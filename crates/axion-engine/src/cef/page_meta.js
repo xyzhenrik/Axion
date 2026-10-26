@@ -1,7 +1,7 @@
 // Reports the page's icon links (with their media queries) and theme colours to the engine,
 // once the document is parsed and whenever they change (pages like GitHub swap their icon
 // when the colour scheme changes). Injected into top-level documents only.
-// Format (one console message): MARKER, then lines "i\t<url>\t<media>\t<sizes>" and
+// Format (one console message): MARKER, then lines "i\t<url>\t<media>\t<sizes>\t<type>" and
 // "c\t<r>,<g>,<b>\t<media>".
 (() => {
   if (window.top !== window || window.__axionMeta) return;
@@ -27,7 +27,7 @@
     for (const link of document.querySelectorAll("link[rel][href]")) {
       const rel = (link.getAttribute("rel") || "").toLowerCase().split(/\s+/);
       if (!rel.includes("icon") && !rel.includes("apple-touch-icon")) continue;
-      lines.push(["i", clean(link.href), clean(link.media), clean(link.getAttribute("sizes"))].join("\t"));
+      lines.push(["i", clean(link.href), clean(link.media), clean(link.getAttribute("sizes")), clean(link.getAttribute("type"))].join("\t"));
     }
     for (const meta of document.querySelectorAll('meta[name="theme-color" i][content]')) {
       const c = rgb(meta.getAttribute("content"));

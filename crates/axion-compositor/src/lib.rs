@@ -147,6 +147,166 @@ pub struct Scene<'a> {
     pub layers: Vec<Layer<'a>>,
 }
 
+impl Scene<'_> {
+    /// The texture views the scene shows. A caller comparing [`Scene::fingerprint`]s keeps
+    /// the previous scene's alive until the comparison, so no new view can take an old one's
+    /// identity.
+    pub fn textures(&self) -> Vec<wgpu::TextureView> {
+        let mut out = Vec::new();
+        for layer in &self.layers {
+            match layer {
+                Layer::Image(i) => out.push(i.texture.clone()),
+                Layer::Content(c) => out.extend(c.images.iter().map(|i| i.texture.clone())),
+                Layer::Glass { .. } => {}
+            }
+        }
+        out
+    }
+
+    /// A hash of everything the scene draws: two scenes with the same fingerprint render the
+    /// same pixels, as long as the textures they show kept their content (textures count by
+    /// identity, so the caller mixes in what changes their content, e.g. page frame serials,
+    /// and keeps the previous scene's [`Scene::textures`] alive). Text counts by its laid-out
+    /// glyphs. Lets a window skip compositing a frame that would look like the one it shows.
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::hash::DefaultHasher::new();
+        self.layer_fingerprints().hash(&mut h);
+        h.finish()
+    }
+
+    /// [`Scene::fingerprint`] in parts: the clear colour's, then each layer's (a debug aid:
+    /// which layer changed).
+    pub fn layer_fingerprints(&self) -> Vec<u64> {
+        use std::hash::{Hash, Hasher};
+        let mut out = Vec::with_capacity(self.layers.len() + 1);
+        let f = |h: &mut std::hash::DefaultHasher, v: f32| v.to_bits().hash(h);
+        let v2 = |h: &mut std::hash::DefaultHasher, v: Vec2| {
+            f(h, v.x);
+            f(h, v.y);
+        };
+        let rect = |h: &mut std::hash::DefaultHasher, r: &Rect| {
+            v2(h, r.origin);
+            v2(h, r.size);
+        };
+        let color = |h: &mut std::hash::DefaultHasher, c: &[f32; 4]| c.iter().for_each(|&c| f(h, c));
+        let image = |h: &mut std::hash::DefaultHasher, i: &ImageDraw<'_>| {
+            i.texture.hash(h);
+            rect(h, &i.rect);
+            rect(h, &i.uv);
+            f(h, i.radius);
+            f(h, i.opacity);
+        };
+        let mut h = std::hash::DefaultHasher::new();
+        color(&mut h, &self.clear);
+        out.push(h.finish());
+        for layer in &self.layers {
+            let mut h = std::hash::DefaultHasher::new();
+            match layer {
+                Layer::Image(i) => {
+                    0u8.hash(&mut h);
+                    image(&mut h, i);
+                }
+                Layer::Glass { shapes, params } => {
+                    1u8.hash(&mut h);
+                    shapes.len().hash(&mut h);
+                    for s in shapes {
+                        v2(&mut h, s.center);
+                        v2(&mut h, s.half_size);
+                        f(&mut h, s.corner_radius);
+                        v2(&mut h, s.stretch);
+                        f(&mut h, s.stretch_angle);
+                        s.tint_opacity.map(f32::to_bits).hash(&mut h);
+                        s.merge.map(f32::to_bits).hash(&mut h);
+                        f(&mut h, s.glow);
+                        s.join_only.hash(&mut h);
+                    }
+                    let p = params;
+                    for v in [p.refraction, p.bezel_width, p.dispersion, p.merge_smoothness, p.frost] {
+                        f(&mut h, v);
+                    }
+                    for v in [p.blur_radius, p.rim, p.shadow] {
+                        f(&mut h, v);
+                    }
+                    color(&mut h, &p.tint);
+                    v2(&mut h, p.light_dir);
+                }
+                Layer::Content(c) => {
+                    2u8.hash(&mut h);
+                    c.clip.is_some().hash(&mut h);
+                    if let Some(clip) = &c.clip {
+                        rect(&mut h, clip);
+                    }
+                    c.quads.len().hash(&mut h);
+                    for q in &c.quads {
+                        rect(&mut h, &q.rect);
+                        f(&mut h, q.radius);
+                        color(&mut h, &q.color);
+                        f(&mut h, q.softness);
+                        f(&mut h, q.ring);
+                        q.knockout.hash(&mut h);
+                    }
+                    c.images.len().hash(&mut h);
+                    for i in &c.images {
+                        image(&mut h, i);
+                    }
+                    c.icons.len().hash(&mut h);
+                    for i in &c.icons {
+                        i.icon.hash(&mut h);
+                        i.weight.hash(&mut h);
+                        f(&mut h, i.stroke);
+                        rect(&mut h, &i.rect);
+                        color(&mut h, &i.color);
+                        f(&mut h, i.rotation);
+                    }
+                    c.text.len().hash(&mut h);
+                    for t in &c.text {
+                        hash_text_area(&mut h, t);
+                    }
+                }
+            }
+            out.push(h.finish());
+        }
+        out
+    }
+}
+
+/// What a text area draws: its place, bounds, colour, custom glyphs and laid-out glyphs.
+fn hash_text_area(h: &mut std::hash::DefaultHasher, t: &glyphon::TextArea<'_>) {
+    use std::hash::Hash;
+    t.left.to_bits().hash(h);
+    t.top.to_bits().hash(h);
+    t.scale.to_bits().hash(h);
+    (t.bounds.left, t.bounds.top, t.bounds.right, t.bounds.bottom).hash(h);
+    t.default_color.0.hash(h);
+    t.custom_glyphs.len().hash(h);
+    for g in t.custom_glyphs {
+        g.id.hash(h);
+        for v in [g.left, g.top, g.width, g.height] {
+            v.to_bits().hash(h);
+        }
+        g.color.map(|c| c.0).hash(h);
+        g.snap_to_physical_pixel.hash(h);
+    }
+    for run in t.buffer.layout_runs() {
+        run.line_y.to_bits().hash(h);
+        run.glyphs.len().hash(h);
+        for g in run.glyphs {
+            g.font_id.hash(h);
+            g.glyph_id.hash(h);
+            for v in [g.x, g.y, g.w, g.font_size, g.x_offset, g.y_offset] {
+                v.to_bits().hash(h);
+            }
+            g.color_opt.map(|c| c.0).hash(h);
+        }
+        run.decorations.len().hash(h);
+        for d in run.decorations {
+            d.glyph_range.hash(h);
+            d.color_opt.map(|c| c.0).hash(h);
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ViewportUniform {
@@ -721,6 +881,39 @@ fn begin_pass<'e>(
 #[cfg(test)]
 mod tests {
     use wgpu::naga;
+
+    use super::*;
+
+    fn scene(quad_x: f32, glass_x: f32) -> Scene<'static> {
+        let content = Content {
+            quads: vec![Quad::fill(Rect::new(quad_x, 0.0, 10.0, 10.0), 2.0, [1.0, 0.0, 0.0, 1.0])],
+            ..Default::default()
+        };
+        Scene {
+            clear: [0.0, 0.0, 0.0, 1.0],
+            layers: vec![
+                Layer::Glass {
+                    shapes: vec![GlassShape::circle(Vec2::new(glass_x, 5.0), 4.0)],
+                    params: GlassParams::default(),
+                },
+                Layer::Content(content),
+            ],
+        }
+    }
+
+    #[test]
+    fn fingerprint_follows_what_is_drawn() {
+        assert_eq!(scene(1.0, 2.0).fingerprint(), scene(1.0, 2.0).fingerprint());
+        assert_ne!(scene(1.0, 2.0).fingerprint(), scene(1.5, 2.0).fingerprint());
+        assert_ne!(scene(1.0, 2.0).fingerprint(), scene(1.0, 2.5).fingerprint());
+        let layers = |s: &Scene<'_>| s.layer_fingerprints();
+        let (a, b) = (layers(&scene(1.0, 2.0)), layers(&scene(1.0, 2.5)));
+        assert_eq!((a[0], a[2]), (b[0], b[2]));
+        assert_ne!(a[1], b[1]);
+        let mut dark = scene(1.0, 2.0);
+        dark.clear = [0.1, 0.0, 0.0, 1.0];
+        assert_ne!(dark.fingerprint(), scene(1.0, 2.0).fingerprint());
+    }
 
     #[test]
     fn shaders_are_valid() {

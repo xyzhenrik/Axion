@@ -41,6 +41,8 @@ pub struct Tab {
     pub media: Option<axion_media::PageMedia>,
     /// Pinned tabs sit first, shown as just their favicon in the tab bar.
     pub pinned: bool,
+    /// What it records now (microphone, camera, screen).
+    pub capture: crate::permissions::Capture,
 }
 
 impl Tab {
@@ -64,6 +66,7 @@ impl Tab {
             media: None,
             muted: false,
             pinned: false,
+            capture: Default::default(),
             last_viewed: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as i64),

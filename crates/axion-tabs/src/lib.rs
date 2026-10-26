@@ -50,6 +50,9 @@ pub struct TabInfo<K> {
     /// Its developer tools are open (or it is the tools): like media tabs it is never frozen
     /// or discarded, whatever the policy says.
     pub devtools_open: bool,
+    /// It records the microphone, camera or screen (a call): never frozen or discarded,
+    /// whatever the policy says (that would cut the call).
+    pub capturing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +80,7 @@ pub fn plan<K: Copy + PartialEq>(
                 && !t.loading
                 && !(policy.keep_media_awake && t.playing_media)
                 && !t.devtools_open
+                && !t.capturing
         })
         .collect();
     let mut out = Vec::new();
@@ -124,6 +128,7 @@ mod tests {
             playing_media: false,
             loading: false,
             devtools_open: false,
+            capturing: false,
         }
     }
 
@@ -156,6 +161,18 @@ mod tests {
         let mut lax = policy();
         lax.keep_media_awake = false;
         assert!(plan(&lax, &[inspected], now, None).is_empty());
+    }
+
+    #[test]
+    fn capturing_tabs_are_never_frozen_or_discarded() {
+        let now = Instant::now() + 120 * MIN;
+        let mut call = tab(1, Lifecycle::Background, Some(90 * MIN), now);
+        call.capturing = true;
+        let idle = tab(2, Lifecycle::Background, Some(7 * MIN), now);
+        let mut lax = policy();
+        lax.keep_media_awake = false;
+        assert!(plan(&lax, &[call], now, Some(5000)).is_empty());
+        assert_eq!(plan(&lax, &[call, idle], now, Some(5000)), [Transition::Discard(2)]);
     }
 
     #[test]

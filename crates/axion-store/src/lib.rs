@@ -87,7 +87,29 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE playlist ADD COLUMN source TEXT NOT NULL DEFAULT '';",
     // 10: when an item was last played (unix seconds, 0 = never), for "continue watching"
     "ALTER TABLE playlist ADD COLUMN played_at INTEGER NOT NULL DEFAULT 0;",
+    // 11: where an imported bookmark lived in its old browser ("Dev / Rust"); empty = top level
+    "ALTER TABLE bookmarks ADD COLUMN folder_path TEXT NOT NULL DEFAULT '';",
+    // 12: remembered permission decisions (microphone, notifications, …), by origin and kind
+    "CREATE TABLE site_permissions (
+        origin TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        allowed INTEGER NOT NULL,
+        decided INTEGER NOT NULL,
+        PRIMARY KEY (origin, kind)
+    );",
 ];
+
+/// A remembered permission decision of a site.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SitePermission {
+    /// `https://discord.com`.
+    pub origin: String,
+    /// The kind's stable key (`microphone`, `notifications`, …).
+    pub kind: String,
+    pub allowed: bool,
+    /// Unix seconds.
+    pub decided: i64,
+}
 
 /// Download states of a playlist item (`PlaylistItem::dl_state`).
 pub mod dl {
@@ -253,6 +275,40 @@ pub struct Bookmark {
     pub title: String,
     pub folder: Option<i64>,
     pub position: i64,
+    /// The folders an imported bookmark was in ("Dev / Rust"), empty for top-level bookmarks
+    /// (those show in the bookmarks bar).
+    pub folder_path: String,
+}
+
+/// A bookmark to add from another browser (see [`Store::import_bookmarks`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewBookmark {
+    pub url: String,
+    pub title: String,
+    /// "Dev / Rust"; empty for the top level.
+    pub folder_path: String,
+    /// Unix seconds; 0 when unknown.
+    pub created: i64,
+}
+
+/// A history entry to add from another browser (see [`Store::import_history`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewHistory {
+    pub url: String,
+    pub title: String,
+    pub visit_count: u32,
+    /// Unix seconds.
+    pub last_visit: i64,
+}
+
+/// What an import did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ImportCounts {
+    pub added: usize,
+    /// Already in the store (by URL).
+    pub existing: usize,
+    /// Not worth keeping (internal pages, no usable time).
+    pub skipped: usize,
 }
 
 pub struct Store {
@@ -892,6 +948,51 @@ impl Store {
         Ok(())
     }
 
+    // ---- permissions ----
+
+    /// Every remembered permission decision, by origin and kind.
+    pub fn site_permissions(&self) -> Result<Vec<SitePermission>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT origin, kind, allowed, decided FROM site_permissions ORDER BY origin, kind")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(SitePermission {
+                origin: r.get(0)?,
+                kind: r.get(1)?,
+                allowed: r.get::<_, i64>(2)? != 0,
+                decided: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Remembers (or with `None`, forgets) a site's decision for a kind.
+    pub fn set_site_permission(
+        &self,
+        origin: &str,
+        kind: &str,
+        allowed: Option<bool>,
+        now: i64,
+    ) -> Result<()> {
+        match allowed {
+            Some(allowed) => self.conn.execute(
+                "INSERT INTO site_permissions (origin, kind, allowed, decided) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(origin, kind) DO UPDATE SET allowed = excluded.allowed, decided = excluded.decided",
+                params![origin, kind, allowed as i64, now],
+            )?,
+            None => self
+                .conn
+                .execute("DELETE FROM site_permissions WHERE origin = ?1 AND kind = ?2", [origin, kind])?,
+        };
+        Ok(())
+    }
+
+    /// Forgets every remembered permission decision.
+    pub fn clear_site_permissions(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM site_permissions", [])?;
+        Ok(())
+    }
+
     // ---- bookmarks ----
 
     pub fn add_bookmark(&self, url: &str, title: &str, now: i64) -> Result<i64> {
@@ -905,6 +1006,69 @@ impl Store {
             params![url, title, position, now],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Adds bookmarks from another browser in one transaction. A URL that is already
+    /// bookmarked (or comes twice) is left alone and counted as existing; `created` of 0 means
+    /// `now`. Bookmarks with an empty `folder_path` go to the top level (the bookmarks bar).
+    pub fn import_bookmarks(&self, items: &[NewBookmark], now: i64) -> Result<ImportCounts> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut position: i64 =
+            tx.query_row("SELECT COALESCE(MAX(position) + 1, 0) FROM bookmarks", [], |r| r.get(0))?;
+        let mut counts = ImportCounts::default();
+        {
+            let mut exists = tx.prepare("SELECT 1 FROM bookmarks WHERE url = ?1 LIMIT 1")?;
+            let mut insert = tx.prepare(
+                "INSERT INTO bookmarks (url, title, position, created, folder_path)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for item in items {
+                if item.url.is_empty() {
+                    counts.skipped += 1;
+                } else if exists.exists([&item.url])? {
+                    counts.existing += 1;
+                } else {
+                    let created = if item.created > 0 { item.created } else { now };
+                    insert.execute(params![item.url, item.title, position, created, item.folder_path])?;
+                    position += 1;
+                    counts.added += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(counts)
+    }
+
+    /// Adds history from another browser in one transaction. A URL Axion already knows keeps
+    /// its own entry (counted as existing); a new one gets its visit count, last visit and one
+    /// visit at that time (which is what the top sites count).
+    pub fn import_history(&self, items: &[NewHistory]) -> Result<ImportCounts> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut counts = ImportCounts::default();
+        {
+            let mut exists = tx.prepare("SELECT 1 FROM urls WHERE url = ?1 LIMIT 1")?;
+            let mut insert =
+                tx.prepare("INSERT INTO urls (url, title, visit_count, last_visit) VALUES (?1, ?2, ?3, ?4)")?;
+            let mut visit = tx.prepare("INSERT INTO visits (url_id, at) VALUES (?1, ?2)")?;
+            for item in items {
+                if !is_recordable(&item.url) || item.last_visit <= 0 {
+                    counts.skipped += 1;
+                } else if exists.exists([&item.url])? {
+                    counts.existing += 1;
+                } else {
+                    insert.execute(params![
+                        item.url,
+                        item.title,
+                        item.visit_count.max(1),
+                        item.last_visit
+                    ])?;
+                    visit.execute(params![tx.last_insert_rowid(), item.last_visit])?;
+                    counts.added += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(counts)
     }
 
     pub fn remove_bookmark(&self, id: i64) -> Result<()> {
@@ -921,7 +1085,7 @@ impl Store {
 
     pub fn bookmarks(&self) -> Result<Vec<Bookmark>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT id, url, title, folder, position FROM bookmarks ORDER BY folder IS NOT NULL, folder, position",
+            "SELECT id, url, title, folder, position, folder_path FROM bookmarks ORDER BY folder IS NOT NULL, folder, position",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(Bookmark {
@@ -930,6 +1094,7 @@ impl Store {
                 title: r.get(2)?,
                 folder: r.get(3)?,
                 position: r.get(4)?,
+                folder_path: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -938,7 +1103,7 @@ impl Store {
     pub fn search_bookmarks(&self, query: &str, limit: usize) -> Result<Vec<Bookmark>> {
         let pattern = format!("%{}%", like_escape(query.trim()));
         let mut stmt = self.conn.prepare_cached(
-            "SELECT id, url, title, folder, position FROM bookmarks
+            "SELECT id, url, title, folder, position, folder_path FROM bookmarks
              WHERE url LIKE ?1 ESCAPE '\\' OR title LIKE ?1 ESCAPE '\\' ORDER BY position LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![pattern, limit as i64], |r| {
@@ -948,6 +1113,7 @@ impl Store {
                 title: r.get(2)?,
                 folder: r.get(3)?,
                 position: r.get(4)?,
+                folder_path: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1175,6 +1341,31 @@ mod tests {
     }
 
     #[test]
+    fn site_permissions_are_remembered_per_origin_and_kind() {
+        let s = store();
+        s.set_site_permission("https://a.com", "microphone", Some(true), NOW).unwrap();
+        s.set_site_permission("https://a.com", "camera", Some(false), NOW).unwrap();
+        s.set_site_permission("https://b.com", "notifications", Some(true), NOW).unwrap();
+        // A new decision replaces the old one.
+        s.set_site_permission("https://a.com", "microphone", Some(false), NOW + 1).unwrap();
+        let all = s.site_permissions().unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(
+            all[1],
+            SitePermission {
+                origin: "https://a.com".into(),
+                kind: "microphone".into(),
+                allowed: false,
+                decided: NOW + 1
+            }
+        );
+        s.set_site_permission("https://a.com", "camera", None, NOW).unwrap();
+        assert_eq!(s.site_permissions().unwrap().len(), 2);
+        s.clear_site_permissions().unwrap();
+        assert!(s.site_permissions().unwrap().is_empty());
+    }
+
+    #[test]
     fn registrable_domains() {
         let d = |u: &str| registrable_domain(u);
         assert_eq!(d("https://github.com/").as_deref(), Some("github.com"));
@@ -1390,6 +1581,59 @@ mod tests {
         s.rename_playlist("Play Later", "Weekend").unwrap();
         assert_eq!(s.playlist_items("Weekend").unwrap().len(), 2);
         assert!(s.playlist_items("Play Later").unwrap().is_empty());
+    }
+
+    #[test]
+    fn imported_bookmarks_keep_their_folders_and_skip_known_urls() {
+        let s = Store::in_memory().unwrap();
+        s.add_bookmark("https://mine.example/", "Mine", NOW).unwrap();
+        let item = |url: &str, folder: &str, created| NewBookmark {
+            url: url.into(),
+            title: "t".into(),
+            folder_path: folder.into(),
+            created,
+        };
+        let counts = s
+            .import_bookmarks(
+                &[
+                    item("https://mine.example/", "", 5),
+                    item("https://a.example/", "", 5),
+                    item("https://b.example/", "Dev / Rust", 0),
+                    item("https://b.example/", "Other", 0),
+                    item("", "", 0),
+                ],
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(counts, ImportCounts { added: 2, existing: 2, skipped: 1 });
+        let all = s.bookmarks().unwrap();
+        assert_eq!(all.len(), 3);
+        let b = all.iter().find(|b| b.url == "https://b.example/").unwrap();
+        assert_eq!(b.folder_path, "Dev / Rust");
+        assert!(b.position > all.iter().find(|b| b.url == "https://mine.example/").unwrap().position);
+        assert!(all.iter().filter(|b| b.folder_path.is_empty()).count() == 2);
+    }
+
+    #[test]
+    fn imported_history_is_kept_beside_own_visits() {
+        let s = Store::in_memory().unwrap();
+        s.record_visit("https://mine.example/", "Mine", NOW).unwrap();
+        let item =
+            |url: &str, at| NewHistory { url: url.into(), title: "t".into(), visit_count: 0, last_visit: at };
+        let counts = s
+            .import_history(&[
+                item("https://mine.example/", NOW - 9),
+                item("https://old.example/", NOW - 100),
+                item("about:blank", NOW),
+                item("https://no-time.example/", 0),
+            ])
+            .unwrap();
+        assert_eq!(counts, ImportCounts { added: 1, existing: 1, skipped: 2 });
+        let history = s.recent_history(10).unwrap();
+        assert_eq!(history.len(), 2);
+        let old = history.iter().find(|h| h.url == "https://old.example/").unwrap();
+        // A zero visit count from a damaged source still counts as one visit.
+        assert_eq!((old.visit_count, old.last_visit), (1, NOW - 100));
     }
 
     #[test]

@@ -5,8 +5,8 @@
 //! axion [url…] [--account=ID] [--capture=out.png] [--size=1440x900] [--position=X,Y] [--maximized] [--overview] [--address=TEXT] [--open=menu|history|bookmarks|settings|private|private-locked|account-menu|…] [--lead=MS] [--onboarding]
 //! ```
 //!
-//! Environment: `AXION_GPU=low` uses the integrated GPU, `AXION_OSR=software` disables GPU
-//! frame sharing, `AXION_NO_SANDBOX=1` disables Chromium's sandbox, `AXION_CONFIG_DIR` and
+//! Environment (they win over Settings › Hardware): `AXION_GPU=low|high|<name>` picks the
+//! graphics card, `AXION_OSR=software|gpu` sets GPU frame sharing, `AXION_NO_SANDBOX=1` disables Chromium's sandbox, `AXION_CONFIG_DIR` and
 //! `AXION_PROFILE_DIR` move the bases of settings and browsing data (each account has its own
 //! directory in them, see `axion-accounts`), `AXION_DEVICE_KEY_DIR` moves the password vault's
 //! device key (default `~/.local/share/axion`), `AXION_MONITOR=HDMI-A-1` opens the window on
@@ -19,17 +19,22 @@ mod browser;
 mod chrome;
 mod context_menu;
 mod desktop;
+mod desktop_integration;
 mod downloads;
 mod downloads_popover;
 mod drip;
 mod engine_icons;
 mod eye;
+mod favicon_contrast;
 mod favicons;
 mod filedrop;
 mod find;
+mod frame_rate;
 mod gpu;
+mod hardware;
 mod history;
 mod home;
+mod import;
 mod input;
 mod lifecycle;
 mod locale;
@@ -44,6 +49,9 @@ mod overview;
 mod page_color;
 mod page_menu;
 mod passwords;
+mod perf_log;
+mod permission_prompt;
+mod permissions;
 mod pip;
 mod platform;
 mod player;
@@ -52,10 +60,12 @@ mod playlist_page;
 mod playlist_popover;
 mod popover;
 mod private;
+mod resize_bench;
 mod settings;
 mod shields;
 mod shields_popover;
 mod suggestions;
+mod svg_icons;
 mod tabdrag;
 mod tabs;
 mod toast;
@@ -64,6 +74,7 @@ mod typing_probe;
 mod update;
 mod update_alert;
 mod url;
+mod window_resize;
 
 use std::time::Duration;
 
@@ -117,10 +128,20 @@ fn main() -> Result<()> {
         maximized: args.iter().any(|a| a == "--maximized"),
         account: args.iter().find_map(|a| a.strip_prefix("--account=")).map(str::to_owned),
         onboarding: args.iter().any(|a| a == "--onboarding"),
+        bench_resize: args.iter().any(|a| a == "--bench-resize"),
         waker: None,
     };
 
-    let event_loop = EventLoop::new()?;
+    let mut builder = EventLoop::builder();
+    // Test aid: `AXION_WINDOW_X11=1` puts the window on X11 (XWayland, where it can be placed
+    // and resized by `--bench-resize`) while Chromium stays on Wayland, so pages keep sharing
+    // GPU frames as in a normal Wayland session.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("AXION_WINDOW_X11").is_some() {
+        use winit::platform::x11::EventLoopBuilderExtX11 as _;
+        builder.with_x11();
+    }
+    let event_loop = builder.build()?;
     // Chromium's message loop is pumped from ours: the engine wakes it when it has work, and
     // says when it wants to run next (see `App::about_to_wait`).
     let proxy = event_loop.create_proxy();
@@ -192,12 +213,15 @@ impl ApplicationHandler for App {
             browser.sync_windows(event_loop);
             browser.pump();
             // Sleep until the next frame (requested below; the compositor's frame callback
-            // wakes us), input, or Chromium's next work, whichever comes first.
-            event_loop.set_control_flow(match browser.next_wakeup() {
-                Some(at) => ControlFlow::WaitUntil(at),
-                None => ControlFlow::Poll,
-            });
-            browser.request_redraw();
+            // wakes us), input, or Chromium's next work, whichever comes first. After a frame
+            // that was skipped (nothing changed, nothing presented) the next one is due a
+            // display refresh later instead of at once.
+            let plan =
+                frame_rate::wake_plan(std::time::Instant::now(), browser.redraw_at(), browser.next_wakeup());
+            event_loop.set_control_flow(plan.until.map_or(ControlFlow::Poll, ControlFlow::WaitUntil));
+            if plan.redraw {
+                browser.request_redraw();
+            }
         }
     }
 }

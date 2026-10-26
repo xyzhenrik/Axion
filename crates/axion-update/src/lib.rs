@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn no_source_means_no_request() {
         let server = TestServer::start(Vec::new());
-        let updates = Updates { api_url: server.url(""), ..Updates::default() };
+        let updates = Updates { api_url: server.url(""), repository: String::new(), ..Updates::default() };
         assert!(matches!(check(&updates, &Version::new(0, 0, 1)), Err(UpdateError::NoSource)));
         assert_eq!(server.requests(), 0);
     }

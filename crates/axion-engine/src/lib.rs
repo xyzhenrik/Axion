@@ -11,6 +11,7 @@ mod context_menu;
 pub mod download;
 mod input;
 pub mod internal;
+mod permission;
 mod policy;
 mod transfer;
 
@@ -18,6 +19,7 @@ pub use context_menu::{ContextCommand, ContextMedia, ContextMenuParams, EditFlag
 pub use download::{ClearData, DownloadAction, DownloadInfo, DownloadOptions, DownloadState};
 pub use input::{CursorKind, InputEvent, Modifiers, MouseButton};
 pub use internal::{INTERNAL_SCHEME, InternalPages, InternalRequest, InternalResponse};
+pub use permission::{PermissionAnswer, PermissionId, PermissionKind};
 pub use policy::{
     MediaViewOptions, NavigationRequest, RequestPolicy, RequestVerdict, ResourceKind, ResourceRequest,
 };
@@ -47,13 +49,15 @@ impl ViewSize {
 }
 
 /// One `<link rel="icon">` (or apple-touch-icon) of a page.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IconLink {
     pub url: String,
     /// The link's `media` attribute (empty: all), e.g. `(prefers-color-scheme: dark)`.
     pub media: String,
     /// The link's `sizes` attribute (empty if none).
     pub sizes: String,
+    /// The link's `type` attribute, e.g. `image/svg+xml` (empty if none).
+    pub mime: String,
 }
 
 /// A `<meta name="theme-color">` of a page.
@@ -228,6 +232,27 @@ pub enum EngineEvent {
         view: ViewId,
         url: String,
     },
+    /// The view's page asks for permissions (`origin` is the frame that asks, e.g.
+    /// `https://discord.com`). Nothing is granted until [`Engine::answer_permission`]; a request
+    /// that is never answered keeps the page waiting.
+    PermissionRequest {
+        view: ViewId,
+        id: PermissionId,
+        origin: String,
+        kinds: Vec<PermissionKind>,
+    },
+    /// Chromium withdrew a request before it was answered (the page navigated or closed).
+    PermissionCancelled {
+        view: ViewId,
+        id: PermissionId,
+    },
+    /// The view started or stopped capturing: `audio` (microphone, or a shared screen's
+    /// sound) and `video` (camera, or a shared screen or window).
+    CaptureChanged {
+        view: ViewId,
+        audio: bool,
+        video: bool,
+    },
     /// The view is gone (after [`Engine::close_view`], or the engine had to drop it).
     Closed {
         view: ViewId,
@@ -365,6 +390,26 @@ pub trait Engine {
     /// Installs what decides which requests and navigations pages may make (Shields). It
     /// applies to every view, also ones created before.
     fn set_request_policy(&mut self, policy: Option<std::sync::Arc<dyn RequestPolicy>>);
+
+    /// Answers an [`EngineEvent::PermissionRequest`] of `view` (a request that is gone is
+    /// ignored).
+    fn answer_permission(&mut self, view: ViewId, id: PermissionId, answer: PermissionAnswer);
+    /// Remembers a site's decision for `kind` in the engine's own permission store, so its
+    /// pages see it at once (`Notification.permission`, `navigator.permissions.query`) and it
+    /// isn't asked again (`None`: forgotten, it asks again). `private` applies it to the private
+    /// profile (kept in memory only). Screen sharing has no stored decision.
+    fn set_site_permission(&mut self, origin: &str, kind: PermissionKind, allow: Option<bool>, private: bool);
+    /// Blocks `kind` on every site without asking (`false`: ask). Applies to the normal profile;
+    /// the browser answers requests of private views itself.
+    fn set_permission_default(&mut self, kind: PermissionKind, blocked: bool);
+    /// Stops the view's microphone, camera or screen capture (`kinds`), as the page's own
+    /// "stop" button would: its tracks end. Tracks the page made in a way the engine didn't
+    /// see (copies) keep going; [`EngineEvent::CaptureChanged`] tells, and reloading the page
+    /// is the sure way to end them.
+    fn stop_capture(&mut self, view: ViewId, kinds: &[PermissionKind]);
+    /// Whether sharing a screen lets the user pick what to share in a dialog of the desktop
+    /// (Wayland: the screen cast portal). Without one (X11) the whole screen is shared.
+    fn screen_share_has_picker(&self) -> bool;
 
     /// Asks the view to produce a frame now (call once per compositor frame for visible views).
     /// Engines that render on their own timer (see [`Engine::set_frame_rate`]) ignore it.

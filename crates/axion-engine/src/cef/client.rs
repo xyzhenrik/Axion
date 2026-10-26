@@ -25,6 +25,10 @@ use crate::{
 const PAGE_META_PREFIX: &str = "\u{1}axion-meta:";
 /// Reports icon links and theme colours of every top-level document.
 const PAGE_META_SCRIPT: &str = include_str!("page_meta.js");
+/// Keeps the page's capture tracks so `Engine::stop_capture` can end them; run in every frame.
+const CAPTURE_SCRIPT: &str = include_str!("capture.js");
+/// The function [`CAPTURE_SCRIPT`] installs.
+pub(super) const STOP_CAPTURE_FUNCTION: &str = "__axionStopCapture";
 
 /// Events from all views, tagged with the CEF browser they came from so events from a browser
 /// that was replaced (see the software fallback) can be dropped.
@@ -35,6 +39,8 @@ pub(super) struct Shared {
     pub page_script: RefCell<Option<String>>,
     pub downloads: Rc<super::download::Downloads>,
     pub stats: super::stats::Stats,
+    /// Permission requests waiting for the browser's answer.
+    pub permissions: super::permission::Permissions,
     /// How long after Chromium hands over a GPU frame it is copied (`ViewContext::submit_gpu_frame`).
     pub frame_settle: Duration,
     /// DevTools browsers Chromium created for a view (see `Engine::open_devtools`), until the
@@ -59,8 +65,13 @@ pub(super) struct ViewFrames {
     spare_checks: RefCell<Vec<wgpu::Buffer>>,
     /// A frame never got drawn: Chromium should paint again (taken by the engine).
     pub wants_repaint: Cell<bool>,
-    /// Software frames with a black bar skipped in a row (see `ViewContext::upload`).
+    /// Frames with a black bar skipped in a row (see `ViewContext::upload`, `resolve_frames`).
     pub skipped_bars: Cell<u32>,
+    /// The last frame shown had black edges of its own (a dark page, such as the dark start
+    /// page): the letterbox check can't tell a bar from the page then and is left out.
+    /// Without this every frame of such a page was skipped for as long as the window was being
+    /// resized: the page froze.
+    pub edges_black: Cell<bool>,
     /// Until when frames are checked for the letterboxed page of a resize (see
     /// `is_letterboxed`); `None` once a frame without bars came.
     pub letterbox_until: Cell<Option<Instant>>,
@@ -79,6 +90,16 @@ impl ViewFrames {
     /// When the frame waiting to be copied is due, if there is one.
     pub fn copy_due(&self) -> Option<Instant> {
         self.scheduled.borrow().due()
+    }
+
+    /// Bytes of the frame textures this view holds (its frame, spares and copies on their
+    /// way), and how many of Chromium's buffers are imported (diagnostics).
+    pub fn memory(&self) -> (u64, usize) {
+        let bytes = |t: &wgpu::Texture| u64::from(t.width()) * u64::from(t.height()) * 4;
+        let mut total = self.texture.borrow().as_ref().map_or(0, bytes);
+        total += self.spare_textures.borrow().iter().map(bytes).sum::<u64>();
+        total += self.pending.borrow().iter().map(|f| bytes(&f.texture)).sum::<u64>();
+        (total, self.imports.borrow().len())
     }
 
     pub fn has_pending(&self) -> bool {
@@ -176,6 +197,7 @@ impl ViewContext {
             self.recycle_texture(old);
         }
         self.frames.serial.set(self.frames.serial.get() + 1);
+        self.shared.stats.count(|c| c.page_frames += 1);
     }
 
     fn recycle_texture(&self, texture: wgpu::Texture) {
@@ -220,6 +242,9 @@ impl ViewContext {
         if !settle.is_zero() {
             // A newer frame replaces one that hasn't been copied yet: it shows the page later.
             let now = Instant::now();
+            if frames.scheduled.borrow().due().is_some() {
+                self.shared.stats.count(|c| c.settle_replaced += 1);
+            }
             if let Some((source, region)) = frames.scheduled.borrow_mut().offer((source, region), now, settle)
             {
                 self.copy_gpu_frame(source, region);
@@ -262,6 +287,7 @@ impl ViewContext {
                 record_drawn_check(encoder, &frame.texture, &frame.check);
             })?;
         frame.mapped.store(MAP_WAITING, Ordering::Release);
+        self.shared.stats.count(|c| c.gpu_copies += 1);
         self.queue.submit(commands);
         let mapped = frame.mapped.clone();
         frame.check.slice(..).map_async(wgpu::MapMode::Read, move |result| {
@@ -299,7 +325,9 @@ impl ViewContext {
             };
             frame.check.unmap();
             let watching = frames.letterbox_until.get().filter(|until| Instant::now() < *until).is_some();
-            if drawn && watching && letterboxed {
+            let skipped = frames.skipped_bars.get();
+            if drawn && watching && letterboxed && !frames.edges_black.get() && skipped < MAX_SKIPPED_BARS {
+                frames.skipped_bars.set(skipped + 1);
                 // Right after a resize Chromium can capture its compositor's frame of the old
                 // size scaled into a buffer of the new size, with black bars, and reports it as
                 // a normal frame: the page shrank for a frame. The real one follows.
@@ -316,6 +344,8 @@ impl ViewContext {
                     frames.letterbox_until.set(None);
                 }
                 tracing::trace!(view = ?self.view, after = ?frame.since.elapsed(), "GPU frame taken");
+                frames.skipped_bars.set(0);
+                frames.edges_black.set(letterboxed);
                 self.recycle_check(frame.check);
                 self.store(frame.texture);
                 continue;
@@ -373,9 +403,13 @@ impl ViewContext {
 
     fn frame_texture(&self, size: wgpu::Extent3d, format: wgpu::TextureFormat) -> wgpu::Texture {
         let mut spare = self.frames.spare_textures.borrow_mut();
-        if let Some(i) = spare.iter().position(|t| t.size() == size && t.format() == format) {
-            return spare.swap_remove(i);
+        // Spares of another size are of a size the page had before a resize: kept, they would
+        // fill the spare slots for good and every later frame would get a new texture.
+        spare.retain(|t| t.size() == size && t.format() == format);
+        if let Some(texture) = spare.pop() {
+            return texture;
         }
+        self.shared.stats.count(|c| c.frame_textures += 1);
         self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("page frame"),
             size,
@@ -391,9 +425,12 @@ impl ViewContext {
     fn check_buffer(&self, width: u32) -> wgpu::Buffer {
         let size = check_buffer_size(width);
         let mut spare = self.frames.spare_checks.borrow_mut();
-        if let Some(i) = spare.iter().position(|b| b.size() == size) {
-            return spare.swap_remove(i);
+        // As for frame textures: buffers of an old width would block the spare slots.
+        spare.retain(|b| b.size() == size);
+        if let Some(buffer) = spare.pop() {
+            return buffer;
         }
+        self.shared.stats.count(|c| c.check_buffers += 1);
         self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame drawn check"),
             size,
@@ -416,7 +453,8 @@ impl ViewContext {
         // `is_scaled`): skip it, the real frame follows. At most a few in a row, so a page that
         // really has a black edge still gets drawn.
         let watching = self.frames.letterbox_until.get().is_some_and(|until| Instant::now() < until);
-        if watching && has_black_bar(pixels, width as usize, height as usize) {
+        let bar = has_black_bar(pixels, width as usize, height as usize);
+        if watching && bar && !self.frames.edges_black.get() {
             let skipped = self.frames.skipped_bars.get();
             if skipped < MAX_SKIPPED_BARS {
                 self.frames.skipped_bars.set(skipped + 1);
@@ -426,6 +464,7 @@ impl ViewContext {
             }
         }
         self.frames.skipped_bars.set(0);
+        self.frames.edges_black.set(bar);
         let reusable = self
             .frames
             .texture
@@ -439,6 +478,7 @@ impl ViewContext {
             })
             .cloned();
         let texture = reusable.unwrap_or_else(|| {
+            self.shared.stats.count(|c| c.frame_textures += 1);
             self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("cef software frame"),
                 size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -613,6 +653,22 @@ wrap_display_handler! {
             self.ctx.emit(browser, EngineEvent::FullscreenRequested { view: self.ctx.view, fullscreen });
         }
 
+        fn on_media_access_change(
+            &self,
+            browser: Option<&mut Browser>,
+            has_video_access: ::std::os::raw::c_int,
+            has_audio_access: ::std::os::raw::c_int,
+        ) {
+            if self.ctx.devtools {
+                return;
+            }
+            self.ctx.emit(browser, EngineEvent::CaptureChanged {
+                view: self.ctx.view,
+                audio: has_audio_access != 0,
+                video: has_video_access != 0,
+            });
+        }
+
         fn on_cursor_change(
             &self,
             browser: Option<&mut Browser>,
@@ -669,6 +725,7 @@ wrap_load_handler! {
             if self.ctx.devtools || is_internal(&url) {
                 return;
             }
+            frame.execute_java_script(Some(&CAPTURE_SCRIPT.into()), Some(&url.as_str().into()), 0);
             let page_script = self.ctx.shared.page_script.borrow().clone();
             if let Some(script) = page_script {
                 frame.execute_java_script(Some(&script.as_str().into()), Some(&url.as_str().into()), 0);
@@ -863,7 +920,8 @@ fn parse_page_meta(text: &str) -> PageMeta {
                 }
                 let media = fields.next().unwrap_or_default().to_owned();
                 let sizes = fields.next().unwrap_or_default().to_owned();
-                meta.icons.push(IconLink { url, media, sizes });
+                let mime = fields.next().unwrap_or_default().to_owned();
+                meta.icons.push(IconLink { url, media, sizes, mime });
             }
             Some("c") => {
                 let channels: Vec<u8> = fields
@@ -884,7 +942,7 @@ fn parse_page_meta(text: &str) -> PageMeta {
 
 /// The strings of a list CEF lends to a callback. (The `cef` crate's `clone().into_iter()`
 /// of a borrowed list yields nothing, so the list is read in place.)
-fn string_list(list: &mut CefStringList) -> Vec<String> {
+pub(super) fn string_list(list: &mut CefStringList) -> Vec<String> {
     let raw: *mut cef::sys::_cef_string_list_t = list.into();
     if raw.is_null() {
         return Vec::new();
@@ -910,36 +968,79 @@ pub(super) fn favicon_callback(request: FaviconRequest) -> DownloadImageCallback
     FaviconCallbackBuilder::new(request)
 }
 
-// A media view may reach the local network and this computer (a video on a home server, a
-// local test page): Chromium asks for that permission, and Alloy style would ignore the ask.
+// Off-screen (Alloy style) Chromium shows no permission UI: without this, media access is
+// denied and every other prompt ignored. Requests go to the browser as events and wait for its
+// answer (`Engine::answer_permission`).
 wrap_permission_handler! {
     pub(super) struct PermissionHandlerBuilder {
-        net: Arc<Network>,
-        view: ViewId,
+        ctx: ViewContext,
     }
 
     impl PermissionHandler {
+        fn on_request_media_access_permission(
+            &self,
+            browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            requesting_origin: Option<&CefString>,
+            requested_permissions: u32,
+            callback: Option<&mut MediaAccessCallback>,
+        ) -> ::std::os::raw::c_int {
+            let (kinds, unknown) = super::permission::media_kinds(requested_permissions);
+            let Some(callback) = callback else { return 0 };
+            // The DevTools frontend never captures; unknown kinds get Chromium's default (denied).
+            if self.ctx.devtools || kinds.is_empty() || unknown != 0 {
+                return 0;
+            }
+            let permissions = &self.ctx.shared.permissions;
+            let id = permissions.add_media(self.ctx.view, callback.clone(), requested_permissions);
+            let origin = requesting_origin.map(|o| o.to_string()).unwrap_or_default();
+            tracing::debug!(view = ?self.ctx.view, %origin, ?kinds, "media access requested");
+            self.ctx.emit(browser, EngineEvent::PermissionRequest { view: self.ctx.view, id, origin, kinds });
+            1
+        }
+
         fn on_show_permission_prompt(
             &self,
-            _browser: Option<&mut Browser>,
-            _prompt_id: u64,
-            _requesting_origin: Option<&CefString>,
+            browser: Option<&mut Browser>,
+            prompt_id: u64,
+            requesting_origin: Option<&CefString>,
             requested_permissions: u32,
             callback: Option<&mut PermissionPromptCallback>,
         ) -> ::std::os::raw::c_int {
-            use cef::sys::cef_permission_request_types_t as types;
-            let network = types::CEF_PERMISSION_TYPE_LOCAL_NETWORK as u32
-                | types::CEF_PERMISSION_TYPE_LOOPBACK_NETWORK as u32;
-            if self.net.media_view(self.view).is_none()
-                || requested_permissions == 0
-                || requested_permissions & !network != 0
+            let Some(callback) = callback else { return 0 };
+            // A media view may reach the local network and this computer (a video on a home
+            // server, a local test page) without asking.
+            let network = super::permission::LOCAL_NETWORK_BITS;
+            if self.ctx.net.media_view(self.ctx.view).is_some()
+                && requested_permissions != 0
+                && requested_permissions & !network == 0
             {
+                callback.cont(cef::sys::cef_permission_request_result_t::CEF_PERMISSION_RESULT_ACCEPT.into());
+                return 1;
+            }
+            let (kinds, unknown) = super::permission::prompt_kinds(requested_permissions);
+            if self.ctx.devtools || kinds.is_empty() || unknown != 0 {
+                // Chromium's default for off-screen browsers: ignored.
+                tracing::debug!(requested_permissions, "permission prompt left to Chromium");
                 return 0;
             }
-            if let Some(callback) = callback {
-                callback.cont(cef::sys::cef_permission_request_result_t::CEF_PERMISSION_RESULT_ACCEPT.into());
-            }
+            let id = self.ctx.shared.permissions.add_prompt(self.ctx.view, callback.clone(), prompt_id);
+            let origin = requesting_origin.map(|o| o.to_string()).unwrap_or_default();
+            tracing::debug!(view = ?self.ctx.view, %origin, ?kinds, "permission prompt");
+            self.ctx.emit(browser, EngineEvent::PermissionRequest { view: self.ctx.view, id, origin, kinds });
             1
+        }
+
+        fn on_dismiss_permission_prompt(
+            &self,
+            browser: Option<&mut Browser>,
+            prompt_id: u64,
+            _result: PermissionRequestResult,
+        ) {
+            // Still waiting: Chromium closed it itself (navigation, closing).
+            if let Some((view, id)) = self.ctx.shared.permissions.prompt_closed(prompt_id) {
+                self.ctx.emit(browser, EngineEvent::PermissionCancelled { view, id });
+            }
         }
     }
 }
@@ -1063,10 +1164,7 @@ pub(super) fn build_client(ctx: &ViewContext) -> Client {
         DisplayHandlerBuilder::new(ctx.clone()),
         LoadHandlerBuilder::new(ctx.clone()),
         LifeSpanHandlerBuilder::new(ctx.clone()),
-        (
-            build_request_handler(&ctx.net, ctx.view),
-            PermissionHandlerBuilder::new(Arc::clone(&ctx.net), ctx.view),
-        ),
+        (build_request_handler(&ctx.net, ctx.view), PermissionHandlerBuilder::new(ctx.clone())),
         super::download::build_download_handler(&ctx.shared.downloads),
         (FindHandlerBuilder::new(ctx.clone()), ContextMenuHandlerBuilder::new(ctx.clone())),
     )

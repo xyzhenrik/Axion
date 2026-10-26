@@ -73,6 +73,9 @@ impl Browser {
             },
             info.has_password,
         );
+        // The import step exists when other browsers are installed.
+        let choices = if self.importer.available() { self.onboarding_import_choices() } else { Vec::new() };
+        self.onboarding.set_sources(choices);
         let size = self.logical_size();
         let events = self.onboarding.open(&mut self.ui, &self.config, size, step);
         self.handle_ui_events(events);
@@ -123,6 +126,7 @@ impl Browser {
             Reaction::Config(pick) => self.onboarding_pick(pick),
             Reaction::ChoosePhoto => self.photo_chooser.choose(PhotoFor::Current),
             Reaction::RemovePhoto => self.settings_outcome(Outcome::RemoveAccountPhoto),
+            Reaction::Import(picks) => self.onboarding_import(picks),
             Reaction::End(ending, choice) => self.finish_onboarding(ending, choice),
         }
     }
@@ -289,6 +293,8 @@ impl Browser {
             })),
             "motion" => self.onboarding_pick(Pick::ReduceMotion(value != "off")),
             "transparency" => self.onboarding_pick(Pick::ReduceTransparency(value != "off")),
+            // Toggles the browser at this index in the import step.
+            "import" => self.onboarding_click(Click::Import(value.parse().unwrap_or(0))),
             "name" => self.onboarding.set_name(&mut self.ui, value),
             "password" => self.onboarding.set_password(&mut self.ui, value),
             other => tracing::warn!("--open=onb-{other} is not a known step"),

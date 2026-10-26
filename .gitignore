@@ -1,6 +1,16 @@
 /target
 *.log
 /third_party/cef/
-.claude/worktrees/
 tools/update-mock/site/
 tools/update-mock/__pycache__/
+CLAUDE.md
+design-prompts.md
+plan.md
+*.md
+!README.md
+!docs/
+!docs/**/*.md
+/docs/design/
+/docs/glass-playground.png
+/docs/reference/
+.claude/

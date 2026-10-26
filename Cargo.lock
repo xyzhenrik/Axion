@@ -414,6 +414,7 @@ dependencies = [
  "axion-config",
  "axion-engine",
  "axion-i18n",
+ "axion-import",
  "axion-media",
  "axion-physics",
  "axion-shields",
@@ -499,6 +500,18 @@ name = "axion-i18n"
 version = "0.0.1"
 dependencies = [
  "toml",
+ "tracing",
+]
+
+[[package]]
+name = "axion-import"
+version = "0.0.1"
+dependencies = [
+ "axion-store",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
  "tracing",
 ]
 

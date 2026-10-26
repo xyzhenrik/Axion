@@ -99,8 +99,6 @@ const CONTENT_REVEAL_FROM: f32 = 0.55;
 const CONTENT_REVEAL_TO: f32 = 0.9;
 /// Fading glass is grouped into this many opacity steps (each step is one glass pass).
 const GLASS_FADE_STEPS: f32 = 24.0;
-/// How strongly tinted glass takes its colour (it still refracts, blurs and catches light).
-const TINTED_GLASS_STRENGTH: f32 = 0.78;
 /// The resting pill of a segmented control, relative to the surface colour.
 const SEGMENT_PILL_OPACITY: f32 = 0.92;
 
@@ -184,6 +182,9 @@ pub struct Ui {
     /// Set while painting a clipped subtree (its glass is drawn in passes of its own, so a
     /// lens there could not flow out of the glass around it).
     painting_clipped: Cell<u32>,
+    /// The clip rectangles (physical px) of the clipped subtrees being painted, innermost last:
+    /// glass cannot be cut to one, so glass that is not wholly inside it is painted flat.
+    clip_stack: RefCell<Vec<Rect>>,
     /// Switch and slider knobs that are held or still animating.
     knobs: HashMap<NodeId, Knob>,
     focus: Option<NodeId>,
@@ -222,6 +223,7 @@ impl Ui {
             press_scale: HashMap::new(),
             press_anchor: None,
             painting_clipped: Cell::new(0),
+            clip_stack: RefCell::new(Vec::new()),
             knobs: HashMap::new(),
             caret_epoch: Instant::now(),
             needs_layout: true,
@@ -440,6 +442,11 @@ impl Ui {
     }
 
     pub fn set_style(&mut self, node: NodeId, style: Style) {
+        // Callers re-apply styles every frame (positions that follow other boxes); an unchanged
+        // one must not dirty the tree, or every frame lays everything out again.
+        if self.tree.style(node).is_ok_and(|s| *s == style) {
+            return;
+        }
         let _ = self.tree.set_style(node, style);
         self.needs_layout = true;
     }
@@ -852,7 +859,9 @@ impl Ui {
                     if caret > field.scroll_x + width - CARET_WIDTH {
                         field.scroll_x = caret - width + CARET_WIDTH;
                     }
-                    if !focused {
+                    if !focused || caret + CARET_WIDTH <= width {
+                        // Unfocused, or the field grew until the caret fits again (the compact
+                        // address expands while it is edited): back to the start.
                         field.scroll_x = 0.0;
                     }
                 }
@@ -1659,7 +1668,12 @@ impl Ui {
                     .collect();
                 let mut params = self.paint_theme().glass(level, s);
                 if let Some(tint) = tint {
-                    params.tint = [tint[0], tint[1], tint[2], TINTED_GLASS_STRENGTH];
+                    let theme = self.paint_theme();
+                    let glass = theme.tinted_glass(tint).0;
+                    params.tint = [glass[0], glass[1], glass[2], theme.tinted_opacity()];
+                    // Tinted glass is a button: neighbours stay separate drops (no blob between two).
+                    params.merge_smoothness = 0.0;
+                    params.rim *= theme.tinted_rim();
                 }
                 if fade < 1.0 {
                     // Fading glass loses blur, tint, refraction and light together.
@@ -1790,8 +1804,19 @@ impl Ui {
         let child_fade = fade * reveal;
         let mut child_depth = depth;
         let content = &mut stacks[depth].content;
+        // Glass in a clipped subtree (a scrolled settings page) cannot be cut to the clip: where
+        // it is not wholly inside it, it is a flat card (clipped like any content) or, wholly
+        // outside, nothing.
+        let glass_clipped = self.clip_stack.borrow().last().is_some_and(|c| !contains_rect(*c, bg_px));
+        let glass_unseen = self.clip_stack.borrow().last().is_some_and(|c| {
+            let hit = clip(bg_px, *c);
+            hit.size.x <= 0.0 || hit.size.y <= 0.0
+        });
         match widget.background {
-            Background::Glass(_) | Background::TintedGlass(..) if flat => {
+            Background::Glass(_) | Background::TintedGlass(..) if glass_unseen => {
+                child_depth = depth + 1;
+            }
+            Background::Glass(_) | Background::TintedGlass(..) if flat || glass_clipped => {
                 // No glass: the same surface as a plain card (see `Theme::flat_paint`).
                 // A bare group draws nothing and is no surface for what lies in it.
                 if widget.flat_role == FlatRole::Bare {
@@ -1831,12 +1856,14 @@ impl Ui {
             }
             Background::Fill(paint, opacity) => {
                 if let Some(shadow) = widget.shadow {
+                    let (dy, blur, opacity) =
+                        theme.flat_shadow_if_flat(shadow.offset_y, shadow.blur, shadow.opacity);
                     content.quads.push(Quad::shadow(
                         bg_px,
                         bg_radius,
-                        shadow.offset_y * s,
-                        shadow.blur * s,
-                        [0.0, 0.0, 0.0, shadow.opacity * fade],
+                        dy * s,
+                        blur * s,
+                        [0.0, 0.0, 0.0, opacity * fade],
                     ));
                 }
                 let mut color = theme.color(paint);
@@ -2027,10 +2054,16 @@ impl Ui {
             // The subtree as its own layers, each cut to this widget's frame.
             let mut sub: Vec<Stack<'a>> = Vec::new();
             self.painting_clipped.set(self.painting_clipped.get() + 1);
+            {
+                let mut stack = self.clip_stack.borrow_mut();
+                let cut = stack.last().map_or(px, |outer| clip(px, *outer));
+                stack.push(cut);
+            }
             for child in self.tree.children(node).unwrap_or_default() {
                 self.paint_node(child, child_depth, dim, child_fade, &mut sub);
             }
             self.painting_clipped.set(self.painting_clipped.get() - 1);
+            self.clip_stack.borrow_mut().pop();
             let mut layers = Vec::new();
             self.flush(sub, &mut layers);
             for layer in &mut layers {
@@ -2093,7 +2126,10 @@ impl Ui {
         };
         let content = &mut stacks[depth + 1].content;
         if paint.shadow[3] > 0.0 && paint.shadow_blur > 0.0 {
-            content.quads.push(Quad::card_shadow(
+            // A plain shadow, not `card_shadow`: a knockout trims the shadow where its own
+            // (offset) shape lies, which leaves a bright crescent of the backdrop under a card
+            // (very visible over video). A flat card is >= 94% opaque: nothing shows through it.
+            content.quads.push(Quad::shadow(
                 rect,
                 radius,
                 paint.shadow_dy * s,
@@ -2134,7 +2170,8 @@ impl Ui {
         let opaque = if rest_knob { (1.0 - lens) * fade } else { 0.0 };
         if opaque > MIN_VISIBLE {
             let content = &mut stacks[depth].content;
-            content.quads.push(Quad::shadow(rect, radius, 2.0 * s, 6.0 * s, [0.0, 0.0, 0.0, 0.18 * opaque]));
+            let (dy, blur, alpha) = self.paint_theme().flat_shadow_if_flat(2.0, 6.0, 0.18);
+            content.quads.push(Quad::shadow(rect, radius, dy * s, blur * s, [0.0, 0.0, 0.0, alpha * opaque]));
             content.quads.push(Quad::fill(rect, radius, [1.0, 1.0, 1.0, opaque]));
         }
         let glass = lens * fade;
@@ -2170,7 +2207,8 @@ impl Ui {
         let opaque = (1.0 - lens) * fade;
         if opaque > MIN_VISIBLE {
             let content = &mut stacks[depth].content;
-            content.quads.push(Quad::shadow(r, radius, 1.0 * s, 4.0 * s, [0.0, 0.0, 0.0, 0.10 * opaque]));
+            let (dy, blur, alpha) = self.paint_theme().flat_shadow_if_flat(1.0, 4.0, 0.10);
+            content.quads.push(Quad::shadow(r, radius, dy * s, blur * s, [0.0, 0.0, 0.0, alpha * opaque]));
             content.quads.push(Quad::fill(r, radius, [rest[0], rest[1], rest[2], rest[3] * opaque]));
         }
         let glass = lens * fade;
@@ -2383,6 +2421,48 @@ fn glass_tint_opacity(widget: &Widget, theme: &Theme) -> Option<f32> {
     })
 }
 
+/// Flat mode audit: what in a painted frame is glass or imitates it. Flat mode draws solid
+/// cards with a hairline border and a subtle shadow, nothing else: no glass pass, no ring
+/// thicker than the border (a rim), no knocked-out shadow (it leaves a bright crescent) and no
+/// shadow heavier than the heaviest flat card. One line per violation (empty: clean).
+pub fn flat_violations(layers: &[Layer<'_>], scale: f32) -> Vec<String> {
+    let (_, max_blur, strength) = theme::FLAT_SHADOW[2];
+    // The darkest chrome (the player's, dark in every scheme) has the strongest shadows.
+    let max_alpha = strength[0].max(strength[1]);
+    let mut out = Vec::new();
+    for (i, layer) in layers.iter().enumerate() {
+        match layer {
+            Layer::Glass { shapes, .. } => {
+                out.push(format!("layer {i}: a glass pass of {} shapes", shapes.len()));
+            }
+            Layer::Content(content) => {
+                for q in &content.quads {
+                    let at = format!(
+                        "layer {i} quad at ({:.0}, {:.0}) {:.0}x{:.0}",
+                        q.rect.origin.x, q.rect.origin.y, q.rect.size.x, q.rect.size.y
+                    );
+                    if q.ring > FLAT_BORDER * scale * 1.5 + 0.5 {
+                        out.push(format!("{at}: a {:.1}px ring (rim)", q.ring));
+                    }
+                    if q.knockout {
+                        out.push(format!("{at}: a knockout shadow"));
+                    }
+                    if q.softness > max_blur * scale + 0.5
+                        || (q.softness > 0.0 && q.color[3] > max_alpha + 0.01)
+                    {
+                        out.push(format!(
+                            "{at}: a heavy shadow (blur {:.0}, alpha {:.2})",
+                            q.softness, q.color[3]
+                        ));
+                    }
+                }
+            }
+            Layer::Image(_) => {}
+        }
+    }
+    out
+}
+
 fn quantize_fade(fade: f32) -> f32 {
     ((fade * GLASS_FADE_STEPS).round() / GLASS_FADE_STEPS).clamp(0.0, 1.0)
 }
@@ -2415,6 +2495,15 @@ fn clip(rect: Rect, to: Rect) -> Rect {
     let min = rect.origin.max(to.origin);
     let max = (rect.origin + rect.size).min(to.origin + to.size);
     Rect { origin: min, size: (max - min).max(Vec2::ZERO) }
+}
+
+/// `inner` lies wholly inside `outer` (half a pixel of slack).
+fn contains_rect(outer: Rect, inner: Rect) -> bool {
+    let slack = 0.5;
+    inner.origin.x >= outer.origin.x - slack
+        && inner.origin.y >= outer.origin.y - slack
+        && inner.origin.x + inner.size.x <= outer.origin.x + outer.size.x + slack
+        && inner.origin.y + inner.size.y <= outer.origin.y + outer.size.y + slack
 }
 
 fn rounded_contains(frame: Rect, radius: f32, p: Vec2) -> bool {
@@ -2689,6 +2778,56 @@ mod tests {
         assert!(events.is_empty(), "{events:?}");
     }
 
+    /// The selection pill is the selected segment's real frame, whatever the segments' widths
+    /// (translated labels make them unequal), and in between it moves and grows from one
+    /// segment's frame to the next one's.
+    #[test]
+    fn segmented_pill_matches_unequal_segments() {
+        let mut ui = ui();
+        let root = ui.root();
+        let seg = ui.add(
+            root,
+            Widget::segmented(0),
+            Style { flex_direction: FlexDirection::Row, ..Default::default() },
+        );
+        let widths = [60.0_f32, 140.0, 90.0];
+        let cells: Vec<NodeId> = widths
+            .iter()
+            .map(|&w| {
+                ui.add(
+                    seg,
+                    Widget::container(),
+                    Style { size: Size { width: length(w), height: length(30.0) }, ..Default::default() },
+                )
+            })
+            .collect();
+        ui.layout();
+        for (i, &cell) in cells.iter().enumerate() {
+            let pill = ui.segment_pill(seg, ui.segment_pos(seg, i)).expect("pill");
+            let frame = ui.frame(cell);
+            assert!(
+                (pill.origin - frame.origin).abs().max_element() < 0.01
+                    && (pill.size - frame.size).abs().max_element() < 0.01,
+                "segment {i}: pill {pill:?} vs frame {frame:?}"
+            );
+        }
+        // Half way between segments 0 and 1: the mean of both frames.
+        let half = ui.segment_pill(seg, 0.25).expect("pill");
+        let (a, b) = (ui.frame(cells[0]), ui.frame(cells[1]));
+        assert!((half.size.x - (a.size.x + b.size.x) / 2.0).abs() < 0.01);
+        assert!((half.center().x - (a.center().x + b.center().x) / 2.0).abs() < 0.01);
+        // After the labels change width the pill follows the new frames at once.
+        ui.set_style(
+            cells[1],
+            Style { size: Size { width: length(40.0), height: length(30.0) }, ..Default::default() },
+        );
+        ui.layout();
+        let pill = ui.segment_pill(seg, ui.segment_pos(seg, 1)).expect("pill");
+        assert!(
+            (pill.size.x - 40.0).abs() < 0.01 && (pill.origin.x - ui.frame(cells[1]).origin.x).abs() < 0.01
+        );
+    }
+
     #[test]
     fn toggles_and_sliders() {
         let mut ui = ui();
@@ -2869,6 +3008,53 @@ mod tests {
         assert!(!ui.is_holding());
     }
 
+    /// Glass in a clipped (scrolling) box cannot be cut to it: wholly outside it is not drawn
+    /// (a scrolled-out tinted button used to float below its page), straddling the edge it is a
+    /// clipped flat card, wholly inside it stays glass.
+    #[test]
+    fn glass_in_a_clipped_box_never_leaves_it() {
+        let mut ui = ui();
+        let root = ui.root();
+        let boxed = ui.add(
+            root,
+            Widget::container().with_clip(),
+            Style { size: Size { width: length(200.0), height: length(100.0) }, ..Default::default() },
+        );
+        let tall = ui.add(
+            boxed,
+            Widget::container(),
+            Style {
+                size: Size { width: length(200.0), height: length(400.0) },
+                flex_direction: FlexDirection::Column,
+                justify_content: taffy::JustifyContent::SPACE_BETWEEN,
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+        );
+        let button = |ui: &mut Ui| {
+            ui.add(
+                tall,
+                Widget::container()
+                    .with_radius(10.0)
+                    .with_background(Background::TintedGlass(GlassLevel::Thin, Paint::Accent)),
+                Style { size: Size { width: length(80.0), height: length(30.0) }, ..Default::default() },
+            )
+        };
+        let inside = button(&mut ui);
+        let outside = button(&mut ui);
+        ui.layout();
+        assert!(ui.frame(inside).origin.y + 30.0 <= 100.0 && ui.frame(outside).origin.y >= 100.0);
+        let glass_shapes = |ui: &Ui| {
+            let mut layers = Vec::new();
+            ui.paint(&mut layers);
+            layers
+                .iter()
+                .map(|l| if let Layer::Glass { shapes, .. } = l { shapes.len() } else { 0 })
+                .sum::<usize>()
+        };
+        assert_eq!(glass_shapes(&ui), 1, "the visible button is glass, the scrolled-out one is not drawn");
+    }
+
     fn flat_ui() -> Ui {
         let mut config = axion_config::Config::default();
         config.glass.style = axion_config::GlassStyle::Flat;
@@ -2891,9 +3077,110 @@ mod tests {
             .filter_map(|l| if let Layer::Content(c) = l { Some(c.quads.iter()) } else { None })
             .flatten()
             .collect();
-        assert!(quads.iter().any(|q| q.knockout && q.softness > 0.0), "a shadow");
+        assert!(quads.iter().any(|q| q.softness > 0.0 && !q.knockout), "a shadow");
         assert!(quads.iter().any(|q| q.ring >= 1.0), "a border");
         assert!(quads.iter().any(|q| q.ring == 0.0 && q.softness == 0.0 && q.color[3] > 0.9), "a solid fill");
+    }
+
+    /// Every kind of glass surface the app uses, painted in flat mode in both schemes, at rest,
+    /// hovered, held and with a held knob: nothing is glass (no pass) and nothing imitates it (no
+    /// rim, no knocked-out or heavy shadow, no lens). `flat_violations` is also the audit the
+    /// `flat-audit` capture aid runs on the real windows.
+    #[test]
+    fn flat_mode_draws_no_glass_and_no_glass_lookalikes() {
+        for dark in [false, true] {
+            let mut config = axion_config::Config::default();
+            config.glass.style = axion_config::GlassStyle::Flat;
+            let mut ui = Ui::new(Theme::new(&config, dark), 2.0);
+            ui.set_viewport(Vec2::new(900.0, 700.0), 2.0);
+            let (_, button, _) = row(&mut ui);
+            let root = ui.root();
+            let cell = |w: f32, h: f32| Style {
+                size: Size { width: length(w), height: length(h) },
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            };
+            let mut buttons = Vec::new();
+            // A text button of each tint (accent, destructive) and of each level, a player disc
+            // over video (thick glass with an icon), a hover highlight (lens level) and a card
+            // with a nested card on it.
+            let backgrounds = [
+                Background::TintedGlass(GlassLevel::Thin, Paint::Accent),
+                Background::TintedGlass(GlassLevel::Thin, Paint::Fixed(axion_config::Color::rgb(0xD0362B))),
+                Background::Glass(GlassLevel::Thin),
+                Background::Glass(GlassLevel::Regular),
+                Background::Glass(GlassLevel::Thick),
+                Background::Glass(GlassLevel::Lens),
+                Background::Soft(Paint::Surface, 0.6, 8.0),
+            ];
+            for background in backgrounds {
+                let b = ui.add(
+                    root,
+                    Widget::container()
+                        .with_action(ActionId(9))
+                        .with_radius(CAPSULE)
+                        .with_background(background),
+                    cell(120.0, 40.0),
+                );
+                ui.add(b, Widget::icon(axion_compositor::Icon::Close, 14.0), Style::default());
+                ui.add_label(b, "Import", TextStyle::Callout, Style::default());
+                buttons.push(b);
+            }
+            let card = ui.add(
+                root,
+                Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(18.0),
+                cell(200.0, 80.0),
+            );
+            ui.add(
+                card,
+                Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
+                cell(80.0, 30.0),
+            );
+            let seg = ui.add(root, Widget::segmented(0), Style::default());
+            ui.add(seg, Widget::container(), cell(100.0, 30.0));
+            ui.add(seg, Widget::container(), cell(100.0, 30.0));
+            let toggle = ui.add(root, Widget::toggle(true), Style::default());
+            let slider = ui.add(
+                root,
+                Widget::slider(0.4),
+                Style { size: Size { width: length(224.0), height: auto() }, ..Default::default() },
+            );
+            ui.layout();
+
+            let audit = |ui: &mut Ui, when: &str| {
+                let mut layers = Vec::new();
+                ui.paint(&mut layers);
+                let violations = flat_violations(&layers, 2.0);
+                assert!(violations.is_empty(), "flat, dark {dark}, {when}: {violations:#?}");
+            };
+            audit(&mut ui, "at rest");
+            for target in buttons.iter().copied().chain([button, toggle, slider, seg]) {
+                ui.handle(UiInput::PointerMove(ui.frame(target).center()));
+                audit(&mut ui, "hovered");
+                ui.handle(UiInput::PointerDown);
+                audit(&mut ui, "held");
+                ui.handle(UiInput::PointerMove(ui.frame(target).center() + Vec2::new(30.0, 6.0)));
+                audit(&mut ui, "dragged");
+                ui.handle(UiInput::PointerUp);
+            }
+        }
+    }
+
+    /// The audit does catch what it is about (so the test above means something).
+    #[test]
+    fn flat_audit_flags_glass_rims_and_knockouts() {
+        let rect = Rect::new(0.0, 0.0, 40.0, 40.0);
+        let mut content = Content::default();
+        content.quads.push(Quad::ring(rect, 20.0, 6.0, [1.0; 4]));
+        content.quads.push(Quad::card_shadow(rect, 20.0, 2.0, 10.0, [0.0, 0.0, 0.0, 0.1]));
+        content.quads.push(Quad::shadow(rect, 20.0, 8.0, 60.0, [0.0, 0.0, 0.0, 0.5]));
+        content.quads.push(Quad::ring(rect, 20.0, 2.0, [1.0; 4]));
+        let layers = vec![
+            Layer::Glass { shapes: vec![GlassShape::circle(Vec2::ZERO, 10.0)], params: Default::default() },
+            Layer::Content(content),
+        ];
+        assert_eq!(flat_violations(&layers, 2.0).len(), 4);
     }
 
     #[test]

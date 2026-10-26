@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
-use axion_config::{ClockFormat, Color, Config, Home, START_PAGE_URL};
+use axion_config::{ClockFormat, Color, Config, FaviconContrast, Home, START_PAGE_URL};
 use axion_engine::internal::split_internal_url;
 use axion_engine::{InternalPages, InternalRequest, InternalResponse};
 use axion_store::{Store, registrable_domain, site_host};
@@ -76,6 +76,8 @@ struct Served {
     thumbs_dir: PathBuf,
     favicons: Option<PathBuf>,
     dark: bool,
+    /// What the tiles' icons get when they would vanish on the page (`appearance.favicon_contrast`).
+    contrast: FaviconContrast,
 }
 
 /// Serves the start page (on Chromium's network thread).
@@ -138,6 +140,10 @@ impl InternalPages for HomeService {
                     .iter()
                     .find_map(|f| std::fs::read(f).ok())
                     .or_else(|| subdomain_icon(dir, &host, served.dark))?;
+                // The cache keeps the site's own pixels; a glyph that would vanish on the page
+                // (black octocat on the dark start page) is adapted like in the chrome.
+                let bytes =
+                    crate::favicon_contrast::adapt_png(&bytes, served.dark, served.contrast).unwrap_or(bytes);
                 InternalResponse::ok("image/png", bytes)
             }
             _ => return None,
@@ -213,6 +219,7 @@ struct Inputs {
     search_url: String,
     name: String,
     dark: bool,
+    contrast: FaviconContrast,
     accent: Color,
     reduce_motion: bool,
 }
@@ -413,6 +420,7 @@ impl HomePage {
             search_url: config.general.search_url.clone(),
             name: account_name.to_owned(),
             dark,
+            contrast: config.appearance.favicon_contrast,
             accent: config.appearance.accent,
             reduce_motion: config.glass.reduce_motion,
         };
@@ -421,6 +429,10 @@ impl HomePage {
             self.blocked_shown.is_none_or(|(shown, at)| shown != blocked_total && at.elapsed() >= interval);
         if !self.stale && self.inputs.as_ref() == Some(&inputs) && !stats_due {
             return false;
+        }
+        if self.inputs.as_ref().is_some_and(|p| p.dark != inputs.dark || p.contrast != inputs.contrast) {
+            // The tiles' icons come in the other tone: pages ask for them again.
+            self.icons_version += 1;
         }
         self.stale = false;
         self.blocked_shown = Some((blocked_total, Instant::now()));
@@ -473,6 +485,7 @@ impl HomePage {
         served.backgrounds_dir = self.library.dir().to_path_buf();
         served.thumbs_dir = self.library.thumbs_dir();
         served.dark = dark;
+        served.contrast = config.appearance.favicon_contrast;
         self.inputs = Some(inputs);
         true
     }
@@ -807,6 +820,7 @@ fn state_json(
         "i18n": page_translations(),
         "icons": icons_version,
         "accent": css_color(config.appearance.accent),
+        "flat": config.glass.is_flat(),
         "clock": { "show": home.show_clock, "h24": h24, "format": match home.clock_format {
             ClockFormat::Auto => "auto", ClockFormat::H12 => "12h", ClockFormat::H24 => "24h" } },
         "greeting": { "show": home.show_greeting && !private, "name": first_name },

@@ -48,10 +48,46 @@ pub(super) struct Stats {
     window: RefCell<Window>,
     /// When input was sent that no page frame has shown yet.
     pending_input: Cell<Option<Instant>>,
+    /// Running totals for benchmarks (see [`Counters`]).
+    counters: Cell<Counters>,
+}
+
+/// Running totals of the engine's frame and resize work, for benchmarks (`--bench-resize`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counters {
+    /// Views told they were resized (`was_resized`).
+    pub view_resizes: u64,
+    /// Page frame textures created (GPU copies and software uploads).
+    pub frame_textures: u64,
+    /// Read-back buffers created for the drawn check of GPU frames.
+    pub check_buffers: u64,
+    /// Page frames that became a view's frame.
+    pub page_frames: u64,
+    /// Paint callbacks from Chromium (GPU and software), before any is dropped or held.
+    pub paints: u64,
+    /// GPU frame copies submitted (first copies and copies again of frames not drawn yet).
+    pub gpu_copies: u64,
+    /// GPU frames held back to settle that a newer frame replaced before their copy.
+    pub settle_replaced: u64,
+    /// GPU frames copied again because they weren't drawn yet.
+    pub late: u64,
+    /// Frames given up on (never drawn, scaled or letterboxed).
+    pub dropped: u64,
 }
 
 impl Stats {
+    pub fn counters(&self) -> Counters {
+        self.counters.get()
+    }
+
+    pub fn count(&self, f: impl FnOnce(&mut Counters)) {
+        let mut c = self.counters.get();
+        f(&mut c);
+        self.counters.set(c);
+    }
+
     pub fn paint(&self, took: Duration) {
+        self.count(|c| c.paints += 1);
         self.window.borrow_mut().paint.add(took);
         if let Some(sent) = self.pending_input.take() {
             self.window.borrow_mut().input.add(sent.elapsed());
@@ -59,10 +95,12 @@ impl Stats {
     }
 
     pub fn late(&self) {
+        self.count(|c| c.late += 1);
         self.window.borrow_mut().late += 1;
     }
 
     pub fn dropped(&self) {
+        self.count(|c| c.dropped += 1);
         self.window.borrow_mut().dropped += 1;
     }
 

@@ -26,6 +26,11 @@ pub enum Paint {
     Hairline,
     /// A fixed colour (e.g. a tab group's dot).
     Fixed(Color),
+    /// The label colour on accent-tinted glass (white or near-black, whichever reads at >= 4.5:1
+    /// on the tinted glass over any backdrop; see [`Theme::on_tint`]).
+    OnAccent,
+    /// Like [`Paint::OnAccent`], on glass tinted with this colour (a destructive button).
+    OnColor(Color),
 }
 
 /// Text styles from the design's type scale (size / line height / weight).
@@ -62,6 +67,31 @@ impl TextStyle {
     }
 }
 
+/// Contrast a tinted glass button's label must keep over the darkest and brightest backdrop (WCAG AA for
+/// large or bold text and UI components, which a button label is). The glass stays translucent;
+/// a higher bar would force it back towards an opaque, desaturated plate.
+pub const TINTED_LABEL_CONTRAST: f32 = 3.0;
+/// The dark label colour on tinted glass.
+const TINTED_INK: [f32; 3] = [0.07, 0.07, 0.08];
+/// A white label is kept while the tint needs at most this much darkening for it.
+const TINTED_WHITE_MAX_SHIFT: f32 = 0.25;
+const TINT_SHIFT_STEPS: u32 = 50;
+/// The backdrops (grey levels) a tinted button's label must stay legible over: very dark and
+/// very bright pages (pure black or white backdrops are rarer than this and the glass blurs them).
+pub const TINTED_BACKDROPS: [f32; 2] = [0.1, 0.85];
+
+/// WCAG relative luminance of an sRGB colour.
+fn luminance(c: [f32; 3]) -> f32 {
+    let lin = |v: f32| if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+}
+
+/// WCAG contrast ratio of two sRGB colours.
+pub fn contrast(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
 /// The lens (see `Theme::lens`): bezel width (logical px) and multipliers on the material.
 const LENS_BEZEL: f32 = 16.0;
 const LENS_REFRACTION: f32 = 1.6;
@@ -76,8 +106,8 @@ const LENS_OPAQUE_MIX: f32 = 0.14;
 /// Flat mode: how opaque a card of each level is (a hint of the page shows through the thin ones,
 /// never blurred) and its shadow (logical px: offset, blur; strength in light / dark chrome).
 const FLAT_OPACITY: [f32; 3] = [0.94, 0.97, 1.0];
-const FLAT_SHADOW: [(f32, f32, [f32; 2]); 3] =
-    [(1.0, 5.0, [0.08, 0.20]), (2.0, 14.0, [0.12, 0.34]), (4.0, 28.0, [0.16, 0.46])];
+pub const FLAT_SHADOW: [(f32, f32, [f32; 2]); 3] =
+    [(1.0, 5.0, [0.08, 0.20]), (2.0, 10.0, [0.10, 0.26]), (3.0, 16.0, [0.12, 0.32])];
 /// Width of a flat card's border (logical px).
 pub const FLAT_BORDER: f32 = 1.0;
 /// A tinted (primary) button in flat mode: the colour, almost solid.
@@ -141,8 +171,55 @@ impl Theme {
             Paint::Ground => palette.ground,
             Paint::Hairline => palette.hairline,
             Paint::Fixed(c) => c,
+            Paint::OnAccent => return self.tinted_glass(self.config.appearance.accent.to_f32()).1,
+            Paint::OnColor(c) => return self.tinted_glass(c.to_f32()).1,
         }
         .to_f32()
+    }
+
+    /// The rim light multiplier of tinted glass (`glass.tinted_rim`).
+    pub fn tinted_rim(&self) -> f32 {
+        self.config.glass.tinted_rim.clamp(0.0, 4.0)
+    }
+
+    /// The tint strength of tinted glass (`glass.tinted_opacity`).
+    pub fn tinted_opacity(&self) -> f32 {
+        self.config.glass.tinted_opacity.clamp(0.0, 1.0)
+    }
+
+    /// Tinted glass for `tint` (an accent, a destructive red): the colour the glass is really
+    /// tinted with and the colour of its label. The label is white or near-black, and the tint is
+    /// darkened (white label) or lightened (dark label) just enough that the label keeps
+    /// [`TINTED_LABEL_CONTRAST`] over the tinted glass on any backdrop, black to white. White is
+    /// preferred unless it would need more than [`TINTED_WHITE_MAX_SHIFT`] of shift and the dark
+    /// label needs less (an orange or green accent gets a dark label).
+    pub fn tinted_glass(&self, tint: [f32; 4]) -> ([f32; 4], [f32; 4]) {
+        let k = self.tinted_opacity();
+        let rgb = [tint[0], tint[1], tint[2]];
+        let fit = |label: [f32; 3], toward: [f32; 3]| -> (f32, [f32; 3]) {
+            for step in 0..=TINT_SHIFT_STEPS {
+                let m = step as f32 / TINT_SHIFT_STEPS as f32;
+                let c = [0, 1, 2].map(|i| rgb[i] * (1.0 - m) + toward[i] * m);
+                let worst = TINTED_BACKDROPS
+                    .into_iter()
+                    .map(|b| contrast(label, c.map(|v| v * k + b * (1.0 - k))))
+                    .fold(f32::INFINITY, f32::min);
+                if worst >= TINTED_LABEL_CONTRAST {
+                    return (m, c);
+                }
+            }
+            (1.0, toward)
+        };
+        let (white_shift, white_tint) = fit([1.0; 3], [0.0; 3]);
+        let (ink_shift, ink_tint) = fit(TINTED_INK, [1.0; 3]);
+        if white_shift <= TINTED_WHITE_MAX_SHIFT || white_shift <= ink_shift {
+            ([white_tint[0], white_tint[1], white_tint[2], tint[3]], [1.0; 4])
+        } else {
+            (
+                [ink_tint[0], ink_tint[1], ink_tint[2], tint[3]],
+                [TINTED_INK[0], TINTED_INK[1], TINTED_INK[2], 1.0],
+            )
+        }
     }
 
     pub fn font_family(&self) -> &str {
@@ -253,6 +330,18 @@ impl Theme {
         }
     }
 
+    /// A widget's own drop shadow (`Widget::shadow`) in flat mode: never softer or stronger than
+    /// the heaviest flat card shadow, so no widget brings a glass-style halo back.
+    pub fn flat_shadow(&self, offset_y: f32, blur: f32, opacity: f32) -> (f32, f32, f32) {
+        let (max_dy, max_blur, strength) = FLAT_SHADOW[2];
+        (offset_y.min(max_dy), blur.min(max_blur), opacity.min(strength[usize::from(self.dark)]))
+    }
+
+    /// [`Theme::flat_shadow`] in flat mode, the arguments unchanged otherwise.
+    pub fn flat_shadow_if_flat(&self, offset_y: f32, blur: f32, opacity: f32) -> (f32, f32, f32) {
+        if self.flat() { self.flat_shadow(offset_y, blur, opacity) } else { (offset_y, blur, opacity) }
+    }
+
     /// A pill raised from a tinted strip (the open tab): the surface colour with a hairline, no shadow.
     pub fn flat_raised(&self) -> FlatPaint {
         let surface = self.color(Paint::Surface);
@@ -267,6 +356,7 @@ impl Theme {
 
     /// A tinted card (a primary button) in flat mode: the colour, no outline, no shadow.
     pub fn flat_tinted(&self, tint: [f32; 4]) -> FlatPaint {
+        let tint = self.tinted_glass(tint).0;
         FlatPaint {
             fill: [tint[0], tint[1], tint[2], FLAT_TINTED_OPACITY],
             border: [0.0; 4],
@@ -399,5 +489,34 @@ mod icon_stroke_tests {
         assert_eq!(Theme::new(&config, false).icon_stroke(), 1.0);
         config.appearance.icon_stroke_light = 9.0;
         assert_eq!(Theme::new(&config, false).icon_stroke(), 2.0);
+    }
+}
+
+#[cfg(test)]
+mod tinted_tests {
+    use super::*;
+
+    /// A tinted glass button's label keeps 4.5:1 over the glass on any backdrop (black to white),
+    /// for every accent swatch and the destructive red, in both schemes; and the glass still shows
+    /// its backdrop (it never becomes a solid plate).
+    #[test]
+    fn tinted_glass_labels_keep_contrast() {
+        let mut tints: Vec<Color> = axion_config::ACCENT_SWATCHES.to_vec();
+        tints.push(Color::rgb(0xD0362B));
+        for dark in [false, true] {
+            let theme = Theme::new(&Config::default(), dark);
+            let k = theme.tinted_opacity();
+            assert!(k < 0.95, "tinted glass must keep some backdrop");
+            for tint in &tints {
+                let (glass, label) = theme.tinted_glass(tint.to_f32());
+                for backdrop in TINTED_BACKDROPS {
+                    let under = [0, 1, 2].map(|i| glass[i] * k + backdrop * (1.0 - k));
+                    let c = contrast([label[0], label[1], label[2]], under);
+                    assert!(c >= TINTED_LABEL_CONTRAST - 0.05, "{tint:?} over {backdrop}: {c:.2}");
+                }
+                // The paint helpers agree with it.
+                assert_eq!(theme.color(Paint::OnColor(*tint)), label);
+            }
+        }
     }
 }

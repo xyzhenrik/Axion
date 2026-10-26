@@ -98,6 +98,11 @@ impl ImportCache {
     pub fn clear(&mut self) {
         self.entries.clear();
     }
+
+    /// How many shared buffers are imported.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 fn borrow_fd(fd: i32) -> Result<BorrowedFd<'static>, ImportError> {
