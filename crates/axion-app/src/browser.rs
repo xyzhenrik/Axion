@@ -38,6 +38,7 @@ use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::filedrop::{DropOutcome, FileDrop};
 use crate::find::{FindAction, FindBar};
 use crate::home::{HomeAction, HomePage, REFRESH_SCRIPT, is_home_url};
+use crate::import::Importer;
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
 use crate::lockscreen::LockScreen;
@@ -77,6 +78,7 @@ use crate::url::resolve_input;
 use crate::window_resize::{Debounce, ResizePacer};
 
 mod context;
+mod import;
 mod onboarding;
 mod page_context;
 mod playlist;
@@ -314,6 +316,8 @@ pub struct Browser {
     panel: Option<(Panel, bool)>,
     favicons: Favicons,
     downloads: Downloads,
+    /// Importing from other browsers into this account's store.
+    importer: Importer,
     /// History and bookmarks; `None` if the database couldn't be opened (browsing still works).
     store: Option<axion_store::Store>,
     /// Search text the overview's cards were last built for.
@@ -564,6 +568,7 @@ impl Browser {
         let store = axion_store::Store::open(&profile.join("axion.sqlite"))
             .inspect_err(|e| tracing::error!("history unavailable: {e}"))
             .ok();
+        let store_path = store.as_ref().map(|_| profile.join("axion.sqlite"));
         PrivateLock::drop_old_password(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
         let downloads = Downloads::new(profile.clone());
@@ -745,6 +750,7 @@ impl Browser {
             store,
             favicons,
             downloads,
+            importer: Importer::new(store_path),
             overview_query: String::new(),
             last_frame: Instant::now(),
             window_tint: None,
@@ -2560,7 +2566,12 @@ impl Browser {
                 .unwrap_or_default()
                 .into_iter()
                 .map(|b| PanelItem {
-                    detail: display_host(&b.url),
+                    // Imported bookmarks keep their old folder ("Dev / Rust · docs.rs").
+                    detail: if b.folder_path.is_empty() {
+                        display_host(&b.url)
+                    } else {
+                        format!("{} · {}", b.folder_path, display_host(&b.url))
+                    },
                     title: b.title,
                     url: b.url,
                     section: None,
@@ -3911,6 +3922,7 @@ impl Browser {
             }
         }
         self.downloads_pump(downloads_changed);
+        self.import_pump();
         self.playlist_housekeeping();
         self.update_home();
         self.update_photos();
@@ -4072,7 +4084,9 @@ impl Browser {
             Outcome::DataPage => {
                 self.downloads.measure_cache();
                 self.engine.request_site_data();
+                self.import_page_opened();
             }
+            Outcome::Import(request) => self.import_request(request),
             Outcome::ChooseDownloadFolder => self.downloads.choose_folder(),
             Outcome::ChoosePlaylistFolder => self.downloads.choose_playlist_folder(),
             Outcome::ChooseBackground => self.home.choose_background(),

@@ -414,6 +414,7 @@ dependencies = [
  "axion-config",
  "axion-engine",
  "axion-i18n",
+ "axion-import",
  "axion-media",
  "axion-physics",
  "axion-shields",

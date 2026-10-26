@@ -26,6 +26,7 @@ pub struct Config {
     pub data: Data,
     pub passwords: Passwords,
     pub accounts: Accounts,
+    pub import: Import,
     pub find: Find,
     pub devtools: DevTools,
     pub clipboard: Clipboard,
@@ -33,6 +34,28 @@ pub struct Config {
     pub sidebar: Sidebar,
     pub ui: Ui,
     pub updates: Updates,
+}
+
+/// Importing bookmarks and history from other browsers (Settings › Data & Downloads).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Import {
+    /// At most this many history entries are imported per browser profile, the most recently
+    /// visited first.
+    pub max_history_items: u32,
+    /// At most this many bookmarks are imported per profile or file.
+    pub max_bookmarks: u32,
+    /// Browser databases larger than this are not imported (MB; they are copied first, so
+    /// this much temporary space is needed).
+    pub max_database_mb: u32,
+    /// Bookmark files (HTML, JSON) larger than this are refused (MB).
+    pub max_file_mb: u32,
+}
+
+impl Default for Import {
+    fn default() -> Self {
+        Self { max_history_items: 20_000, max_bookmarks: 50_000, max_database_mb: 512, max_file_mb: 64 }
+    }
 }
 
 /// Account profile pictures.

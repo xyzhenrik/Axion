@@ -20,7 +20,10 @@ use crate::morph::{Origin, SheetMorph};
 use crate::passwords::MIN_MASTER_LENGTH;
 use crate::update::{AboutInfo, AboutState, InstallMode};
 
+mod import;
 mod search;
+
+pub use import::{ImportAction, ImportRequest, ImportSource, ImportStatus, ImportView};
 
 const ACTION_BASE: u32 = 8000;
 const SHEET_MAX: Vec2 = Vec2::new(920.0, 660.0);
@@ -645,6 +648,8 @@ pub enum SettingsAction {
     CopyDiagnostics,
     /// Relaunch to apply the Hardware settings.
     RestartAxion,
+    /// Data & Downloads: importing from other browsers.
+    Import(ImportAction),
 }
 
 /// The Hardware page's actions (ids between the trusted sites' and the pages').
@@ -841,6 +846,7 @@ impl SettingsAction {
                     SettingsAction::OpenReleasePage => UPDATE_BASE + 4,
                     SettingsAction::SaveRepository => UPDATE_BASE + 5,
                     SettingsAction::RelaunchNow => UPDATE_BASE + 6,
+                    SettingsAction::Import(action) => action.id(),
                     SettingsAction::PageFrames(f) => HARDWARE_BASE + page_frames_index(f),
                     SettingsAction::GpuCard(g) => HARDWARE_BASE + 3 + gpu_card_index(g),
                     SettingsAction::CopyDiagnostics => HARDWARE_BASE + 6,
@@ -926,6 +932,7 @@ impl SettingsAction {
                 SettingsAction::SaveRepository,
                 SettingsAction::RelaunchNow,
             ][(n - UPDATE_BASE) as usize],
+            n if ImportAction::from_id(n).is_some() => SettingsAction::Import(ImportAction::from_id(n)?),
             _ => return None,
         })
     }
@@ -992,6 +999,8 @@ pub enum Outcome {
     CopyDiagnostics,
     /// Hardware: relaunch Axion to apply the changed settings.
     RestartAxion,
+    /// Data & Downloads: import from another browser or a file.
+    Import(ImportRequest),
     /// Hardware: ask before "Shared GPU memory" is used on AMD graphics.
     ConfirmGpuFrames,
     /// The repository changed (`config.updates.repository`); save it and look for updates.
@@ -1048,6 +1057,8 @@ pub struct SettingsSheet {
     site_data: Option<Vec<(String, usize)>>,
     confirm_clear_data: bool,
     confirm_remove_all: bool,
+    /// Data page: the browsers to import from and what the import group shows.
+    import: ImportView,
     open: bool,
     /// The search field above the categories, and what it held when the page was built.
     search: NodeId,
@@ -1270,6 +1281,7 @@ impl SettingsSheet {
             site_data: None,
             confirm_clear_data: false,
             confirm_remove_all: false,
+            import: ImportView::default(),
             open: false,
             search,
             query: String::new(),
@@ -2401,6 +2413,8 @@ impl SettingsSheet {
         segmented(ui, row_node, &options, current);
         self.note(ui, tr("“Safe” files are pictures, movies, sounds, PDF and text documents."));
 
+        self.import_group(ui, config);
+
         self.section(ui, tr("Clear browsing data"));
         let row_node = self.row(ui, tr("Time range"));
         let options: Vec<(&str, ActionId)> =
@@ -3371,6 +3385,7 @@ impl SettingsSheet {
             }
             SettingsAction::CopyDiagnostics => return Outcome::CopyDiagnostics,
             SettingsAction::RestartAxion => return Outcome::RestartAxion,
+            SettingsAction::Import(action) => self.import_action(action),
             SettingsAction::SaveRepository => {
                 let text = self
                     .repository_field

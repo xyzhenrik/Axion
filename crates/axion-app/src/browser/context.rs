@@ -355,7 +355,7 @@ impl Browser {
                 .and_then(|s| s.bookmarks().ok())
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|b| b.folder.is_none())
+                .filter(|b| b.folder.is_none() && b.folder_path.is_empty())
                 .map(|b| (b.id, b.url, b.title))
                 .collect();
         }
