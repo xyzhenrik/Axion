@@ -79,6 +79,8 @@ pub struct IconDraw {
     pub weight: IconWeight,
     pub rect: Rect,
     pub color: [f32; 4],
+    /// Clockwise degrees about the centre (quantized).
+    pub rotation: f32,
 }
 
 /// A texture placed in the frame.
@@ -440,7 +442,7 @@ impl Compositor {
             .icons
             .iter()
             .map(|i| CustomGlyph {
-                id: icons::glyph_id(i.icon, i.weight),
+                id: icons::glyph_id(i.icon, i.weight, i.rotation),
                 left: i.rect.origin.x,
                 top: i.rect.origin.y,
                 width: i.rect.size.x,

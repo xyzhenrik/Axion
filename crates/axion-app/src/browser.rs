@@ -2018,6 +2018,7 @@ impl Browser {
     fn show_panel(&mut self, panel: Panel) {
         // A freshly opened list starts unfiltered.
         self.ui.set_field_text(self.chrome.panel_search_field(), "");
+        self.chrome.reset_panel_groups();
         self.show_panel_with(panel, false);
     }
 
@@ -2097,6 +2098,10 @@ impl Browser {
         } else {
             format!("No results for “{query}”")
         });
+        // History days fold away, except while a search lists its matches.
+        let foldable = (panel == Panel::History && query.is_empty())
+            .then_some(self.config.sidebar.history_collapse_older);
+        self.chrome.set_panel_groups(foldable);
         self.chrome.show_panel(&mut self.ui, title, &items, &self.favicons, clear, keep_scroll);
     }
 
@@ -2841,6 +2846,7 @@ impl Browser {
                     Some(ChromeAction::CollapsePrivate) => {
                         self.chrome.toggle_section(&mut self.ui, Section::Private)
                     }
+                    Some(ChromeAction::ToggleGroup(i)) => self.chrome.toggle_group(i),
                     Some(ChromeAction::ToggleSavedSection) => {
                         self.chrome.toggle_section(&mut self.ui, Section::Saved)
                     }

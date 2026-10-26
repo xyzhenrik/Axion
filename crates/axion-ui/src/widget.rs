@@ -143,6 +143,8 @@ pub struct Widget {
     pub selected: bool,
     /// Fades the widget and everything inside it (0–1); glass loses blur, tint and light.
     pub opacity: f32,
+    /// An icon's clockwise rotation in degrees (a chevron turning as a section folds).
+    pub rotation: f32,
     /// Draws the widget's own background (glass, fill, shadow) in this rectangle (absolute,
     /// logical px) instead of its layout frame — for animating glass without relayout.
     pub visual_frame: Option<Rect>,
@@ -183,6 +185,7 @@ impl Widget {
             feedback: true,
             selected: false,
             opacity: 1.0,
+            rotation: 0.0,
             visual_frame: None,
             glass_density: None,
             glass_merge: None,

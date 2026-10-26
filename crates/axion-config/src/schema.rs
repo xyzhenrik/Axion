@@ -26,6 +26,7 @@ pub struct Config {
     pub find: Find,
     pub clipboard: Clipboard,
     pub toast: Toast,
+    pub sidebar: Sidebar,
 }
 
 /// Axion's own start page, served at this address.
@@ -437,7 +438,7 @@ pub struct Layout {
     /// Always float the sidebar over the page as a rounded glass card (it never pushes the
     /// page), whatever the window size.
     pub float_sidebar: bool,
-    /// Corner radius of a floating sidebar card.
+    /// Corner radius of the sidebar card (docked or floating).
     pub sidebar_corner_radius: f32,
     /// From this window width up, the sidebar docks (with `sidebar = "auto"`).
     pub wide_from: f32,
@@ -680,6 +681,21 @@ impl Default for Passwords {
 pub struct Find {
     /// Match upper and lower case exactly (the find bar's "Aa" toggle).
     pub match_case: bool,
+}
+
+/// The sidebar's panels.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Sidebar {
+    /// The History panel opens with every day but today folded away (a search shows matches
+    /// unfolded either way).
+    pub history_collapse_older: bool,
+}
+
+impl Default for Sidebar {
+    fn default() -> Self {
+        Self { history_collapse_older: true }
+    }
 }
 
 /// Short glass notifications ("Link copied").

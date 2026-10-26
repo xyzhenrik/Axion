@@ -126,6 +126,8 @@ pub enum ChromeAction {
     CollapseTabs,
     /// The chevron of "Private" (while unlocked): collapses or expands the private list.
     CollapsePrivate,
+    /// The heading of the `i`th folding group (a history day) in the open panel.
+    ToggleGroup(usize),
 }
 
 /// The sidebar's sections that fold away.
@@ -177,6 +179,7 @@ const DELETE_PANEL_ITEM_BASE: u32 = 10_000;
 const SELECT_OTHER_TAB_BASE: u32 = 12_000;
 const PANEL_BUTTON_BASE: u32 = 13_000;
 const BOOKMARK_BASE: u32 = 18_000;
+const GROUP_BASE: u32 = 11_000;
 /// Trailing buttons a panel entry can have.
 pub const PANEL_BUTTONS: usize = 4;
 
@@ -223,6 +226,7 @@ impl ChromeAction {
             ChromeAction::DeletePanelItem(i) => DELETE_PANEL_ITEM_BASE + i as u32,
             ChromeAction::PanelButton(i, k) => PANEL_BUTTON_BASE + (i * PANEL_BUTTONS + k) as u32,
             ChromeAction::OpenBookmark(i) => BOOKMARK_BASE + i as u32,
+            ChromeAction::ToggleGroup(i) => GROUP_BASE + i as u32,
             simple => 1 + Self::SIMPLE.iter().position(|&a| a == simple).unwrap_or(0) as u32,
         })
     }
@@ -230,6 +234,9 @@ impl ChromeAction {
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
             n if (1..=Self::SIMPLE.len() as u32).contains(&n) => Some(Self::SIMPLE[n as usize - 1]),
+            n if (GROUP_BASE..GROUP_BASE + 1000).contains(&n) => {
+                Some(ChromeAction::ToggleGroup((n - GROUP_BASE) as usize))
+            }
             n if (BOOKMARK_BASE..BOOKMARK_BASE + 1000).contains(&n) => {
                 Some(ChromeAction::OpenBookmark((n - BOOKMARK_BASE) as usize))
             }
@@ -275,6 +282,21 @@ pub struct PanelItem {
     /// Trailing buttons, sending [`ChromeAction::PanelButton`] (at most [`PANEL_BUTTONS`]).
     pub buttons: Vec<Icon>,
 }
+
+/// A folding group of panel rows (a history day): its heading's chevron, and the clipped
+/// container whose height springs between 0 and `full`.
+struct PanelGroup {
+    label: String,
+    chevron: NodeId,
+    content: NodeId,
+    /// 0 (folded) to 1 (open).
+    open: Animated<f32>,
+    /// The rows' height when open (logical px).
+    full: f32,
+}
+
+/// Rotation of a folded group's chevron (degrees; it points down when open).
+const FOLDED_CHEVRON: f32 = -90.0;
 
 /// The three layouts from the design's responsive boards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -369,6 +391,14 @@ pub struct Chrome {
     panel_empty: String,
     panel_scroll: f32,
     panel_list: NodeId,
+    /// The open panel's folding groups (history days), if its rows are grouped that way.
+    panel_groups: Vec<PanelGroup>,
+    /// Whether the next `show_panel` makes its sections foldable, and whether the days other
+    /// than today start folded (see [`Self::set_panel_groups`]).
+    panel_foldable: Option<bool>,
+    /// Groups the user opened or folded in this panel session, by heading.
+    panel_group_state: std::collections::HashMap<String, bool>,
+    group_spring: Spring,
     tab_group_label: NodeId,
     tab_group_chevron: NodeId,
     /// The current group's tabs, under its row.
@@ -1206,6 +1236,10 @@ impl Chrome {
             panel_empty: "Nothing here yet".into(),
             panel_scroll: 0.0,
             panel_list,
+            panel_groups: Vec::new(),
+            panel_foldable: None,
+            panel_group_state: Default::default(),
+            group_spring: Spring::SMOOTH,
             tab_group_label,
             tab_group_chevron,
             sidebar_tabs,
@@ -1297,7 +1331,9 @@ impl Chrome {
             return 0.0;
         }
         let width = config.layout.sidebar_width;
-        (width + self.slide.value).clamp(0.0, width)
+        // The docked card floats at the page margin from the window's edge: the page starts
+        // that same margin after its right edge.
+        (width + self.slide.value).clamp(0.0, width + config.layout.page_margin)
     }
 
     /// The sidebar is sliding, or the chrome is moving for F11 fullscreen (the page and
@@ -1379,24 +1415,81 @@ impl Chrome {
                 w.set_paint(Paint::Secondary);
             }
         }
+        self.panel_groups.clear();
+        // `Some(collapse_older)`: headings fold their day; `None`: plain headings.
+        let foldable = self.panel_foldable;
+        let mut rows_parent = self.panel_list;
         for (i, item) in items.iter().enumerate() {
             if let Some(section) = &item.section {
-                let heading = ui.add_label(
-                    self.panel_list,
-                    section,
-                    TextStyle::BodyEmphasis,
-                    Style {
-                        padding: padding(10.0, 10.0, if i == 0 { 4.0 } else { 14.0 }, 4.0),
-                        flex_shrink: 0.0,
-                        ..Default::default()
-                    },
-                );
-                if let Some(w) = ui.widget_mut(heading) {
-                    w.set_paint(Paint::Secondary);
+                let top = if i == 0 { 4.0 } else { 10.0 };
+                if let Some(collapse_older) = foldable {
+                    let index = self.panel_groups.len();
+                    let open = self
+                        .panel_group_state
+                        .get(section)
+                        .copied()
+                        .unwrap_or(!collapse_older || section == "Today");
+                    let heading = ui.add(
+                        self.panel_list,
+                        Widget::container()
+                            .with_action(ChromeAction::ToggleGroup(index).id())
+                            .with_radius(10.0),
+                        Style { padding: padding(10.0, 10.0, top, 4.0), flex_shrink: 0.0, ..row(6.0) },
+                    );
+                    let label = ui.add_label(heading, section, TextStyle::BodyEmphasis, shrinking_label());
+                    if let Some(w) = ui.widget_mut(label) {
+                        w.set_paint(Paint::Secondary);
+                    }
+                    let mut glyph = Widget::icon(Icon::ChevronDown, 14.0).with_paint(Paint::Secondary);
+                    glyph.rotation = if open { 0.0 } else { FOLDED_CHEVRON };
+                    let chevron = ui.add(heading, glyph, Style::default());
+                    let content = ui.add(
+                        self.panel_list,
+                        Widget::container().with_clip(),
+                        Style {
+                            flex_shrink: 0.0,
+                            size: Size { width: percent(1.0), height: length(0.0) },
+                            overflow: axion_ui::taffy::Point {
+                                x: axion_ui::taffy::Overflow::Hidden,
+                                y: axion_ui::taffy::Overflow::Hidden,
+                            },
+                            ..column(2.0)
+                        },
+                    );
+                    let k = if open { 1.0 } else { 0.0 };
+                    self.panel_groups.push(PanelGroup {
+                        label: section.clone(),
+                        chevron,
+                        content,
+                        open: Animated::new(k, self.group_spring),
+                        full: 0.0,
+                    });
+                    rows_parent = content;
+                } else {
+                    let heading = ui.add_label(
+                        self.panel_list,
+                        section,
+                        TextStyle::BodyEmphasis,
+                        Style {
+                            padding: padding(10.0, 10.0, if i == 0 { 4.0 } else { 14.0 }, 4.0),
+                            flex_shrink: 0.0,
+                            ..Default::default()
+                        },
+                    );
+                    if let Some(w) = ui.widget_mut(heading) {
+                        w.set_paint(Paint::Secondary);
+                    }
                 }
             }
+            if foldable.is_some()
+                && let Some(group) = self.panel_groups.last_mut()
+            {
+                let row_height =
+                    PANEL_ROW_HEIGHT + if item.progress.is_some() { PANEL_PROGRESS_ROOM } else { 0.0 };
+                group.full += row_height + if group.full > 0.0 { 2.0 } else { 0.0 };
+            }
             let row_node = ui.add(
-                self.panel_list,
+                rows_parent,
                 Widget::container().with_action(ChromeAction::OpenPanelItem(i).id()).with_radius(14.0),
                 Style {
                     size: Size {
@@ -1473,8 +1566,69 @@ impl Chrome {
                 icon_button(ui, row_node, ChromeAction::DeletePanelItem(i), glyph, 30.0);
             }
         }
+        for group in &self.panel_groups {
+            let mut style = ui.style(group.content);
+            style.size.height = length(group.full * group.open.value);
+            ui.set_style(group.content, style);
+            ui.set_visible(group.content, group.open.value > 0.0);
+        }
         ui.set_visible(self.sections_viewport, false);
         ui.set_visible(self.panel, true);
+    }
+
+    /// Whether the next `show_panel` folds its sections: `Some(collapse_older)` makes each
+    /// heading a button that folds its rows (a group starts folded unless it's "Today" and
+    /// `collapse_older` is set; groups the user toggled keep their state while the panel
+    /// stays open); `None` keeps plain headings (a search shows its matches unfolded).
+    pub fn set_panel_groups(&mut self, foldable: Option<bool>) {
+        self.panel_foldable = foldable;
+    }
+
+    /// A freshly opened panel forgets which groups were folded or opened.
+    pub fn reset_panel_groups(&mut self) {
+        self.panel_group_state.clear();
+    }
+
+    /// Folds or opens the panel's `index`th group; its rows and chevron move on springs.
+    pub fn toggle_group(&mut self, index: usize) {
+        let Some(group) = self.panel_groups.get_mut(index) else { return };
+        let open = group.open.target < 0.5;
+        group.open.target = if open { 1.0 } else { 0.0 };
+        self.panel_group_state.insert(group.label.clone(), open);
+    }
+
+    /// Advances the folding groups' springs: the rows' height and the chevron's turn.
+    fn animate_groups(&mut self, ui: &mut Ui, dt: f32) {
+        let mut changed = false;
+        for group in &mut self.panel_groups {
+            if group.open.is_settled(0.002) {
+                continue;
+            }
+            group.open.spring = self.group_spring;
+            group.open.step(dt);
+            let settled = group.open.is_settled(0.002);
+            if settled {
+                let target = group.open.target;
+                group.open.snap(target);
+            }
+            // The overshoot of a spring may dip below 0 but a height can't.
+            let k = group.open.value.max(0.0);
+            let mut style = ui.style(group.content);
+            style.size.height = length(group.full * k);
+            ui.set_style(group.content, style);
+            ui.set_visible(group.content, k > 0.0 || !settled);
+            if let Some(w) = ui.widget_mut(group.chevron) {
+                w.rotation = FOLDED_CHEVRON * (1.0 - group.open.value);
+            }
+            changed = true;
+        }
+        if changed {
+            // Rows leaving the viewport must not leave the list scrolled past its end.
+            let max = (ui.frame(self.panel_list).size.y - ui.frame(self.panel_viewport).size.y).max(0.0);
+            if self.panel_scroll > max {
+                self.set_panel_scroll(ui, max);
+            }
+        }
     }
 
     /// Shows the toolbar's download button with `progress` (0–1) on its bar, or hides it.
@@ -1684,6 +1838,7 @@ impl Chrome {
     /// Advances the sidebar's slide (and the tabs' widths, the bookmarks bar's fit). Call
     /// every frame.
     pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
+        self.animate_groups(ui, dt);
         self.animate_tab_widths(ui, dt);
         self.fit_bookmarks(ui);
         self.fit_progress(ui);
@@ -1774,8 +1929,9 @@ impl Chrome {
         if show_sidebar && !ui.is_visible(self.sidebar) {
             self.slide.snap(hidden_x);
         }
-        // Floating, the sidebar is a rounded card at a margin from the window's edges.
-        let gap = if self.docked { 0.0 } else { l.margin };
+        // A rounded glass card at a margin from the window's edges (docked: the page margin, so
+        // it and the page card beside it share one gap).
+        let gap = if self.docked { l.page_margin } else { l.margin };
         self.slide.target = if show_sidebar { gap } else { hidden_x };
         let motion = &config.motion;
         self.slide.spring = if config.glass.reduce_motion {
@@ -1783,6 +1939,7 @@ impl Chrome {
         } else {
             Spring::new(motion.smooth.response * motion.speed, motion.smooth.damping)
         };
+        self.group_spring = self.slide.spring;
         let mut side = ui.style(self.sidebar);
         side.size = Size { width: length(l.sidebar_width), height: auto() };
         side.inset =
@@ -1794,7 +1951,7 @@ impl Chrome {
             // Docked it's a panel beside the page; floating it needs more separation.
             w.background =
                 Background::Glass(if self.docked { GlassLevel::Regular } else { GlassLevel::Thick });
-            w.radius = if self.docked { 0.0 } else { l.sidebar_corner_radius };
+            w.radius = l.sidebar_corner_radius;
         }
 
         let narrow = self.mode == Mode::Narrow || self.locked;
@@ -1856,7 +2013,7 @@ impl Chrome {
         }
         let sidebar = if self.docked {
             let width = config.layout.sidebar_width;
-            (width + self.slide.target).clamp(0.0, width)
+            (width + self.slide.target).clamp(0.0, width + config.layout.page_margin)
         } else {
             0.0
         };
