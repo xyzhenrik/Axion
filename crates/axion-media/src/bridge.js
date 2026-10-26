@@ -27,6 +27,7 @@
   var childOf = new Map();    // player id -> child window
   var childSession = null;
   var takeover = null;        // {el, style, rootOverflow}
+  var handlers = {};          // mediaSession action -> the page's handler
   var lastSent = '';
   var timer = 0;
 
@@ -42,6 +43,17 @@
     register(this);
     return play.apply(this, arguments);
   };
+
+  // The page's track handlers (previoustrack / nexttrack) tell the browser whether Previous
+  // and Next work, and are what they call.
+  if (window.MediaSession && MediaSession.prototype.setActionHandler) {
+    var setHandler = MediaSession.prototype.setActionHandler;
+    MediaSession.prototype.setActionHandler = function (action, handler) {
+      handlers[action] = handler || null;
+      schedule();
+      return setHandler.apply(this, arguments);
+    };
+  }
 
   var style = document.createElement('style');
   // Takeover hides everything but the video: `visibility` (unlike z-index) is not trapped by
@@ -126,9 +138,18 @@
 
   function session() {
     var m = navigator.mediaSession && navigator.mediaSession.metadata;
-    if (!m) return childSession;
-    var art = (m.artwork && m.artwork.length) ? m.artwork[m.artwork.length - 1].src : '';
-    return { title: m.title || '', artist: m.artist || '', album: m.album || '', artwork: art };
+    var prev = !!handlers.previoustrack, next = !!handlers.nexttrack;
+    if (childSession) { prev = prev || childSession.prev; next = next || childSession.next; }
+    if (!m) {
+      if (!childSession && !prev && !next) return null;
+      var c = childSession || { title: '', artist: '', album: '', artwork: '' };
+      return { title: c.title, artist: c.artist, album: c.album, artwork: c.artwork, prev: prev, next: next };
+    }
+    var art = '';
+    if (m.artwork && m.artwork.length) {
+      try { art = new URL(m.artwork[m.artwork.length - 1].src, document.baseURI).href; } catch (e) {}
+    }
+    return { title: m.title || '', artist: m.artist || '', album: m.album || '', artwork: art, prev: prev, next: next };
   }
 
   // The page's own preview picture (Open Graph / Twitter card), for the Playlist's thumbnail.
@@ -229,6 +250,14 @@
   }
 
   function cmd(c) {
+    if (c.action === 'prev' || c.action === 'next') {
+      var name = c.action === 'prev' ? 'previoustrack' : 'nexttrack';
+      var h = handlers[name];
+      if (h) { try { h({ action: name }); } catch (e) {} schedule(); return; }
+      var w = childOf.get(c.id);
+      if (w) w.postMessage({ s: SECRET, k: 'cmd', cmd: c }, '*');
+      return;
+    }
     var el = find(c.id);
     if (el) { apply(el, c); return; }
     var win = childOf.get(c.id);

@@ -21,15 +21,9 @@ use crate::favicons::{Favicons, favicon_node};
 use crate::tabs::{Tab, Tabs};
 use crate::url::display_host;
 
-/// The Now Playing card's content.
-#[derive(Clone, Debug, PartialEq)]
-pub struct NowPlaying {
-    pub title: String,
-    pub subtitle: String,
-    pub playing: bool,
-}
+pub use crate::now_playing::NowPlaying;
+use crate::now_playing::{Art, NowPlayingCard};
 
-const NOW_PLAYING_HEIGHT: f32 = 60.0;
 /// The account button at the bottom of the sidebar, and its avatar.
 const ACCOUNT_HEIGHT: f32 = 48.0;
 const ACCOUNT_AVATAR: f32 = 30.0;
@@ -45,7 +39,6 @@ const SEPARATE_ADDRESS_MAX: f32 = 680.0;
 /// The loading line's distance from the address field's ends.
 const PROGRESS_INSET: f32 = 16.0;
 const ADDRESS_FAVICON: f32 = 18.0;
-const NOW_PLAYING_RADIUS: f32 = 20.0;
 const DOWNLOAD_BAR_WIDTH: f32 = 18.0;
 const PANEL_PROGRESS_HEIGHT: f32 = 4.0;
 /// Extra height of a panel row with a progress bar.
@@ -100,6 +93,8 @@ pub enum ChromeAction {
     /// A bookmark of the bookmarks bar (index into the bar's list).
     OpenBookmark(usize),
     NowPlayingToggle,
+    NowPlayingPrevious,
+    NowPlayingNext,
     SelectTab(usize),
     /// A tab of the other group (private while browsing normally, or the reverse): switches
     /// group and selects it.
@@ -187,7 +182,7 @@ const GROUP_BASE: u32 = 11_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 31] = [
+    const SIMPLE: [ChromeAction; 33] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -207,6 +202,8 @@ impl ChromeAction {
         ChromeAction::ClosePanel,
         ChromeAction::NowPlaying,
         ChromeAction::NowPlayingToggle,
+        ChromeAction::NowPlayingPrevious,
+        ChromeAction::NowPlayingNext,
         ChromeAction::MuteTab,
         ChromeAction::ClearPanel,
         ChromeAction::Downloads,
@@ -345,10 +342,7 @@ pub struct Chrome {
     account_avatar: NodeId,
     account_initials: NodeId,
     account_name: NodeId,
-    now_playing: NodeId,
-    now_playing_title: NodeId,
-    now_playing_subtitle: NodeId,
-    now_playing_icon: NodeId,
+    now_playing: NowPlayingCard,
     mode: Mode,
     docked: bool,
     /// Sidebar shown while docked (remembered across resizes).
@@ -937,46 +931,10 @@ impl Chrome {
             Style {
                 margin: Rect { left: length(0.0), right: length(0.0), top: auto(), bottom: length(0.0) },
                 flex_shrink: 0.0,
-                ..column(8.0)
-            },
-        );
-        let now_playing = ui.add(
-            footer,
-            Widget::container()
-                .with_background(Background::Glass(GlassLevel::Thin))
-                .with_radius(NOW_PLAYING_RADIUS)
-                .with_action(ChromeAction::NowPlaying.id())
-                .pressed_whole(),
-            Style {
-                size: Size { width: auto(), height: length(NOW_PLAYING_HEIGHT) },
-                padding: padding(14.0, 8.0, 0.0, 0.0),
-                ..row(12.0)
-            },
-        );
-        ui.add(now_playing, Widget::icon(Icon::Media, 22.0).with_paint(Paint::Accent), Style::default());
-        let titles = ui.add(
-            now_playing,
-            Widget::container(),
-            Style {
-                flex_grow: 1.0,
-                flex_shrink: 1.0,
-                min_size: Size { width: length(0.0), height: auto() },
                 ..column(0.0)
             },
         );
-        let now_playing_title = ui.add_label(titles, "", TextStyle::Callout, shrinking_label());
-        let now_playing_subtitle = ui.add_label(titles, "", TextStyle::Footnote, shrinking_label());
-        if let Some(w) = ui.widget_mut(now_playing_subtitle) {
-            w.set_paint(Paint::Secondary);
-        }
-        let (_, now_playing_icon) = icon_button(
-            ui,
-            now_playing,
-            ChromeAction::NowPlayingToggle,
-            Widget::icon(Icon::Pause, 20.0),
-            40.0,
-        );
-        ui.set_visible(now_playing, false);
+        let now_playing = NowPlayingCard::build(ui, footer, config);
         // The account button (like Claude's app): avatar with initials, then the name, on a
         // thin glass capsule lying on the sidebar's glass. The account menu flows out of it.
         let account = ui.add(
@@ -1234,9 +1192,6 @@ impl Chrome {
             account_initials,
             account_name,
             now_playing,
-            now_playing_title,
-            now_playing_subtitle,
-            now_playing_icon,
             mode: Mode::Wide,
             docked: true,
             docked_open: layout.sidebar_visible,
@@ -1891,6 +1846,7 @@ impl Chrome {
     /// every frame.
     pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
         self.animate_groups(ui, dt);
+        self.now_playing.animate(ui, dt);
         self.animate_tab_widths(ui, dt);
         self.fit_bookmarks(ui);
         self.fit_progress(ui);
@@ -2099,7 +2055,6 @@ impl Chrome {
         ui.frame(self.page_menu)
     }
 
-    /// Shows the Now Playing card (`None` hides it).
     /// Shows the current account on the account button.
     pub fn set_account(&self, ui: &mut Ui, name: &str, initials: &str, color: Color) {
         ui.set_text(self.account_name, name);
@@ -2114,22 +2069,34 @@ impl Chrome {
         ui.frame(self.account)
     }
 
-    /// The Now Playing card (the account menu covers it).
-    pub fn now_playing_node(&self) -> NodeId {
-        self.now_playing
-    }
-
     /// The sidebar, the plane the account menu's glass belongs to.
     pub fn sidebar_node(&self) -> NodeId {
         self.sidebar
     }
 
-    pub fn set_now_playing(&self, ui: &mut Ui, now: Option<&NowPlaying>) {
-        ui.set_visible(self.now_playing, now.is_some());
-        let Some(now) = now else { return };
-        ui.set_text(self.now_playing_title, &now.title);
-        ui.set_text(self.now_playing_subtitle, &now.subtitle);
-        ui.set_icon(self.now_playing_icon, if now.playing { Icon::Pause } else { Icon::Play });
+    /// Shows the Now Playing card (`None` hides it).
+    pub fn set_now_playing(&mut self, ui: &mut Ui, config: &Config, now: Option<&NowPlaying>) {
+        self.now_playing.set(ui, config, now);
+    }
+
+    /// The card's artwork (see [`Art`]).
+    pub fn set_now_playing_art(&mut self, ui: &mut Ui, art: Art) {
+        self.now_playing.set_art(ui, art);
+    }
+
+    /// Lifts the card out of the account menu's way (logical px).
+    pub fn set_now_playing_lift(&self, ui: &mut Ui, lift: f32) {
+        self.now_playing.set_lift(ui, lift);
+    }
+
+    /// The Now Playing card's progress slider.
+    pub fn now_playing_scrubber(&self) -> NodeId {
+        self.now_playing.scrubber()
+    }
+
+    /// The progress slider moved: the second to seek to.
+    pub fn now_playing_seek(&mut self, value: f32) -> Option<f64> {
+        self.now_playing.seek_to(value)
     }
 
     /// The toolbar's download button (logical px), for anchoring the downloads popover.

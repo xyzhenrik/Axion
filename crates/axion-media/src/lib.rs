@@ -150,6 +150,9 @@ pub struct SessionInfo {
     pub artist: String,
     pub album: String,
     pub artwork: String,
+    /// The page handles `previoustrack` / `nexttrack` (`mediaSession.setActionHandler`).
+    pub prev: bool,
+    pub next: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -250,6 +253,9 @@ pub enum Action {
     Fullscreen(bool),
     /// Let the video cover the page (used inside a page-made fullscreen).
     Takeover(bool),
+    /// The page's `previoustrack` / `nexttrack` handler.
+    PreviousTrack,
+    NextTrack,
     /// Log the element's loading state from its own frame (debugging).
     Probe,
 }
@@ -286,6 +292,8 @@ impl Command {
             Action::Caption(i) => ("caption", i.into()),
             Action::Fullscreen(on) => ("fullscreen", on.into()),
             Action::Takeover(on) => ("takeover", on.into()),
+            Action::PreviousTrack => ("prev", serde_json::Value::Null),
+            Action::NextTrack => ("next", serde_json::Value::Null),
             Action::Probe => ("probe", serde_json::Value::Null),
         };
         let command = serde_json::json!({ "id": self.player, "action": name, "value": value });

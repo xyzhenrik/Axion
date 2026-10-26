@@ -41,6 +41,7 @@ use crate::menu::{
 };
 use crate::morph::Origin;
 use crate::mpris::{Mpris, MprisCommand, Track};
+use crate::now_playing::{Art, ArtStore, first_web_url};
 use crate::overview::{Overview, OverviewAction};
 use crate::page_color::{PageTint, TintParams, lightness};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
@@ -231,6 +232,8 @@ pub struct Browser {
     frame_stats: FrameStats,
     /// The tab whose media the Now Playing card and the desktop (MPRIS) show.
     now_playing: Option<ViewId>,
+    /// The Now Playing card's artwork.
+    now_art: ArtStore,
     mpris: Option<Mpris>,
     memory: MemoryMonitor,
     lifecycle_checked: Instant,
@@ -551,6 +554,7 @@ impl Browser {
             site_click: None,
             frame_stats: FrameStats::default(),
             now_playing: None,
+            now_art: ArtStore::default(),
             mpris: if config.media.desktop_integration { Mpris::start() } else { None },
             memory: MemoryMonitor::start(Duration::from_secs_f32(
                 config.tabs.check_interval_seconds.max(0.5),
@@ -1089,8 +1093,7 @@ impl Browser {
         }
         let anchor = self.chrome.account_frame(&self.ui);
         let window = self.logical_size();
-        // It flows out of the account button's glass and covers the Now Playing card above it.
-        self.account_menu.set_covered(&mut self.ui, Some(self.chrome.now_playing_node()));
+        // The Now Playing card above it is lifted out of its way (`sync_now_playing_lift`).
         self.account_menu.open(&mut self.ui, &self.config, anchor, window, items);
     }
 
@@ -1434,6 +1437,28 @@ impl Browser {
         }
     }
 
+    /// Previous: the page's previous-track handler, else the track starts over.
+    fn now_playing_previous(&mut self) {
+        let Some(view) = self.now_playing else { return };
+        let handled = find_tab(&self.tabs, &self.parked, view)
+            .and_then(|t| t.media.as_ref())
+            .and_then(|m| m.session.as_ref())
+            .is_some_and(|s| s.prev);
+        self.now_playing_command(if handled {
+            axion_media::Action::PreviousTrack
+        } else {
+            axion_media::Action::Seek(0.0)
+        });
+    }
+
+    /// Keeps the Now Playing card clear of the account menu: as the menu's glass grows upwards
+    /// from the account button the card is lifted by as much.
+    fn sync_now_playing_lift(&mut self) {
+        let account = self.chrome.account_frame(&self.ui).origin.y;
+        let lift = self.account_menu.top().map_or(0.0, |top| account - top);
+        self.chrome.set_now_playing_lift(&mut self.ui, lift);
+    }
+
     fn now_playing_command(&mut self, action: axion_media::Action) {
         let Some(view) = self.now_playing else { return };
         let Some(id) = self.primary_player(view).map(|p| p.id.clone()) else { return };
@@ -1453,39 +1478,59 @@ impl Browser {
             let player = media.primary()?;
             let session = media.session.clone().unwrap_or_default();
             let title = if session.title.is_empty() { t.label() } else { session.title };
-            Some((
-                t.private,
-                player.clone(),
+            Some(NowPlayingInfo {
+                private: t.private,
+                player: player.clone(),
                 title,
-                session.artist,
-                session.album,
-                session.artwork,
-                display_host(&t.url),
-            ))
+                artist: session.artist,
+                album: session.album,
+                artwork: session.artwork,
+                image: media.image.clone(),
+                url: t.url.clone(),
+                host: display_host(&t.url),
+                can_prev: session.prev,
+                can_next: session.next,
+            })
         });
         let private_shown = self.private_mode && !self.private_locked();
-        let card =
-            info.as_ref().filter(|i| !i.0 || private_shown).map(|(_, p, title, artist, ..)| NowPlaying {
-                title: title.clone(),
-                subtitle: if artist.is_empty() {
-                    info.as_ref().map(|i| i.6.clone()).unwrap_or_default()
-                } else {
-                    artist.clone()
-                },
-                playing: p.is_playing(),
-            });
-        self.chrome.set_now_playing(&mut self.ui, card.as_ref());
+        let card = info.as_ref().filter(|i| !i.private || private_shown).map(|i| NowPlaying {
+            title: i.title.clone(),
+            subtitle: if i.artist.is_empty() { i.host.clone() } else { i.artist.clone() },
+            playing: i.player.is_playing(),
+            time: i.player.time,
+            duration: i.player.duration,
+            live: i.player.live,
+            can_prev: i.can_prev,
+            can_next: i.can_next,
+        });
+        self.chrome.set_now_playing(&mut self.ui, &self.config, card.as_ref());
+        // Artwork: what the page offers (never fetched for private tabs), else the site's icon.
+        let art_url = info
+            .as_ref()
+            .filter(|i| !i.private && self.config.media.now_playing_artwork)
+            .and_then(|i| first_web_url(&[&i.artwork, &i.player.poster, &i.image]).map(str::to_owned));
+        self.now_art.want(art_url.as_deref());
+        if let Some(i) = info.as_ref().filter(|_| card.is_some()) {
+            let art = match (self.now_art.image(), self.favicons.get(&i.url)) {
+                (Some(image), _) => Art::Image(image),
+                (None, Some(icon)) => Art::Favicon(icon),
+                (None, None) => Art::None,
+            };
+            self.chrome.set_now_playing_art(&mut self.ui, art);
+        }
         if let Some(mpris) = &mut self.mpris {
-            let track = info.filter(|i| !i.0).map(|(_, p, title, artist, album, art, _)| Track {
-                playing: p.is_playing(),
-                title,
-                artist,
-                album,
-                art_url: art,
-                length: if p.live { 0.0 } else { p.duration },
-                position: p.time,
-                volume: if p.muted { 0.0 } else { p.volume },
-                rate: p.rate,
+            let track = info.filter(|i| !i.private).map(|i| Track {
+                playing: i.player.is_playing(),
+                title: i.title,
+                artist: i.artist,
+                album: i.album,
+                art_url: i.artwork,
+                length: if i.player.live { 0.0 } else { i.player.duration },
+                position: i.player.time,
+                volume: if i.player.muted { 0.0 } else { i.player.volume },
+                rate: i.player.rate,
+                can_next: i.can_next,
+                can_previous: i.can_prev,
             });
             mpris.update(track);
         }
@@ -1506,6 +1551,11 @@ impl Browser {
                 MprisCommand::Play => A::Play,
                 MprisCommand::Pause => A::Pause,
                 MprisCommand::PlayPause => A::Toggle,
+                MprisCommand::Next => A::NextTrack,
+                MprisCommand::Previous => {
+                    self.now_playing_previous();
+                    continue;
+                }
                 MprisCommand::Seek(by) => A::Skip(by),
                 MprisCommand::SetPosition(to) => A::Seek(to),
                 MprisCommand::Volume(v) => A::Volume(v),
@@ -2813,6 +2863,11 @@ impl Browser {
                     let outcome = self.settings.action(&mut self.ui, action, &mut self.config, &self.keymap);
                     self.settings_outcome(outcome);
                 }
+                UiEvent::ValueChanged { node, value } if node == self.chrome.now_playing_scrubber() => {
+                    if let Some(to) = self.chrome.now_playing_seek(value) {
+                        self.now_playing_command(axion_media::Action::Seek(to));
+                    }
+                }
                 UiEvent::ValueChanged { node, value } if node == self.player.scrubber() => {
                     if let Some((view, command)) = self.player.seek_command(value) {
                         self.media_command(view, &command);
@@ -3048,6 +3103,10 @@ impl Browser {
                     }
                     Some(ChromeAction::NowPlayingToggle) => {
                         self.now_playing_command(axion_media::Action::Toggle)
+                    }
+                    Some(ChromeAction::NowPlayingPrevious) => self.now_playing_previous(),
+                    Some(ChromeAction::NowPlayingNext) => {
+                        self.now_playing_command(axion_media::Action::NextTrack)
                     }
                     Some(ChromeAction::SelectTab(i)) => self.select_tab(i),
                     Some(ChromeAction::SelectOtherTab(i)) => {
@@ -4790,6 +4849,16 @@ impl Browser {
                 "account-password" if std::env::var_os("AXION_PROFILE_DIR").is_some() => {
                     self.set_test_password()
                 }
+                // Capture aids: the Now Playing card's buttons, and "now-seek:FRACTION" (its slider).
+                "now-prev" => self.now_playing_previous(),
+                "now-next" => self.now_playing_command(axion_media::Action::NextTrack),
+                seek if seek.starts_with("now-seek:") => {
+                    if let Ok(value) = seek["now-seek:".len()..].parse::<f32>()
+                        && let Some(to) = self.chrome.now_playing_seek(value)
+                    {
+                        self.now_playing_command(axion_media::Action::Seek(to));
+                    }
+                }
                 "account-menu" => self.toggle_account_menu(),
                 "add-account" => self.open_add_account(),
                 // Capture aid: type "add-account-name:NAME" into the open Add Account sheet.
@@ -4908,6 +4977,7 @@ impl Browser {
         self.account_menu.track_hover(&mut self.ui, &self.config);
         self.menu.animate(&mut self.ui, dt);
         self.account_menu.animate(&mut self.ui, dt);
+        self.sync_now_playing_lift();
         if self.context_menus.is_open()
             && let Some((view, private, surface)) = self.context_row
         {
@@ -4959,6 +5029,9 @@ impl Browser {
         let window = self.logical_size();
         self.tooltip.animate(&mut self.ui, &self.config, &self.keymap, window, blocked, dt);
         self.take_engine_icons();
+        if self.now_art.poll(&self.favicons) {
+            self.update_now_playing();
+        }
         self.sync_password_icons();
         // Keeps the sidebar's scroll in range when its content got shorter (tabs closed).
         self.chrome.scroll_sections(&mut self.ui, 0.0);
@@ -5574,6 +5647,22 @@ fn is_dark(config: &Config, window: &Window, desktop_dark: Option<bool>) -> bool
         ThemeMode::Dark => true,
         ThemeMode::Auto => desktop_dark.unwrap_or(window.theme() == Some(winit::window::Theme::Dark)),
     }
+}
+
+/// What the Now Playing card and the desktop show, gathered from the playing tab.
+struct NowPlayingInfo {
+    private: bool,
+    player: axion_media::Player,
+    title: String,
+    artist: String,
+    album: String,
+    /// The media session's artwork, the page's preview image.
+    artwork: String,
+    image: String,
+    url: String,
+    host: String,
+    can_prev: bool,
+    can_next: bool,
 }
 
 #[cfg(test)]

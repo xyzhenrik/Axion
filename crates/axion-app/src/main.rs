@@ -32,6 +32,7 @@ mod lockscreen;
 mod menu;
 mod morph;
 mod mpris;
+mod now_playing;
 mod overview;
 mod page_color;
 mod passwords;

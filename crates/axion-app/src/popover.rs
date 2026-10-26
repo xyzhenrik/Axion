@@ -39,9 +39,7 @@ pub struct Popover {
     join: Option<(Frame, f32)>,
     /// How deep the bridge reaches into the shapes it joins (logical px; see [`bridge_frame`]).
     bridge_depth: f32,
-    /// Glass of the same pass that the open popover lies over (the Now Playing card under
-    /// the account menu): it would merge into the popover and its content would show through,
-    /// so it fades out as the popover grows.
+    /// Content under the popover that would show through it, and fades out as it grows.
     covered: Vec<NodeId>,
     /// The bridge thins out as the popover settles and is gone once it is open: it only
     /// joins it to its anchor while it flows out and back (the find bar).
@@ -101,18 +99,18 @@ impl Popover {
         self.drip.phase()
     }
 
+    /// The top edge of the glass as it is drawn now (logical px; `None` while closed).
+    pub fn top(&self) -> Option<f32> {
+        (self.drip.phase() != Phase::Closed).then(|| self.drip.frame().origin.y)
+    }
+
     /// Open or opening.
     pub fn is_open(&self) -> bool {
         matches!(self.drip.phase(), Phase::Opening | Phase::Open)
     }
 
-    /// See [`Popover::covered`]. Set before opening.
-    pub fn set_covered(&mut self, ui: &mut Ui, node: Option<NodeId>) {
-        self.set_covered_nodes(ui, node.into_iter().collect());
-    }
-
-    /// Like [`Popover::set_covered`], for several nodes (the content of the row a context
-    /// menu flows out of, which would otherwise poke out of the menu's neck).
+    /// Nodes that fade out as the popover grows (the content of the row a context menu flows
+    /// out of, which would otherwise poke out of the menu's neck). Set before opening.
     pub fn set_covered_nodes(&mut self, ui: &mut Ui, nodes: Vec<NodeId>) {
         for old in std::mem::take(&mut self.covered) {
             ui.set_opacity(old, 1.0);
