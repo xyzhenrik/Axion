@@ -145,8 +145,8 @@ pub struct Overview {
 }
 
 /// One of the overview's own springs, scaled by the global motion speed.
-fn quick((response, damping): (f32, f32), speed: f32) -> Spring {
-    Spring::new(response * speed, damping)
+fn quick((response, damping): (f32, f32), config: &Config) -> Spring {
+    Spring::new(response * config.motion.speed, config.glass.damping(damping))
 }
 
 fn fixed(color: Color) -> Paint {
@@ -643,14 +643,13 @@ impl Overview {
         self.rebuild(ui, tabs, favicons);
         ui.set_visible(self.root, true);
         ui.layout();
-        let speed = config.motion.speed;
         let reduce = config.glass.reduce_motion;
-        self.fade.spring = quick(FADE_SPRING, speed);
+        self.fade.spring = quick(FADE_SPRING, config);
         self.fade.snap(0.0);
         self.fade.target = 1.0;
         self.ghost_view = tabs.active().map(|t| t.view);
         let target = self.card_frame(ui, tabs.active_index()).unwrap_or(page);
-        self.start_ghost(page, target, quick(ZOOM_SPRING, speed), reduce);
+        self.start_ghost(page, target, quick(ZOOM_SPRING, config), reduce);
         self.phase = Phase::Opening;
         // Search starts hidden behind its button (Safari).
         ui.set_visible(self.search_box, false);
@@ -671,11 +670,10 @@ impl Overview {
         if !self.is_open() || self.phase == Phase::Closing {
             return Vec::new();
         }
-        let speed = config.motion.speed;
         let from = self.card_frame(ui, index).unwrap_or(page);
         self.ghost_view = tabs.all().get(index).map(|t| t.view);
-        self.start_ghost(from, page, quick(ZOOM_SPRING, speed), config.glass.reduce_motion);
-        self.fade.spring = quick(FADE_SPRING, speed);
+        self.start_ghost(from, page, quick(ZOOM_SPRING, config), config.glass.reduce_motion);
+        self.fade.spring = quick(FADE_SPRING, config);
         self.fade.target = 0.0;
         self.phase = Phase::Closing;
         ui.blur()

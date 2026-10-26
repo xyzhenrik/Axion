@@ -323,7 +323,10 @@ impl LockScreen {
         self.appear.spring = if config.glass.reduce_motion {
             Spring::new(0.15, 1.0)
         } else {
-            Spring::new(config.motion.snappy.response * config.motion.speed, config.motion.snappy.damping)
+            Spring::new(
+                config.motion.snappy.response * config.motion.speed,
+                config.glass.damping(config.motion.snappy.damping),
+            )
         };
         self.appear.target = 1.0;
         ui.set_visible(self.alert_layer, true);

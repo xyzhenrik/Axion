@@ -2130,7 +2130,7 @@ impl Browser {
                 self.close_popups();
             }
         }
-        let radius = self.config.layout.page_corner_radius;
+        let radius = self.config.effective_layout().page_corner_radius;
         self.lock_screen.show(&mut self.ui, page, radius);
         self.order_lock_planes(locked);
         self.tabs_changed = true;

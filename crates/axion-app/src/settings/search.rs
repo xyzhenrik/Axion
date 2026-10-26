@@ -235,6 +235,23 @@ pub const INDEX: &[Entry] = &[
     ),
     page(
         C::Appearance,
+        tr_mark("Glass"),
+        &[
+            "flat",
+            "no glass",
+            "liquid glass",
+            "solid",
+            "performance",
+            "weak gpu",
+            "fast",
+            "transparency",
+            "glas",
+            "flach",
+            "leistung",
+        ],
+    ),
+    page(
+        C::Appearance,
         tr_mark("Accent colour"),
         &["color", "accent", "highlight", "akzentfarbe", "farbe", "tint"],
     ),

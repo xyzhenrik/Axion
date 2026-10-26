@@ -73,6 +73,33 @@ const LENS_SHADOW: f32 = 0.45;
 /// colour (lighter in dark, darker in light), so text on it keeps its contrast.
 const LENS_OPAQUE_MIX: f32 = 0.14;
 
+/// Flat mode: how opaque a card of each level is (a hint of the page shows through the thin ones,
+/// never blurred) and its shadow (logical px: offset, blur; strength in light / dark chrome).
+const FLAT_OPACITY: [f32; 3] = [0.94, 0.97, 1.0];
+const FLAT_SHADOW: [(f32, f32, [f32; 2]); 3] =
+    [(1.0, 5.0, [0.08, 0.20]), (2.0, 14.0, [0.12, 0.34]), (4.0, 28.0, [0.16, 0.46])];
+/// Width of a flat card's border (logical px).
+pub const FLAT_BORDER: f32 = 1.0;
+/// A tinted (primary) button in flat mode: the colour, almost solid.
+const FLAT_TINTED_OPACITY: f32 = 0.96;
+/// A lens-level background (a hovered sidebar row's highlight) in flat mode: the label colour at
+/// this strength, over whatever it lies on.
+const FLAT_HIGHLIGHT_ALPHA: f32 = 0.08;
+
+/// A flat card: what `Background::Glass(level)` is painted as without glass (see
+/// [`Theme::flat_paint`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlatPaint {
+    pub fill: [f32; 4],
+    /// The 1px outline; fully transparent for none.
+    pub border: [f32; 4],
+    /// Shadow colour (black with its strength as alpha), offset and blur in logical px.
+    /// Nested cards have none.
+    pub shadow: [f32; 4],
+    pub shadow_dy: f32,
+    pub shadow_blur: f32,
+}
+
 /// Tint strength of every glass level under Reduce Transparency (nearly opaque).
 const REDUCED_TRANSPARENCY_OPACITY: f32 = 0.94;
 
@@ -176,6 +203,79 @@ impl Theme {
         [0, 1, 2].map(|i| base[i] * (1.0 - LENS_OPAQUE_MIX) + label[i] * LENS_OPAQUE_MIX)
     }
 
+    /// Flat mode (`glass.style = "flat"`): nothing is drawn as glass, merged or animated like
+    /// glass. This is the one switch the painter, the popover code and the physics read.
+    pub fn flat(&self) -> bool {
+        self.config.glass.is_flat()
+    }
+
+    /// What `Background::Glass(level)` is painted as in flat mode: a solid themed card (the
+    /// scheme's surface colour; a hint translucent only for thin cards, never blurred) with a
+    /// hairline border and a soft shadow. `nested` (glass inside glass: a card on the sidebar,
+    /// a field in the bar) is an inset in the ground colour without a shadow, so it stands out
+    /// from the card it lies on in both schemes.
+    pub fn flat_paint(&self, level: GlassLevel, nested: bool) -> FlatPaint {
+        let i = match level {
+            GlassLevel::Thin | GlassLevel::Lens => 0,
+            GlassLevel::Regular => 1,
+            GlassLevel::Thick => 2,
+        };
+        let hairline = self.color(Paint::Hairline);
+        if level == GlassLevel::Lens {
+            // A highlight, not a surface: a tint of the label colour that keeps contrast.
+            let label = self.color(Paint::Label);
+            return FlatPaint {
+                fill: [label[0], label[1], label[2], FLAT_HIGHLIGHT_ALPHA],
+                border: [0.0; 4],
+                shadow: [0.0; 4],
+                shadow_dy: 0.0,
+                shadow_blur: 0.0,
+            };
+        }
+        if nested {
+            let ground = self.color(Paint::Ground);
+            return FlatPaint {
+                fill: [ground[0], ground[1], ground[2], 1.0],
+                border: [hairline[0], hairline[1], hairline[2], hairline[3] * 0.6],
+                shadow: [0.0; 4],
+                shadow_dy: 0.0,
+                shadow_blur: 0.0,
+            };
+        }
+        let surface = self.color(Paint::Surface);
+        let (dy, blur, strength) = FLAT_SHADOW[i];
+        FlatPaint {
+            fill: [surface[0], surface[1], surface[2], FLAT_OPACITY[i]],
+            border: hairline,
+            shadow: [0.0, 0.0, 0.0, strength[usize::from(self.dark)]],
+            shadow_dy: dy,
+            shadow_blur: blur,
+        }
+    }
+
+    /// A pill raised from a tinted strip (the open tab): the surface colour with a hairline, no shadow.
+    pub fn flat_raised(&self) -> FlatPaint {
+        let surface = self.color(Paint::Surface);
+        FlatPaint {
+            fill: [surface[0], surface[1], surface[2], 1.0],
+            border: self.color(Paint::Hairline),
+            shadow: [0.0; 4],
+            shadow_dy: 0.0,
+            shadow_blur: 0.0,
+        }
+    }
+
+    /// A tinted card (a primary button) in flat mode: the colour, no outline, no shadow.
+    pub fn flat_tinted(&self, tint: [f32; 4]) -> FlatPaint {
+        FlatPaint {
+            fill: [tint[0], tint[1], tint[2], FLAT_TINTED_OPACITY],
+            border: [0.0; 4],
+            shadow: [0.0; 4],
+            shadow_dy: 0.0,
+            shadow_blur: 0.0,
+        }
+    }
+
     /// The tint strength of `level` (see [`Theme::glass`]).
     pub fn glass_opacity(&self, level: GlassLevel) -> f32 {
         if self.config.glass.reduce_transparency {
@@ -221,6 +321,64 @@ impl Theme {
             shadow: m.shadow,
             light_dir: Vec2::new(-0.55, -0.85),
         }
+    }
+}
+
+#[cfg(test)]
+mod flat_tests {
+    use super::*;
+
+    fn theme(dark: bool, flat: bool) -> Theme {
+        let mut config = Config::default();
+        if flat {
+            config.glass.style = axion_config::GlassStyle::Flat;
+        }
+        Theme::new(&config, dark)
+    }
+
+    #[test]
+    fn only_the_flat_style_is_flat() {
+        assert!(!theme(false, false).flat());
+        assert!(theme(false, true).flat());
+    }
+
+    #[test]
+    fn glass_levels_map_to_ever_more_solid_cards_with_more_shadow() {
+        for dark in [false, true] {
+            let t = theme(dark, true);
+            let [thin, regular, thick] =
+                [GlassLevel::Thin, GlassLevel::Regular, GlassLevel::Thick].map(|l| t.flat_paint(l, false));
+            assert!(thin.fill[3] < regular.fill[3] && regular.fill[3] < thick.fill[3]);
+            assert_eq!(thick.fill[3], 1.0);
+            assert!(thin.shadow[3] < regular.shadow[3] && regular.shadow[3] < thick.shadow[3]);
+            assert!(thin.shadow_blur < thick.shadow_blur);
+            // The scheme's own surface and hairline.
+            assert_eq!(thick.fill[..3], t.color(Paint::Surface)[..3]);
+            assert_eq!(thick.border, t.color(Paint::Hairline));
+        }
+    }
+
+    #[test]
+    fn nested_cards_are_shadowless_insets_in_the_ground_colour() {
+        for dark in [false, true] {
+            let t = theme(dark, true);
+            let inset = t.flat_paint(GlassLevel::Thin, true);
+            assert_eq!(inset.fill[..3], t.color(Paint::Ground)[..3]);
+            assert_eq!(inset.fill[3], 1.0);
+            assert_eq!(inset.shadow[3], 0.0);
+            assert_ne!(inset.fill[..3], t.flat_paint(GlassLevel::Thin, false).fill[..3]);
+        }
+    }
+
+    #[test]
+    fn highlights_and_tinted_cards_keep_contrast() {
+        let t = theme(false, true);
+        let lens = t.flat_paint(GlassLevel::Lens, true);
+        assert_eq!(lens.fill[..3], t.color(Paint::Label)[..3]);
+        assert!(lens.fill[3] < 0.15, "a faint tint of the label colour, text stays readable");
+        assert_eq!(lens.border[3], 0.0);
+        let tinted = t.flat_tinted([0.2, 0.4, 1.0, 1.0]);
+        assert!(tinted.fill[3] > 0.9 && tinted.shadow[3] == 0.0 && tinted.border[3] == 0.0);
     }
 }
 

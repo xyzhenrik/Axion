@@ -26,8 +26,8 @@ use taffy::prelude::*;
 
 pub use editor::Editor;
 use knob::Knob;
-pub use theme::{GlassLevel, Paint, TextStyle, Theme};
-pub use widget::{ActionId, Align, Background, CAPSULE, Shadow, Tooltip, Widget, WidgetKind};
+pub use theme::{FLAT_BORDER, FlatPaint, GlassLevel, Paint, TextStyle, Theme};
+pub use widget::{ActionId, Align, Background, CAPSULE, FlatRole, Shadow, Tooltip, Widget, WidgetKind};
 use widget::{caret_x, index_at, measure, new_buffer, set_buffer_text};
 
 const CARET_BLINK: Duration = Duration::from_millis(530);
@@ -253,10 +253,9 @@ impl Ui {
         }
     }
 
-    /// How much moving glass may squash (`glass.squash`; none with Reduce Motion).
+    /// How much moving glass may squash (`glass.squash`; none with Reduce Motion or flat).
     fn squash(&self) -> f32 {
-        let glass = &self.theme.config().glass;
-        if glass.reduce_motion { 0.0 } else { glass.squash.max(0.0) }
+        self.theme.config().glass.squash()
     }
 
     /// Text is shaped at the display scale times the user's text size.
@@ -1094,7 +1093,10 @@ impl Ui {
         if self.theme.config().glass.reduce_motion {
             Spring::new(0.15, 1.0)
         } else {
-            Spring::new(motion.liquid.response * motion.speed, motion.liquid.damping)
+            Spring::new(
+                motion.liquid.response * motion.speed,
+                self.theme.config().glass.damping(motion.liquid.damping),
+            )
         }
     }
 
@@ -1343,6 +1345,10 @@ impl Ui {
     /// Glass that is one element (`Widget::press_whole`) becomes one lens as a whole,
     /// whichever of its buttons is pressed.
     fn press_target(&self, button: NodeId) -> Option<(NodeId, bool)> {
+        // Flat mode: nothing swells or becomes a lens; the button's own tint is the feedback.
+        if self.theme.flat() {
+            return None;
+        }
         let widget = self.widget(button)?;
         if widget.feedback
             && let Some(whole) =
@@ -1470,7 +1476,10 @@ impl Ui {
         if self.theme.config().glass.reduce_motion {
             Spring::new(0.15, 1.0)
         } else {
-            Spring::new(motion.snappy.response * motion.speed, motion.liquid.damping)
+            Spring::new(
+                motion.snappy.response * motion.speed,
+                self.theme.config().glass.damping(motion.liquid.damping),
+            )
         }
     }
 
@@ -1618,7 +1627,8 @@ impl Ui {
         };
 
         // Held glass swells and leans toward the pointer; its content moves with it.
-        let press_xf = self.press_scale.get(&node).map(|press| {
+        let flat = theme.flat();
+        let press_xf = self.press_scale.get(&node).filter(|_| !flat).map(|press| {
             let offset = press.offset.value * s;
             let pull = offset.length();
             let e = (pull * PULL_STRETCH / bg_px.size.max_element().max(1.0)).min(self.squash());
@@ -1641,7 +1651,7 @@ impl Ui {
         // How far a lens has formed (0 at rest, 1 held): it lightens with it.
         // Reduce Transparency: opaque glass has no clearer lens to show, so a pressed button
         // keeps its plain highlight (the lens still swells).
-        let opaque = self.theme.config().glass.reduce_transparency;
+        let opaque = self.theme.config().glass.reduce_transparency || flat;
         let lens_glow = self.press_scale.get(&node).filter(|p| p.lens).map(|press| {
             let t = press.held.value.clamp(0.0, 1.0);
             if opaque { 0.0 } else { LENS_PRESS_GLOW[usize::from(theme.dark)] * t }
@@ -1685,6 +1695,16 @@ impl Ui {
         let mut child_depth = depth;
         let content = &mut stacks[depth].content;
         match widget.background {
+            Background::Glass(_) | Background::TintedGlass(..) if flat => {
+                // No glass: the same surface as a plain card (see `Theme::flat_paint`).
+                // A bare group draws nothing and is no surface for what lies in it.
+                if widget.flat_role == FlatRole::Bare {
+                    child_depth = depth;
+                } else {
+                    self.paint_flat_card(widget, theme, bg_px, bg_radius, fade, depth, stacks);
+                    child_depth = depth + 1;
+                }
+            }
             Background::Glass(_) | Background::TintedGlass(..) => {
                 let (level, tint) = match widget.background {
                     Background::TintedGlass(level, paint) => (level, Some(theme.color(paint))),
@@ -1706,10 +1726,12 @@ impl Ui {
                 stacks[depth + 1].glass.push(GlassItem { level, fade: quantize_fade(fade), tint, shape });
                 child_depth = depth + 1;
             }
+            // A soft plate only helps text over glass; a flat card is solid already.
+            Background::Soft(..) if flat => {}
             Background::Soft(paint, opacity, blur) => {
                 let mut color = theme.color(paint);
                 color[3] *= opacity * fade;
-                content.quads.push(Quad { rect: bg_px, radius: bg_radius, color, softness: blur * s });
+                content.quads.push(Quad { softness: blur * s, ..Quad::fill(bg_px, bg_radius, color) });
             }
             Background::Fill(paint, opacity) => {
                 if let Some(shadow) = widget.shadow {
@@ -1934,6 +1956,59 @@ impl Ui {
         }
     }
 
+    /// A glass background painted without glass (flat mode): a solid card with a hairline border
+    /// and a soft shadow, in the plane's content at the glass's stacking position (glass on glass
+    /// is an inset instead, see `Theme::flat_paint`). Bridges between shapes aren't drawn.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_flat_card(
+        &self,
+        widget: &Widget,
+        theme: &Theme,
+        rect: Rect,
+        radius: f32,
+        fade: f32,
+        depth: usize,
+        stacks: &mut [Stack<'_>],
+    ) {
+        if widget.join_only {
+            return;
+        }
+        let nested = depth > 0;
+        let (level, tint) = match widget.background {
+            Background::TintedGlass(level, paint) => (level, Some(theme.color(paint))),
+            Background::Glass(level) => (level, None),
+            _ => return,
+        };
+        // A panel that carries text (a popover on the bar's thin glass) is as solid as its
+        // density says: with no blur behind it, anything less would show the page through.
+        let level = if level == GlassLevel::Lens { level } else { widget.glass_density.unwrap_or(level) };
+        let s = self.scale;
+        let paint = match (tint, widget.flat_role) {
+            (Some(tint), _) => theme.flat_tinted(tint),
+            (None, FlatRole::Field) => theme.flat_paint(level, true),
+            (None, FlatRole::Raised) => theme.flat_raised(),
+            (None, _) => theme.flat_paint(level, nested),
+        };
+        let faded = |mut c: [f32; 4]| {
+            c[3] *= fade;
+            c
+        };
+        let content = &mut stacks[depth + 1].content;
+        if paint.shadow[3] > 0.0 && paint.shadow_blur > 0.0 {
+            content.quads.push(Quad::card_shadow(
+                rect,
+                radius,
+                paint.shadow_dy * s,
+                paint.shadow_blur * s,
+                faded(paint.shadow),
+            ));
+        }
+        content.quads.push(Quad::fill(rect, radius, faded(paint.fill)));
+        if paint.border[3] > 0.0 {
+            content.quads.push(Quad::ring(rect, radius, (FLAT_BORDER * s).max(1.0), faded(paint.border)));
+        }
+    }
+
     /// A switch or slider knob (physical px): opaque white at rest (a line slider has
     /// none: `rest_knob` off), a clear glass lens while held (`lens` 0→1), stretched along fast
     /// motion.
@@ -1950,6 +2025,8 @@ impl Ui {
         stacks: &mut [Stack<'_>],
     ) {
         let s = self.scale;
+        // Flat mode: a plain knob that never swells into a lens.
+        let lens = if self.theme.flat() { 0.0 } else { lens };
         let grow = Vec2::ONE + (LENS_GROWTH - Vec2::ONE) * lens;
         let stretch = (speed.abs() * LENS_SQUASH).min(self.squash() * LENS_SQUASH_RATIO) * lens;
         let size = knob * grow * Vec2::new(1.0 + stretch, 1.0 / (1.0 + stretch).sqrt());
@@ -1986,6 +2063,7 @@ impl Ui {
         stacks: &mut [Stack<'_>],
     ) {
         let s = self.scale;
+        let lens = if self.theme.flat() { 0.0 } else { lens };
         let grow = Vec2::ONE + (Vec2::new(1.12, 1.25) - Vec2::ONE) * lens;
         let size = rect.size * grow;
         let center = rect.center();
@@ -2660,6 +2738,53 @@ mod tests {
         assert!((value(&events) - 0.8).abs() < 1e-3);
         ui.handle(UiInput::PointerUp);
         assert!(!ui.is_holding());
+    }
+
+    fn flat_ui() -> Ui {
+        let mut config = axion_config::Config::default();
+        config.glass.style = axion_config::GlassStyle::Flat;
+        let mut ui = Ui::new(Theme::new(&config, false), 1.0);
+        ui.set_viewport(Vec2::new(800.0, 600.0), 1.0);
+        ui
+    }
+
+    #[test]
+    fn flat_mode_paints_no_glass_layers_at_all() {
+        let mut ui = flat_ui();
+        row(&mut ui);
+        ui.layout();
+        let mut layers = Vec::new();
+        ui.paint(&mut layers);
+        assert!(layers.iter().all(|l| !matches!(l, Layer::Glass { .. })), "flat mode skips glass passes");
+        // The bar became a card: a shadow, a fill and a one-px ring.
+        let quads: Vec<&Quad> = layers
+            .iter()
+            .filter_map(|l| if let Layer::Content(c) = l { Some(c.quads.iter()) } else { None })
+            .flatten()
+            .collect();
+        assert!(quads.iter().any(|q| q.knockout && q.softness > 0.0), "a shadow");
+        assert!(quads.iter().any(|q| q.ring >= 1.0), "a border");
+        assert!(quads.iter().any(|q| q.ring == 0.0 && q.softness == 0.0 && q.color[3] > 0.9), "a solid fill");
+    }
+
+    #[test]
+    fn liquid_mode_still_paints_glass() {
+        let mut ui = ui();
+        row(&mut ui);
+        ui.layout();
+        let mut layers = Vec::new();
+        ui.paint(&mut layers);
+        assert!(layers.iter().any(|l| matches!(l, Layer::Glass { .. })));
+    }
+
+    #[test]
+    fn flat_mode_stops_presses_stretch_and_merging() {
+        let mut ui = flat_ui();
+        let (_, button, _) = row(&mut ui);
+        ui.layout();
+        assert!(ui.press_target(button).is_none(), "no lens, no swell");
+        assert_eq!(ui.squash(), 0.0);
+        assert_eq!(ui.theme().config().glass.merge_distance(), 0.0);
     }
 
     #[test]

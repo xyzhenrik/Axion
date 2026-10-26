@@ -344,9 +344,27 @@ pub struct GlassMaterial {
     pub shadow: f32,
 }
 
+/// How the chrome is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GlassStyle {
+    /// Liquid Glass: refraction, blur, merging drops and the glass physics.
+    #[default]
+    Liquid,
+    /// Flat: solid cards with a border and a soft shadow. No refraction, blur, merging, drips,
+    /// stretch or bounce, and the compositor skips the glass passes entirely (the performance
+    /// mode for weak GPUs). Everything else works exactly the same.
+    Flat,
+}
+
+/// The damping ratio flat mode raises every spring to: critically damped, so nothing bounces.
+pub const FLAT_DAMPING: f32 = 1.0;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Glass {
+    /// Liquid Glass or the flat, glass-free look (see [`GlassStyle`]). Live-switchable.
+    pub style: GlassStyle,
     pub light: GlassMaterial,
     pub dark: GlassMaterial,
     /// Width of the curved rim in logical pixels.
@@ -374,10 +392,38 @@ pub struct Glass {
     pub reduce_motion: bool,
 }
 
+impl Glass {
+    /// Flat mode: no glass is drawn, merged or animated.
+    pub fn is_flat(&self) -> bool {
+        self.style == GlassStyle::Flat
+    }
+
+    /// Distance at which neighbouring glass flows together (0 in flat mode: nothing merges).
+    pub fn merge_distance(&self) -> f32 {
+        if self.is_flat() { 0.0 } else { self.merge_distance }
+    }
+
+    /// Maximum squash of moving glass (0 under Reduce Motion and in flat mode).
+    pub fn squash(&self) -> f32 {
+        if self.reduce_motion || self.is_flat() { 0.0 } else { self.squash.max(0.0) }
+    }
+
+    /// Smooth-union radius of a popover's bridge (0 in flat mode: no bridges).
+    pub fn popover_bridge_fillet(&self) -> f32 {
+        if self.is_flat() { 0.0 } else { self.popover_bridge_fillet.max(0.0) }
+    }
+
+    /// A spring's damping ratio as used: flat mode never bounces, so it is at least critical.
+    pub fn damping(&self, ratio: f32) -> f32 {
+        if self.is_flat() { ratio.max(FLAT_DAMPING) } else { ratio }
+    }
+}
+
 impl Default for Glass {
     fn default() -> Self {
         let blur = Levels { thin: 16.0, regular: 26.0, thick: 40.0 };
         Self {
+            style: GlassStyle::Liquid,
             light: GlassMaterial {
                 tint: Color::rgb(0xFFFFFF),
                 opacity: Levels { thin: 0.30, regular: 0.48, thick: 0.66 },
@@ -1252,7 +1298,23 @@ impl Default for Playlist {
     }
 }
 
+/// Flat mode: the gap around the toolbar's rows (logical px), at most.
+pub const FLAT_MARGIN: f32 = 8.0;
+
 impl Config {
+    /// The layout as used: in flat mode the chrome is one conventional toolbar surface with the
+    /// page filling the area under (and beside) it: small margins, no page margin, square page.
+    /// Liquid mode uses `layout` as configured.
+    pub fn effective_layout(&self) -> Layout {
+        let mut layout = self.layout.clone();
+        if self.glass.is_flat() {
+            layout.margin = layout.margin.min(FLAT_MARGIN);
+            layout.page_margin = 0.0;
+            layout.page_corner_radius = 0.0;
+        }
+        layout
+    }
+
     /// The full default configuration as TOML, for documentation and the settings UI.
     pub fn default_toml() -> String {
         toml::to_string_pretty(&Self::default()).unwrap_or_default()
@@ -1373,5 +1435,57 @@ mod private_prompt_tests {
     #[test]
     fn the_unlock_card_opens_by_itself_by_default() {
         assert!(Privacy::default().prompt_unlock_on_open);
+    }
+}
+
+#[cfg(test)]
+mod glass_style_tests {
+    use super::*;
+
+    #[test]
+    fn liquid_is_the_default_and_the_key_round_trips() {
+        assert_eq!(Config::default().glass.style, GlassStyle::Liquid);
+        assert!(!Config::default().glass.is_flat());
+        let mut c = Config::default();
+        c.glass.style = GlassStyle::Flat;
+        let text = toml::to_string(&c).unwrap();
+        assert!(text.contains("style = \"flat\""), "{text}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.glass.style, GlassStyle::Flat);
+        let c: Config = toml::from_str("[glass]\nstyle = \"liquid\"").unwrap();
+        assert_eq!(c.glass.style, GlassStyle::Liquid);
+        assert!(toml::from_str::<Config>("[glass]\nstyle = \"jelly\"").is_err());
+    }
+
+    #[test]
+    fn flat_mode_switches_off_merging_squash_bridges_and_bounce() {
+        let mut glass = Glass::default();
+        assert_eq!(glass.merge_distance(), glass.merge_distance);
+        assert_eq!(glass.squash(), glass.squash);
+        assert_eq!(glass.popover_bridge_fillet(), glass.popover_bridge_fillet);
+        assert_eq!(glass.damping(0.6), 0.6, "liquid keeps its bounce");
+        glass.style = GlassStyle::Flat;
+        assert_eq!(glass.merge_distance(), 0.0);
+        assert_eq!(glass.squash(), 0.0);
+        assert_eq!(glass.popover_bridge_fillet(), 0.0);
+        assert_eq!(glass.damping(0.6), FLAT_DAMPING);
+        assert_eq!(glass.damping(1.4), 1.4, "already over-damped springs stay as they are");
+    }
+
+    #[test]
+    fn flat_mode_lays_the_chrome_out_as_one_toolbar_with_a_full_bleed_page() {
+        let mut c = Config::default();
+        assert_eq!(c.effective_layout(), c.layout, "liquid uses the layout as configured");
+        c.glass.style = GlassStyle::Flat;
+        let l = c.effective_layout();
+        assert!(l.margin <= FLAT_MARGIN);
+        assert_eq!((l.page_margin, l.page_corner_radius), (0.0, 0.0));
+        assert_eq!(l.sidebar_width, c.layout.sidebar_width, "everything else is as configured");
+    }
+
+    #[test]
+    fn reduce_motion_also_stops_the_squash() {
+        let glass = Glass { reduce_motion: true, ..Glass::default() };
+        assert_eq!(glass.squash(), 0.0);
     }
 }

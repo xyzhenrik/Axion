@@ -11,7 +11,8 @@ struct Instance {
     // x, y, width, height in physical pixels.
     @location(0) rect: vec4f,
     @location(1) color: vec4f,
-    // corner radius, softness (0 = crisp edge, > 0 = shadow blur radius), unused, unused.
+    // corner radius, softness (0 = crisp edge, > 0 = shadow blur radius), ring width (0 = filled),
+    // knockout (1 = a shadow trimmed under its own shape).
     @location(2) params: vec4f,
 }
 
@@ -51,8 +52,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     var coverage: f32;
     if (softness > 0.0) {
         coverage = 1.0 - smoothstep(-softness * 0.5, softness, d);
+        if (in.params.w > 0.5) {
+            // Not under the card itself: a translucent card must not look darker for its shadow.
+            coverage = coverage * clamp(d + 0.5, 0.0, 1.0);
+        }
     } else {
         coverage = clamp(0.5 - d, 0.0, 1.0);
+        let ring = in.params.z;
+        if (ring > 0.0) {
+            // Only the band between the edge and `ring` px inside it.
+            coverage = coverage * clamp(d + ring + 0.5, 0.0, 1.0);
+        }
     }
     return vec4f(in.color.rgb, in.color.a * coverage);
 }

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
-    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, Keymap, PlaylistSort,
-    RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode, UiLanguage,
+    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, GlassStyle, Keymap,
+    PlaylistSort, RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode, UiLanguage,
 };
 use axion_i18n::{tr, tr_fmt, tr_mark, tr_n};
 use axion_ui::taffy::prelude::*;
@@ -520,6 +520,8 @@ pub enum SettingsAction {
     Close,
     Category(Category),
     Theme(ThemeMode),
+    /// Liquid Glass or the flat, glass-free look.
+    GlassStyle(GlassStyle),
     /// Index into `ICON_WEIGHTS`.
     IconWeight(usize),
     SearchEngine(usize),
@@ -654,6 +656,8 @@ impl SettingsAction {
                     SettingsAction::Language(language) => {
                         23 + LANGUAGES.iter().position(|&(_, l)| l == language).unwrap_or(0) as u32
                     }
+                    SettingsAction::GlassStyle(GlassStyle::Liquid) => 26,
+                    SettingsAction::GlassStyle(GlassStyle::Flat) => 27,
                     SettingsAction::SearchEngine(i) => 30 + i as u32,
                     SettingsAction::Accent(i) => 40 + i as u32,
                     SettingsAction::ClearHistory => 50,
@@ -717,6 +721,8 @@ impl SettingsAction {
             21 => SettingsAction::Theme(ThemeMode::Light),
             22 => SettingsAction::Theme(ThemeMode::Dark),
             23..=25 => SettingsAction::Language(LANGUAGES[(n - 23) as usize].1),
+            26 => SettingsAction::GlassStyle(GlassStyle::Liquid),
+            27 => SettingsAction::GlassStyle(GlassStyle::Flat),
             30..=39 if ((n - 30) as usize) < SEARCH_ENGINES.len() => {
                 SettingsAction::SearchEngine((n - 30) as usize)
             }
@@ -1415,6 +1421,18 @@ impl SettingsSheet {
                     .iter()
                     .position(|&m| m == config.appearance.theme);
                 segmented(ui, row_node, &themes, current);
+                let row_node = self.row(ui, tr("Glass"));
+                let styles = [
+                    (tr("Liquid Glass"), SettingsAction::GlassStyle(GlassStyle::Liquid).id()),
+                    (tr("Flat"), SettingsAction::GlassStyle(GlassStyle::Flat).id()),
+                ];
+                let current =
+                    [GlassStyle::Liquid, GlassStyle::Flat].iter().position(|&m| m == config.glass.style);
+                segmented(ui, row_node, &styles, current);
+                self.note(
+                    ui,
+                    tr("Flat: solid cards, no refraction, blur or bounce. Skips the glass work (fast on weak GPUs)."),
+                );
                 let row_node = self.row(ui, tr("Accent colour"));
                 swatches(ui, row_node, config.appearance.accent, SettingsAction::Accent);
                 let row_node = self.row(ui, tr("Icon weight"));
@@ -2516,6 +2534,10 @@ impl SettingsSheet {
                 config.appearance.theme = mode;
                 Outcome::Changed
             }
+            SettingsAction::GlassStyle(style) => {
+                config.glass.style = style;
+                Outcome::Changed
+            }
             SettingsAction::IconWeight(i) => {
                 set_icon_weight(config, i);
                 Outcome::Changed
@@ -3121,6 +3143,8 @@ mod tests {
             SettingsAction::Category(Category::Privacy),
             SettingsAction::Theme(ThemeMode::Dark),
             SettingsAction::Language(UiLanguage::German),
+            SettingsAction::GlassStyle(GlassStyle::Liquid),
+            SettingsAction::GlassStyle(GlassStyle::Flat),
             SettingsAction::IconWeight(2),
             SettingsAction::SearchEngine(4),
             SettingsAction::Accent(5),

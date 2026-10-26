@@ -372,7 +372,7 @@ impl PlaylistPage {
             ui.root(),
             Widget::container()
                 .with_background(Background::Fill(Paint::Ground, 1.0))
-                .with_radius(config.layout.page_corner_radius)
+                .with_radius(config.effective_layout().page_corner_radius)
                 .with_clip(),
             Style { position: Position::Absolute, flex_direction: FlexDirection::Row, ..Default::default() },
         );
@@ -808,7 +808,7 @@ impl PlaylistPage {
             search_field,
             search_width: Animated::new(
                 TOP_BUTTON,
-                Spring::new(SEARCH_SPRING.0 * config.motion.speed, SEARCH_SPRING.1),
+                Spring::new(SEARCH_SPRING.0 * config.motion.speed, config.glass.damping(SEARCH_SPRING.1)),
             ),
             search_open: false,
             video_box,
@@ -905,7 +905,7 @@ impl PlaylistPage {
         style.size = Size { width: length(rect.size.x), height: length(rect.size.y) };
         ui.set_style(self.root, style);
         if let Some(w) = ui.widget_mut(self.root) {
-            w.radius = config.layout.page_corner_radius;
+            w.radius = config.effective_layout().page_corner_radius;
         }
         let list_width = LIST_WIDTH.min((rect.size.x * LIST_SHARE).max(LIST_MIN));
         let mut col = ui.style(self.list_col);
@@ -922,7 +922,8 @@ impl PlaylistPage {
     }
 
     fn apply_search_spring(&mut self, config: &Config) {
-        self.search_width.spring = Spring::new(SEARCH_SPRING.0 * config.motion.speed, SEARCH_SPRING.1);
+        self.search_width.spring =
+            Spring::new(SEARCH_SPRING.0 * config.motion.speed, config.glass.damping(SEARCH_SPRING.1));
     }
 
     /// The width of the list column (logical px).
