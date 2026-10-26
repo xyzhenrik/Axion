@@ -275,6 +275,8 @@ pub struct Browser {
     /// Right-click menus of tabs and bookmarks, and the tab (view, private) one was opened for.
     context_menus: ContextMenus,
     context_tab: Option<(ViewId, bool)>,
+    /// The tab row the open context menu flows out of (view, private, surface).
+    context_row: Option<(ViewId, bool, crate::chrome::Surface)>,
     /// The bookmarks bar's bookmarks (id, url, title), reloaded when `bookmarks_changed`.
     bar_bookmarks: Vec<(i64, String, String)>,
     bookmarks_changed: bool,
@@ -581,6 +583,7 @@ impl Browser {
             tab_drag,
             context_menus,
             context_tab: None,
+            context_row: None,
             bar_bookmarks: Vec::new(),
             bookmarks_changed: true,
             no_tabs: Tabs::default(),
@@ -4690,6 +4693,17 @@ impl Browser {
         self.account_menu.track_hover(&mut self.ui, &self.config);
         self.menu.animate(&mut self.ui, dt);
         self.account_menu.animate(&mut self.ui, dt);
+        if self.context_menus.is_open()
+            && let Some((view, private, surface)) = self.context_row
+        {
+            let row = self
+                .chrome
+                .tab_items(surface)
+                .into_iter()
+                .find(|i| i.view == view && i.private == private)
+                .map(|i| i.node);
+            self.context_menus.cover_row(&mut self.ui, row);
+        }
         self.context_menus.animate(&mut self.ui, &self.config, dt);
         self.add_account.animate(&mut self.ui, dt);
         self.shields_popover.animate(&mut self.ui, dt);

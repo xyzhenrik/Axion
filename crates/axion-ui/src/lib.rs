@@ -1589,6 +1589,11 @@ impl Ui {
                 stacks[depth + 1].glass.push(GlassItem { level, fade: quantize_fade(fade), tint, shape });
                 child_depth = depth + 1;
             }
+            Background::Soft(paint, opacity, blur) => {
+                let mut color = theme.color(paint);
+                color[3] *= opacity * fade;
+                content.quads.push(Quad { rect: bg_px, radius: bg_radius, color, softness: blur * s });
+            }
             Background::Fill(paint, opacity) => {
                 if let Some(shadow) = widget.shadow {
                     content.quads.push(Quad::shadow(

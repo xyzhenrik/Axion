@@ -77,6 +77,7 @@ impl Browser {
         let items = tab_items(info, &self.keymap);
         self.close_other_menus();
         self.context_tab = Some((item.view, item.private));
+        self.context_row = Some((item.view, item.private, item.surface));
         let plane = self.chrome.tab_plane(&item);
         let anchor = self.ui.frame(item.node);
         let window = self.logical_size();
@@ -86,8 +87,9 @@ impl Browser {
             plane,
             anchor,
             window,
-            Placement::BelowStart,
+            Placement::Over,
             items,
+            Some(item.node),
         );
     }
 
@@ -109,6 +111,7 @@ impl Browser {
         let items = group_items(info, &self.keymap);
         self.close_other_menus();
         self.context_tab = Some((view, private));
+        self.context_row = None;
         let plane = self.chrome.sidebar_node();
         let anchor = self.ui.frame(header);
         let window = self.logical_size();
@@ -118,8 +121,9 @@ impl Browser {
             plane,
             anchor,
             window,
-            Placement::BelowStart,
+            Placement::Over,
             items,
+            Some(header),
         );
     }
 
@@ -138,6 +142,7 @@ impl Browser {
             window,
             Placement::BelowStart,
             items,
+            None,
         );
     }
 
@@ -163,7 +168,16 @@ impl Browser {
         let anchor = self.chrome.bookmarks_more_frame(&self.ui);
         let plane = self.chrome.bookmarks_bar_node();
         let window = self.logical_size();
-        self.context_menus.open(&mut self.ui, &self.config, plane, anchor, window, Placement::Below, items);
+        self.context_menus.open(
+            &mut self.ui,
+            &self.config,
+            plane,
+            anchor,
+            window,
+            Placement::Below,
+            items,
+            None,
+        );
     }
 
     pub(super) fn bookmark_command(&mut self, command: BookmarkCommand) {

@@ -21,6 +21,10 @@ pub enum Background {
     TintedGlass(GlassLevel, Paint),
     /// A solid fill with an opacity multiplier.
     Fill(Paint, f32),
+    /// A fill with soft edges (blur radius in logical px) at an opacity: it is full over its
+    /// inside and fades out over its edge. Menus use it as a plate on their glass, so the rows
+    /// read cleanly while the glass at the edges still refracts.
+    Soft(Paint, f32, f32),
 }
 
 /// A drop shadow below a filled widget (black, CSS-like offset and blur).

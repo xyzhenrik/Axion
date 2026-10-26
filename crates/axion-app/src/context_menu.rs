@@ -144,6 +144,8 @@ pub fn bookmark_items(index: usize) -> Vec<MenuItem> {
 /// One glass menu per plane things can be right-clicked in.
 pub struct ContextMenus {
     menus: Vec<(NodeId, Menu)>,
+    /// The row the open menu flows out of, whose content is faded out (see [`Self::cover_row`]).
+    covered: Option<NodeId>,
 }
 
 impl ContextMenus {
@@ -157,7 +159,7 @@ impl ContextMenus {
                 (plane, Menu::build(ui, plane, base, Placement::BelowStart))
             })
             .collect();
-        Self { menus }
+        Self { menus, covered: None }
     }
 
     /// Opens the menu of `plane` next to `anchor` (logical px), closing any other.
@@ -171,6 +173,7 @@ impl ContextMenus {
         window: Vec2,
         placement: Placement,
         items: Vec<MenuItem>,
+        hide: Option<NodeId>,
     ) {
         for (p, menu) in &mut self.menus {
             if *p != plane {
@@ -179,9 +182,26 @@ impl ContextMenus {
         }
         if let Some((_, menu)) = self.menus.iter_mut().find(|(p, _)| *p == plane) {
             menu.set_placement(placement);
+            // The row it flows out of keeps its glass, but its content gives way to the menu.
+            menu.set_covered_nodes(ui, hide.map(|row| ui.children(row)).unwrap_or_default());
+            self.covered = hide;
             menu.open(ui, config, anchor, window, items);
         } else {
             tracing::warn!("no context menu for this plane");
+        }
+    }
+
+    /// Fades out the content of `row`, the row the open menu flows out of. The chrome rebuilds
+    /// its tab rows whenever a title or icon changes, so the browser calls this every frame
+    /// with the row's current node; it does nothing unless that changed.
+    pub fn cover_row(&mut self, ui: &mut Ui, row: Option<NodeId>) {
+        if self.covered == row {
+            return;
+        }
+        self.covered = row;
+        let nodes = row.map(|row| ui.children(row)).unwrap_or_default();
+        if let Some((_, menu)) = self.menus.iter_mut().find(|(_, m)| m.is_open()) {
+            menu.set_covered_nodes(ui, nodes);
         }
     }
 
