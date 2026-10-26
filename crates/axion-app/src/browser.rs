@@ -37,6 +37,7 @@ use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
 use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::filedrop::{DropOutcome, FileDrop};
 use crate::find::{FindAction, FindBar};
+use crate::frame_rate::{self, RefreshWatch};
 use crate::home::{HomeAction, HomePage, REFRESH_SCRIPT, is_home_url};
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
@@ -197,8 +198,6 @@ const SLIDE_ANCHOR_CENTRED: f32 = 0.5;
 const PAGE_LAG_SMOOTHING: f32 = 0.25;
 /// Opacity below which the page's frame from before a sidebar slide is gone (see `slide_fade`).
 const SLIDE_FADE_DONE: f32 = 0.01;
-/// Pages' frame rate when the display's refresh rate is unknown.
-const FALLBACK_FRAME_RATE: u32 = 60;
 /// The chrome turns dark on pages whose colour is darker than this.
 const DARK_BELOW: f32 = 0.5;
 
@@ -453,6 +452,8 @@ pub struct Browser {
     shown_layers: Vec<u64>,
     idle_redraw_at: Option<Instant>,
     frame_interval: Duration,
+    /// Notices the window's monitor's refresh rate changing (see `frame_rate`).
+    refresh_watch: RefreshWatch,
     frames_skipped: u64,
     frames_presented: u64,
     /// The engine's page frame count at the last pump.
@@ -822,7 +823,8 @@ impl Browser {
             shown_layers: Vec::new(),
             page_view: None,
             idle_redraw_at: None,
-            frame_interval: Duration::from_secs_f64(1.0 / f64::from(FALLBACK_FRAME_RATE)),
+            frame_interval: frame_rate::display_interval(None),
+            refresh_watch: RefreshWatch::default(),
             frames_skipped: 0,
             frames_presented: 0,
             pumped_page_frames: 0,
@@ -859,7 +861,7 @@ impl Browser {
             }),
         };
         browser.show_account();
-        browser.frame_interval = display_frame_interval(&browser.window);
+        browser.sync_frame_rate();
         browser.update_layout();
         browser.start_onboarding(&options, accounts_file, config_file);
         browser.playlist_start();
@@ -3664,6 +3666,7 @@ impl Browser {
     }
 
     fn pump_engine(&mut self) {
+        self.watch_refresh_rate();
         // The desktop switched light/dark (winit doesn't report it on most Linux desktops).
         let desktop_dark = self.desktop_theme.dark();
         if desktop_dark != self.desktop_dark {
@@ -6535,8 +6538,21 @@ impl Browser {
 
     /// Pages render at the refresh rate of the window's monitor (or the configured rate).
     fn sync_frame_rate(&mut self) {
+        let refresh = monitor_refresh(&self.window);
         self.engine.set_frame_rate(page_frame_rate(&self.config, &self.window));
-        self.frame_interval = display_frame_interval(&self.window);
+        self.frame_interval = frame_rate::display_interval(refresh);
+        self.refresh_watch.applied(refresh, Instant::now());
+    }
+
+    /// Follows the refresh rate of the window's monitor: unknown on Wayland until the window
+    /// is shown, and it changes when the window moves to another monitor (which Wayland
+    /// doesn't report as a move).
+    fn watch_refresh_rate(&mut self) {
+        let now = Instant::now();
+        if self.refresh_watch.due(now) && self.refresh_watch.changed(monitor_refresh(&self.window), now) {
+            self.sync_frame_rate();
+            tracing::debug!(interval = ?self.frame_interval, "monitor refresh rate changed");
+        }
     }
 
     /// When the next frame should run, if not at once: after a frame that was skipped (nothing
@@ -6949,25 +6965,19 @@ fn push_slide_page<'a>(
     layers.push(Layer::Image(image));
 }
 
-/// Frames per second pages render at: `tabs.max_frame_rate`, or the window's monitor's
-/// refresh rate.
-/// One refresh of the window's monitor.
-fn display_frame_interval(window: &Window) -> Duration {
-    let hz = window
-        .current_monitor()
-        .and_then(|m| m.refresh_rate_millihertz())
-        .map_or(FALLBACK_FRAME_RATE as f64, |mhz| f64::from(mhz) / 1000.0);
-    Duration::from_secs_f64(1.0 / hz.max(1.0))
+/// The refresh rate (millihertz) of the window's monitor, if known (on Wayland only once the
+/// window has been shown, see `frame_rate`).
+fn monitor_refresh(window: &Window) -> Option<u32> {
+    window.current_monitor().and_then(|m| m.refresh_rate_millihertz())
 }
 
+/// Frames per second pages render at (see `frame_rate::page_frame_rate`).
 fn page_frame_rate(config: &Config, window: &Window) -> u32 {
-    if config.tabs.max_frame_rate > 0 {
-        return config.tabs.max_frame_rate;
-    }
-    window
-        .current_monitor()
-        .and_then(|m| m.refresh_rate_millihertz())
-        .map_or(FALLBACK_FRAME_RATE, |mhz| mhz.div_ceil(1000))
+    frame_rate::page_frame_rate(
+        config.tabs.max_frame_rate,
+        config.tabs.max_frame_rate_cap,
+        monitor_refresh(window),
+    )
 }
 
 fn is_dark(config: &Config, window: &Window, desktop_dark: Option<bool>) -> bool {

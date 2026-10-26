@@ -29,6 +29,7 @@ mod favicon_contrast;
 mod favicons;
 mod filedrop;
 mod find;
+mod frame_rate;
 mod gpu;
 mod hardware;
 mod history;
