@@ -44,6 +44,11 @@ refresh() {
   if command -v update-desktop-database >/dev/null; then update-desktop-database "$apps" 2>/dev/null || true; fi
   if command -v gtk-update-icon-cache >/dev/null; then gtk-update-icon-cache -q -f -t "$icons" 2>/dev/null || true; fi
   if command -v kbuildsycoca6 >/dev/null; then kbuildsycoca6 >/dev/null 2>&1 || true; fi
+  # KDE keeps icons it once could not find empty until it is told the icons changed (what
+  # Axion itself sends after installing them, see desktop_integration.rs).
+  if command -v dbus-send >/dev/null; then
+    dbus-send --session --type=signal /KIconLoader org.kde.KIconLoader.iconChanged int32:0 2>/dev/null || true
+  fi
 }
 
 # ---- uninstall ---------------------------------------------------------------------------
@@ -125,14 +130,7 @@ if [ -e "$bindir/axion" ] && [ ! -L "$bindir/axion" ]; then
 fi
 ln -sfn -- "$launcher" "$bindir/axion"
 
-# Menu entry: Exec points at the installed launcher (the path is quoted for the spec).
-esc=${launcher//\\/\\\\}
-esc=${esc//\"/\\\"}
-esc=${esc//\`/\\\`}
-esc=${esc//\$/\\\$}
-esc=${esc//%/%%}
-EXEC_LINE="Exec=\"$esc\" %U" awk '/^Exec=/ {print ENVIRON["EXEC_LINE"]; next} /^X-AppImage-/ {next} {print}' \
-  "$entry_src" >"$apps/axion.desktop"
+# The icons first: a desktop that sees the entry before its icon keeps the icon empty.
 if [ -d "$icon_src" ]; then
   for f in "$icon_src"/*/apps/axion.*; do
     [ -f "$f" ] || continue
@@ -141,6 +139,17 @@ if [ -d "$icon_src" ]; then
     install -m 644 -- "$f" "$icons/$rel"
   done
 fi
+# Menu entry: Exec points at the installed launcher, quoted and escaped as the Desktop Entry
+# Specification wants (the same as Axion's own `exec_command`, so Axion does not rewrite it for
+# that): `"`, `` ` ``, `$` and `\` get a backslash, which the string syntax doubles again, and
+# `%` doubles.
+esc=${launcher//\\/\\\\\\\\}
+esc=${esc//\"/\\\\\"}
+esc=${esc//\`/\\\\\`}
+esc=${esc//\$/\\\\\$}
+esc=${esc//%/%%}
+EXEC_LINE="Exec=\"$esc\" %U" awk '/^Exec=/ {print ENVIRON["EXEC_LINE"]; next} /^X-AppImage-/ {next} {print}' \
+  "$entry_src" >"$apps/axion.desktop"
 refresh
 
 echo "Installed Axion in $prefix"

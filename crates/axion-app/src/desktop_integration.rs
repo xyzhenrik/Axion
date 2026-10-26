@@ -8,15 +8,25 @@
 //! installs them itself at start (`general.desktop_integration`), the same thing
 //! `tools/install-desktop.sh` does by hand.
 //!
-//! The entry is rewritten when it is missing or when it does not match this executable and
-//! version (a stamp line in the file). The few small files are written before the window is
-//! created (so a compositor that watches the directory sees them as early as possible); the
-//! slow part, refreshing the desktop and icon caches, runs on a thread of its own and can only
-//! fail silently.
+//! The entry is rewritten when it is missing or when it does not match this launcher, version
+//! and integration revision (a stamp line in the file). The few small files are written before
+//! the window is created (icons first, so nothing ever sees an entry whose icon is missing);
+//! the slow part, refreshing the desktop and icon caches, runs on a thread of its own and can
+//! only fail silently.
+//!
+//! KDE needs one more step: every KDE process (KWin for the title bar and Alt+Tab, plasmashell
+//! for the task manager) remembers an icon name it once failed to find, and it never notices
+//! theme folders that appeared after it started. On a desktop that ran before the icons were
+//! there, `Icon=axion` then resolves to an empty icon until the session restarts. After writing
+//! the icons Axion therefore sends KDE's "icons changed" signal (`iconChanged` of
+//! `org.kde.KIconLoader` on `/KIconLoader`, what the icon settings send after a theme change),
+//! which makes those processes drop their caches and update the open windows (see
+//! docs/troubleshooting.md, "The window has no icon on Wayland").
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// The desktop entry template (`Exec=` is replaced by the running executable).
+/// The desktop entry template (`Exec=` is replaced by the launcher).
 const TEMPLATE: &str = include_str!("../../../assets/axion.desktop");
 
 /// The icon set: (size directory, PNG bytes), and the scalable SVG.
@@ -32,15 +42,24 @@ const PNG_ICONS: [(&str, &[u8]); 8] = [
 ];
 const SVG_ICON: &[u8] = include_bytes!("../../../assets/icons/hicolor/scalable/apps/axion.svg");
 
-/// Marks an entry as written by Axion (and for which executable and version).
+/// Marks an entry as written by Axion (and for which revision, version and launcher).
 const STAMP_KEY: &str = "# X-Axion-Integration:";
+
+/// Revision of what [`install`] writes and does. Raising it rewrites every existing entry once
+/// (and so sends the icon change signal once): revision 2 added that signal, for entries an
+/// older Axion wrote while KDE kept an empty icon for them.
+const REVISION: u32 = 2;
+
+/// Where KDE's icon loaders listen for [`notify_icons_changed`].
+const ICON_LOADER_PATH: &str = "/KIconLoader";
+const ICON_LOADER_INTERFACE: &str = "org.kde.KIconLoader";
 
 /// Where the entry and the icons go, and what the entry launches.
 #[derive(Clone, Debug)]
 pub struct Target {
     /// `$XDG_DATA_HOME` (default `~/.local/share`).
     pub data_home: PathBuf,
-    /// The running executable.
+    /// What the entry launches (see [`launcher`]).
     pub exe: PathBuf,
     /// Axion's version (part of the stamp: an update rewrites the entry).
     pub version: String,
@@ -53,7 +72,12 @@ impl Target {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .or_else(|| directories::BaseDirs::new().map(|d| d.home_dir().join(".local/share")))?;
-        let exe = std::env::current_exe().ok()?;
+        let exe = launcher(
+            std::env::var_os("APPIMAGE"),
+            std::env::var_os("AXION_LAUNCHER"),
+            axion_update::install::current_exe(),
+            Path::is_file,
+        )?;
         Some(Self { data_home, exe, version: env!("CARGO_PKG_VERSION").to_owned() })
     }
 
@@ -78,6 +102,26 @@ impl Target {
         files.push((hicolor.join("scalable/apps/axion.svg"), SVG_ICON));
         files
     }
+}
+
+/// What `Exec=` launches, in this order: the AppImage file (`$APPIMAGE`: inside an AppImage the
+/// executable lives in a temporary mount that is gone after Axion quits), the packaged launcher
+/// (`$AXION_LAUNCHER`, exported by `tools/package/AppRun`: the AppImage or the launcher script),
+/// else the running executable (`current_exe`, already without the ` (deleted)` Linux appends
+/// once an update replaced the file). A variable only counts when it names an existing file by
+/// an absolute path.
+pub fn launcher(
+    appimage: Option<OsString>,
+    axion_launcher: Option<OsString>,
+    current_exe: Option<PathBuf>,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    [appimage, axion_launcher]
+        .into_iter()
+        .flatten()
+        .map(PathBuf::from)
+        .find(|p| p.is_absolute() && is_file(p))
+        .or(current_exe)
 }
 
 /// `path` as the `Exec=` command: quoted, with the characters the Desktop Entry Specification
@@ -117,7 +161,7 @@ pub fn render_desktop_entry(target: &Target) -> String {
         }
         out.push('\n');
         if line == "[Desktop Entry]" && !stamped {
-            out.push_str(&format!("{STAMP_KEY} {} {}\n", target.version, target.exe.display()));
+            out.push_str(&format!("{STAMP_KEY} r{REVISION} {} {}\n", target.version, target.exe.display()));
             stamped = true;
         }
     }
@@ -183,21 +227,36 @@ pub fn ensure(enabled: bool) {
     }
 }
 
-/// Best-effort cache refreshes, each skipped when its tool is not installed: the desktop
-/// database, the GTK icon cache and KDE's service cache (the one Plasma's task manager and
-/// KWin match app ids against).
+/// Best-effort cache refreshes, each skipped when its tool is not installed: the GTK icon
+/// cache, KDE's icon caches (the "icons changed" signal, see the module docs), the desktop
+/// database and KDE's service cache (where Plasma's task manager finds the entry). The signal
+/// goes out right away (KWin's title bar and Alt+Tab icon) and once more after the service
+/// cache is rebuilt (the task manager, which looks the entry up again then).
 fn refresh_caches_in_background(target: Target) {
     let spawned = std::thread::Builder::new().name("desktop-integration".into()).spawn(move || {
         let apps = target.applications();
         let hicolor = target.hicolor();
-        run("update-desktop-database", &[apps.as_os_str()]);
         run("gtk-update-icon-cache", &["-f".as_ref(), "-t".as_ref(), "-q".as_ref(), hicolor.as_os_str()]);
+        notify_icons_changed();
+        run("update-desktop-database", &[apps.as_os_str()]);
         if !run("kbuildsycoca6", &["--noincremental".as_ref()]) {
             run("kbuildsycoca5", &["--noincremental".as_ref()]);
         }
+        notify_icons_changed();
     });
     if let Err(e) = spawned {
         tracing::debug!("desktop integration: no cache refresh thread: {e}");
+    }
+}
+
+/// KDE's "icons changed" broadcast: every KDE process drops its icon caches, rereads the theme
+/// folders and updates the icons of its windows. Harmless where nobody listens.
+fn notify_icons_changed() {
+    let sent = zbus::blocking::Connection::session().and_then(|bus| {
+        bus.emit_signal(None::<&str>, ICON_LOADER_PATH, ICON_LOADER_INTERFACE, "iconChanged", &(0i32,))
+    });
+    if let Err(e) = sent {
+        tracing::debug!("desktop integration: no icon change signal: {e}");
     }
 }
 
@@ -235,11 +294,57 @@ mod tests {
         assert!(text.contains("\nIcon=axion\n") && text.contains("\nStartupWMClass=axion\n"));
         assert!(text.contains("\nCategories=Network;WebBrowser;\n"));
         assert!(text.contains("x-scheme-handler/https"));
-        assert!(text.contains("# X-Axion-Integration: 1.2.3 /opt/axion browser/axion\n"));
+        assert!(text.contains("# X-Axion-Integration: r2 1.2.3 /opt/axion browser/axion\n"));
         // The template's own `Exec=axion %U` is gone, and there is exactly one.
         assert_eq!(text.matches("\nExec=").count(), 1);
         // The group header stays the first line, as the specification wants.
         assert!(text.starts_with("[Desktop Entry]\n"));
+    }
+
+    #[test]
+    fn an_entry_of_an_older_revision_is_stale() {
+        let dir = scratch("revision");
+        let t = target(dir.clone(), "/usr/bin/axion");
+        assert!(install(&t).expect("install"));
+        // What revision 1 wrote: the same entry with the old stamp.
+        let entry = dir.join("applications/axion.desktop");
+        let old = std::fs::read_to_string(&entry)
+            .expect("entry")
+            .replace("# X-Axion-Integration: r2 1.2.3 ", "# X-Axion-Integration: 1.2.3 ");
+        std::fs::write(&entry, old).expect("write");
+        assert!(!is_up_to_date(&t));
+        assert!(install(&t).expect("rewrite"));
+        assert!(is_up_to_date(&t));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn launcher_prefers_the_appimage_then_the_packaged_launcher() {
+        let exe = Some(PathBuf::from("/tmp/.mount_AxionX/usr/bin/axion"));
+        let files = ["/home/u/Axion.AppImage", "/home/u/.local/opt/axion/AppRun"];
+        let is_file = |p: &Path| files.iter().any(|f| Path::new(f) == p);
+        let os = |s: &str| Some(OsString::from(s));
+        let path = |s: &str| Some(PathBuf::from(s));
+        // Inside an AppImage: the image file, never the temporary mount.
+        assert_eq!(
+            launcher(os("/home/u/Axion.AppImage"), os("/home/u/Axion.AppImage"), exe.clone(), is_file),
+            path("/home/u/Axion.AppImage")
+        );
+        // The tarball or an installed copy: the launcher script AppRun exports.
+        assert_eq!(
+            launcher(None, os("/home/u/.local/opt/axion/AppRun"), exe.clone(), is_file),
+            path("/home/u/.local/opt/axion/AppRun")
+        );
+        assert_eq!(
+            launcher(os("/gone/Axion.AppImage"), os("/home/u/.local/opt/axion/AppRun"), exe.clone(), is_file),
+            path("/home/u/.local/opt/axion/AppRun")
+        );
+        // Relative, missing or empty values do not count.
+        assert_eq!(launcher(os("Axion.AppImage"), os(""), exe.clone(), is_file), exe);
+        assert_eq!(launcher(os("/gone/Axion.AppImage"), None, exe.clone(), is_file), exe);
+        // A plain build: the executable itself.
+        assert_eq!(launcher(None, None, exe.clone(), is_file), exe);
+        assert_eq!(launcher(None, None, None, is_file), None);
     }
 
     #[test]

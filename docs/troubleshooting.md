@@ -177,9 +177,24 @@ default).
 
 - The very first start after this can still show the generic icon, because the desktop only learns
   about a new entry a moment after the window opened. Restart Axion once; the icon is there from then
-  on. If it is still missing, sign out and in, or run `kbuildsycoca6 --noincremental` on KDE.
-- Axion rewrites the entry when you start it from another place (for example a new build) or after an
-  update. It never removes the entry: delete `axion.desktop` and the `axion.png` / `axion.svg` icons
+  on.
+- **KDE: no icon at all** (not even the generic one). KDE programs remember an icon they once could
+  not find, and they do not notice icon folders that appeared after they started: KWin (title bar,
+  Alt+Tab, overview) then shows an empty icon for `Icon=axion` although the files are there. After
+  writing its icons Axion tells KDE that the icons changed (the signal the icon settings send), which
+  fixes this within a second, also for windows that are already open. Older Axion versions did not;
+  start the new version once (it rewrites its entry and sends the signal). To send it by hand:
+
+  ```bash
+  dbus-send --session --type=signal /KIconLoader org.kde.KIconLoader.iconChanged int32:0
+  ```
+
+  Signing out and in has the same effect. `kbuildsycoca6 --noincremental` alone does not help with
+  this one (it refreshes the application list, not the icon caches).
+- Axion rewrites the entry when you start it from another place (for example a new build or another
+  AppImage file) or after an update. In an AppImage the entry launches the AppImage file
+  (`$APPIMAGE`), in an installed release the launcher (`$AXION_LAUNCHER`), never the temporary
+  mount the AppImage runs from. It never removes the entry: delete `axion.desktop` and the `axion.png` / `axion.svg` icons
   yourself, or run `tools/install-desktop.sh --uninstall`, and turn the setting off first.
 - Only a switch you turned off, or an unusual setup (no writable `~/.local/share`), needs the manual
   route. The script in the source folder does the same by hand:
@@ -191,6 +206,24 @@ tools/install-desktop.sh --uninstall       # remove it again
 ```
 
 It is safe to run more than once.
+
+**What does KDE think the window is?** Ask KWin (this only reads, it changes nothing). With Axion
+open:
+
+```bash
+qdbus6 org.kde.KWin /KWin org.kde.KWin.queryWindowInfo   # then click the Axion window
+```
+
+`resourceClass` and `desktopFile` must both be `axion` (the Wayland app id, which names
+`axion.desktop`). If they are, the entry is matched and only the icon lookup can be stale (see the
+KDE point above). If `desktopFile` is something else, a window rule overrides it (System Settings >
+Window Management > Window Rules). To see the icon KDE itself resolves, `kiconfinder6 axion` must print
+a path in `~/.local/share/icons/hicolor`.
+
+Not related to the icon: the system log and `systemd-cgls` show Axion in a scope named
+`app-org.chromium.Chromium-<pid>.scope`, and the portal log mentions `org.chromium.Chromium`. That is
+the browser engine registering itself with systemd and the desktop portal under a name built into it;
+KWin does not use it to find the icon or the entry.
 
 ## I cannot open my private tabs
 
