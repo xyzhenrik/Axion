@@ -12,16 +12,26 @@
 //! has finished loading (many pages add their icon links late). When the page's best link for
 //! the scheme differs from where the cached icon came from (the site changed it, or the theme
 //! switched), it is fetched again. Sites without any icon get a neutral globe.
+//!
+//! Among the links of a scheme, SVG icons and ones of 32 px or more come first. The cache keeps
+//! the site's own pixels; what is drawn is adapted to the chrome (`favicon_contrast`): a dark
+//! glyph that would vanish on dark chrome is inverted or put on a tile, per host and scheme,
+//! and recomputed when the theme or the setting changes. SVG icons with `prefers-color-scheme`
+//! rules inside are rewritten for the chrome's scheme before Chromium rasterises them
+//! (`Favicons::alias` ties the rewritten `data:` URL back to the icon's address).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use axion_compositor::Icon;
+use axion_config::FaviconContrast;
 use axion_engine::IconLink;
 use axion_ui::taffy::prelude::*;
 use axion_ui::{Paint, Ui, Widget};
 
+use crate::favicon_contrast;
 use crate::url::display_host;
 
 /// 64 px PNG of the app icon: the site icon of every `axion://` page (start page, settings, ...).
@@ -74,7 +84,7 @@ fn media_scheme(media: &str) -> Option<Scheme> {
 /// The page's icon links usable in `scheme`, best first: links made for the scheme, then the
 /// general ones; Apple touch icons last.
 fn links_for(links: &[IconLink], scheme: Scheme) -> Vec<String> {
-    let mut ranked: Vec<(u8, usize, &str)> = links
+    let mut ranked: Vec<(u8, u8, usize, &str)> = links
         .iter()
         .enumerate()
         .filter_map(|(i, l)| {
@@ -84,17 +94,43 @@ fn links_for(links: &[IconLink], scheme: Scheme) -> Vec<String> {
                 None => 1,
             };
             let touch = u8::from(l.url.contains("apple-touch-icon"));
-            Some((rank + 2 * touch, i, l.url.as_str()))
+            Some((rank + 2 * touch, size_class(l), i, l.url.as_str()))
         })
         .collect();
     ranked.sort();
     let mut out: Vec<String> = Vec::new();
-    for (_, _, url) in ranked {
+    for (_, _, _, url) in ranked {
         if !out.iter().any(|u| u == url) {
             out.push(url.to_owned());
         }
     }
     out
+}
+
+/// Whether an icon link is an SVG (by its `type`, `sizes="any"` or the address).
+pub fn is_svg_link(link: &IconLink) -> bool {
+    let path = link.url.split(['?', '#']).next().unwrap_or_default().to_ascii_lowercase();
+    link.mime.to_ascii_lowercase().contains("svg") || path.ends_with(".svg")
+}
+
+/// How well a link's size suits a 16–18 px slot at up to 3×: 0 scalable, 1 at least 32 px (or
+/// unknown), 2 smaller.
+fn size_class(link: &IconLink) -> u8 {
+    if is_svg_link(link) || link.sizes.trim().eq_ignore_ascii_case("any") {
+        return 0;
+    }
+    let largest = link
+        .sizes
+        .split_whitespace()
+        .filter_map(|s| {
+            let (w, h) = s.to_ascii_lowercase().split_once('x').map(|(w, h)| (w.to_owned(), h.to_owned()))?;
+            Some(w.parse::<u32>().ok()?.max(h.parse::<u32>().ok()?))
+        })
+        .max();
+    match largest {
+        Some(side) if side < 32 => 2,
+        _ => 1,
+    }
 }
 
 /// The search for one site's icon in one scheme.
@@ -106,9 +142,18 @@ struct Search {
     rounds: u32,
 }
 
+/// Straight-alpha RGBA pixels.
+struct Raw {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
 #[derive(Clone)]
 struct Cached {
     icon: SiteIcon,
+    /// The icon's pixels as the site made them (for adapting it to the chrome).
+    raw: Arc<Raw>,
     /// Where it was downloaded from (unknown for icons cached by older versions).
     source: Option<String>,
 }
@@ -135,6 +180,12 @@ pub struct Favicons {
     searches: HashMap<Key, Search>,
     links: HashMap<String, SiteLinks>,
     scheme: Scheme,
+    contrast: FaviconContrast,
+    /// What is drawn for a cached icon on the current chrome (its adapted look), by key of the
+    /// cached icon; emptied when the scheme or the setting changes.
+    shown: RefCell<HashMap<Key, SiteIcon>>,
+    /// Rewritten `data:` URLs of SVG icons -> the address they stand for.
+    aliases: HashMap<String, String>,
     /// The app icon, the icon of all `axion://` pages.
     app_icon: Option<SiteIcon>,
 }
@@ -155,6 +206,9 @@ impl Favicons {
             searches: HashMap::new(),
             links: HashMap::new(),
             scheme: Scheme::Light,
+            contrast: FaviconContrast::default(),
+            shown: RefCell::default(),
+            aliases: HashMap::new(),
             app_icon: None,
         };
         this.app_icon = image::load_from_memory_with_format(APP_ICON_PNG, image::ImageFormat::Png)
@@ -178,7 +232,43 @@ impl Favicons {
         let scheme = Scheme::of(dark);
         let changed = scheme != self.scheme;
         self.scheme = scheme;
+        if changed {
+            self.shown.borrow_mut().clear();
+        }
         changed
+    }
+
+    /// Sets what happens to icons that would vanish on the chrome. Returns whether it changed.
+    pub fn set_contrast(&mut self, mode: FaviconContrast) -> bool {
+        let changed = mode != self.contrast;
+        self.contrast = mode;
+        if changed {
+            self.shown.borrow_mut().clear();
+        }
+        changed
+    }
+
+    /// Whether the chrome the icons are shown on is dark.
+    pub fn is_dark(&self) -> bool {
+        self.scheme == Scheme::Dark
+    }
+
+    /// Whether `url` is, by what the pages reported, an SVG icon of `page_url`'s site.
+    pub fn is_svg(&self, page_url: &str, url: &str) -> bool {
+        let known = self
+            .links
+            .get(&display_host(page_url))
+            .is_some_and(|s| s.links.iter().any(|l| l.url == url && is_svg_link(l)));
+        known || is_svg_link(&IconLink { url: url.to_owned(), ..IconLink::default() })
+    }
+
+    /// `derived` (a rewritten copy of an icon, fetched instead of it) stands for `original`.
+    pub fn alias(&mut self, derived: &str, original: &str) {
+        self.aliases.insert(derived.to_owned(), original.to_owned());
+    }
+
+    fn canonical(&self, url: &str) -> String {
+        self.aliases.get(url).cloned().unwrap_or_else(|| url.to_owned())
     }
 
     /// The icon for `page_url`'s site in the current scheme (else the other one's), if known
@@ -191,7 +281,23 @@ impl Favicons {
         if host.is_empty() {
             return None;
         }
-        self.cached(&host, self.scheme).or_else(|| self.cached(&host, self.scheme.other())).map(|c| c.icon)
+        let (scheme, cached) = self
+            .cached(&host, self.scheme)
+            .map(|c| (self.scheme, c))
+            .or_else(|| self.cached(&host, self.scheme.other()).map(|c| (self.scheme.other(), c)))?;
+        Some(self.shown_icon((host, scheme), &cached))
+    }
+
+    /// The cached icon as drawn on the current chrome: adapted when it would fade into it.
+    fn shown_icon(&self, key: Key, cached: &Cached) -> SiteIcon {
+        if let Some(shown) = self.shown.borrow().get(&key) {
+            return shown.clone();
+        }
+        let raw = &cached.raw;
+        let icon = favicon_contrast::adapt(&raw.rgba, raw.width, raw.height, self.is_dark(), self.contrast)
+            .map_or_else(|| cached.icon.clone(), |(w, h, rgba)| self.upload(w, h, &rgba));
+        self.shown.borrow_mut().insert(key, icon.clone());
+        icon
     }
 
     fn cached(&self, host: &str, scheme: Scheme) -> Option<Cached> {
@@ -223,7 +329,8 @@ impl Favicons {
         let image = image::open(&path).ok()?.into_rgba8();
         let (w, h) = image.dimensions();
         let source = std::fs::read_to_string(source_file(&path)).ok().map(|s| s.trim().to_owned());
-        Some(Cached { icon: self.upload(w, h, image.as_raw()), source })
+        let icon = self.upload(w, h, image.as_raw());
+        Some(Cached { icon, raw: Arc::new(Raw { width: w, height: h, rgba: image.into_raw() }), source })
     }
 
     /// Chromium reported the page's icon URLs (without media queries): returns the next URL to
@@ -244,6 +351,7 @@ impl Favicons {
                         url: url.clone(),
                         media: String::new(),
                         sizes: String::new(),
+                        mime: String::new(),
                     });
                 }
             }
@@ -282,7 +390,9 @@ impl Favicons {
         let general = |url: &str| {
             site.is_some_and(|s| s.links.iter().any(|l| l.url == url && media_scheme(&l.media).is_none()))
         };
-        let best_is_general = best.as_deref().is_some_and(general);
+        // An SVG may look different per scheme (rules inside it), so it never serves both.
+        let svg = |url: &str| site.is_some_and(|s| s.links.iter().any(|l| l.url == url && is_svg_link(l)));
+        let best_is_general = best.as_deref().is_some_and(|b| general(b) && !svg(b));
         let own = self.cached(&host, scheme);
         match (&own, &best) {
             (Some(cached), Some(best)) if cached.source.as_ref() == Some(best) => return None,
@@ -360,6 +470,7 @@ impl Favicons {
 
     /// Fetching `url` failed: the next candidate to try, if any.
     pub fn failed(&mut self, page_url: &str, url: &str) -> Option<String> {
+        let url = &self.canonical(url);
         let host = display_host(page_url);
         let scheme = self.scheme_fetching(&host, url)?;
         let search = self.searches.get_mut(&(host, scheme))?;
@@ -370,6 +481,7 @@ impl Favicons {
     /// The icon from `url` arrived for `page_url`'s site: shown from now on (in the scheme it
     /// was fetched for), and cached on disk if `persist`.
     pub fn insert(&mut self, page_url: &str, url: &str, width: u32, height: u32, rgba: &[u8], persist: bool) {
+        let url = &self.canonical(url);
         if is_internal(page_url) {
             return;
         }
@@ -380,7 +492,9 @@ impl Favicons {
         let scheme = self.scheme_fetching(&host, url).unwrap_or(self.scheme);
         let icon = self.upload(width, height, rgba);
         let key = (host.clone(), scheme);
-        self.by_key.borrow_mut().insert(key.clone(), Cached { icon, source: Some(url.to_owned()) });
+        let raw = Arc::new(Raw { width, height, rgba: rgba.to_vec() });
+        self.shown.borrow_mut().remove(&key);
+        self.by_key.borrow_mut().insert(key.clone(), Cached { icon, raw, source: Some(url.to_owned()) });
         self.not_on_disk.borrow_mut().remove(&key);
         if let Some(search) = self.searches.get_mut(&key) {
             // Done; what was tried stays tried (no fetching in circles).
@@ -552,7 +666,7 @@ mod tests {
     }
 
     fn link(url: &str, media: &str) -> IconLink {
-        IconLink { url: url.into(), media: media.into(), sizes: String::new() }
+        IconLink { url: url.into(), media: media.into(), ..IconLink::default() }
     }
 
     #[test]
@@ -570,5 +684,50 @@ mod tests {
         assert_eq!(links_for(&links, Scheme::Light)[0], "https://x/light.svg");
         assert_eq!(media_scheme("screen and (prefers-color-scheme: DARK)"), Some(Scheme::Dark));
         assert_eq!(media_scheme("(min-width: 10px)"), None);
+    }
+
+    fn sized(url: &str, sizes: &str, mime: &str) -> IconLink {
+        IconLink { url: url.into(), sizes: sizes.into(), mime: mime.into(), ..IconLink::default() }
+    }
+
+    #[test]
+    fn scalable_and_large_icons_come_first() {
+        let links = [
+            sized("https://x/16.png", "16x16", "image/png"),
+            sized("https://x/48.png", "48x48", "image/png"),
+            sized("https://x/icon.svg", "any", "image/svg+xml"),
+            sized("https://x/apple-touch-icon.png", "180x180", ""),
+        ];
+        assert_eq!(
+            links_for(&links, Scheme::Light),
+            ["https://x/icon.svg", "https://x/48.png", "https://x/16.png", "https://x/apple-touch-icon.png"]
+        );
+        assert!(is_svg_link(&sized("https://x/a.SVG?v=2", "", "")));
+        assert!(is_svg_link(&sized("https://x/a", "", "image/svg+xml")));
+        assert!(!is_svg_link(&sized("https://x/a.png", "", "")));
+    }
+
+    #[test]
+    fn dark_variant_beats_general_icon_in_dark_chrome_only() {
+        let links = [
+            sized("https://x/general.png", "64x64", ""),
+            IconLink {
+                media: "(prefers-color-scheme: dark)".into(),
+                ..sized("https://x/dark.svg", "any", "")
+            },
+            IconLink {
+                media: "(prefers-color-scheme: light)".into(),
+                ..sized("https://x/light.svg", "any", "")
+            },
+        ];
+        assert_eq!(links_for(&links, Scheme::Dark), ["https://x/dark.svg", "https://x/general.png"]);
+        assert_eq!(links_for(&links, Scheme::Light), ["https://x/light.svg", "https://x/general.png"]);
+    }
+
+    #[test]
+    fn cache_files_differ_per_scheme() {
+        let dir = Path::new("/c");
+        assert_ne!(cache_file(dir, "github.com", false), cache_file(dir, "github.com", true));
+        assert_eq!(cache_file(dir, "github.com", true), Path::new("/c/github.com.dark.png"));
     }
 }

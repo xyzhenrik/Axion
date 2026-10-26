@@ -409,6 +409,8 @@ pub struct Browser {
     engine_icons: Option<std::sync::mpsc::Receiver<crate::engine_icons::EngineIcon>>,
     /// Icons of the saved logins' sites being fetched for the Passwords list.
     password_icons: Option<std::sync::mpsc::Receiver<crate::engine_icons::EngineIcon>>,
+    /// SVG site icons being rewritten for the chrome's colour scheme.
+    svg_icons: crate::svg_icons::SvgIcons,
     /// The page menu row clicked last (where a sheet it opens comes out of).
     menu_click_frame: Option<Rect>,
     /// Capture aid "sweep:X1:Y1:X2:Y2:N": the pointer moves from one point to the other in N
@@ -640,6 +642,7 @@ impl Browser {
         let lock = PrivateLock::new();
         let mut favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         favicons.set_dark(dark);
+        favicons.set_contrast(config.appearance.favicon_contrast);
         let mut home = HomePage::new(&profile, favicons.dir().map(Into::into));
         // The single background image of older versions moves into the backgrounds directory.
         let migrated = home.migrate(&mut config);
@@ -834,6 +837,7 @@ impl Browser {
             sheet_origin: None,
             engine_icons: None,
             password_icons: None,
+            svg_icons: crate::svg_icons::SvgIcons::new(),
             menu_click_frame: None,
             open_at: options.open.clone().filter(|_| options.capture.is_some()).map(|what| {
                 (
@@ -3737,7 +3741,7 @@ impl Browser {
                         && let Some(icon) = self.favicons.page_loaded(&page)
                     {
                         tracing::debug!("fetching icon {icon}");
-                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                        self.fetch_icon(view, &page, &icon);
                     }
                     if loading
                         && self.find.view() == Some(view)
@@ -3834,7 +3838,7 @@ impl Browser {
                         && let Some(icon) = self.favicons.icon_urls(&page, &urls)
                     {
                         tracing::debug!("fetching icon {icon}");
-                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                        self.fetch_icon(view, &page, &icon);
                     }
                 }
                 EngineEvent::PageMetaChanged { view, meta } => {
@@ -3844,7 +3848,7 @@ impl Browser {
                         && let Some(icon) = self.favicons.icon_links(&page, &meta.icons)
                     {
                         tracing::debug!("fetching icon {icon}");
-                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                        self.fetch_icon(view, &page, &icon);
                     }
                 }
                 EngineEvent::InternalMessage { view, host, message } => {
@@ -3864,7 +3868,7 @@ impl Browser {
                         && let Some(icon) = self.favicons.failed(&page, &url)
                     {
                         tracing::debug!("fetching icon {icon}");
-                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                        self.fetch_icon(view, &page, &icon);
                     }
                 }
                 EngineEvent::FaviconReady { view, url, width, height, rgba } => {
@@ -4707,6 +4711,26 @@ impl Browser {
         }
     }
 
+    /// Has Chromium download a site icon. SVGs go through `svg_icons` first: their
+    /// `prefers-color-scheme` rules are decided for the chrome.
+    fn fetch_icon(&mut self, view: ViewId, page: &str, url: &str) {
+        if self.favicons.is_svg(page, url) {
+            self.svg_icons.request(view, url, self.favicons.is_dark());
+        } else {
+            self.engine.fetch_favicon(view, url, FETCH_SIZE);
+        }
+    }
+
+    /// SVG icons that were rewritten: Chromium rasterises them now.
+    fn poll_svg_icons(&mut self) {
+        for icon in self.svg_icons.poll() {
+            if icon.fetch != icon.url {
+                self.favicons.alias(&icon.fetch, &icon.url);
+            }
+            self.engine.fetch_favicon(icon.view, &icon.fetch, FETCH_SIZE);
+        }
+    }
+
     fn apply_theme(&mut self) {
         if let Some(pip) = &mut self.pip {
             pip.set_theme(&self.config);
@@ -4716,6 +4740,7 @@ impl Browser {
         self.engine.set_color_scheme(self.dark);
         let delay = self.page_color_delay();
         self.page_colors.set_dark(self.dark, self.active_view(), delay);
+        let contrast_changed = self.favicons.set_contrast(self.config.appearance.favicon_contrast);
         if self.favicons.set_dark(self.dark) {
             // Sites with their own icon for the scheme show it at once.
             let pages: Vec<(ViewId, String)> = self
@@ -4728,9 +4753,14 @@ impl Browser {
                 .collect();
             for (view, page) in pages {
                 if let Some(icon) = self.favicons.resolve(&page) {
-                    self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                    self.fetch_icon(view, &page, &icon);
                 }
             }
+            self.tabs_changed = true;
+            if self.overview.is_open() {
+                self.rebuild_overview();
+            }
+        } else if contrast_changed {
             self.tabs_changed = true;
             if self.overview.is_open() {
                 self.rebuild_overview();
@@ -6138,6 +6168,7 @@ impl Browser {
         let window = self.logical_size();
         self.tooltip.animate(&mut self.ui, &self.config, &self.keymap, window, blocked, dt);
         self.take_engine_icons();
+        self.poll_svg_icons();
         if self.now_art.poll(&self.favicons) {
             self.update_now_playing();
         }

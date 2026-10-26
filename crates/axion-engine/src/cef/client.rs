@@ -883,7 +883,8 @@ fn parse_page_meta(text: &str) -> PageMeta {
                 }
                 let media = fields.next().unwrap_or_default().to_owned();
                 let sizes = fields.next().unwrap_or_default().to_owned();
-                meta.icons.push(IconLink { url, media, sizes });
+                let mime = fields.next().unwrap_or_default().to_owned();
+                meta.icons.push(IconLink { url, media, sizes, mime });
             }
             Some("c") => {
                 let channels: Vec<u8> = fields

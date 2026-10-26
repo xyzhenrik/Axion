@@ -268,6 +268,21 @@ pub enum ThemeMode {
     Auto,
 }
 
+/// What happens to a site icon that would vanish on the chrome (a black glyph on dark chrome,
+/// a white one on light chrome).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FaviconContrast {
+    /// Icons are shown as the site made them.
+    Off,
+    /// A small neutral tile in the opposite tone goes behind the icon.
+    Backing,
+    /// Single-colour glyphs are inverted (white on dark chrome, like Safari and Arc); coloured
+    /// icons that vanish get the tile.
+    #[default]
+    Invert,
+}
+
 /// How the window tint is picked from the page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -297,6 +312,8 @@ pub struct Appearance {
     /// Switch the chrome between light and dark to match the page's brightness (opt-in; off:
     /// the chrome follows `theme` only, so it never depends on the website).
     pub adapt_to_page: bool,
+    /// What to do with site icons that are hard to see on the chrome (see `FaviconContrast`).
+    pub favicon_contrast: FaviconContrast,
     /// Icon stroke weight in the light chrome, as a multiple of the design's base stroke
     /// (1.75 in a 24-unit box). Dark-on-light icons look thinner than light-on-dark ones, so
     /// light defaults a little heavier. Clamped to 0.5-2.0 when used. Only the stroke changes;
@@ -331,6 +348,7 @@ impl Default for Appearance {
             font_family: "Inter".into(),
             text_scale: 1.0,
             adapt_to_page: false,
+            favicon_contrast: FaviconContrast::Invert,
             icon_stroke_light: 1.2,
             icon_stroke_dark: 1.0,
             tint_from_page: false,
