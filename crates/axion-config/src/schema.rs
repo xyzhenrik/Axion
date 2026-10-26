@@ -26,6 +26,7 @@ pub struct Config {
     pub passwords: Passwords,
     pub accounts: Accounts,
     pub find: Find,
+    pub devtools: DevTools,
     pub clipboard: Clipboard,
     pub toast: Toast,
     pub sidebar: Sidebar,
@@ -113,6 +114,18 @@ mod homepage_tests {
         assert_eq!(g, General::default());
         g.homepage = String::new();
         assert_eq!(g.effective_homepage(), START_PAGE_URL);
+    }
+}
+
+#[cfg(test)]
+mod devtools_tests {
+    use super::*;
+
+    #[test]
+    fn developer_tools_default_on_and_switchable() {
+        assert!(Config::default().devtools.enabled);
+        let config: Config = toml::from_str("[devtools]\nenabled = false\n").unwrap();
+        assert!(!config.devtools.enabled);
     }
 }
 
@@ -813,6 +826,21 @@ impl Default for Passwords {
 pub struct Find {
     /// Match upper and lower case exactly (the find bar's "Aa" toggle).
     pub match_case: bool,
+}
+
+/// Chromium's developer tools (unchanged: Axion does not build its own). They open in a
+/// window of their own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DevTools {
+    /// Allows the developer tools (F12, Inspect, View Source). Off, none of it is reachable.
+    pub enabled: bool,
+}
+
+impl Default for DevTools {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 /// The sidebar's panels.

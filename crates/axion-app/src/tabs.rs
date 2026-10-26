@@ -70,6 +70,12 @@ impl Tab {
         }
     }
 
+    /// Whether visits to this tab's pages go into the history (and the top sites): not for
+    /// private tabs or the page source.
+    pub fn records_history(&self) -> bool {
+        !self.private && !self.url.starts_with("view-source:")
+    }
+
     /// Title, or the host while the page has none.
     pub fn label(&self) -> String {
         if self.title.trim().is_empty() { crate::url::display_host(&self.url) } else { self.title.clone() }

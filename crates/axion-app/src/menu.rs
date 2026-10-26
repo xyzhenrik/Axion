@@ -58,6 +58,8 @@ pub enum MenuAction {
     ZoomOut,
     ZoomReset,
     HardReload,
+    /// Chromium's developer tools for the page.
+    DevTools,
     FindOnPage,
     Settings,
     /// Switch to the account at this index of the list.

@@ -94,6 +94,11 @@ pub const INDEX: &[Entry] = &[
         "Delete account",
         &["remove account", "delete profile", "konto löschen", "profil löschen", "entfernen", "löschen"],
     ),
+    control(
+        C::General,
+        S::DevTools,
+        &["devtools", "inspect", "inspector", "console", "f12", "source", "debug", "entwickler"],
+    ),
     control(C::General, S::HomeButton, &["home", "haus", "startseite", "toolbar", "button"]),
     page(C::General, "Homepage", &["start page", "new tab", "startseite", "home", "neuer tab"]),
     control(C::General, S::HomeClock, &["start page", "time", "uhr", "uhrzeit", "startseite", "24", "12"]),

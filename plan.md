@@ -101,6 +101,7 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   and the settings UI; conflict detection.
 - Touchpad: two-finger swipe back/forward with physics preview, pinch for tab overview,
   smooth scrolling forwarded to the page.
+- Developer: F12 / Ctrl+Shift+I developer tools, Ctrl+Shift+J on the Console, Ctrl+U page source (see 2.9).
 - Mouse: drag tabs/glass elements, middle-click behaviours, mouse back/forward buttons.
 
 ### 2.7 Media player & fullscreen (priority 1)
@@ -205,6 +206,45 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
 ### 2.8 Customization
 - Settings UI (glass sheet) + `~/.config/axion/config.toml`, live-reloaded.
 - Themes: accent colour, light/dark/auto, glass parameters, density, corner radius.
+
+### 2.9 Developer tools (user decision: Chromium's own, unchanged - we do not build one)
+- `Engine::open_devtools(view, &DevToolsOptions)` / `close_devtools(view)` / `devtools_open(view)` /
+  `inspect_element(view, x, y)` (for a context menu's "Inspect": opens the tools with that element
+  selected, or selects it in the open window). CEF backend: `browser.host().show_dev_tools(...)`.
+- **Mechanism (decided 2026-10-26, verified under XWayland): option (a), Chromium's own DevTools
+  window.** CEF 156 runs the Chrome runtime; a windowed `WindowInfo` passed to `show_dev_tools`
+  makes Chromium create a normal top-level window (Views/Ozone) next to our OSR page browsers, so it
+  needs no parent window from us and no `--remote-debugging-port`. Stock Elements, Console, Sources,
+  Network ... all work; the window title is "DevTools - <page url>" and its X11 class / Wayland app id
+  is `axion` (`CHROME_DESKTOP=axion.desktop` is set first thing in `run_subprocess_if_needed`, else
+  the window inherits the launching program's, which was the wrong desktop entry/icon).
+- Rejected: DevTools as an Axion tab. Passing a *windowless* `WindowInfo` to `show_dev_tools` is
+  refused by the Chrome runtime ("Windowless rendering is not supported for this DevTools window",
+  `chrome_browser_delegate.cc`), so a tab would need the frontend served by a remote-debugging port
+  (`--remote-debugging-port` on 127.0.0.1 + `/devtools/inspector.html?ws=...`). That port is
+  reachable by every local process (and, with a DNS-rebinding bug, maybe by pages), so it stays
+  unbuilt unless the window turns out to be a problem on native Wayland. `open_in = tab` is
+  therefore not offered.
+- The DevTools window is a browser of its own in the engine (`ViewState::devtools_of`, no tab, no
+  events for the app, no page script / bridge / password scripts, no history); it closes with its
+  page (`close_view`), on shutdown the engine closes the tools first (`close_browser` on a
+  DevTools browser hangs), and "Open in new tab" in the tools opens a normal Axion tab through the
+  inspected page's popup path. Private tabs work (same context as the page); Shields apply to the
+  page as before and are not touched.
+- A tab with open tools is never frozen or discarded (`TabInfo::devtools_open`, like media tabs;
+  `Engine::discard` refuses it too); the window is no tab, so nothing is saved in the session.
+- Keymap (`keymap.toml` names; Settings > Keyboard, heading "Developer"): `devtools` = F12,
+  Ctrl+Shift+I (toggles the window), `devtools_console` = Ctrl+Shift+J (opens on the Console panel
+  through `DevToolsAPI.showPanel`, or switches an open window to it), `view_source` = Ctrl+U (new tab
+  `view-source:<url>` for http(s)/file pages; not recorded in the history).
+- Config `[devtools] enabled = true` (Settings > General > Developer): off, none of the three
+  shortcuts, nor the page menu's *Developer Tools* row, do anything.
+- Not verifiable by `--capture`: the window is Chromium's own OS window. Tested through its X11
+  window (title / class via `xprop`, a single-window grab by id for the content) and the engine log.
+- Left: native Wayland untested (Chromium's Ozone-Wayland windows are the same code path as Chrome's
+  DevTools, but no test window was opened on the user's screens); window placement is Chromium's
+  (it remembers the last size/position); the frontend's own language/theme follow Chromium, not
+  Axion's appearance.
 
 ## 3. Out of scope for v0.1
 Extensions, sync, reader mode, Windows/macOS builds, touchscreen polish.

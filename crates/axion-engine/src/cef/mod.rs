@@ -29,8 +29,8 @@ pub use gpu::render_node_for;
 pub use schedule::Waker;
 
 use crate::{
-    DropData, Engine, EngineError, EngineEvent, FindRequest, Frame, InputEvent, MediaViewOptions, Modifiers,
-    PasteData, RequestPolicy, ViewId, ViewSize,
+    DevToolsOptions, DevToolsPanel, DropData, Engine, EngineError, EngineEvent, FindRequest, Frame,
+    InputEvent, MediaViewOptions, Modifiers, PasteData, RequestPolicy, ViewId, ViewSize,
 };
 use client::{FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, build_client, favicon_callback};
 use input::InputState;
@@ -127,6 +127,12 @@ fn on_x11() -> bool {
 /// If this process was launched by Chromium as a helper, runs it and returns its exit code;
 /// the caller must then exit. Returns `None` in the browser process.
 pub fn run_subprocess_if_needed() -> Option<i32> {
+    // Windows Chromium opens itself (the DevTools window) take their class / Wayland app id from
+    // this desktop entry, which matches `axion.desktop`: the shell shows Axion's icon and
+    // groups them with the browser. The environment may carry another program's (the one
+    // that launched us).
+    // SAFETY: the first thing `main` does, before this process starts any thread.
+    unsafe { std::env::set_var("CHROME_DESKTOP", "axion.desktop") };
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     let args = args::Args::new();
     let is_helper = args.as_cmd_line().is_some_and(|cmd| cmd.has_switch(Some(&"type".into())) == 1);
@@ -175,6 +181,10 @@ struct ViewState {
     ctx: ViewContext,
     url: String,
     closing: bool,
+    /// This view is the DevTools window of that view (it has no page of its own).
+    devtools_of: Option<ViewId>,
+    /// The view of this view's DevTools window while it is open.
+    devtools: Option<ViewId>,
 }
 
 pub struct CefEngine {
@@ -301,6 +311,46 @@ impl CefEngine {
         Ok((browser, id))
     }
 
+    /// Closes the view's page (or forgets it if it has none).
+    fn close_browser_of(&mut self, view: ViewId) {
+        let Some(state) = self.views.get_mut(&view) else { return };
+        match &state.browser {
+            None => {
+                self.views.remove(&view);
+            }
+            Some(browser) if !state.closing => {
+                state.closing = true;
+                state.ctx.frames.release_shared();
+                if let Some(host) = browser.host() {
+                    host.close_browser(1);
+                }
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Takes the DevTools browsers Chromium created since the last pump into their views.
+    fn adopt_devtools_browsers(&mut self) {
+        let created = std::mem::take(&mut *self.shared.devtools_created.borrow_mut());
+        for (view, browser) in created {
+            let id = browser.identifier();
+            match self.views.get_mut(&view) {
+                Some(state) if !state.closing => {
+                    tracing::debug!(?view, browser = id, "DevTools frontend created");
+                    state.browser_id = id;
+                    state.browser = Some(browser);
+                    self.net.set_browser(id, Some(view));
+                }
+                _ => {
+                    // Closed before Chromium finished creating it.
+                    if let Some(host) = browser.host() {
+                        host.close_browser(1);
+                    }
+                }
+            }
+        }
+    }
+
     /// Takes the view's GPU frames whose copy has finished (see `ViewContext::resolve_frames`);
     /// asks Chromium to paint again if one never got drawn.
     fn resolve_frames(&self, state: &ViewState) {
@@ -369,7 +419,13 @@ impl CefEngine {
         self.shut_down = true;
         // Discarded views have no page to close.
         self.views.retain(|_, v| v.browser.is_some());
-        for state in self.views.values_mut() {
+        // DevTools windows close through their page; closing their browsers directly hangs.
+        let inspected: Vec<ViewId> =
+            self.views.iter().filter(|(_, v)| v.devtools.is_some()).map(|(k, _)| *k).collect();
+        for view in inspected {
+            self.close_devtools(view);
+        }
+        for state in self.views.values_mut().filter(|v| v.devtools_of.is_none()) {
             if !state.closing {
                 state.closing = true;
                 if let Some(host) = state.browser.as_ref().and_then(|b| b.host()) {
@@ -418,6 +474,8 @@ impl Engine for CefEngine {
             shared: self.shared.clone(),
             net: self.net.clone(),
             drag: Rc::default(),
+            devtools: false,
+            devtools_panel: Rc::default(),
         };
         let state = ViewState {
             browser: None,
@@ -426,26 +484,17 @@ impl Engine for CefEngine {
             ctx,
             url: url.to_owned(),
             closing: false,
+            devtools_of: None,
+            devtools: None,
         };
         self.views.insert(view, state);
         view
     }
 
     fn close_view(&mut self, view: ViewId) {
-        let Some(state) = self.views.get_mut(&view) else { return };
-        match &state.browser {
-            None => {
-                self.views.remove(&view);
-            }
-            Some(browser) if !state.closing => {
-                state.closing = true;
-                state.ctx.frames.release_shared();
-                if let Some(host) = browser.host() {
-                    host.close_browser(1);
-                }
-            }
-            Some(_) => {}
-        }
+        // The tools go with their page.
+        self.close_devtools(view);
+        self.close_browser_of(view);
     }
 
     fn set_color_scheme(&mut self, dark: bool) {
@@ -457,7 +506,7 @@ impl Engine for CefEngine {
         for context in contexts.iter().flatten() {
             apply_color_scheme(context, dark);
         }
-        for state in self.views.values().filter(|v| !v.closing) {
+        for state in self.views.values().filter(|v| !v.closing && v.devtools_of.is_none()) {
             if let Some(host) = state.browser.as_ref().and_then(|b| b.host()) {
                 emulate_color_scheme(&host, dark);
             }
@@ -568,8 +617,87 @@ impl Engine for CefEngine {
         host.execute_dev_tools_method(0, Some(&"Runtime.evaluate".into()), Some(&mut params));
     }
 
+    fn open_devtools(&mut self, view: ViewId, options: &DevToolsOptions) -> Result<(), EngineError> {
+        let Some(host) = self.host(view) else { return Ok(()) };
+        let Some(inspected) = self.views.get(&view) else { return Ok(()) };
+        if inspected.devtools_of.is_some() {
+            // The tools of the tools: not supported.
+            return Ok(());
+        }
+        let point = options.inspect_at.map(|(x, y)| Point { x, y });
+        if let Some(tools) = inspected.devtools.and_then(|t| self.views.get(&t)) {
+            // Open already: switch the panel; Chromium selects the element and raises the window.
+            if let Some(panel) = devtools_panel_name(options.panel) {
+                match tools.browser.as_ref().and_then(|b| b.main_frame()) {
+                    Some(frame) => client::show_devtools_panel(&frame, panel),
+                    None => *tools.ctx.devtools_panel.borrow_mut() = Some(panel),
+                }
+            }
+            if point.is_some() {
+                host.show_dev_tools(None, None, None, point.as_ref());
+            }
+            return Ok(());
+        }
+        let private = inspected.private;
+        let tools = ViewId(self.next_id);
+        self.next_id += 1;
+        let ctx = ViewContext {
+            view: tools,
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            geometry: Rc::new(ViewGeometry { logical: DEVTOOLS_SIZE.into(), scale: 1.0.into() }),
+            frames: Rc::new(ViewFrames::default()),
+            shared: self.shared.clone(),
+            net: self.net.clone(),
+            drag: Rc::default(),
+            devtools: true,
+            devtools_panel: Rc::new(std::cell::RefCell::new(devtools_panel_name(options.panel))),
+        };
+        // Chromium's own window (windowless DevTools are not supported by the Chrome runtime);
+        // our client only watches it open and close.
+        let mut client = build_client(&ctx);
+        let window_info = WindowInfo {
+            window_name: "Axion Developer Tools".into(),
+            bounds: Rect { x: 0, y: 0, width: DEVTOOLS_SIZE.x as _, height: DEVTOOLS_SIZE.y as _ },
+            ..Default::default()
+        };
+        self.views.insert(
+            tools,
+            ViewState {
+                browser: None,
+                private,
+                browser_id: NO_BROWSER,
+                ctx,
+                url: String::new(),
+                closing: false,
+                devtools_of: Some(view),
+                devtools: None,
+            },
+        );
+        if let Some(state) = self.views.get_mut(&view) {
+            state.devtools = Some(tools);
+        }
+        host.show_dev_tools(Some(&window_info), Some(&mut client), None, point.as_ref());
+        tracing::info!(?view, "developer tools opened");
+        Ok(())
+    }
+
+    fn close_devtools(&mut self, view: ViewId) {
+        if let Some(host) = self.host(view) {
+            host.close_dev_tools();
+        }
+    }
+
+    fn devtools_open(&self, view: ViewId) -> bool {
+        self.host(view).is_some_and(|h| h.has_dev_tools() == 1)
+    }
+
     fn discard(&mut self, view: ViewId) {
         let Some(state) = self.views.get_mut(&view).filter(|v| !v.closing) else { return };
+        if state.devtools.is_some() {
+            // The planner keeps these awake; the tools can't follow a page that is rebuilt.
+            return;
+        }
         let Some(browser) = state.browser.take() else { return };
         // Keep the last frame as the tab's snapshot. Chromium's shared GPU buffers are
         // recycled once the page closes, so those are copied; software frames are ours.
@@ -802,6 +930,7 @@ impl Engine for CefEngine {
         self.schedule.pumping();
         do_message_loop_work();
         self.shared.stats.pump(started.elapsed());
+        self.adopt_devtools_browsers();
         self.fall_back_to_software_if_needed();
         for state in self.views.values() {
             self.resolve_frames(state);
@@ -846,15 +975,23 @@ impl Engine for CefEngine {
             if state.browser_id != browser_id {
                 continue;
             }
+            let tools_of = state.devtools_of;
             match &event {
                 EngineEvent::AddressChanged { url, .. } => state.url.clone_from(url),
                 EngineEvent::Closed { .. } => {
                     self.net.set_media_view(view, None);
                     self.views.remove(&view);
+                    if let Some(inspected) = tools_of.and_then(|v| self.views.get_mut(&v)) {
+                        inspected.devtools = None;
+                        tracing::info!("developer tools closed");
+                    }
                 }
                 _ => {}
             }
-            events.push(event);
+            // The tools are no tab: the browser hears nothing of them.
+            if tools_of.is_none() {
+                events.push(event);
+            }
         }
         // Downloads go on when their tab closes, so they aren't filtered by view.
         let downloads = &self.shared.downloads;
@@ -865,6 +1002,17 @@ impl Engine for CefEngine {
             events.push(EngineEvent::SiteData(sites));
         }
         events
+    }
+}
+
+/// The initial size of Chromium's DevTools window (logical pixels).
+const DEVTOOLS_SIZE: glam::Vec2 = glam::Vec2::new(1100.0, 760.0);
+
+/// The frontend's name of a panel to start on (`None`: its default).
+fn devtools_panel_name(panel: DevToolsPanel) -> Option<&'static str> {
+    match panel {
+        DevToolsPanel::Default => None,
+        DevToolsPanel::Console => Some("console"),
     }
 }
 

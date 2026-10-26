@@ -13,7 +13,10 @@ use axion_config::{
     Action, Config, ConfigPaths, ConfigWatcher, Key, Keymap, Modifiers, SidebarSlideResize, ThemeMode,
 };
 use axion_engine::cef::{CefEngine, CefOptions};
-use axion_engine::{CursorKind, Engine, EngineEvent, InputEvent, MouseButton, NewViewKind, ViewId, ViewSize};
+use axion_engine::{
+    CursorKind, DevToolsOptions, DevToolsPanel, Engine, EngineEvent, InputEvent, MouseButton, NewViewKind,
+    ViewId, ViewSize,
+};
 use axion_shields::Level;
 use axion_tabs::{Lifecycle, MemoryMonitor, TabInfo, Transition};
 use axion_ui::{Paint, Theme, Ui, UiCursor, UiEvent, UiInput};
@@ -1064,6 +1067,9 @@ impl Browser {
                     self.lock_account();
                 }
             }
+            Action::DevTools => self.toggle_devtools(DevToolsPanel::Default),
+            Action::DevToolsConsole => self.toggle_devtools(DevToolsPanel::Console),
+            Action::ViewSource => self.view_source(),
             Action::Find => self.open_find(),
             Action::FindNext | Action::FindPrevious => {
                 if self.find.is_open() {
@@ -1086,6 +1092,51 @@ impl Browser {
                     self.media_command(view, &command);
                 }
             }
+        }
+    }
+
+    /// Chromium's developer tools for the shown page, in their own window (see
+    /// `Engine::open_devtools`). F12 / Ctrl+Shift+I toggle them; the Console shortcut opens them
+    /// on the Console panel (or switches an open window to it).
+    fn toggle_devtools(&mut self, panel: DevToolsPanel) {
+        if !self.config.devtools.enabled {
+            return;
+        }
+        let Some(view) = self.active_view() else { return };
+        if self.engine.devtools_open(view) && panel == DevToolsPanel::Default {
+            self.engine.close_devtools(view);
+        } else {
+            self.open_devtools(view, panel, None);
+        }
+    }
+
+    /// Opens the developer tools of the tab showing `view`, with the element at `inspect_at`
+    /// (page coordinates) selected if given: the entry point for a context menu's "Inspect"
+    /// and the page menu.
+    fn open_devtools(&mut self, view: ViewId, panel: DevToolsPanel, inspect_at: Option<(i32, i32)>) {
+        if !self.config.devtools.enabled {
+            return;
+        }
+        if let Err(e) = self.engine.open_devtools(view, &DevToolsOptions { panel, inspect_at }) {
+            tracing::error!("opening the developer tools failed: {e}");
+        }
+    }
+
+    /// The shown page's source in a new tab.
+    fn view_source(&mut self) {
+        if !self.config.devtools.enabled {
+            return;
+        }
+        let Some(tab) = self.tabs.active() else { return };
+        let url = tab.url.clone();
+        // Pages that aren't loaded from the web have no source to show.
+        let source = url.strip_prefix("view-source:").unwrap_or(&url);
+        if !(source.starts_with("http://") || source.starts_with("https://") || source.starts_with("file:")) {
+            return;
+        }
+        let url = format!("view-source:{source}");
+        if let Err(e) = self.open_tab(&url, true) {
+            tracing::error!("opening the page source failed: {e:#}");
         }
     }
 
@@ -2032,6 +2083,7 @@ impl Browser {
                 playing_media: t.playing_media || Some(t.view) == pip_view,
                 // A background tab still waiting for its overview snapshot counts as loading.
                 loading: t.loading || t.needs_snapshot,
+                devtools_open: self.engine.devtools_open(t.view),
             })
             .collect();
         self.close_unused_tabs();
@@ -2485,6 +2537,13 @@ impl Browser {
                 MenuAction::Playlist(crate::playlist::Command::Show),
             ),
         );
+        if self.config.devtools.enabled {
+            let mut tools = MenuItem::new(Icon::Code, "Developer Tools", MenuAction::DevTools);
+            if let Some(keys) = self.keymap.chords_for(Action::DevTools).first() {
+                tools = tools.with_detail(keys.to_string());
+            }
+            items.insert(items.len() - 1, tools);
+        }
         self.account_menu.close(&mut self.ui, &self.config);
         let anchor = self.chrome.page_menu_frame(&self.ui);
         let window = self.logical_size();
@@ -2642,6 +2701,10 @@ impl Browser {
             }
             MenuAction::Zoom => {}
             MenuAction::HardReload => self.run(Action::HardReload),
+            MenuAction::DevTools => {
+                self.menu.close(&mut self.ui, &self.config);
+                self.run(Action::DevTools);
+            }
             MenuAction::FindOnPage => {
                 self.menu.close(&mut self.ui, &self.config);
                 self.run(Action::Find);
@@ -3377,9 +3440,10 @@ impl Browser {
                     }
                 }
                 EngineEvent::TitleChanged { view, title } => {
-                    if let (Some(store), Some(tab)) =
-                        (&self.store, find_tab(&self.tabs, &self.parked, view).filter(|t| !t.private))
-                        && let Err(e) = store.set_title(&tab.url, &title)
+                    if let (Some(store), Some(tab)) = (
+                        &self.store,
+                        find_tab(&self.tabs, &self.parked, view).filter(|t| t.records_history()),
+                    ) && let Err(e) = store.set_title(&tab.url, &title)
                     {
                         tracing::warn!("saving a title failed: {e}");
                     }
@@ -3393,8 +3457,10 @@ impl Browser {
                         self.playlist_forget_sniffed(view);
                     }
                     if !loading
-                        && let (Some(store), Some(tab)) =
-                            (&self.store, find_tab(&self.tabs, &self.parked, view).filter(|t| !t.private))
+                        && let (Some(store), Some(tab)) = (
+                            &self.store,
+                            find_tab(&self.tabs, &self.parked, view).filter(|t| t.records_history()),
+                        )
                         && let Err(e) = store.record_visit(&tab.url, &tab.title, unix_now())
                     {
                         tracing::warn!("saving history failed: {e}");
@@ -4692,6 +4758,12 @@ impl Browser {
             }
             match what {
                 "menu" => self.open_page_menu(),
+                // Capture aids: the developer tools (again: back out of them), on the Console,
+                // the page source, and closing the shown tab.
+                "devtools" => self.run(Action::DevTools),
+                "devtools-console" => self.run(Action::DevToolsConsole),
+                "view-source" => self.run(Action::ViewSource),
+                "close-tab" => self.run(Action::CloseTab),
                 // Capture aids: the page menu with its zoom submenu open, a zoom step in it,
                 // and closing every popup at once (mid-animation with --lead / frame sequences).
                 "zoom-menu" => self.menu.open_first_submenu(&mut self.ui, &self.config),

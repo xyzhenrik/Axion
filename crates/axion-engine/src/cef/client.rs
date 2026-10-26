@@ -37,6 +37,9 @@ pub(super) struct Shared {
     pub stats: super::stats::Stats,
     /// How long after Chromium hands over a GPU frame it is copied (`ViewContext::submit_gpu_frame`).
     pub frame_settle: Duration,
+    /// DevTools browsers Chromium created for a view (see `Engine::open_devtools`), until the
+    /// engine takes them in `pump`.
+    pub devtools_created: RefCell<Vec<(ViewId, Browser)>>,
 }
 
 #[derive(Default)]
@@ -155,6 +158,11 @@ pub(super) struct ViewContext {
     pub shared: Rc<Shared>,
     pub net: Arc<Network>,
     pub drag: Rc<super::drag::ViewDrag>,
+    /// The view is Chromium's DevTools window of another view: it gets none of the scripts
+    /// meant for web pages and reports no events.
+    pub devtools: bool,
+    /// The panel the DevTools window should show once it has loaded (`devtools` views).
+    pub devtools_panel: Rc<RefCell<Option<&'static str>>>,
 }
 
 impl ViewContext {
@@ -619,20 +627,46 @@ wrap_display_handler! {
     }
 }
 
+/// Switches a DevTools window to a panel (`"console"`, …) through the frontend's host API
+/// (what Chromium's own "Console" shortcut calls). The frontend sets that API up a moment
+/// after its document loads, so this retries for a few seconds.
+pub(super) fn show_devtools_panel(frame: &Frame, panel: &str) {
+    // Called again a moment later too: the frontend restores its last panel while it starts,
+    // which would undo an earlier call.
+    let script = format!(
+        "(function t(n){{ if (window.DevToolsAPI && DevToolsAPI.showPanel) {{ \
+         DevToolsAPI.showPanel('{panel}'); \
+         setTimeout(function(){{ DevToolsAPI.showPanel('{panel}'); }}, 1500); }} \
+         else if (n < 50) {{ setTimeout(function(){{ t(n + 1); }}, 100); }} }})(0);"
+    );
+    frame.execute_java_script(Some(&script.as_str().into()), None, 0);
+}
+
 wrap_load_handler! {
     pub(super) struct LoadHandlerBuilder {
         ctx: ViewContext,
     }
 
     impl LoadHandler {
+        fn on_load_end(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, _http_status_code: ::std::os::raw::c_int) {
+            let Some(frame) = frame else { return };
+            if self.ctx.devtools
+                && frame.is_main() == 1
+                && let Some(panel) = self.ctx.devtools_panel.borrow_mut().take()
+            {
+                show_devtools_panel(frame, panel);
+            }
+        }
+
         fn on_load_start(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, _transition_type: TransitionType) {
             let Some(frame) = frame else { return };
             let url = CefString::from(&frame.url()).to_string();
-            if frame.is_main() == 1 {
+            if frame.is_main() == 1 && !self.ctx.devtools {
                 frame.execute_java_script(Some(&PAGE_META_SCRIPT.into()), Some(&url.as_str().into()), 0);
             }
-            // Axion's own pages get none of the scripts meant for web pages.
-            if is_internal(&url) {
+            // Axion's own pages and the DevTools frontend get none of the scripts meant for web
+            // pages.
+            if self.ctx.devtools || is_internal(&url) {
                 return;
             }
             let page_script = self.ctx.shared.page_script.borrow().clone();
@@ -701,6 +735,16 @@ wrap_life_span_handler! {
             });
             // Never let CEF open windows itself; the browser decides.
             1
+        }
+
+        fn on_after_created(&self, browser: Option<&mut Browser>) {
+            // A DevTools browser is created by Chromium (not by `create_browser`): hand it to the
+            // engine, which keeps it in the view.
+            if self.ctx.devtools
+                && let Some(browser) = browser
+            {
+                self.ctx.shared.devtools_created.borrow_mut().push((self.ctx.view, browser.clone()));
+            }
         }
 
         fn on_before_close(&self, browser: Option<&mut Browser>) {
