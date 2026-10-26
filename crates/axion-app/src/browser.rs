@@ -135,6 +135,11 @@ const CLEAR_HISTORY_CONFIRM: &str = "Click Again to Clear";
 const ZOOM_BASE: f64 = 1.2;
 /// Pixels per wheel notch.
 const LINE_SCROLL: f32 = 100.0;
+/// Slide anchors (see `Browser::slide_anchor`): the frame's right edge or its middle stays on
+/// the page rectangle's.
+const SLIDE_ANCHOR_STILL: f32 = 1.0;
+const SLIDE_ANCHOR_CENTRED: f32 = 0.5;
+
 /// Opacity below which the page's frame from before a sidebar slide is gone (see `slide_fade`).
 const SLIDE_FADE_DONE: f32 = 0.01;
 /// Pages' frame rate when the display's refresh rate is unknown.
@@ -4603,6 +4608,7 @@ impl Browser {
         self.last_tint_step = Instant::now();
         self.adapt_appearance(page_view.as_ref(), tint_dt);
         let page_px = Rect { origin: page.origin * s, size: page.size * s };
+        let anchor = self.slide_anchor();
 
         let theme = self.ui.theme();
         let mut layers = Vec::new();
@@ -4615,6 +4621,7 @@ impl Browser {
                 texture,
                 page_px,
                 self.chrome.page_corner_radius(&self.config) * s,
+                anchor,
             );
         } else if let (Some(view), Some(frame)) = (&page_view, &frame) {
             // Drawn at its own pixel size from the page's top-left, never stretched: while the
@@ -4663,6 +4670,7 @@ impl Browser {
                 texture,
                 page_px,
                 self.chrome.page_corner_radius(&self.config) * s,
+                anchor,
             );
             for layer in &mut layers[first..] {
                 if let Layer::Image(image) = layer {
@@ -4850,6 +4858,14 @@ impl Browser {
         }
     }
 
+    /// Which point of the page's frame stays on the page rectangle's while the sidebar slides:
+    /// its right edge, or its middle for the start page, whose content is centred: it follows
+    /// the rectangle instead of standing still and jumping once the page has re-laid itself out.
+    fn slide_anchor(&self) -> f32 {
+        let home = self.tabs.active().is_some_and(|t| is_home_url(&t.url));
+        if home { SLIDE_ANCHOR_CENTRED } else { SLIDE_ANCHOR_STILL }
+    }
+
     /// A copy of a page frame (Chromium reuses the textures of its later frames).
     fn copy_texture(&self, texture: &wgpu::Texture) -> wgpu::Texture {
         let copy = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -5034,13 +5050,16 @@ fn push_slide_page<'a>(
     texture: &wgpu::Texture,
     page: Rect,
     radius: f32,
+    anchor: f32,
 ) {
     let tex = Vec2::new(texture.width() as f32, texture.height() as f32);
     let texel = Vec2::ONE / tex.max(Vec2::ONE);
     let shown = page.size.min(tex);
-    let right = page.origin.x + page.size.x;
+    // The frame's `anchor` point (0 left, 0.5 middle, 1 right) stays on the rectangle's: the
+    // frame's left edge is `anchor * (rectangle - frame)` from the rectangle's.
+    let left = anchor * (page.size.x - tex.x);
     // The leftmost part of the frame that is shown.
-    let skip = tex.x - shown.x;
+    let skip = (-left).max(0.0);
     if shown.x < page.size.x {
         let mut edge =
             ImageDraw::new(view, Rect { origin: page.origin, size: Vec2::new(page.size.x, shown.y) });
@@ -5048,8 +5067,10 @@ fn push_slide_page<'a>(
         edge.radius = radius;
         layers.push(Layer::Image(edge));
     }
-    let mut image =
-        ImageDraw::new(view, Rect { origin: Vec2::new(right - shown.x, page.origin.y), size: shown });
+    let mut image = ImageDraw::new(
+        view,
+        Rect { origin: Vec2::new(page.origin.x + left.max(0.0), page.origin.y), size: shown },
+    );
     image.uv = Rect { origin: Vec2::new(skip * texel.x, 0.0), size: shown * texel };
     image.radius = radius;
     layers.push(Layer::Image(image));
