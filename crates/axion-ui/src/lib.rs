@@ -191,6 +191,8 @@ pub struct Ui {
     dragging: Option<NodeId>,
     caret_epoch: Instant,
     needs_layout: bool,
+    /// Containing blocks that still list a removed absolute box (see `refresh_stale_hoists`).
+    stale_hoists: Vec<NodeId>,
 }
 
 impl Ui {
@@ -223,6 +225,7 @@ impl Ui {
             knobs: HashMap::new(),
             caret_epoch: Instant::now(),
             needs_layout: true,
+            stale_hoists: Vec::new(),
         }
     }
 
@@ -365,7 +368,24 @@ impl Ui {
 
     /// Removes `node` and everything below it.
     pub fn remove(&mut self, node: NodeId) {
-        for n in self.descendants(node).into_iter().rev() {
+        let doomed = self.descendants(node);
+        // An absolutely positioned box stays in the list of its containing block (see
+        // `refresh_stale_hoists`): remember the blocks that outlive it.
+        for &n in &doomed {
+            if self.tree.style(n).is_ok_and(|s| s.position == Position::Absolute) {
+                let mut up = self.tree.parent(n);
+                while let Some(u) = up {
+                    if self.tree.hoisted_children(u).is_ok_and(|h| h.contains(&n))
+                        && !doomed.contains(&u)
+                        && !self.stale_hoists.contains(&u)
+                    {
+                        self.stale_hoists.push(u);
+                    }
+                    up = self.tree.parent(u);
+                }
+            }
+        }
+        for n in doomed.into_iter().rev() {
             if self.focus == Some(n) {
                 self.focus = None;
             }
@@ -627,6 +647,48 @@ impl Ui {
             return;
         }
         self.needs_layout = false;
+        self.refresh_stale_hoists();
+        self.compute_layout();
+        self.update_frames(self.root, Vec2::ZERO);
+    }
+
+    /// Taffy records the absolutely positioned boxes of a containing block while it lays that
+    /// block out, but a hidden block (`display: none` itself or below a hidden node) is not laid
+    /// out, so a box removed from it stays in its list and the next layout panics ("invalid
+    /// SlotMap key"). Such blocks are shown for one layout pass so the list is rebuilt.
+    fn refresh_stale_hoists(&mut self) {
+        let blocks = std::mem::take(&mut self.stale_hoists);
+        let mut hidden = Vec::new();
+        for block in blocks {
+            // Gone with the removed subtree, or not hidden (the ordinary layout refreshes it).
+            if self.tree.get_node_context(block).is_none() {
+                continue;
+            }
+            let mut node = Some(block);
+            while let Some(n) = node {
+                if self.style(n).display == Display::None && !hidden.contains(&n) {
+                    hidden.push(n);
+                }
+                node = self.tree.parent(n);
+            }
+        }
+        if hidden.is_empty() {
+            return;
+        }
+        for &n in &hidden {
+            let mut style = self.style(n);
+            style.display = Display::Flex;
+            self.set_style(n, style);
+        }
+        self.compute_layout();
+        for &n in &hidden {
+            let mut style = self.style(n);
+            style.display = Display::None;
+            self.set_style(n, style);
+        }
+    }
+
+    fn compute_layout(&mut self) {
         let scale = self.scale;
         let available = Size {
             width: AvailableSpace::Definite(self.size.x),
@@ -667,7 +729,6 @@ impl Ui {
                 };
                 taffy::LayoutOutput::from_outer_size(size)
             });
-        self.update_frames(self.root, Vec2::ZERO);
     }
 
     /// Stores absolute frames and sizes text buffers to their final widths.
@@ -2452,6 +2513,56 @@ mod tests {
         grab(&mut ui);
         ui.remove(slider);
         assert!(!ui.is_holding());
+    }
+
+    #[test]
+    fn removing_an_absolute_box_below_a_hidden_block_does_not_break_the_next_layout() {
+        // The Playlist page: an absolute badge in a list row; the page is hidden (fullscreen
+        // player) and its rows are rebuilt meanwhile. Taffy kept the removed badge in the
+        // page's list of absolute boxes and panicked in the next layout.
+        let mut ui = ui();
+        let root = ui.root();
+        let page = ui.add(
+            root,
+            Widget::container(),
+            Style {
+                position: Position::Absolute,
+                size: Size { width: length(400.0), height: length(300.0) },
+                ..Default::default()
+            },
+        );
+        let list = ui.add(page, Widget::container(), Style::default());
+        let row = |ui: &mut Ui, list: NodeId| {
+            let thumb = ui.add(
+                list,
+                Widget::container(),
+                Style { size: Size { width: length(40.0), height: length(30.0) }, ..Default::default() },
+            );
+            ui.add(
+                thumb,
+                Widget::container(),
+                Style {
+                    position: Position::Absolute,
+                    size: Size { width: length(10.0), height: length(8.0) },
+                    ..Default::default()
+                },
+            )
+        };
+        row(&mut ui, list);
+        ui.layout();
+        for hidden_ancestor in [page, root] {
+            // Hidden (itself or higher up), rows rebuilt, laid out again.
+            let was = ui.is_visible(hidden_ancestor);
+            ui.set_visible(hidden_ancestor, false);
+            ui.clear_children(list);
+            row(&mut ui, list);
+            ui.layout();
+            ui.set_visible(hidden_ancestor, was);
+            ui.layout();
+            // Still consistent when shown: the new badge is laid out.
+            let badge = *ui.children(*ui.children(list).last().unwrap()).first().unwrap();
+            assert!(ui.frame(badge).size.x > 0.0);
+        }
     }
 
     #[test]
