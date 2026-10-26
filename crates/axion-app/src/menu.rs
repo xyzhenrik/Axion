@@ -21,6 +21,8 @@ pub const ACCOUNT_MENU_BASE: u32 = 6050;
 /// Clickable things a menu can have, its submenus' included (the next menu's ids start after).
 pub const MAX_ITEMS: usize = 50;
 const WIDTH: f32 = 280.0;
+/// Characters a row's label and its detail (shortcut, value) may take together at `WIDTH`.
+const MAX_LABEL_AND_DETAIL: usize = 24;
 const SUBMENU_WIDTH: f32 = 200.0;
 const ROW_HEIGHT: f32 = 44.0;
 const CAPTION_HEIGHT: f32 = 30.0;
@@ -270,9 +272,17 @@ impl Menu {
         self.labels.clear();
         self.window = window;
         let mut height = 2.0 * PADDING;
-        for (i, item) in items.into_iter().enumerate() {
+        for (i, mut item) in items.into_iter().enumerate() {
             if self.slots.len() >= MAX_ITEMS {
                 break;
+            }
+            // A shortcut that would squeeze the label into an ellipsis is left out.
+            if item
+                .detail
+                .as_ref()
+                .is_some_and(|d| item.label.chars().count() + d.chars().count() > MAX_LABEL_AND_DETAIL)
+            {
+                item.detail = None;
             }
             height += item.height(i == 0);
             let node = self.add_item(ui, root, i == 0, &item, Slot::Submenu(self.rows.len()));

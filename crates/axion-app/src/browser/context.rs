@@ -4,7 +4,7 @@
 use axion_config::{BookmarksBar, Config};
 
 use super::*;
-use crate::context_menu::{BookmarkCommand, TabCommand, TabMenuInfo, bookmark_items, tab_items};
+use crate::context_menu::{BookmarkCommand, TabCommand, TabMenuInfo, bookmark_items, group_items, tab_items};
 
 /// Pages that count as the home page for `layout.bookmarks_bar = "home"`: the configured home
 /// page and Axion's own new-tab pages (easy to extend when more arrive).
@@ -44,6 +44,13 @@ impl Browser {
             self.open_tab_menu(item);
             return true;
         }
+        if button == Button::Right
+            && !self.is_locked()
+            && let Some((private, header)) = self.chrome.group_header_at(&self.ui, node)
+        {
+            self.open_group_menu(private, header);
+            return true;
+        }
         false
     }
 
@@ -72,6 +79,38 @@ impl Browser {
         self.context_tab = Some((item.view, item.private));
         let plane = self.chrome.tab_plane(&item);
         let anchor = self.ui.frame(item.node);
+        let window = self.logical_size();
+        self.context_menus.open(
+            &mut self.ui,
+            &self.config,
+            plane,
+            anchor,
+            window,
+            Placement::BelowStart,
+            items,
+        );
+    }
+
+    /// Opens the menu of a sidebar group header ("N Tabs", "Private"), flowing out of the row.
+    /// Its per-tab rows act on the group's active tab.
+    fn open_group_menu(&mut self, private: bool, header: axion_ui::taffy::NodeId) {
+        let group = self.group(private);
+        let Some(tab) = group.active() else { return };
+        let view = tab.view;
+        let info = TabMenuInfo {
+            pinned: tab.pinned,
+            muted: tab.muted,
+            private,
+            others: group.all().iter().any(|t| !t.pinned && t.view != view),
+            right: false,
+            can_reopen: group.has_closed(),
+            can_bookmark: self.store.is_some(),
+        };
+        let items = group_items(info, &self.keymap);
+        self.close_other_menus();
+        self.context_tab = Some((view, private));
+        let plane = self.chrome.sidebar_node();
+        let anchor = self.ui.frame(header);
         let window = self.logical_size();
         self.context_menus.open(
             &mut self.ui,
@@ -230,17 +269,14 @@ impl Browser {
                 self.tabs_changed = true;
             }
             TabCommand::Close => self.close_tab_in(private, view),
-            TabCommand::CloseOthers | TabCommand::CloseToTheRight => {
-                // Pinned tabs stay (like closing tabs to the right never reaches them).
+            TabCommand::CloseOthers => {
+                // Pinned tabs stay.
                 let views: Vec<ViewId> = self
                     .group(private)
                     .all()
                     .iter()
-                    .enumerate()
-                    .filter(|(i, t)| {
-                        !t.pinned && t.view != view && (command == TabCommand::CloseOthers || *i > index)
-                    })
-                    .map(|(_, t)| t.view)
+                    .filter(|t| !t.pinned && t.view != view)
+                    .map(|t| t.view)
                     .collect();
                 for other in views {
                     self.close_tab_in(private, other);
@@ -249,6 +285,15 @@ impl Browser {
             TabCommand::ReopenClosed => {
                 self.show_group(private);
                 self.run(Action::ReopenClosedTab);
+            }
+            TabCommand::Bookmark => {
+                if let Some(store) = &self.store
+                    && store.bookmark_for(&tab.url).ok().flatten().is_none()
+                    && let Err(e) = store.add_bookmark(&tab.url, &tab.label(), unix_now())
+                {
+                    tracing::error!("adding a bookmark failed: {e}");
+                }
+                self.bookmarks_changed = true;
             }
             TabCommand::BookmarkAll => {
                 let now = unix_now();
