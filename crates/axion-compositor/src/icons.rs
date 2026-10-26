@@ -103,22 +103,34 @@ icons! {
     ChevronUp => "M6 15l6-6 6 6",
 }
 
-/// Packs icon and weight into glyphon's custom glyph id.
-pub(crate) fn glyph_id(icon: Icon, weight: IconWeight) -> u16 {
+/// Rotated icons (a spinning chevron) are rasterized in steps of this many degrees.
+const ROTATION_STEP: f32 = 4.0;
+/// Rotations are limited to ±this (degrees); springs overshooting further are clamped.
+const ROTATION_LIMIT: f32 = 180.0;
+const ROTATION_STEPS: usize = (2.0 * ROTATION_LIMIT / ROTATION_STEP) as usize + 1;
+
+/// Packs icon, weight and rotation (degrees, clockwise) into glyphon's custom glyph id.
+pub(crate) fn glyph_id(icon: Icon, weight: IconWeight, rotation: f32) -> u16 {
     let i = Icon::ALL.iter().position(|&x| x == icon).unwrap_or(0);
     let w = IconWeight::ALL.iter().position(|&x| x == weight).unwrap_or(0);
-    (i * IconWeight::ALL.len() + w) as u16
+    let r =
+        ((rotation.clamp(-ROTATION_LIMIT, ROTATION_LIMIT) + ROTATION_LIMIT) / ROTATION_STEP).round() as usize;
+    ((r * Icon::ALL.len() + i) * IconWeight::ALL.len() + w) as u16
 }
 
-fn from_glyph_id(id: u16) -> Option<(Icon, IconWeight)> {
+fn from_glyph_id(id: u16) -> Option<(Icon, IconWeight, f32)> {
     let id = id as usize;
-    let icon = *Icon::ALL.get(id / IconWeight::ALL.len())?;
-    Some((icon, IconWeight::ALL[id % IconWeight::ALL.len()]))
+    let (rest, w) = (id / IconWeight::ALL.len(), id % IconWeight::ALL.len());
+    let (r, i) = (rest / Icon::ALL.len(), rest % Icon::ALL.len());
+    if r >= ROTATION_STEPS {
+        return None;
+    }
+    Some((*Icon::ALL.get(i)?, IconWeight::ALL[w], r as f32 * ROTATION_STEP - ROTATION_LIMIT))
 }
 
 /// glyphon's rasterizer callback: strokes the icon into an alpha mask.
 pub(crate) fn rasterize(request: RasterizeCustomGlyphRequest) -> Option<RasterizedCustomGlyph> {
-    let (icon, weight) = from_glyph_id(request.id)?;
+    let (icon, weight, rotation) = from_glyph_id(request.id)?;
     let (w, h) = (request.width as u32, request.height as u32);
     let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
     let path = kurbo::BezPath::from_svg(icon.path()).ok()?;
@@ -157,7 +169,12 @@ pub(crate) fn rasterize(request: RasterizeCustomGlyphRequest) -> Option<Rasteriz
         line_join: tiny_skia::LineJoin::Round,
         ..Default::default()
     };
-    pixmap.stroke_path(&path, &paint, &stroke, tiny_skia::Transform::identity(), None);
+    let transform = if rotation == 0.0 {
+        tiny_skia::Transform::identity()
+    } else {
+        tiny_skia::Transform::from_rotate_at(rotation, w as f32 / 2.0, h as f32 / 2.0)
+    };
+    pixmap.stroke_path(&path, &paint, &stroke, transform, None);
     let data = pixmap.pixels().iter().map(|px| px.alpha()).collect();
     Some(RasterizedCustomGlyph { data, content_type: ContentType::Mask })
 }
@@ -170,8 +187,8 @@ mod tests {
     fn every_icon_rasterizes() {
         for &icon in Icon::ALL {
             for weight in IconWeight::ALL {
-                let id = glyph_id(icon, weight);
-                assert_eq!(from_glyph_id(id), Some((icon, weight)));
+                let id = glyph_id(icon, weight, 0.0);
+                assert_eq!(from_glyph_id(id), Some((icon, weight, 0.0)));
                 let request = RasterizeCustomGlyphRequest {
                     id,
                     width: 32,

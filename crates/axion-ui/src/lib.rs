@@ -1671,6 +1671,7 @@ impl Ui {
                     weight: *weight,
                     rect: Rect { origin, size: Vec2::splat(side) },
                     color,
+                    rotation: widget.rotation,
                 });
             }
             WidgetKind::Progress { value, paint } => {
