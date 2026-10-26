@@ -43,9 +43,20 @@ pub struct Popover {
     /// the account menu): it would merge into the popover and its content would show through,
     /// so it fades out as the popover grows.
     covered: Option<NodeId>,
+    /// The bridge thins out as the popover settles and is gone once it is open: it only
+    /// joins it to its anchor while it flows out and back (the find bar).
+    detach: bool,
+    /// Where it opens to (logical px).
+    target: Frame,
 }
 
 impl Popover {
+    /// Floats free of its anchor once open (joined only while it flows out and back in).
+    pub fn detached(mut self) -> Self {
+        self.detach = true;
+        self
+    }
+
     /// The popover's glass as an absolute child of `parent` (the plane the anchor's glass lies
     /// in: the toolbar, the sidebar). `style` lays out its content (it is made absolute).
     pub fn build(ui: &mut Ui, parent: NodeId, radius: f32, style: Style) -> Self {
@@ -67,7 +78,18 @@ impl Popover {
         );
         ui.set_visible(bridge, false);
         ui.set_visible(root, false);
-        Self { parent, root, bridge, drip: Drip::new(), radius, join: None, bridge_depth: 0.0, covered: None }
+        Self {
+            parent,
+            root,
+            bridge,
+            drip: Drip::new(),
+            radius,
+            join: None,
+            bridge_depth: 0.0,
+            covered: None,
+            detach: false,
+            target: Frame::default(),
+        }
     }
 
     /// The glass panel: the popover's content goes in here.
@@ -95,6 +117,7 @@ impl Popover {
     /// Drips out of `anchor` to `target` (logical px); if already open it glides there, and if
     /// it is closing it turns around.
     pub fn open(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, target: Frame) {
+        self.target = target;
         crate::menu::place(ui, self.root, self.parent, target);
         ui.set_visible(self.root, true);
         self.find_join(ui, anchor);
@@ -108,6 +131,7 @@ impl Popover {
 
     /// Glides an open popover to `target` (the window or the layout changed).
     pub fn retarget(&mut self, ui: &mut Ui, target: Frame) {
+        self.target = target;
         if !self.is_open() {
             return;
         }
@@ -151,8 +175,21 @@ impl Popover {
         self.find_join(ui, self.drip.anchor());
         let frame = self.drip.frame();
         ui.set_visual_frame(self.root, Some(frame));
-        let bridge =
+        let mut bridge =
             self.join.and_then(|(join, r)| bridge_frame(join, r, frame, self.radius, self.bridge_depth));
+        if self.detach {
+            // Narrower the further it has flowed away from its anchor, gone when open.
+            let from = self.drip.anchor();
+            let (start, end) = (from.origin.y + from.size.y, self.target.origin.y);
+            let travelled = if end > start { (frame.origin.y - start) / (end - start) } else { 1.0 };
+            let keep = (1.0 - travelled).clamp(0.0, 1.0);
+            bridge = bridge
+                .map(|b| {
+                    let width = b.size.x * keep;
+                    Frame::new(b.origin.x + (b.size.x - width) / 2.0, b.origin.y, width, b.size.y)
+                })
+                .filter(|b| b.size.x >= MIN_BRIDGE_WIDTH);
+        }
         ui.set_visible(self.bridge, bridge.is_some());
         ui.set_visual_frame(self.bridge, bridge);
         if let Some(node) = self.covered {

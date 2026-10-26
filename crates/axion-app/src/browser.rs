@@ -2025,7 +2025,8 @@ impl Browser {
         self.menu.close(&mut self.ui, &self.config);
         let anchor = self.chrome.address_frame(&self.ui);
         let width = self.logical_size().x;
-        self.find.open(&mut self.ui, &self.config, anchor, width, view);
+        let top = self.page_rect().origin.y;
+        self.find.open(&mut self.ui, &self.config, anchor, width, top, view);
         let events = self.ui.focus(self.find.field());
         self.handle_ui_events(events);
     }
@@ -3596,6 +3597,11 @@ impl Browser {
             let _ = self.ui.blur();
             return false;
         }
+        // Escape closes Find on Page wherever the focus is (the page after a click on it too).
+        if pressed && self.find.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.close_find();
+            return false;
+        }
         if pressed
             && self.settings.is_open()
             && self.ui.focused().is_none()
@@ -4212,7 +4218,8 @@ impl Browser {
         self.downloads_popover.animate(&mut self.ui, dt);
         let width = self.logical_size().x;
         let address = self.chrome.address_frame(&self.ui);
-        self.find.follow(&mut self.ui, address, width);
+        let top = self.page_rect().origin.y;
+        self.find.follow(&mut self.ui, address, width, top);
         self.find.animate(&mut self.ui, dt, &mut self.engine);
         self.lock_screen.animate(&mut self.ui, dt);
         self.settings.animate(&mut self.ui, dt);
