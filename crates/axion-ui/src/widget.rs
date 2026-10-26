@@ -48,6 +48,9 @@ pub struct Label {
     pub style: TextStyle,
     pub paint: Paint,
     pub align: Align,
+    /// How many lines the text may wrap onto (1 = never wraps; what does not fit ends in an
+    /// ellipsis).
+    pub(crate) max_lines: usize,
 }
 
 pub struct TextField {
@@ -275,8 +278,12 @@ impl Widget {
         style: TextStyle,
     ) -> Self {
         let mut buffer = new_buffer(fonts, style, scale);
+        buffer.set_ellipsize(glyphon::cosmic_text::Ellipsize::End(
+            glyphon::cosmic_text::EllipsizeHeightLimit::Lines(1),
+        ));
         set_buffer_text(&mut buffer, fonts, family, text, style, Align::Start);
         Self::new(WidgetKind::Label(Label {
+            max_lines: 1,
             text: text.to_owned(),
             buffer,
             style,
@@ -453,6 +460,70 @@ pub(crate) fn set_buffer_text(
     };
     buffer.set_text(&text, &attrs, Shaping::Advanced, align);
     buffer.shape_until_scroll(fonts, false);
+}
+
+/// The lines a label's text breaks into at `width` (physical px): greedy, at spaces. A word
+/// wider than the width stays on its own line (and is clipped). `buffer` is used for measuring
+/// and left holding some line.
+pub(crate) fn break_lines(
+    buffer: &mut Buffer,
+    fonts: &mut FontSystem,
+    family: &str,
+    label: (&str, TextStyle, Align),
+    width: f32,
+) -> Vec<String> {
+    let (text, style, align) = label;
+    let mut fits = |candidate: &str| {
+        set_buffer_text(buffer, fonts, family, candidate, style, align);
+        measure(buffer).0 <= width
+    };
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            current = word.to_owned();
+            continue;
+        }
+        let candidate = format!("{current} {word}");
+        if fits(&candidate) {
+            current = candidate;
+        } else {
+            lines.push(std::mem::replace(&mut current, word.to_owned()));
+        }
+    }
+    lines.push(current);
+    lines
+}
+
+/// Shows a wrapping label's text broken to `width` (physical px) over at most its `max_lines`
+/// (the last ends in an ellipsis when text is left over). Returns the text's size and whether
+/// it all fit.
+pub(crate) fn layout_wrapped(
+    label: &mut Label,
+    fonts: &mut FontSystem,
+    family: &str,
+    width: Option<f32>,
+) -> ((f32, f32), bool) {
+    let (style, align) = (label.style, label.align);
+    set_buffer_text(&mut label.buffer, fonts, family, &label.text, style, align);
+    let natural = measure(&label.buffer);
+    let Some(width) = width.filter(|w| natural.0 > *w) else { return (natural, true) };
+    let mut lines = break_lines(&mut label.buffer, fonts, family, (&label.text, style, align), width);
+    let fit = lines.len() <= label.max_lines;
+    if !fit {
+        let mut rest = lines.split_off(label.max_lines - 1).join(" ");
+        loop {
+            set_buffer_text(&mut label.buffer, fonts, family, &format!("{rest}…"), style, align);
+            if measure(&label.buffer).0 <= width || rest.is_empty() {
+                break;
+            }
+            rest.pop();
+            rest = rest.trim_end().to_owned();
+        }
+        lines.push(format!("{rest}…"));
+    }
+    set_buffer_text(&mut label.buffer, fonts, family, &lines.join("\n"), style, align);
+    (measure(&label.buffer), fit)
 }
 
 /// Width and height of shaped text, in the buffer's (physical) units.

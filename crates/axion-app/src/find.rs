@@ -107,7 +107,7 @@ impl FindBar {
             TextStyle::Footnote,
             Style {
                 flex_shrink: 0.0,
-                size: Size { width: length(COUNT_WIDTH), height: auto() },
+                min_size: Size { width: length(COUNT_WIDTH), height: auto() },
                 ..Default::default()
             },
         );

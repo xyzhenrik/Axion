@@ -537,7 +537,7 @@ Windows/macOS, touchscreen-first mode.
   identifiers, URLs, shortcut chord names, brand names. `cargo test -p axion-i18n` scans all
   sources (regex-free scanner, `axion_i18n::scan`) and fails with the list of missing, unused or
   placeholder-mismatching keys; `cargo run -p axion-i18n --example extract` appends missing keys.
-  Translator instructions and glossary: `crates/axion-i18n/locales/GLOSSARY.md`. Known gaps:
+  Layout robustness: labels ellipsize instead of clipping; `Ui::set_label_lines` lets a label wrap (settings row labels 2 lines, notes 4, sheet notes 3); settings button rows wrap; capture aids `--open=settings-page:N,i18n-overflow` (use `--after=12 --lead=9000` so the steps run before the capture) log every text that still does not fit. Translator instructions and glossary: `crates/axion-i18n/locales/GLOSSARY.md`. Known gaps:
   library `thiserror` messages shown verbatim (vault/accounts), weekday/month names in history
   headings, PiP window title (matched by a KWin script).
 - 2026-10-26: **App icon (updated).** Default is now the **user's own generated glass-compass icon**
