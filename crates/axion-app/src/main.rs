@@ -30,6 +30,7 @@ mod history;
 mod home;
 mod input;
 mod lifecycle;
+mod locale;
 mod lockscreen;
 mod media_view;
 mod menu;

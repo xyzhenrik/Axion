@@ -412,6 +412,7 @@ impl Browser {
             tracing::error!("{e}; using defaults");
             Config::default()
         });
+        crate::locale::apply(config.general.language);
         let keymap = load_keymap(&paths);
         let watcher = ConfigWatcher::new(&paths)
             .inspect_err(|e| tracing::warn!("live config reload unavailable: {e}"))

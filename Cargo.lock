@@ -410,6 +410,7 @@ dependencies = [
  "axion-compositor",
  "axion-config",
  "axion-engine",
+ "axion-i18n",
  "axion-media",
  "axion-physics",
  "axion-shields",

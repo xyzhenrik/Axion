@@ -59,6 +59,21 @@ pub struct General {
     pub homepage: String,
     /// Search URL; `{}` is replaced by the URL-encoded query.
     pub search_url: String,
+    /// Language of Axion's own interface (applied when Axion starts).
+    pub language: UiLanguage,
+}
+
+/// Which language the interface is shown in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UiLanguage {
+    /// The system's (`LC_ALL`/`LC_MESSAGES`/`LANG`), English when unsupported.
+    #[default]
+    System,
+    #[serde(rename = "en")]
+    English,
+    #[serde(rename = "de")]
+    German,
 }
 
 /// The homepage Axion used before it had its own start page; configs that still carry it (or
@@ -93,7 +108,7 @@ impl General {
 
 impl Default for General {
     fn default() -> Self {
-        Self { homepage: START_PAGE_URL.into(), search_url: "https://duckduckgo.com/?q={}".into() }
+        Self { homepage: START_PAGE_URL.into(), search_url: "https://duckduckgo.com/?q={}".into(), language: UiLanguage::System }
     }
 }
 
