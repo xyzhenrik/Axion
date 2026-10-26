@@ -144,27 +144,69 @@ pub(crate) fn rasterize(request: RasterizeCustomGlyphRequest) -> Option<Rasteriz
     let path = kurbo::BezPath::from_svg(icon.path()).ok()?;
     let scale = w.min(h) as f64 / 24.0;
 
+    // Grid fitting: the stroke is a whole number of pixels wide and every anchor sits on the
+    // pixel grid that stroke needs (pixel centres for odd widths, pixel edges for even ones), so
+    // horizontal and vertical strokes cover whole pixels instead of two half-covered ones
+    // (dark glyphs on light glass read as fuzzy otherwise). Control points ride along with
+    // their anchor, which keeps curves smooth. Rotated glyphs (spinners) stay unfitted.
+    let stroke_px = if rotation == 0.0 {
+        (weight.stroke() * scale as f32).round().max(1.0)
+    } else {
+        weight.stroke() * scale as f32
+    };
+    let fit = rotation == 0.0;
+    let grid = if stroke_px.round() as u32 % 2 == 1 { 0.5 } else { 0.0 };
+    let snap = |v: f32| if fit { (v - grid).round() + grid } else { v };
+    // An anchor in pixels, snapped; returns it with the shift the snapping made.
+    let anchor = |pt: kurbo::Point, prev: Option<((f32, f32), (f32, f32))>| {
+        let (x, y) = ((pt.x * scale) as f32, (pt.y * scale) as f32);
+        let (mut sx, mut sy) = (snap(x), snap(y));
+        // A (near) zero-length stroke, a dot, must stay a segment: keep its original offset.
+        if let Some(((qx, qy), (rx, ry))) = prev
+            && (x != rx || y != ry)
+            && (sx, sy) == (qx, qy)
+        {
+            (sx, sy) = (qx + (x - rx), qy + (y - ry));
+        }
+        ((sx, sy), (sx - x, sy - y))
+    };
     let mut builder = tiny_skia::PathBuilder::new();
+    let (mut last, mut last_shift, mut last_raw) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32), (0.0f32, 0.0f32));
+    let (mut start, mut start_shift) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32));
+    let raw = |pt: kurbo::Point| ((pt.x * scale) as f32, (pt.y * scale) as f32);
+    let moved = |pt: kurbo::Point, shift: (f32, f32)| {
+        let (x, y) = raw(pt);
+        (x + shift.0, y + shift.1)
+    };
     for el in path.elements() {
-        let p = |pt: kurbo::Point| ((pt.x * scale) as f32, (pt.y * scale) as f32);
         match *el {
             kurbo::PathEl::MoveTo(a) => {
-                let (x, y) = p(a);
-                builder.move_to(x, y);
+                let (p, shift) = anchor(a, None);
+                builder.move_to(p.0, p.1);
+                (last, last_shift, last_raw) = (p, shift, raw(a));
+                (start, start_shift) = (p, shift);
             }
             kurbo::PathEl::LineTo(a) => {
-                let (x, y) = p(a);
-                builder.line_to(x, y);
+                let (p, shift) = anchor(a, Some((last, last_raw)));
+                builder.line_to(p.0, p.1);
+                (last, last_shift, last_raw) = (p, shift, raw(a));
             }
-            kurbo::PathEl::QuadTo(a, b) => {
-                let ((x1, y1), (x, y)) = (p(a), p(b));
-                builder.quad_to(x1, y1, x, y);
+            kurbo::PathEl::QuadTo(c, a) => {
+                let (p, shift) = anchor(a, None);
+                let c = moved(c, shift);
+                builder.quad_to(c.0, c.1, p.0, p.1);
+                (last, last_shift, last_raw) = (p, shift, raw(a));
             }
-            kurbo::PathEl::CurveTo(a, b, c) => {
-                let ((x1, y1), (x2, y2), (x, y)) = (p(a), p(b), p(c));
-                builder.cubic_to(x1, y1, x2, y2, x, y);
+            kurbo::PathEl::CurveTo(c1, c2, a) => {
+                let (p, shift) = anchor(a, None);
+                let (c1, c2) = (moved(c1, last_shift), moved(c2, shift));
+                builder.cubic_to(c1.0, c1.1, c2.0, c2.1, p.0, p.1);
+                (last, last_shift, last_raw) = (p, shift, raw(a));
             }
-            kurbo::PathEl::ClosePath => builder.close(),
+            kurbo::PathEl::ClosePath => {
+                builder.close();
+                (last, last_shift, last_raw) = (start, start_shift, last_raw);
+            }
         }
     }
     let path = builder.finish()?;
@@ -172,7 +214,9 @@ pub(crate) fn rasterize(request: RasterizeCustomGlyphRequest) -> Option<Rasteriz
     paint.set_color_rgba8(255, 255, 255, 255);
     paint.anti_alias = true;
     let stroke = tiny_skia::Stroke {
-        width: weight.stroke() * scale as f32,
+        // A hair over a whole pixel: tiny-skia draws strokes of 1 px or less as anti-aliased
+        // hairlines, which come out at about 75 % coverage instead of solid.
+        width: stroke_px + 0.001,
         line_cap: tiny_skia::LineCap::Round,
         line_join: tiny_skia::LineJoin::Round,
         ..Default::default()
@@ -190,6 +234,33 @@ pub(crate) fn rasterize(request: RasterizeCustomGlyphRequest) -> Option<Rasteriz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mask(icon: Icon, weight: IconWeight, side: u16) -> Vec<u8> {
+        let request = RasterizeCustomGlyphRequest {
+            id: glyph_id(icon, weight, 0.0),
+            width: side,
+            height: side,
+            x_bin: glyphon::cosmic_text::SubpixelBin::Zero,
+            y_bin: glyphon::cosmic_text::SubpixelBin::Zero,
+            scale: 1.0,
+        };
+        rasterize(request).expect("rasterizes").data
+    }
+
+    /// Straight strokes are grid-fitted: they cover whole pixels (full alpha), not two
+    /// half-covered ones (which is what made icons look fuzzy).
+    #[test]
+    fn straight_strokes_are_crisp() {
+        for side in [16u16, 18, 20, 22, 24, 27, 36] {
+            for icon in [Icon::Plus, Icon::Minus, Icon::Pause] {
+                let data = mask(icon, IconWeight::Regular, side);
+                let soft = data.iter().filter(|&&a| (24..232).contains(&a)).count();
+                let solid = data.iter().filter(|&&a| a >= 232).count();
+                // Only the round caps' ends may be soft.
+                assert!(soft <= 12 && solid > 0, "{icon:?} at {side}: {soft} soft, {solid} solid");
+            }
+        }
+    }
 
     #[test]
     fn every_icon_rasterizes() {

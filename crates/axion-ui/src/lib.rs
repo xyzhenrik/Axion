@@ -1793,7 +1793,8 @@ impl Ui {
             WidgetKind::Icon { icon, weight, size, paint } => {
                 let mut color = theme.color(*paint);
                 color[3] *= alpha;
-                let side = size * s;
+                // Whole pixels, so the rasterized (grid-fitted) glyph is drawn 1:1, never resampled.
+                let side = (size * s).round().max(1.0);
                 let origin = (px.center() - Vec2::splat(side / 2.0)).round();
                 content.icons.push(IconDraw {
                     icon: *icon,
@@ -2261,6 +2262,61 @@ mod tests {
         let mut ui = Ui::new(Theme::new(&axion_config::Config::default(), false), 1.0);
         ui.set_viewport(Vec2::new(800.0, 600.0), 1.0);
         ui
+    }
+
+    /// Linear-light relative luminance of an sRGB colour (WCAG).
+    fn luminance(c: [f32; 3]) -> f32 {
+        let lin = |v: f32| if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+    }
+
+    fn contrast(a: [f32; 3], b: [f32; 3]) -> f32 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    fn over(top: [f32; 4], alpha: f32, below: [f32; 3]) -> [f32; 3] {
+        [0, 1, 2].map(|i| top[i] * alpha + below[i] * (1.0 - alpha))
+    }
+
+    /// Text and icons stay legible on every hover / selected / pressed surface, in both themes
+    /// and with Reduce Transparency on or off (text 4.5:1, icons 3:1).
+    #[test]
+    fn feedback_surfaces_keep_contrast() {
+        for dark in [false, true] {
+            for reduce in [false, true] {
+                let mut config = axion_config::Config::default();
+                config.glass.reduce_transparency = reduce;
+                let theme = Theme::new(&config, dark);
+                let label = theme.color(Paint::Label);
+                let secondary = theme.color(Paint::Secondary);
+                let surface = theme.color(Paint::Surface);
+                let ground = theme.color(Paint::Ground);
+                // What a row lies on: the sidebar/bar glass (near-opaque tint over the ground).
+                let glass = theme.glass(GlassLevel::Regular, 1.0);
+                let panel = over(glass.tint, glass.tint[3].max(0.94), [ground[0], ground[1], ground[2]]);
+                let mut surfaces = vec![
+                    ("rest", panel),
+                    ("hover", over(label, HOVER_ALPHA, panel)),
+                    ("pressed", over(label, PRESS_ALPHA, panel)),
+                    ("selected", over(surface, 0.7, panel)),
+                    ("selected+hover", over(label, HOVER_ALPHA, over(surface, 0.7, panel))),
+                ];
+                if reduce {
+                    let lens = theme.glass(GlassLevel::Lens, 1.0).tint;
+                    assert!((lens[3] - 1.0).abs() < 1e-6, "an opaque lens");
+                    surfaces.push(("lens", [lens[0], lens[1], lens[2]]));
+                }
+                for (name, bg) in surfaces {
+                    for (what, fg, min) in
+                        [("label", label, 4.5), ("secondary", secondary, 4.5), ("icon", label, 3.0)]
+                    {
+                        let c = contrast([fg[0], fg[1], fg[2]], bg);
+                        assert!(c >= min, "{what} on {name} (dark {dark}, reduce {reduce}): {c:.2} < {min}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

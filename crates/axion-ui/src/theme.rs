@@ -69,6 +69,9 @@ const LENS_DISPERSION: f32 = 1.5;
 const LENS_TINT: f32 = 0.03;
 const LENS_RIM: f32 = 1.5;
 const LENS_SHADOW: f32 = 0.45;
+/// Reduce Transparency: how far the opaque lens leans from the glass tint towards the label
+/// colour (lighter in dark, darker in light), so text on it keeps its contrast.
+const LENS_OPAQUE_MIX: f32 = 0.14;
 
 /// Tint strength of every glass level under Reduce Transparency (nearly opaque).
 const REDUCED_TRANSPARENCY_OPACITY: f32 = 0.94;
@@ -129,6 +132,12 @@ impl Theme {
         let m = self.material();
         let glass = &self.config.glass;
         let bezel = LENS_BEZEL * scale;
+        let tint = if glass.reduce_transparency {
+            let rgb = self.reduced_lens_color();
+            [rgb[0], rgb[1], rgb[2], 1.0]
+        } else {
+            [1.0, 1.0, 1.0, LENS_TINT]
+        };
         GlassParams {
             refraction: if glass.reduce_transparency {
                 0.0
@@ -140,11 +149,20 @@ impl Theme {
             merge_smoothness: 0.0,
             frost: 0.0,
             blur_radius: 0.0,
-            tint: [1.0, 1.0, 1.0, if glass.reduce_transparency { 0.9 } else { LENS_TINT }],
+            tint,
             rim: m.rim * LENS_RIM,
             shadow: m.shadow * LENS_SHADOW,
             light_dir: Vec2::new(-0.55, -0.85),
         }
+    }
+
+    /// The opaque colour of a lens (hover highlight, held knob or pill) under Reduce Transparency:
+    /// the glass tint nudged towards the label colour, so it stands out from the surface it
+    /// lies on yet keeps label text and icons legible in both themes (never plain white).
+    pub fn reduced_lens_color(&self) -> [f32; 3] {
+        let base = self.material().tint.to_f32();
+        let label = self.color(Paint::Label);
+        [0, 1, 2].map(|i| base[i] * (1.0 - LENS_OPAQUE_MIX) + label[i] * LENS_OPAQUE_MIX)
     }
 
     /// The tint strength of `level` (see [`Theme::glass`]).
