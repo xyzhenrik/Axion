@@ -126,8 +126,14 @@ Extensions, sync, reader mode, Windows/macOS builds, touchscreen polish.
     device triggers a GPUVM permission fault and context loss ("hard recovery"). Until found
     (modifier/plane layout in cef-rs' dmabuf import? sync?), GPU sharing is NVIDIA-only by
     default and other drivers use software paint (`AXION_OSR=gpu` forces it — don't on AMD).
-  - [ ] Avoid the per-frame copy + GPU wait in the import (keep CEF's texture alive until our
-    composite is submitted).
+  - [x] Avoid the GPU wait in the import: each shared buffer is imported once and cached
+    (`cef/dmabuf.rs`); a frame's copy and its drawn check are only submitted, and resolved on
+    a later pump (paint callback 1–3 ms → 0.1 ms; spikes of 15–90 ms gone). The copy itself
+    stays (CEF's buffer returns to its pool when the callback ends).
+  - [x] Frame pacing: Chromium's own begin-frame timer at the monitor's refresh rate
+    (`tabs.max_frame_rate`); external begin frames from our loop halved pages' main-thread
+    frame rate. Chromium's message loop is pumped when it asks
+    (`OnScheduleMessagePumpWork` wakes winit) instead of a busy loop.
 - [ ] **Input forwarding spike**: mouse, keyboard (incl. IME), scroll, touchpad gestures into CEF.
   *(mouse, wheel, keys and text implemented in the spike, not yet verified by hand; IME and
   touchpad gestures still open)*
