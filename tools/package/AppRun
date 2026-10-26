@@ -1,0 +1,54 @@
+#!/bin/sh
+# Launcher of a packaged Axion: the AppImage's AppRun and, in the tarball / an installed copy,
+# the `axion` entry point. It lives next to `usr/bin/axion`.
+#
+# What it does, and nothing else:
+#   - finds its own folder (also through symlinks such as ~/.local/bin/axion),
+#   - tells Axion which file to put into the desktop entry (AXION_LAUNCHER),
+#   - checks that Chromium's sandbox can work here and explains how to fix it when it cannot
+#     (Axion never starts without the sandbox unless you say so with AXION_NO_SANDBOX=1),
+#   - starts usr/bin/axion with your arguments.
+#
+# It does NOT set LD_LIBRARY_PATH: usr/bin/axion finds its libraries through its RUNPATH
+# ($ORIGIN), so programs Axion starts (xdg-open, a mail client) keep a clean environment.
+
+self=$(readlink -f -- "$0" 2>/dev/null) || self=$0
+here=${self%/*}
+bin=$here/usr/bin/axion
+
+if [ ! -x "$bin" ]; then
+  echo "axion: $bin is missing or not executable" >&2
+  exit 127
+fi
+
+# What `Exec=` in the desktop entry should launch: the AppImage itself when there is one
+# (the mount point of an AppImage is gone after Axion quits), else this launcher.
+export AXION_LAUNCHER=${APPIMAGE:-$self}
+
+explain() {
+  cat >&2 <<'MSG'
+Axion cannot start: your system does not allow Chromium's sandbox (unprivileged user
+namespaces are blocked). Running a browser without its sandbox is unsafe, so Axion refuses.
+
+Fix it with one of these (see docs/install.md, "The sandbox"):
+  - Ubuntu 23.10+/24.04: allow Axion in AppArmor (a short profile, shown in the docs), or
+    sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0
+  - Debian/older kernels: sudo sysctl kernel.unprivileged_userns_clone=1
+  - Containers: allow user namespaces, or accept the risk with  AXION_NO_SANDBOX=1 axion
+MSG
+}
+
+# The kernel (or AppArmor) must let an unprivileged process create the namespaces Chromium's
+# sandbox uses. `unshare` is part of util-linux; when it is missing we cannot tell, so we start.
+if [ -z "${AXION_NO_SANDBOX:-}" ] && [ "${AXION_SANDBOX_CHECK:-1}" != 0 ] \
+  && command -v unshare >/dev/null 2>&1 \
+  && ! unshare --user --pid --net --fork true >/dev/null 2>&1; then
+  explain
+  if [ ! -t 2 ] && command -v notify-send >/dev/null 2>&1; then
+    notify-send -a Axion -i axion "Axion cannot start" \
+      "The sandbox is blocked on this system. Start it from a terminal for details, or see docs/install.md." || true
+  fi
+  exit 1
+fi
+
+exec "$bin" "$@"

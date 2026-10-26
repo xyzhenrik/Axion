@@ -170,7 +170,8 @@ and tests.
 | `AXION_OSR` | `software` or `gpu`. Overrides **Page frames**. Never use `gpu` on AMD graphics. |
 | `AXION_MONITOR` | Open the window on this monitor, for example `HDMI-A-1`. Works on X11 and XWayland (start with `env -u WAYLAND_DISPLAY`). |
 | `AXION_CHROMIUM_SWITCHES` | Extra Chromium command-line switches, separated by commas, for example `AXION_CHROMIUM_SWITCHES=autoplay-policy=no-user-gesture-required`. |
-| `AXION_NO_SANDBOX` | Set to `1` to turn off Chromium's sandbox, for containers. Not recommended otherwise. |
+| `AXION_NO_SANDBOX` | Set to `1` to turn off Chromium's sandbox, for containers and tests. Unsafe for browsing: see [Install](install.md#the-sandbox). The packaged launcher refuses to start when the sandbox cannot work, unless this is set. |
+| `AXION_SANDBOX_CHECK` | Set to `0` to skip the packaged launcher's up-front test of user-namespace support (the AppImage and the tarball's `axion`). Chromium still needs a working sandbox. |
 | `AXION_FAKE_MEDIA_DEVICES` | Set to `1` for tests: pages get Chromium's fake camera (a test pattern) and microphone (a beep) instead of your real ones. The permission prompt still asks. |
 
 To try things out safely, point the first three at empty temporary folders. Your real accounts,
