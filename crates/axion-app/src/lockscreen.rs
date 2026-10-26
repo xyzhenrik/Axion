@@ -10,10 +10,10 @@
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{Color, Config};
+use axion_i18n::{tr, tr_fmt};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
-use axion_i18n::{tr, tr_fmt};
 use glam::Vec2;
 
 const SHOW_ALERT: ActionId = ActionId(9000);

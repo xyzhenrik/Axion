@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use axion_i18n::tr;
 use crate::downloads::{Choose, choose_portal, spawn};
 use crate::home::Image;
+use axion_i18n::tr;
 
 /// Decoded profile pictures as textures, by account id.
 pub struct Avatars {
