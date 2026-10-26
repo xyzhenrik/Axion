@@ -144,22 +144,54 @@ pub fn bookmark_items(index: usize) -> Vec<MenuItem> {
 /// One glass menu per plane things can be right-clicked in.
 pub struct ContextMenus {
     menus: Vec<(NodeId, Menu)>,
+    /// The page's own menu (the last of `menus`).
+    page: usize,
     /// The row the open menu flows out of, whose content is faded out (see [`Self::cover_row`]).
     covered: Option<NodeId>,
 }
 
 impl ContextMenus {
-    /// A menu in each of `planes` (the toolbar, the tab strip, the sidebar, the bookmarks bar).
-    pub fn build(ui: &mut Ui, planes: &[NodeId]) -> Self {
-        let menus = planes
+    /// A menu in each of `planes` (the toolbar, the tab strip, the sidebar, the bookmarks bar),
+    /// and the page's menu in `page_plane` (drawn above the page).
+    pub fn build(ui: &mut Ui, planes: &[NodeId], page_plane: NodeId) -> Self {
+        let menus: Vec<_> = planes
             .iter()
+            .chain([&page_plane])
             .enumerate()
             .map(|(k, &plane)| {
                 let base = CONTEXT_MENU_BASE + (k * MAX_ITEMS) as u32;
                 (plane, Menu::build(ui, plane, base, Placement::BelowStart))
             })
             .collect();
-        Self { menus, covered: None }
+        Self { page: menus.len() - 1, menus, covered: None }
+    }
+
+    /// Opens the page's menu, dripping out of `anchor` (a point in the page).
+    pub fn open_page(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        anchor: Frame,
+        window: Vec2,
+        width: f32,
+        items: Vec<MenuItem>,
+    ) {
+        for (k, (_, menu)) in self.menus.iter_mut().enumerate() {
+            if k != self.page {
+                menu.close(ui, config);
+            }
+        }
+        self.covered = None;
+        let menu = &mut self.menus[self.page].1;
+        menu.set_placement(Placement::Over);
+        menu.set_min_width(width);
+        menu.set_covered_nodes(ui, Vec::new());
+        menu.open(ui, config, anchor, window, items);
+    }
+
+    /// Whether the page's menu is the one open.
+    pub fn page_open(&self) -> bool {
+        self.menus[self.page].1.is_open()
     }
 
     /// Opens the menu of `plane` next to `anchor` (logical px), closing any other.
@@ -175,12 +207,14 @@ impl ContextMenus {
         items: Vec<MenuItem>,
         hide: Option<NodeId>,
     ) {
-        for (p, menu) in &mut self.menus {
-            if *p != plane {
+        // The first menu of the plane (the page's menu shares the toolbar's plane).
+        let target = self.menus.iter().position(|(p, _)| *p == plane);
+        for (k, (_, menu)) in self.menus.iter_mut().enumerate() {
+            if Some(k) != target {
                 menu.close(ui, config);
             }
         }
-        if let Some((_, menu)) = self.menus.iter_mut().find(|(p, _)| *p == plane) {
+        if let Some((_, menu)) = target.and_then(|k| self.menus.get_mut(k)) {
             menu.set_placement(placement);
             // The row it flows out of keeps its glass, but its content gives way to the menu.
             menu.set_covered_nodes(ui, hide.map(|row| ui.children(row)).unwrap_or_default());

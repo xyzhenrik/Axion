@@ -38,6 +38,7 @@ mod mpris;
 mod now_playing;
 mod overview;
 mod page_color;
+mod page_menu;
 mod passwords;
 mod pip;
 mod platform;
