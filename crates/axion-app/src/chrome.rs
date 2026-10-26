@@ -9,7 +9,7 @@
 //!   bottom. Docked in wide windows, floating otherwise.
 
 use axion_compositor::{Icon, IconWeight, Rect as Frame};
-use axion_config::{Color, Config, SidebarMode, TabBarStyle};
+use axion_config::{Action, Color, Config, SidebarMode, TabBarStyle};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Align, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
@@ -82,7 +82,6 @@ pub enum ChromeAction {
     Share,
     NewTab,
     Overview,
-    NewTabGroup,
     ToggleTabsSection,
     ToggleSavedSection,
     Private,
@@ -184,7 +183,7 @@ const GROUP_BASE: u32 = 11_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 30] = [
+    const SIMPLE: [ChromeAction; 29] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -195,7 +194,6 @@ impl ChromeAction {
         ChromeAction::Share,
         ChromeAction::NewTab,
         ChromeAction::Overview,
-        ChromeAction::NewTabGroup,
         ChromeAction::ToggleTabsSection,
         ChromeAction::ToggleSavedSection,
         ChromeAction::Private,
@@ -574,6 +572,13 @@ fn shrinking_label() -> Style {
 }
 
 /// A round icon button. Returns the button and its glyph.
+/// Gives a button a tooltip (see `crate::tooltip`); `action` adds its keyboard shortcut.
+fn tip(ui: &mut Ui, button: NodeId, label: &str, action: Option<Action>) {
+    if let Some(w) = ui.widget_mut(button) {
+        w.tooltip = Some(axion_ui::Tooltip { label: label.to_owned(), action });
+    }
+}
+
 fn icon_button(
     ui: &mut Ui,
     parent: NodeId,
@@ -723,19 +728,16 @@ impl Chrome {
                 ..row(GROUP_GAP)
             },
         );
-        for (action, icon) in
-            [(ChromeAction::NewTabGroup, Icon::NewTabGroup), (ChromeAction::ToggleSidebar, Icon::Sidebar)]
-        {
-            let button = ui.add(
-                header,
-                Widget::container()
-                    .with_background(Background::Glass(GlassLevel::Thin))
-                    .with_radius(CAPSULE)
-                    .with_action(action.id()),
-                Style { size: square(SIDEBAR_BUTTON), justify_content: JustifyContent::CENTER, ..row(0.0) },
-            );
-            ui.add(button, Widget::icon(icon, 22.0), Style::default());
-        }
+        let header_toggle = ui.add(
+            header,
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thin))
+                .with_radius(CAPSULE)
+                .with_action(ChromeAction::ToggleSidebar.id())
+                .with_tooltip("Hide Sidebar", Some(Action::ToggleSidebar)),
+            Style { size: square(SIDEBAR_BUTTON), justify_content: JustifyContent::CENTER, ..row(0.0) },
+        );
+        ui.add(header_toggle, Widget::icon(Icon::Sidebar, 22.0), Style::default());
         // The normal sidebar content; a panel (bookmarks, history) replaces it when open. It
         // scrolls in a clipped viewport, so the footer (account) stays pinned and rows slide
         // away behind its edge.
@@ -1010,11 +1012,15 @@ impl Chrome {
         let nav = glass_group(ui, bar);
         let (bar_sidebar_button, _) =
             icon_button(ui, nav, ChromeAction::ToggleSidebar, Widget::icon(Icon::Sidebar, 21.0), BUTTON);
+        tip(ui, bar_sidebar_button, "Show Sidebar", Some(Action::ToggleSidebar));
         let (back, _) = icon_button(ui, nav, ChromeAction::Back, Widget::icon(Icon::Back, 21.0), BUTTON);
+        tip(ui, back, "Back", Some(Action::Back));
         let (forward, _) =
             icon_button(ui, nav, ChromeAction::Forward, Widget::icon(Icon::Forward, 21.0), BUTTON);
+        tip(ui, forward, "Forward", Some(Action::Forward));
         let (home_button, _) =
             icon_button(ui, nav, ChromeAction::Home, Widget::icon(Icon::Home, 20.0), BUTTON);
+        tip(ui, home_button, "Home", None);
 
         // Separate tab bar: the address segment sits here, centred between the groups.
         let address_slot = ui.add(
@@ -1061,6 +1067,7 @@ impl Chrome {
         let address_close = close_dot(ui, address, ChromeAction::CloseTab(0), 32.0);
         let shield_glyph = Widget::icon(Icon::Shield, 18.0).with_paint(Paint::Shield);
         let (shield, shield_glyph) = icon_button(ui, address, ChromeAction::Shield, shield_glyph, 30.0);
+        tip(ui, shield, "Shields", None);
         // The site's icon, like on the other tabs' segments.
         let address_favicon = ui.add(
             address,
@@ -1075,6 +1082,7 @@ impl Chrome {
             Widget::icon(Icon::Volume, 18.0).with_paint(Paint::Accent),
             30.0,
         );
+        tip(ui, audio_button, "Mute or Unmute Tab", None);
         ui.set_visible(audio_button, false);
         let address_label = ui.add_label(address, "", TextStyle::BodyEmphasis, shrinking_label());
         ui.set_label_align(address_label, Align::Start);
@@ -1085,10 +1093,12 @@ impl Chrome {
             Style { size: Size { width: auto(), height: length(22.0) }, ..shrinking_label() },
         );
         ui.set_visible(address_field, false);
-        let (_, reload_icon) =
+        let (reload_button, reload_icon) =
             icon_button(ui, address, ChromeAction::ReloadOrStop, Widget::icon(Icon::Reload, 19.0), 34.0);
+        tip(ui, reload_button, "Reload", Some(Action::Reload));
         let (page_menu, _) =
             icon_button(ui, address, ChromeAction::PageMenu, Widget::icon(Icon::Menu, 20.0), 34.0);
+        tip(ui, page_menu, "Page Menu", None);
         let progress = ui.add(
             address,
             Widget::progress(Paint::Accent),
@@ -1126,7 +1136,10 @@ impl Chrome {
         // While downloads run (Safari): an arrow over a thin progress bar; opens the list.
         let downloads = ui.add(
             actions,
-            Widget::container().with_action(ChromeAction::DownloadsButton.id()).with_radius(CAPSULE),
+            Widget::container()
+                .with_action(ChromeAction::DownloadsButton.id())
+                .with_radius(CAPSULE)
+                .with_tooltip("Downloads", None),
             Style {
                 size: square(BUTTON),
                 justify_content: JustifyContent::CENTER,
@@ -1148,14 +1161,20 @@ impl Chrome {
         ui.set_visible(downloads, false);
         let (share_button, _) =
             icon_button(ui, actions, ChromeAction::Share, Widget::icon(Icon::Share, 21.0), BUTTON);
+        tip(ui, share_button, "Copy Link", None);
         let (new_tab_button, _) =
             icon_button(ui, actions, ChromeAction::NewTab, Widget::icon(Icon::Plus, 22.0), BUTTON);
+        tip(ui, new_tab_button, "New Tab", Some(Action::NewTab));
         let (overview, _) =
             icon_button(ui, actions, ChromeAction::Overview, Widget::icon(Icon::Overview, 20.0), BUTTON);
+        tip(ui, overview, "Show Tab Overview", Some(Action::TabOverview));
         // Narrow windows: the overview button shows the tab count instead.
         let tab_count = ui.add(
             actions,
-            Widget::container().with_action(ChromeAction::Overview.id()).with_radius(CAPSULE),
+            Widget::container()
+                .with_action(ChromeAction::Overview.id())
+                .with_radius(CAPSULE)
+                .with_tooltip("Show Tab Overview", Some(Action::TabOverview)),
             Style { size: square(BUTTON), justify_content: JustifyContent::CENTER, ..row(0.0) },
         );
         let count_box = ui.add(
@@ -2441,6 +2460,10 @@ impl Chrome {
         }
         if let Some(w) = ui.widget_mut(self.reload_icon) {
             w.set_icon(if tab.loading { Icon::Stop } else { Icon::Reload });
+        }
+        if let Some(button) = ui.parent(self.reload_icon) {
+            let label = if tab.loading { "Stop Loading" } else { "Reload" };
+            tip(ui, button, label, (!tab.loading).then_some(Action::Reload));
         }
         ui.set_progress(self.progress, if tab.loading { tab.progress.max(0.08) as f32 } else { 1.0 });
     }

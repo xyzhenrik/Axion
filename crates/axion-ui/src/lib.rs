@@ -27,7 +27,7 @@ use taffy::prelude::*;
 pub use editor::Editor;
 use knob::Knob;
 pub use theme::{GlassLevel, Paint, TextStyle, Theme};
-pub use widget::{ActionId, Align, Background, CAPSULE, Shadow, Widget, WidgetKind};
+pub use widget::{ActionId, Align, Background, CAPSULE, Shadow, Tooltip, Widget, WidgetKind};
 use widget::{caret_x, index_at, measure, new_buffer, set_buffer_text};
 
 const CARET_BLINK: Duration = Duration::from_millis(530);
@@ -766,6 +766,13 @@ impl Ui {
     /// The button under the pointer, if any.
     pub fn hovered(&self) -> Option<NodeId> {
         self.hover
+    }
+
+    /// The hovered button with a tooltip: its node, its frame and the tooltip.
+    pub fn hovered_tooltip(&self) -> Option<(NodeId, Rect, &Tooltip)> {
+        let node = self.hover?;
+        let widget = self.widget(node)?;
+        Some((node, widget.frame, widget.tooltip.as_ref()?))
     }
 
     /// The clickable node at `p`, if any.

@@ -47,6 +47,7 @@ mod suggestions;
 mod tabdrag;
 mod tabs;
 mod toast;
+mod tooltip;
 mod url;
 
 use std::time::Duration;

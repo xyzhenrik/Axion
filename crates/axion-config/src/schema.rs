@@ -27,6 +27,7 @@ pub struct Config {
     pub clipboard: Clipboard,
     pub toast: Toast,
     pub sidebar: Sidebar,
+    pub ui: Ui,
 }
 
 /// Axion's own start page, served at this address.
@@ -764,6 +765,20 @@ pub struct Sidebar {
 impl Default for Sidebar {
     fn default() -> Self {
         Self { history_collapse_older: true }
+    }
+}
+
+/// General interface behaviour.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Ui {
+    /// How long the pointer must rest on a button before its tooltip appears (milliseconds).
+    pub tooltip_delay_ms: u32,
+}
+
+impl Default for Ui {
+    fn default() -> Self {
+        Self { tooltip_delay_ms: 700 }
     }
 }
 

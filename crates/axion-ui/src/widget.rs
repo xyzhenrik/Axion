@@ -126,6 +126,14 @@ pub enum WidgetKind {
     },
 }
 
+/// A button's hover label: what it does, plus the keymap action whose shortcut is appended
+/// (resolved when the tooltip is shown, so remapped keys show up).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tooltip {
+    pub label: String,
+    pub action: Option<axion_config::Action>,
+}
+
 pub struct Widget {
     pub kind: WidgetKind,
     pub background: Background,
@@ -169,6 +177,8 @@ pub struct Widget {
     pub hover_fill: bool,
     /// Children are drawn only inside this widget's frame (scrolling lists).
     pub clip: bool,
+    /// Shown in a glass label after the pointer rests on the widget (see `Ui::hovered_tooltip`).
+    pub tooltip: Option<Tooltip>,
     /// Absolute frame in logical pixels, updated by layout.
     pub(crate) frame: Rect,
 }
@@ -193,6 +203,7 @@ impl Widget {
             press_whole: false,
             hover_fill: true,
             clip: false,
+            tooltip: None,
             frame: Rect::default(),
         }
     }
@@ -297,6 +308,12 @@ impl Widget {
     /// See [`Widget::press_whole`].
     pub fn pressed_whole(mut self) -> Self {
         self.press_whole = true;
+        self
+    }
+
+    /// See [`Widget::tooltip`].
+    pub fn with_tooltip(mut self, label: &str, action: Option<axion_config::Action>) -> Self {
+        self.tooltip = Some(Tooltip { label: label.to_owned(), action });
         self
     }
 

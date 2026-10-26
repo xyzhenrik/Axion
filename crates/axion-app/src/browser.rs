@@ -59,6 +59,7 @@ use crate::suggestions::{SuggestionList, suggest};
 use crate::tabdrag::{TabDrag, Target};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
 use crate::toast::Toast;
+use crate::tooltip::Tooltip;
 use crate::url::display_host;
 use crate::url::resolve_input;
 
@@ -199,6 +200,7 @@ pub struct Browser {
     shields_popover: ShieldsPopover,
     downloads_popover: DownloadsPopover,
     toast: Toast,
+    tooltip: Tooltip,
     /// What the sidebar panel's search field held when the list was last built.
     panel_query: String,
     find: FindBar,
@@ -493,6 +495,8 @@ impl Browser {
             &mut ui,
             &[chrome.bar_node(), chrome.tab_strip_node(), chrome.sidebar_node(), chrome.bookmarks_bar_node()],
         );
+        let tooltip_parent = ui.root();
+        let tooltip = Tooltip::build(&mut ui, tooltip_parent);
         let (_, alert_plane) = lock_screen.planes();
         let root = ui.root();
         let mut planes = ui.children(root);
@@ -520,6 +524,7 @@ impl Browser {
             shields_popover,
             downloads_popover,
             toast,
+            tooltip,
             panel_query: String::new(),
             find,
             file_drop: FileDrop::default(),
@@ -2917,7 +2922,6 @@ impl Browser {
                     Some(ChromeAction::Private) if !self.private_mode => self.toggle_private_mode(),
                     Some(ChromeAction::Private) if self.is_locked() => self.show_unlock_alert(),
                     Some(ChromeAction::Private) => self.chrome.toggle_section(&mut self.ui, Section::Private),
-                    Some(ChromeAction::NewTabGroup) => tracing::info!("tab groups arrive in a later phase"),
                     Some(ChromeAction::MuteTab) => {
                         if let Some(tab) = self.tabs.active_mut() {
                             tab.muted = !tab.muted;
@@ -3414,6 +3418,23 @@ impl Browser {
         self.toast.show(&mut self.ui, &self.config, anchor, width, icon, text);
     }
 
+    /// Tooltips stay away while a menu, popover, sheet or drag is active.
+    fn tooltips_blocked(&self) -> bool {
+        self.tab_drag.is_dragging()
+            || self.menu.is_open()
+            || self.account_menu.is_open()
+            || self.context_menus.is_open()
+            || self.shields_popover.is_open()
+            || self.downloads_popover.is_open()
+            || self.suggestions.is_visible()
+            || self.find.is_open()
+            || self.overview.is_open()
+            || self.settings.is_open()
+            || self.passwords.is_open()
+            || self.add_account.is_open()
+            || self.lock_screen.is_alert_open()
+    }
+
     fn toggle_downloads_popover(&mut self) {
         if self.downloads_popover.is_open() {
             self.downloads_popover.close(&mut self.ui, &self.config);
@@ -3699,8 +3720,12 @@ impl Browser {
                 self.ui.handle(UiInput::PointerLeave);
                 self.leave_page();
             }
-            WindowEvent::MouseInput { state, button, .. } => self.mouse_button(state, button),
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.tooltip.cancel(&mut self.ui);
+                self.mouse_button(state, button)
+            }
             WindowEvent::MouseWheel { delta, .. } => {
+                self.tooltip.cancel(&mut self.ui);
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(x, y) => Vec2::new(x, y) * LINE_SCROLL,
                     MouseScrollDelta::PixelDelta(p) => Vec2::new(p.x as f32, p.y as f32) / self.scale(),
@@ -3928,6 +3953,9 @@ impl Browser {
     /// Returns `true` if the browser should quit.
     fn keyboard(&mut self, event: &winit::event::KeyEvent) -> bool {
         let pressed = event.state.is_pressed();
+        if pressed {
+            self.tooltip.cancel(&mut self.ui);
+        }
         if pressed && self.passwords.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.close_passwords();
             let _ = self.ui.blur();
@@ -4683,6 +4711,9 @@ impl Browser {
         self.settings.poll_search(&mut self.ui, &self.config, &self.keymap);
         self.poll_panel_search();
         self.toast.animate(&mut self.ui, &self.config, dt);
+        let blocked = self.tooltips_blocked();
+        let window = self.logical_size();
+        self.tooltip.animate(&mut self.ui, &self.config, &self.keymap, window, blocked, dt);
         self.take_engine_icons();
         self.sync_password_icons();
         // Keeps the sidebar's scroll in range when its content got shorter (tabs closed).
