@@ -6,6 +6,7 @@
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{Action, Config, Keymap};
+use axion_i18n::tr;
 use axion_ui::taffy::NodeId;
 use axion_ui::{ActionId, Ui};
 use glam::Vec2;
@@ -72,18 +73,18 @@ pub fn tab_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
         }
     };
     let mut items = vec![
-        item(Icon::Reload, "Reload", TabCommand::Reload, Some(Action::Reload)),
-        item(Icon::Copy, "Duplicate", TabCommand::Duplicate, None),
+        item(Icon::Reload, tr("Reload"), TabCommand::Reload, Some(Action::Reload)),
+        item(Icon::Copy, tr("Duplicate"), TabCommand::Duplicate, None),
         if info.muted {
-            item(Icon::Volume, "Unmute Tab", TabCommand::Unmute, None)
+            item(Icon::Volume, tr("Unmute Tab"), TabCommand::Unmute, None)
         } else {
-            item(Icon::Muted, "Mute Tab", TabCommand::Mute, None)
+            item(Icon::Muted, tr("Mute Tab"), TabCommand::Mute, None)
         },
     ];
     if info.can_bookmark {
-        items.push(item(Icon::Bookmark, "Bookmark", TabCommand::Bookmark, None));
+        items.push(item(Icon::Bookmark, tr("Bookmark"), TabCommand::Bookmark, None));
     }
-    items.push(item(Icon::Close, "Close Tab", TabCommand::Close, Some(Action::CloseTab)).separated());
+    items.push(item(Icon::Close, tr("Close Tab"), TabCommand::Close, Some(Action::CloseTab)).separated());
     items
 }
 
@@ -98,32 +99,32 @@ pub fn group_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
             None => item,
         }
     };
-    let mut items = vec![item(Icon::Plus, "New Tab", TabCommand::NewTabToTheRight, Some(Action::NewTab))];
+    let mut items = vec![item(Icon::Plus, tr("New Tab"), TabCommand::NewTabToTheRight, Some(Action::NewTab))];
     if info.can_reopen {
         items.push(item(
             Icon::History,
-            "Reopen Closed Tab",
+            tr("Reopen Closed Tab"),
             TabCommand::ReopenClosed,
             Some(Action::ReopenClosedTab),
         ));
     }
     if !info.private {
         items.push(if info.pinned {
-            item(Icon::Pin, "Unpin Current Tab", TabCommand::Unpin, Some(Action::PinTab)).separated()
+            item(Icon::Pin, tr("Unpin Current Tab"), TabCommand::Unpin, Some(Action::PinTab)).separated()
         } else {
-            item(Icon::Pin, "Pin Current Tab", TabCommand::Pin, Some(Action::PinTab)).separated()
+            item(Icon::Pin, tr("Pin Current Tab"), TabCommand::Pin, Some(Action::PinTab)).separated()
         });
     }
     items.push(if info.private {
-        item(Icon::TabGroup, "Move Current to Normal", TabCommand::MoveToNormal, None).separated()
+        item(Icon::TabGroup, tr("Move Current to Normal"), TabCommand::MoveToNormal, None).separated()
     } else {
-        item(Icon::Hand, "Move Current to Private", TabCommand::MoveToPrivate, None)
+        item(Icon::Hand, tr("Move Current to Private"), TabCommand::MoveToPrivate, None)
     });
     if info.can_bookmark {
-        items.push(item(Icon::Bookmark, "Bookmark All Tabs", TabCommand::BookmarkAll, None));
+        items.push(item(Icon::Bookmark, tr("Bookmark All Tabs"), TabCommand::BookmarkAll, None));
     }
     if info.others {
-        items.push(item(Icon::Close, "Close Other Tabs", TabCommand::CloseOthers, None).separated());
+        items.push(item(Icon::Close, tr("Close Other Tabs"), TabCommand::CloseOthers, None).separated());
     }
     items
 }
@@ -133,10 +134,10 @@ pub fn bookmark_items(index: usize) -> Vec<MenuItem> {
     vec![
         MenuItem::new(
             Icon::Plus,
-            "Open in New Tab",
+            tr("Open in New Tab"),
             MenuAction::Bookmark(BookmarkCommand::OpenInNewTab(index)),
         ),
-        MenuItem::new(Icon::Trash, "Delete", MenuAction::Bookmark(BookmarkCommand::Delete(index)))
+        MenuItem::new(Icon::Trash, tr("Delete"), MenuAction::Bookmark(BookmarkCommand::Delete(index)))
             .separated(),
     ]
 }

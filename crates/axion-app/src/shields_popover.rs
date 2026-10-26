@@ -3,6 +3,7 @@
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
+use axion_i18n::{tr, tr_mark};
 use axion_shields::Level;
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
@@ -24,8 +25,11 @@ const COUNTER: f32 = 44.0;
 const SEGMENTS: f32 = 36.0;
 const NOTE: f32 = 18.0;
 const FOOTER: f32 = 32.0;
-const LEVELS: [(&str, Level); 3] =
-    [("Off", Level::Off), ("Standard", Level::Standard), ("Aggressive", Level::Aggressive)];
+const LEVELS: [(&str, Level); 3] = [
+    (tr_mark("Off"), Level::Off),
+    (tr_mark("Standard"), Level::Standard),
+    (tr_mark("Aggressive"), Level::Aggressive),
+];
 
 /// What the popover shows.
 pub struct ShieldsInfo {
@@ -108,35 +112,39 @@ impl ShieldsPopover {
             Style { flex_direction: FlexDirection::Column, flex_grow: 1.0, ..Default::default() },
         );
         ui.add_label(titles, &info.host, TextStyle::BodyEmphasis, Style::default());
-        let status = if active { "Shields are up" } else { "Shields are down for this site" };
+        let status = if active { tr("Shields are up") } else { tr("Shields are down for this site") };
         secondary(ui, titles, status, TextStyle::Footnote);
 
         let counter = ui.add(self.plate, Widget::container(), fixed_row(COUNTER, 12.0));
         let count = if active { info.blocked_here.to_string() } else { "–".into() };
         self.count = Some(ui.add_label(counter, &count, TextStyle::LargeTitle, Style::default()));
-        let what =
-            if info.lists_loading && active { "blocked · lists loading" } else { "blocked on this page" };
+        let what = if info.lists_loading && active {
+            tr("blocked · lists loading")
+        } else {
+            tr("blocked on this page")
+        };
         secondary(ui, counter, what, TextStyle::Footnote);
 
         let segments = ui.add(self.plate, Widget::container(), fixed_row(SEGMENTS, 0.0));
         let options: Vec<(&str, ActionId)> = LEVELS
             .iter()
             .enumerate()
-            .map(|(i, (name, _))| (*name, ActionId(ACTION_BASE + i as u32)))
+            .map(|(i, (name, _))| (tr(name), ActionId(ACTION_BASE + i as u32)))
             .collect();
         let current = LEVELS.iter().position(|(_, l)| *l == info.level);
         crate::settings::segmented(ui, segments, &options, current);
 
         let note = match info.level {
-            Level::Off => "Nothing is blocked on this site.",
-            Level::Standard => "Blocks third-party ads, trackers and ad popups.",
-            Level::Aggressive => "Also first-party ads and redirects without a click.",
+            Level::Off => tr("Nothing is blocked on this site."),
+            Level::Standard => tr("Blocks third-party ads, trackers and ad popups."),
+            Level::Aggressive => tr("Also first-party ads and redirects without a click."),
         };
         let note_row = ui.add(self.plate, Widget::container(), fixed_row(NOTE, 0.0));
         secondary(ui, note_row, note, TextStyle::Footnote);
 
         let footer = ui.add(self.plate, Widget::container(), fixed_row(FOOTER, 8.0));
-        let total = format!("{} blocked in total", group_thousands(info.blocked_total));
+        let total =
+            axion_i18n::tr_fmt!("{count} blocked in total", count = group_thousands(info.blocked_total));
         let label = secondary(ui, footer, &total, TextStyle::Footnote);
         self.total = Some(label);
         self.shown_level = Some(info.level);
@@ -160,7 +168,7 @@ impl ShieldsPopover {
                 ..row(4.0)
             },
         );
-        ui.add_label(button, "Settings", TextStyle::Callout, Style::default());
+        ui.add_label(button, tr("Settings"), TextStyle::Callout, Style::default());
         ui.add(button, Widget::icon(Icon::ChevronRight, 14.0).with_paint(Paint::Secondary), Style::default());
     }
 
@@ -187,7 +195,10 @@ impl ShieldsPopover {
             ui.set_text(count, &info.blocked_here.to_string());
         }
         if let Some(total) = self.total {
-            ui.set_text(total, &format!("{} blocked in total", group_thousands(info.blocked_total)));
+            ui.set_text(
+                total,
+                &axion_i18n::tr_fmt!("{count} blocked in total", count = group_thousands(info.blocked_total)),
+            );
         }
     }
 
