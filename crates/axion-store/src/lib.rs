@@ -87,7 +87,27 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE playlist ADD COLUMN source TEXT NOT NULL DEFAULT '';",
     // 10: when an item was last played (unix seconds, 0 = never), for "continue watching"
     "ALTER TABLE playlist ADD COLUMN played_at INTEGER NOT NULL DEFAULT 0;",
+    // 11: remembered permission decisions (microphone, notifications, …), by origin and kind
+    "CREATE TABLE site_permissions (
+        origin TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        allowed INTEGER NOT NULL,
+        decided INTEGER NOT NULL,
+        PRIMARY KEY (origin, kind)
+    );",
 ];
+
+/// A remembered permission decision of a site.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SitePermission {
+    /// `https://discord.com`.
+    pub origin: String,
+    /// The kind's stable key (`microphone`, `notifications`, …).
+    pub kind: String,
+    pub allowed: bool,
+    /// Unix seconds.
+    pub decided: i64,
+}
 
 /// Download states of a playlist item (`PlaylistItem::dl_state`).
 pub mod dl {
@@ -892,6 +912,51 @@ impl Store {
         Ok(())
     }
 
+    // ---- permissions ----
+
+    /// Every remembered permission decision, by origin and kind.
+    pub fn site_permissions(&self) -> Result<Vec<SitePermission>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT origin, kind, allowed, decided FROM site_permissions ORDER BY origin, kind")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(SitePermission {
+                origin: r.get(0)?,
+                kind: r.get(1)?,
+                allowed: r.get::<_, i64>(2)? != 0,
+                decided: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Remembers (or with `None`, forgets) a site's decision for a kind.
+    pub fn set_site_permission(
+        &self,
+        origin: &str,
+        kind: &str,
+        allowed: Option<bool>,
+        now: i64,
+    ) -> Result<()> {
+        match allowed {
+            Some(allowed) => self.conn.execute(
+                "INSERT INTO site_permissions (origin, kind, allowed, decided) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(origin, kind) DO UPDATE SET allowed = excluded.allowed, decided = excluded.decided",
+                params![origin, kind, allowed as i64, now],
+            )?,
+            None => self
+                .conn
+                .execute("DELETE FROM site_permissions WHERE origin = ?1 AND kind = ?2", [origin, kind])?,
+        };
+        Ok(())
+    }
+
+    /// Forgets every remembered permission decision.
+    pub fn clear_site_permissions(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM site_permissions", [])?;
+        Ok(())
+    }
+
     // ---- bookmarks ----
 
     pub fn add_bookmark(&self, url: &str, title: &str, now: i64) -> Result<i64> {
@@ -1172,6 +1237,31 @@ mod tests {
         assert_eq!(all, [("a.com".into(), "standard".into()), ("b.com".into(), "aggressive".into())]);
         s.set_site_setting("b.com", "shields", None).unwrap();
         assert_eq!(s.site_settings("shields").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn site_permissions_are_remembered_per_origin_and_kind() {
+        let s = store();
+        s.set_site_permission("https://a.com", "microphone", Some(true), NOW).unwrap();
+        s.set_site_permission("https://a.com", "camera", Some(false), NOW).unwrap();
+        s.set_site_permission("https://b.com", "notifications", Some(true), NOW).unwrap();
+        // A new decision replaces the old one.
+        s.set_site_permission("https://a.com", "microphone", Some(false), NOW + 1).unwrap();
+        let all = s.site_permissions().unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(
+            all[1],
+            SitePermission {
+                origin: "https://a.com".into(),
+                kind: "microphone".into(),
+                allowed: false,
+                decided: NOW + 1
+            }
+        );
+        s.set_site_permission("https://a.com", "camera", None, NOW).unwrap();
+        assert_eq!(s.site_permissions().unwrap().len(), 2);
+        s.clear_site_permissions().unwrap();
+        assert!(s.site_permissions().unwrap().is_empty());
     }
 
     #[test]

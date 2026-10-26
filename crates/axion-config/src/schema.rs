@@ -17,6 +17,7 @@ pub struct Config {
     pub motion: Motion,
     pub layout: Layout,
     pub privacy: Privacy,
+    pub permissions: Permissions,
     pub shields: Shields,
     pub tabs: Tabs,
     pub media: Media,
@@ -771,6 +772,60 @@ pub struct Privacy {
 impl Default for Privacy {
     fn default() -> Self {
         Self { lock_private_tabs: true, prompt_unlock_on_open: true, lock_after_seconds: None }
+    }
+}
+
+/// What happens when a site asks for a permission nobody has decided for it yet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionDefault {
+    /// Show the prompt.
+    #[default]
+    Ask,
+    /// Refuse without asking.
+    Block,
+}
+
+impl PermissionDefault {
+    pub fn blocks(self) -> bool {
+        self == PermissionDefault::Block
+    }
+}
+
+/// Site permissions: what sites may ask for, and what Axion does when they do. Decisions for
+/// single sites are remembered in the profile (Settings › Privacy › Site Permissions), not here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Permissions {
+    pub microphone: PermissionDefault,
+    pub camera: PermissionDefault,
+    /// Sharing a screen or window (calls, Discord streams). Allowing is never remembered:
+    /// every share asks.
+    pub screen_sharing: PermissionDefault,
+    pub notifications: PermissionDefault,
+    pub location: PermissionDefault,
+    /// Reading the clipboard (writing to it needs no permission).
+    pub clipboard: PermissionDefault,
+    /// Everything else sites can ask for: MIDI devices, the local network, window placement,
+    /// installed fonts, idle detection, pointer and keyboard lock, sensors, several downloads.
+    pub other: PermissionDefault,
+    /// "Stop" in the capture popover ends the page's tracks; if the page still records this
+    /// long after, the page is reloaded (milliseconds).
+    pub stop_reload_after_ms: u32,
+}
+
+impl Default for Permissions {
+    fn default() -> Self {
+        Self {
+            microphone: PermissionDefault::Ask,
+            camera: PermissionDefault::Ask,
+            screen_sharing: PermissionDefault::Ask,
+            notifications: PermissionDefault::Ask,
+            location: PermissionDefault::Ask,
+            clipboard: PermissionDefault::Ask,
+            other: PermissionDefault::Ask,
+            stop_reload_after_ms: 1500,
+        }
     }
 }
 
