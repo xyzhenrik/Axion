@@ -1936,7 +1936,9 @@ impl Onboarding {
                 ..Default::default()
             },
         );
-        ui.set_secure(field, secure);
+        if secure {
+            crate::eye::add(ui, holder, field);
+        }
         self.register(ui, holder, Target::Field(field));
         field
     }

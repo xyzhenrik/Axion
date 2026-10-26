@@ -2882,7 +2882,9 @@ fn text_field(ui: &mut Ui, parent: NodeId, placeholder: &str, width: f32, secure
         TextStyle::Body,
         Style { size: Size { width: length(width), height: length(22.0) }, ..Default::default() },
     );
-    ui.set_secure(field, secure);
+    if secure {
+        crate::eye::add(ui, field_box, field);
+    }
     field
 }
 

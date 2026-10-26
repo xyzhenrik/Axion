@@ -516,6 +516,13 @@ fn badge_icon(ui: &mut Ui, parent: NodeId, icon: Icon, size: f32) {
 }
 
 /// A grey rounded box holding a text field; returns the field.
+/// Makes a field of `field_box` a password field with the shared eye.
+fn add_eye(ui: &mut Ui, field: NodeId) {
+    if let Some(boxed) = ui.parent(field) {
+        crate::eye::add(ui, boxed, field);
+    }
+}
+
 fn field_box(ui: &mut Ui, parent: NodeId, placeholder: &str, layout: Style) -> NodeId {
     let boxed = ui.add(
         parent,
@@ -707,9 +714,9 @@ impl Passwords {
             ..row(0.0)
         };
         let alert_field = field_box(ui, alert, tr("Account password"), field_style.clone());
-        ui.set_secure(alert_field, true);
+        add_eye(ui, alert_field);
         let confirm_field = field_box(ui, alert, tr("Repeat password"), field_style);
-        ui.set_secure(confirm_field, true);
+        add_eye(ui, confirm_field);
         let confirm_box = ui.parent(confirm_field).unwrap_or(confirm_field);
         let alert_error = painted(ui, alert, "", TextStyle::Footnote, Paint::Fixed(ERROR));
         ui.set_visible(alert_error, false);
@@ -973,6 +980,8 @@ impl Passwords {
         }
         ui.set_field_text(self.alert_field, "");
         ui.set_field_text(self.confirm_field, "");
+        crate::eye::hide(ui, self.alert_field);
+        crate::eye::hide(ui, self.confirm_field);
         ui.set_visible(self.alert_layer, false);
         let draining = ui.is_visible(self.root) && ui.is_visible(self.sheet) && self.morph.is_shown();
         self.morph.close(ui, config, fallback);
@@ -2170,7 +2179,7 @@ impl Passwords {
                 let line = ui.add(root, Widget::container(), fixed(PROMPT_LINE, padding(2.0, 0.0), 8.0));
                 height += PROMPT_GAP_ROWS + PROMPT_LINE;
                 let field = field_box(ui, line, tr("Account password"), Style { flex_grow: 1.0, ..row(0.0) });
-                ui.set_secure(field, true);
+                add_eye(ui, field);
                 // The field takes the room; the button keeps its natural width.
                 let label = capsule_button(ui, line, PROMPT_UNLOCK, tr("Unlock"), true);
                 if let Some(button) = ui.parent(label) {

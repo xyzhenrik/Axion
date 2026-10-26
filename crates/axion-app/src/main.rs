@@ -22,6 +22,7 @@ mod downloads;
 mod downloads_popover;
 mod drip;
 mod engine_icons;
+mod eye;
 mod favicons;
 mod filedrop;
 mod find;

@@ -3041,6 +3041,13 @@ impl Browser {
     fn handle_ui_events(&mut self, events: Vec<UiEvent>) {
         for event in events {
             match event {
+                UiEvent::Clicked { action, .. } if crate::eye::owns(action) => {
+                    // The eye of a password field: keep typing where the focus was.
+                    if let Some(field) = crate::eye::toggle(&mut self.ui, action) {
+                        let events = self.ui.focus(field);
+                        self.handle_ui_events(events);
+                    }
+                }
                 event if self.onboarding.is_open() && self.onboarding.wants(&event) => {
                     self.onboarding_event(event);
                 }
