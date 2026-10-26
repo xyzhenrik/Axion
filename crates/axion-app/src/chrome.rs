@@ -457,8 +457,7 @@ struct BookmarkRow {
     /// What the items were built from (url, title, has a favicon), to rebuild only on change.
     signature: Vec<(String, String, bool)>,
     shown: bool,
-    /// Where the bar may lie (left edge, width; logical px): it is only as wide as its items,
-    /// centred in this span, and grows with them.
+    /// Where the bar lies (left edge, width; logical px).
     area: (f32, f32),
     /// The bar's applied left edge and width.
     applied: (f32, f32),
@@ -2510,13 +2509,10 @@ impl Chrome {
         if !b.shown || !ui.is_visible(b.bar) {
             return;
         }
+        // The bar spans the whole width.
         let (left, span) = b.area;
+        b.place(ui, left, span, span);
         if b.items.is_empty() {
-            // Just the hint, centred.
-            let hint = ui.frame(b.hint).size.x;
-            if hint > 0.0 {
-                b.place(ui, left, span, hint + 2.0 * BOOKMARKS_BAR_PADDING);
-            }
             return;
         }
         if b.widths.is_none() {
@@ -2531,11 +2527,6 @@ impl Chrome {
         let Some(widths) = b.widths.clone() else { return };
         let available = span - 2.0 * BOOKMARKS_BAR_PADDING;
         let fit = bookmarks_that_fit(&widths, BOOKMARK_GAP, available, BOOKMARK_ITEM_HEIGHT);
-        // As wide as the items shown (and the chevron, when some don't fit), centred.
-        let more = if fit < widths.len() { BOOKMARK_GAP + BOOKMARK_ITEM_HEIGHT } else { 0.0 };
-        let items: f32 =
-            widths[..fit.min(widths.len())].iter().sum::<f32>() + fit.saturating_sub(1) as f32 * BOOKMARK_GAP;
-        b.place(ui, left, span, items + more + 2.0 * BOOKMARKS_BAR_PADDING);
         if fit == b.fit {
             return;
         }

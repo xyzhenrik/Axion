@@ -451,7 +451,7 @@ impl Default for Layout {
             sidebar_visible: true,
             wide_from: 1280.0,
             narrow_below: 800.0,
-            tab_width: 220.0,
+            tab_width: 260.0,
             tab_min_width: 72.0,
             pinned_tab_width: 44.0,
             bookmarks_bar: BookmarksBar::Always,
