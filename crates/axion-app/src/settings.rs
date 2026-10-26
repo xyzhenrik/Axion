@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
     ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, Keymap, PlaylistSort,
-    RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode,
+    RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode, UiLanguage,
 };
+use axion_i18n::{tr, tr_fmt, tr_mark, tr_n};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
@@ -100,19 +101,25 @@ impl Category {
         Category::Passwords,
     ];
 
+    /// The page's name, translated.
     fn title(self) -> &'static str {
+        tr(self.source_title())
+    }
+
+    /// The page's English name (what search also matches).
+    fn source_title(self) -> &'static str {
         match self {
-            Category::Account => "Account",
-            Category::General => "General",
-            Category::Appearance => "Appearance",
-            Category::LiquidGlass => "Liquid Glass",
-            Category::Tabs => "Tabs & Memory",
-            Category::Media => "Media",
-            Category::Keyboard => "Keyboard",
-            Category::Shields => "Shields",
-            Category::Privacy => "Privacy",
-            Category::Data => "Data & Downloads",
-            Category::Passwords => "Passwords",
+            Category::Account => tr_mark("Account"),
+            Category::General => tr_mark("General"),
+            Category::Appearance => tr_mark("Appearance"),
+            Category::LiquidGlass => tr_mark("Liquid Glass"),
+            Category::Tabs => tr_mark("Tabs & Memory"),
+            Category::Media => tr_mark("Media"),
+            Category::Keyboard => tr_mark("Keyboard"),
+            Category::Shields => tr_mark("Shields"),
+            Category::Privacy => tr_mark("Privacy"),
+            Category::Data => tr_mark("Data & Downloads"),
+            Category::Passwords => tr_mark("Passwords"),
         }
     }
 
@@ -191,60 +198,66 @@ enum Setting {
 }
 
 impl Setting {
+    /// The setting's label, translated.
     fn label(self) -> &'static str {
+        tr(self.source_label())
+    }
+
+    /// The setting's English label (what search also matches).
+    fn source_label(self) -> &'static str {
         match self {
-            Setting::HomeClock => "Clock",
-            Setting::HomeGreeting => "Greeting",
-            Setting::HomeSearch => "Search field",
-            Setting::HomeTopSites => "Top sites",
-            Setting::HomeStats => "Shields statistics",
-            Setting::HomeLive => "Live wallpapers (animated images and videos)",
-            Setting::HomeLiveIgnoreReduceMotion => "Play live wallpapers with Reduce Motion",
-            Setting::HomeDim => "Dim background image",
-            Setting::HomeBlur => "Blur background image",
-            Setting::TintFromPage => "Colour in tab bar",
-            Setting::AdaptToPage => "Light or dark chrome to match the page",
-            Setting::TextScale => "Text size",
-            Setting::PageCorner => "Page corner radius",
-            Setting::FloatSidebar => "Float sidebar over the page",
-            Setting::ReduceTransparency => "Reduce transparency",
-            Setting::ReduceMotion => "Reduce motion",
-            Setting::Refraction => "Refraction",
-            Setting::Blur => "Blur",
-            Setting::Dispersion => "Colour dispersion",
-            Setting::Squash => "Squash when moving",
-            Setting::MergeDistance => "Merge distance",
-            Setting::LockPrivateTabs => "Lock private tabs with the account password",
-            Setting::HideAdElements => "Hide empty ad spaces",
-            Setting::BlockPopups => "Block popups opened without a click",
-            Setting::BlockRedirects => "Block redirects to ad and tracker sites",
-            Setting::StripTracking => "Remove tracking parameters from links",
-            Setting::ThirdPartyCookies => "Block third-party cookies",
-            Setting::FreezeAfter => "Freeze background tabs after",
-            Setting::DiscardAfter => "Unload background tabs after",
-            Setting::LimitMemory => "Unload tabs when memory runs over the budget",
-            Setting::MemoryBudget => "Memory budget",
-            Setting::KeepMediaAwake => "Keep tabs playing audio awake",
-            Setting::RestoreSession => "Reopen last session's tabs at start",
-            Setting::OpenInBackground => "Open new tabs in background",
-            Setting::HomeButton => "Show home button",
-            Setting::OwnFullscreenControls => "Axion's player in fullscreen",
-            Setting::HideControlsAfter => "Hide controls while playing after",
-            Setting::HardwareDecoding => "Hardware video decoding (after restart)",
-            Setting::DesktopIntegration => "Desktop media controls and media keys (after restart)",
-            Setting::AskWhereToSave => "Ask where to save each file",
-            Setting::OpenSafeFiles => "Open “safe” files after downloading",
-            Setting::ClearCookiesOnQuit => "Clear cookies and site data when Axion quits",
-            Setting::ClearHistoryItem => "Browsing history",
-            Setting::ClearCookiesItem => "Cookies and other site data",
-            Setting::ClearCacheItem => "Cached images and files",
-            Setting::ClearDownloadsItem => "Downloads list",
-            Setting::OfferToSavePasswords => "Offer to save passwords",
-            Setting::AutofillPasswords => "Offer to fill saved passwords",
-            Setting::ClearClipboardAfter => "Clear clipboard after copying",
-            Setting::PlaylistQuickAction => "Playlist button in the address field",
-            Setting::PlaylistAutoDownload => "Download videos when adding them to the Playlist",
-            Setting::PlaylistDeleteFiles => "Delete downloaded files when removing videos",
+            Setting::HomeClock => tr_mark("Clock"),
+            Setting::HomeGreeting => tr_mark("Greeting"),
+            Setting::HomeSearch => tr_mark("Search field"),
+            Setting::HomeTopSites => tr_mark("Top sites"),
+            Setting::HomeStats => tr_mark("Shields statistics"),
+            Setting::HomeLive => tr_mark("Live wallpapers (animated images and videos)"),
+            Setting::HomeLiveIgnoreReduceMotion => tr_mark("Play live wallpapers with Reduce Motion"),
+            Setting::HomeDim => tr_mark("Dim background image"),
+            Setting::HomeBlur => tr_mark("Blur background image"),
+            Setting::TintFromPage => tr_mark("Colour in tab bar"),
+            Setting::AdaptToPage => tr_mark("Light or dark chrome to match the page"),
+            Setting::TextScale => tr_mark("Text size"),
+            Setting::PageCorner => tr_mark("Page corner radius"),
+            Setting::FloatSidebar => tr_mark("Float sidebar over the page"),
+            Setting::ReduceTransparency => tr_mark("Reduce transparency"),
+            Setting::ReduceMotion => tr_mark("Reduce motion"),
+            Setting::Refraction => tr_mark("Refraction"),
+            Setting::Blur => tr_mark("Blur"),
+            Setting::Dispersion => tr_mark("Colour dispersion"),
+            Setting::Squash => tr_mark("Squash when moving"),
+            Setting::MergeDistance => tr_mark("Merge distance"),
+            Setting::LockPrivateTabs => tr_mark("Lock private tabs with the account password"),
+            Setting::HideAdElements => tr_mark("Hide empty ad spaces"),
+            Setting::BlockPopups => tr_mark("Block popups opened without a click"),
+            Setting::BlockRedirects => tr_mark("Block redirects to ad and tracker sites"),
+            Setting::StripTracking => tr_mark("Remove tracking parameters from links"),
+            Setting::ThirdPartyCookies => tr_mark("Block third-party cookies"),
+            Setting::FreezeAfter => tr_mark("Freeze background tabs after"),
+            Setting::DiscardAfter => tr_mark("Unload background tabs after"),
+            Setting::LimitMemory => tr_mark("Unload tabs when memory runs over the budget"),
+            Setting::MemoryBudget => tr_mark("Memory budget"),
+            Setting::KeepMediaAwake => tr_mark("Keep tabs playing audio awake"),
+            Setting::RestoreSession => tr_mark("Reopen last session's tabs at start"),
+            Setting::OpenInBackground => tr_mark("Open new tabs in background"),
+            Setting::HomeButton => tr_mark("Show home button"),
+            Setting::OwnFullscreenControls => tr_mark("Axion's player in fullscreen"),
+            Setting::HideControlsAfter => tr_mark("Hide controls while playing after"),
+            Setting::HardwareDecoding => tr_mark("Hardware video decoding (after restart)"),
+            Setting::DesktopIntegration => tr_mark("Desktop media controls and media keys (after restart)"),
+            Setting::AskWhereToSave => tr_mark("Ask where to save each file"),
+            Setting::OpenSafeFiles => tr_mark("Open “safe” files after downloading"),
+            Setting::ClearCookiesOnQuit => tr_mark("Clear cookies and site data when Axion quits"),
+            Setting::ClearHistoryItem => tr_mark("Browsing history"),
+            Setting::ClearCookiesItem => tr_mark("Cookies and other site data"),
+            Setting::ClearCacheItem => tr_mark("Cached images and files"),
+            Setting::ClearDownloadsItem => tr_mark("Downloads list"),
+            Setting::OfferToSavePasswords => tr_mark("Offer to save passwords"),
+            Setting::AutofillPasswords => tr_mark("Offer to fill saved passwords"),
+            Setting::ClearClipboardAfter => tr_mark("Clear clipboard after copying"),
+            Setting::PlaylistQuickAction => tr_mark("Playlist button in the address field"),
+            Setting::PlaylistAutoDownload => tr_mark("Download videos when adding them to the Playlist"),
+            Setting::PlaylistDeleteFiles => tr_mark("Delete downloaded files when removing videos"),
         }
     }
 
@@ -318,15 +331,15 @@ impl Setting {
     fn display(self, c: &Config) -> String {
         let percent = |v: f32| format!("{:.0} %", v * 100.0);
         let minutes = |m: f32| match m {
-            m if m <= 0.0 => "Never".to_owned(),
-            m if m < 60.0 => format!("{m:.0} min"),
-            m => format!("{} h", trim_number(m / 60.0)),
+            m if m <= 0.0 => tr("Never").to_owned(),
+            m if m < 60.0 => tr_fmt!("{minutes} min", minutes = format!("{m:.0}")),
+            m => tr_fmt!("{hours} h", hours = trim_number(m / 60.0)),
         };
         let defaults = Config::default();
         match self {
             Setting::HomeDim => percent(c.home.background_dim),
             Setting::HomeBlur => match c.home.background_blur {
-                b if b <= 0.0 => "Off".to_owned(),
+                b if b <= 0.0 => tr("Off").to_owned(),
                 b => format!("{b:.0} px"),
             },
             Setting::TextScale => percent(c.appearance.text_scale),
@@ -344,16 +357,19 @@ impl Setting {
                 0 => {
                     let mut auto = c.clone();
                     auto.tabs.limit_memory = true;
-                    crate::lifecycle::memory_budget(&auto)
-                        .map_or("Automatic".to_owned(), |b| format!("Automatic ({:.0} GB)", b as f64 / GIB))
+                    crate::lifecycle::memory_budget(&auto).map_or(tr("Automatic").to_owned(), |b| {
+                        tr_fmt!("Automatic ({size} GB)", size = format!("{:.0}", b as f64 / GIB))
+                    })
                 }
                 mb => format_bytes(u64::from(mb) * 1024 * 1024),
             },
-            Setting::HideControlsAfter => format!("{} s", trim_number(c.media.hide_controls_after_seconds)),
+            Setting::HideControlsAfter => {
+                tr_fmt!("{seconds} s", seconds = trim_number(c.media.hide_controls_after_seconds))
+            }
             Setting::ClearClipboardAfter => match c.passwords.clear_clipboard_seconds {
-                s if s <= 0.0 => "Never".to_owned(),
-                s if s < 60.0 => format!("{s:.0} s"),
-                s => format!("{} min", trim_number(s / 60.0)),
+                s if s <= 0.0 => tr("Never").to_owned(),
+                s if s < 60.0 => tr_fmt!("{seconds} s", seconds = format!("{s:.0}")),
+                s => tr_fmt!("{minutes} min", minutes = trim_number(s / 60.0)),
             },
             _ => String::new(),
         }
@@ -523,6 +539,7 @@ pub enum SettingsAction {
     TabBar(TabBarStyle),
     BookmarksBar(BookmarksBar),
     PlaylistSort(PlaylistSort),
+    Language(UiLanguage),
     CloseAfter(u32),
     AddTrustedSite,
     /// Index into `media.trusted_player_sites`.
@@ -567,29 +584,36 @@ const SITE_DATA_BASE: u32 = 100;
 const SITE_DATA_LIMIT: usize = 100;
 
 const REMOVE_DOWNLOADS: [(&str, RemoveDownloads); 3] = [
-    ("Manually", RemoveDownloads::Manually),
-    ("After One Day", RemoveDownloads::AfterOneDay),
-    ("When Axion Quits", RemoveDownloads::OnQuit),
+    (tr_mark("Manually"), RemoveDownloads::Manually),
+    (tr_mark("After One Day"), RemoveDownloads::AfterOneDay),
+    (tr_mark("When Axion Quits"), RemoveDownloads::OnQuit),
 ];
 
 const CLEAR_RANGES: [(&str, ClearRange); 4] = [
-    ("Last Hour", ClearRange::LastHour),
-    ("Today", ClearRange::Today),
-    ("Last 7 Days", ClearRange::LastWeek),
-    ("All Time", ClearRange::AllTime),
+    (tr_mark("Last Hour"), ClearRange::LastHour),
+    (tr_mark("Today"), ClearRange::Today),
+    (tr_mark("Last 7 Days"), ClearRange::LastWeek),
+    (tr_mark("All Time"), ClearRange::AllTime),
 ];
 
 const DESTRUCTIVE: Color = Color::rgb(0xD0362B);
 
-const CLOSE_AFTER: [(&str, u32); 4] =
-    [("Manually", 0), ("After a Day", 1), ("After a Week", 7), ("After a Month", 30)];
+const CLOSE_AFTER: [(&str, u32); 4] = [
+    (tr_mark("Manually"), 0),
+    (tr_mark("After a Day"), 1),
+    (tr_mark("After a Week"), 7),
+    (tr_mark("After a Month"), 30),
+];
 
-const BOOKMARKS_BAR: [(&str, BookmarksBar); 3] =
-    [("Always", BookmarksBar::Always), ("On Home Page", BookmarksBar::Home), ("Never", BookmarksBar::Never)];
+const BOOKMARKS_BAR: [(&str, BookmarksBar); 3] = [
+    (tr_mark("Always"), BookmarksBar::Always),
+    (tr_mark("On Home Page"), BookmarksBar::Home),
+    (tr_mark("Never"), BookmarksBar::Never),
+];
 
 /// Icon weight presets: (name, `appearance.icon_stroke_light`, `appearance.icon_stroke_dark`).
 const ICON_WEIGHTS: [(&str, f32, f32); 3] =
-    [("Regular", 1.0, 1.0), ("Medium", 1.2, 1.0), ("Bold", 1.4, 1.15)];
+    [(tr_mark("Regular"), 1.0, 1.0), (tr_mark("Medium"), 1.2, 1.0), (tr_mark("Bold"), 1.4, 1.15)];
 
 /// The preset the config's two multipliers match, if any (custom values match none).
 fn icon_weight_preset(c: &Config) -> Option<usize> {
@@ -605,8 +629,15 @@ fn set_icon_weight(config: &mut Config, preset: usize) {
     config.appearance.icon_stroke_dark = dark;
 }
 
-const SHIELD_LEVELS: [(&str, ShieldLevel); 3] =
-    [("Off", ShieldLevel::Off), ("Standard", ShieldLevel::Standard), ("Aggressive", ShieldLevel::Aggressive)];
+/// The language choices, named in their own language (never translated).
+const LANGUAGES: [(&str, UiLanguage); 3] =
+    [("System", UiLanguage::System), ("English", UiLanguage::English), ("Deutsch", UiLanguage::German)];
+
+const SHIELD_LEVELS: [(&str, ShieldLevel); 3] = [
+    (tr_mark("Off"), ShieldLevel::Off),
+    (tr_mark("Standard"), ShieldLevel::Standard),
+    (tr_mark("Aggressive"), ShieldLevel::Aggressive),
+];
 
 impl SettingsAction {
     fn id(self) -> ActionId {
@@ -620,6 +651,9 @@ impl SettingsAction {
                     SettingsAction::Theme(ThemeMode::Auto) => 20,
                     SettingsAction::Theme(ThemeMode::Light) => 21,
                     SettingsAction::Theme(ThemeMode::Dark) => 22,
+                    SettingsAction::Language(language) => {
+                        23 + LANGUAGES.iter().position(|&(_, l)| l == language).unwrap_or(0) as u32
+                    }
                     SettingsAction::SearchEngine(i) => 30 + i as u32,
                     SettingsAction::Accent(i) => 40 + i as u32,
                     SettingsAction::ClearHistory => 50,
@@ -682,6 +716,7 @@ impl SettingsAction {
             20 => SettingsAction::Theme(ThemeMode::Auto),
             21 => SettingsAction::Theme(ThemeMode::Light),
             22 => SettingsAction::Theme(ThemeMode::Dark),
+            23..=25 => SettingsAction::Language(LANGUAGES[(n - 23) as usize].1),
             30..=39 if ((n - 30) as usize) < SEARCH_ENGINES.len() => {
                 SettingsAction::SearchEngine((n - 30) as usize)
             }
@@ -903,7 +938,7 @@ impl SettingsSheet {
         );
         let title = ui.add_label(
             nav_column,
-            "Settings",
+            tr("Settings"),
             TextStyle::Title1,
             Style {
                 margin: Rect {
@@ -935,7 +970,7 @@ impl SettingsSheet {
         ui.add(search_box, Widget::icon(Icon::Search, 15.0).with_paint(Paint::Secondary), Style::default());
         let search = ui.add_text_field(
             search_box,
-            "Search",
+            tr("Search"),
             TextStyle::Body,
             Style {
                 flex_grow: 1.0,
@@ -1290,7 +1325,7 @@ impl SettingsSheet {
         );
         match self.category {
             Category::General => {
-                let row_node = self.row(ui, "Homepage");
+                let row_node = self.row(ui, tr("Homepage"));
                 let field_box = ui.add(
                     row_node,
                     Widget::container()
@@ -1304,13 +1339,13 @@ impl SettingsSheet {
                 );
                 let field = ui.add_text_field(
                     field_box,
-                    "Axion Home",
+                    tr("Axion Home"),
                     TextStyle::Body,
                     Style { size: Size { width: length(320.0), height: length(22.0) }, ..Default::default() },
                 );
                 ui.set_field_text(field, config.general.homepage_field_text());
                 self.homepage = Some(field);
-                let row_node = self.row(ui, "Search engine");
+                let row_node = self.row(ui, tr("Search engine"));
                 let current = SEARCH_ENGINES.iter().position(|(_, url)| *url == config.general.search_url);
                 let options: Vec<(&str, ActionId)> = SEARCH_ENGINES
                     .iter()
@@ -1318,8 +1353,17 @@ impl SettingsSheet {
                     .map(|(i, (name, _))| (*name, SettingsAction::SearchEngine(i).id()))
                     .collect();
                 segmented(ui, row_node, &options, current);
+                // The language names stay as they are (each in its own language).
+                let row_node = self.row(ui, tr("Language"));
+                let languages: Vec<(&str, ActionId)> = LANGUAGES
+                    .iter()
+                    .map(|&(name, language)| (name, SettingsAction::Language(language).id()))
+                    .collect();
+                let current = LANGUAGES.iter().position(|&(_, l)| l == config.general.language);
+                segmented(ui, row_node, &languages, current);
+                self.note(ui, tr("Applies after restarting Axion."));
                 self.control(ui, config, Setting::HomeButton);
-                self.section(ui, "Start page");
+                self.section(ui, tr("Start page"));
                 for setting in [
                     Setting::HomeClock,
                     Setting::HomeGreeting,
@@ -1329,24 +1373,24 @@ impl SettingsSheet {
                 ] {
                     self.control(ui, config, setting);
                 }
-                self.section(ui, "Start page background");
+                self.section(ui, tr("Start page background"));
                 self.background_picker(ui, config);
                 if self.backgrounds.iter().any(|c| c.name == config.home.background) {
-                    self.control_labeled(ui, config, Setting::HomeDim, "Dim");
-                    self.control_labeled(ui, config, Setting::HomeBlur, "Blur");
+                    self.control_labeled(ui, config, Setting::HomeDim, tr("Dim"));
+                    self.control_labeled(ui, config, Setting::HomeBlur, tr("Blur"));
                 }
                 self.control(ui, config, Setting::HomeLive);
                 self.control(ui, config, Setting::HomeLiveIgnoreReduceMotion);
-                self.note(ui, "Off: wallpapers show a still frame while Reduce Motion is on.");
-                let row_node = self.row(ui, "Add from file");
+                self.note(ui, tr("Off: wallpapers show a still frame while Reduce Motion is on."));
+                let row_node = self.row(ui, tr("Add from file"));
                 self.background_path = Some(text_field(ui, row_node, "~/Pictures/sea.jpg", 220.0, false));
-                pill_button(ui, row_node, "Add", SettingsAction::AddBackgroundPath, false);
+                pill_button(ui, row_node, tr("Add"), SettingsAction::AddBackgroundPath, false);
                 let note = match &self.background_status {
                     Some(status) => status.clone(),
-                    None => "Images, animated images (GIF, WebP) and videos (WebM, MP4) are copied into \
+                    None => tr("Images, animated images (GIF, WebP) and videos (WebM, MP4) are copied into \
                              your profile. Videos play muted and loop; MP4 needs H.264 support. The \
-                             gear on the start page picks them too."
-                        .to_owned(),
+                             gear on the start page picks them too.")
+                    .to_owned(),
                 };
                 self.note(ui, &note);
                 if config.glass.reduce_motion
@@ -1355,29 +1399,29 @@ impl SettingsSheet {
                 {
                     self.note(
                         ui,
-                        "Reduce Motion is on (Appearance), so animated wallpapers and videos show a still \
-                         frame.",
+                        tr("Reduce Motion is on (Appearance), so animated wallpapers and videos show a still \
+                         frame."),
                     );
                 }
             }
             Category::Appearance => {
-                let row_node = self.row(ui, "Appearance");
+                let row_node = self.row(ui, tr("Appearance"));
                 let themes = [
-                    ("Automatic", SettingsAction::Theme(ThemeMode::Auto).id()),
-                    ("Light", SettingsAction::Theme(ThemeMode::Light).id()),
-                    ("Dark", SettingsAction::Theme(ThemeMode::Dark).id()),
+                    (tr("Automatic"), SettingsAction::Theme(ThemeMode::Auto).id()),
+                    (tr("Light"), SettingsAction::Theme(ThemeMode::Light).id()),
+                    (tr("Dark"), SettingsAction::Theme(ThemeMode::Dark).id()),
                 ];
                 let current = [ThemeMode::Auto, ThemeMode::Light, ThemeMode::Dark]
                     .iter()
                     .position(|&m| m == config.appearance.theme);
                 segmented(ui, row_node, &themes, current);
-                let row_node = self.row(ui, "Accent colour");
+                let row_node = self.row(ui, tr("Accent colour"));
                 swatches(ui, row_node, config.appearance.accent, SettingsAction::Accent);
-                let row_node = self.row(ui, "Icon weight");
+                let row_node = self.row(ui, tr("Icon weight"));
                 let weights: Vec<(&str, ActionId)> = ICON_WEIGHTS
                     .iter()
                     .enumerate()
-                    .map(|(i, &(name, ..))| (name, SettingsAction::IconWeight(i).id()))
+                    .map(|(i, &(name, ..))| (tr(name), SettingsAction::IconWeight(i).id()))
                     .collect();
                 segmented(ui, row_node, &weights, icon_weight_preset(config));
                 for setting in
@@ -1402,7 +1446,7 @@ impl SettingsSheet {
             Category::Keyboard => {
                 let note = ui.add_label(
                     self.content,
-                    "Change shortcuts in ~/.config/axion/keymap.toml - edits apply immediately.",
+                    tr("Change shortcuts in ~/.config/axion/keymap.toml - edits apply immediately."),
                     TextStyle::Footnote,
                     Style {
                         margin: Rect {
@@ -1431,7 +1475,7 @@ impl SettingsSheet {
                         ..row(0.0)
                     },
                 );
-                let field = text_field(ui, row_node, "Search shortcuts", 320.0, false);
+                let field = text_field(ui, row_node, tr("Search shortcuts"), 320.0, false);
                 ui.set_field_text(field, &self.key_query);
                 self.key_search = Some(field);
                 let list = ui.add(
@@ -1447,22 +1491,22 @@ impl SettingsSheet {
                 for setting in [Setting::TintFromPage, Setting::OpenInBackground] {
                     self.control(ui, config, setting);
                 }
-                let row_node = self.row(ui, "Close tabs");
+                let row_node = self.row(ui, tr("Close tabs"));
                 let options: Vec<(&str, ActionId)> = CLOSE_AFTER
                     .iter()
-                    .map(|(name, days)| (*name, SettingsAction::CloseAfter(*days).id()))
+                    .map(|(name, days)| (tr(name), SettingsAction::CloseAfter(*days).id()))
                     .collect();
                 let current = CLOSE_AFTER.iter().position(|(_, d)| *d == config.tabs.close_after_days);
                 segmented(ui, row_node, &options, current);
-                self.note(ui, "Axion can close tabs you haven't looked at for a while.");
-                let row_node = self.row(ui, "Bookmarks bar");
+                self.note(ui, tr("Axion can close tabs you haven't looked at for a while."));
+                let row_node = self.row(ui, tr("Bookmarks bar"));
                 let options: Vec<(&str, ActionId)> = BOOKMARKS_BAR
                     .iter()
-                    .map(|(name, mode)| (*name, SettingsAction::BookmarksBar(*mode).id()))
+                    .map(|(name, mode)| (tr(name), SettingsAction::BookmarksBar(*mode).id()))
                     .collect();
                 let current = BOOKMARKS_BAR.iter().position(|(_, m)| *m == config.layout.bookmarks_bar);
                 segmented(ui, row_node, &options, current);
-                self.section(ui, "Memory");
+                self.section(ui, tr("Memory"));
                 for setting in [
                     Setting::FreezeAfter,
                     Setting::DiscardAfter,
@@ -1473,9 +1517,10 @@ impl SettingsSheet {
                 ] {
                     self.control(ui, config, setting);
                 }
-                let budget = crate::lifecycle::memory_budget(config).map_or("none".into(), format_bytes);
-                let used = self.memory_used.map_or("not measured yet".into(), format_bytes);
-                let row_node = self.row(ui, &format!("In use now: {used} · budget: {budget}"));
+                let budget = crate::lifecycle::memory_budget(config).map_or(tr("none").into(), format_bytes);
+                let used = self.memory_used.map_or(tr("not measured yet").into(), format_bytes);
+                let row_node = self
+                    .row(ui, &tr_fmt!("In use now: {used} · budget: {budget}", used = used, budget = budget));
                 if let Some(label) = ui.children(row_node).first().copied()
                     && let Some(w) = ui.widget_mut(label)
                 {
@@ -1486,8 +1531,8 @@ impl SettingsSheet {
                 for setting in [Setting::OwnFullscreenControls, Setting::HideControlsAfter] {
                     self.control(ui, config, setting);
                 }
-                self.note(ui, "Pages keep their own player; in fullscreen, Axion's takes over.");
-                self.section(ui, "Playlist");
+                self.note(ui, tr("Pages keep their own player; in fullscreen, Axion's takes over."));
+                self.section(ui, tr("Playlist"));
                 for setting in [
                     Setting::PlaylistQuickAction,
                     Setting::PlaylistAutoDownload,
@@ -1496,28 +1541,28 @@ impl SettingsSheet {
                     self.control(ui, config, setting);
                 }
                 let folder = if config.playlist.directory.trim().is_empty() {
-                    "Axion data folder".to_owned()
+                    tr("Axion data folder").to_owned()
                 } else {
                     crate::downloads::display_path(std::path::Path::new(config.playlist.directory.trim()))
                 };
-                let row_node = self.row(ui, "Playlist sort");
+                let row_node = self.row(ui, tr("Playlist sort"));
                 let options: Vec<(&str, ActionId)> = crate::playlist::SORTS
                     .iter()
-                    .map(|(sort, name, _)| (*name, SettingsAction::PlaylistSort(*sort).id()))
+                    .map(|(sort, name, _)| (tr(name), SettingsAction::PlaylistSort(*sort).id()))
                     .collect();
                 let current = crate::playlist::SORTS.iter().position(|(s, ..)| *s == config.playlist.sort);
                 segmented(ui, row_node, &options, current);
-                let row_node = self.row(ui, "Playlist downloads");
+                let row_node = self.row(ui, tr("Playlist downloads"));
                 let label = ui.add_label(row_node, &folder, TextStyle::Callout, Style::default());
                 if let Some(w) = ui.widget_mut(label) {
                     w.set_paint(Paint::Secondary);
                 }
-                pill_button(ui, row_node, "Change…", SettingsAction::ChoosePlaylistFolder, false);
+                pill_button(ui, row_node, tr("Change…"), SettingsAction::ChoosePlaylistFolder, false);
                 if !config.playlist.directory.trim().is_empty() {
-                    pill_button(ui, row_node, "Default", SettingsAction::ResetPlaylistFolder, false);
+                    pill_button(ui, row_node, tr("Default"), SettingsAction::ResetPlaylistFolder, false);
                 }
-                self.note(ui, "Plain video files can be downloaded; streams are watched online only.");
-                self.section(ui, "Sites that keep their own player");
+                self.note(ui, tr("Plain video files can be downloaded; streams are watched online only."));
+                self.section(ui, tr("Sites that keep their own player"));
                 for (i, site) in config.media.trusted_player_sites.iter().enumerate() {
                     let row_node = self.row(ui, site);
                     let remove = ui.add(
@@ -1538,7 +1583,7 @@ impl SettingsSheet {
                         Style::default(),
                     );
                 }
-                let row_node = self.row(ui, "Add a site");
+                let row_node = self.row(ui, tr("Add a site"));
                 let field_box = ui.add(
                     row_node,
                     Widget::container()
@@ -1557,18 +1602,18 @@ impl SettingsSheet {
                     Style { size: Size { width: length(220.0), height: length(22.0) }, ..Default::default() },
                 );
                 self.trusted_site = Some(field);
-                pill_button(ui, row_node, "Add", SettingsAction::AddTrustedSite, false);
-                self.note(ui, "Also in fullscreen, with their subdomains. Applies to pages loaded next.");
-                self.section(ui, "Playback");
+                pill_button(ui, row_node, tr("Add"), SettingsAction::AddTrustedSite, false);
+                self.note(ui, tr("Also in fullscreen, with their subdomains. Applies to pages loaded next."));
+                self.section(ui, tr("Playback"));
                 for setting in [Setting::HardwareDecoding, Setting::DesktopIntegration] {
                     self.control(ui, config, setting);
                 }
             }
             Category::Shields => {
-                let row_node = self.row(ui, "Shields on sites you haven't set");
+                let row_node = self.row(ui, tr("Shields on sites you haven't set"));
                 let options: Vec<(&str, ActionId)> = SHIELD_LEVELS
                     .iter()
-                    .map(|(name, l)| (*name, SettingsAction::ShieldLevel(*l).id()))
+                    .map(|(name, l)| (tr(name), SettingsAction::ShieldLevel(*l).id()))
                     .collect();
                 let current = SHIELD_LEVELS.iter().position(|(_, l)| *l == config.shields.default_level);
                 segmented(ui, row_node, &options, current);
@@ -1582,12 +1627,13 @@ impl SettingsSheet {
                     self.control(ui, config, setting);
                 }
                 let hours = config.shields.update_interval_hours;
-                let label = format!(
-                    "Filter lists ({}, refreshed every {hours:.0} hours)",
-                    config.shields.lists.len()
+                let label = tr_fmt!(
+                    "Filter lists ({count}, refreshed every {hours} hours)",
+                    count = config.shields.lists.len(),
+                    hours = format!("{hours:.0}")
                 );
                 let row_node = self.row(ui, &label);
-                pill_button(ui, row_node, "Update Now", SettingsAction::UpdateFilterLists, false);
+                pill_button(ui, row_node, tr("Update Now"), SettingsAction::UpdateFilterLists, false);
             }
             Category::Privacy => {
                 self.control(ui, config, Setting::LockPrivateTabs);
@@ -1595,16 +1641,17 @@ impl SettingsSheet {
                     // The lock needs the account password: offer to create it right here.
                     self.password_rows(ui);
                     let note = self.account_status.clone().unwrap_or_else(|| {
-                        format!(
-                            "Create a password for “{}” to lock private tabs. It also protects Passwords.",
-                            self.account.name
+                        tr_fmt!(
+                            "Create a password for “{name}” to lock private tabs. It also protects Passwords.",
+                            name = self.account.name
                         )
                     });
                     self.note(ui, &note);
                     self.section(ui, "");
                 }
-                let row_node = self.row(ui, "Browsing history");
-                let text = if self.confirm_clear { "Click again to clear" } else { "Clear History…" };
+                let row_node = self.row(ui, tr("Browsing history"));
+                let text =
+                    if self.confirm_clear { tr("Click again to clear") } else { tr("Clear History…") };
                 let button = ui.add(
                     row_node,
                     Widget::container()
@@ -1630,19 +1677,19 @@ impl SettingsSheet {
                 }
             }
             Category::Passwords => {
-                let row_node = self.row(ui, "Saved passwords, cards and addresses");
-                pill_button(ui, row_node, "Open Passwords", SettingsAction::OpenPasswords, false);
+                let row_node = self.row(ui, tr("Saved passwords, cards and addresses"));
+                pill_button(ui, row_node, tr("Open Passwords"), SettingsAction::OpenPasswords, false);
                 for setting in [Setting::OfferToSavePasswords, Setting::AutofillPasswords] {
                     self.control(ui, config, setting);
                 }
-                self.section(ui, "Security");
+                self.section(ui, tr("Security"));
                 self.control(ui, config, Setting::ClearClipboardAfter);
                 self.note(
                     ui,
-                    "Encrypted with your account password and a key that never leaves this device.",
+                    tr("Encrypted with your account password and a key that never leaves this device."),
                 );
-                self.section(ui, "Import and export");
-                let row_node = self.row(ui, "File");
+                self.section(ui, tr("Import and export"));
+                let row_node = self.row(ui, tr("File"));
                 let field_box = ui.add(
                     row_node,
                     Widget::container()
@@ -1661,15 +1708,28 @@ impl SettingsSheet {
                     Style { size: Size { width: length(260.0), height: length(22.0) }, ..Default::default() },
                 );
                 self.passwords_file = Some(field);
-                let row_node = self.row(ui, "Password");
+                let row_node = self.row(ui, tr("Password"));
                 self.passwords_secret =
-                    Some(text_field(ui, row_node, "For exports and restoring", 260.0, true));
+                    Some(text_field(ui, row_node, tr("For exports and restoring"), 260.0, true));
                 let row_node = self.row(ui, "");
-                pill_button(ui, row_node, "Import CSV", SettingsAction::ImportPasswords, false);
-                pill_button(ui, row_node, "Restore Axion Export", SettingsAction::RestorePasswords, false);
-                pill_button(ui, row_node, "Export Encrypted Copy", SettingsAction::ExportPasswords, false);
+                pill_button(ui, row_node, tr("Import CSV"), SettingsAction::ImportPasswords, false);
+                pill_button(
+                    ui,
+                    row_node,
+                    tr("Restore Axion Export"),
+                    SettingsAction::RestorePasswords,
+                    false,
+                );
+                pill_button(
+                    ui,
+                    row_node,
+                    tr("Export Encrypted Copy"),
+                    SettingsAction::ExportPasswords,
+                    false,
+                );
                 let note = self.passwords_status.clone().unwrap_or_else(|| {
-                    "Imports CSV from Chrome, Firefox or Bitwarden. Exports restore on any device.".to_owned()
+                    tr("Imports CSV from Chrome, Firefox or Bitwarden. Exports restore on any device.")
+                        .to_owned()
                 });
                 self.note(ui, &note);
             }
@@ -1700,8 +1760,8 @@ impl SettingsSheet {
         );
         ui.add_label(names, &account.name, TextStyle::Title2, Style::default());
         let detail = match account.count {
-            0 | 1 => "The only account on this computer".to_owned(),
-            n => format!("One of {n} accounts on this computer"),
+            0 | 1 => tr("The only account on this computer").to_owned(),
+            n => tr_fmt!("One of {count} accounts on this computer", count = n),
         };
         let label = ui.add_label(names, &detail, TextStyle::Footnote, Style::default());
         if let Some(w) = ui.widget_mut(label) {
@@ -1709,64 +1769,77 @@ impl SettingsSheet {
         }
         self.note(
             ui,
-            "Each account has its own tabs, history, bookmarks, passwords, website data and settings.",
+            tr("Each account has its own tabs, history, bookmarks, passwords, website data and settings."),
         );
 
-        self.section(ui, "Profile");
-        let row_node = self.row(ui, "Name");
-        let field = text_field(ui, row_node, "Name", 220.0, false);
+        self.section(ui, tr("Profile"));
+        let row_node = self.row(ui, tr("Name"));
+        let field = text_field(ui, row_node, tr("Name"), 220.0, false);
         ui.set_field_text(field, &account.name);
         self.account_name = Some(field);
-        pill_button(ui, row_node, "Save", SettingsAction::SaveAccountName, false);
-        let row_node = self.row(ui, "Photo");
+        pill_button(ui, row_node, tr("Save"), SettingsAction::SaveAccountName, false);
+        let row_node = self.row(ui, tr("Photo"));
         avatar(ui, row_node, &account.initials, account.color, PHOTO_PREVIEW, account.picture.as_ref());
-        glass_pill(ui, row_node, "Choose Photo…", SettingsAction::ChooseAccountPhoto);
+        glass_pill(ui, row_node, tr("Choose Photo…"), SettingsAction::ChooseAccountPhoto);
         if account.picture.is_some() {
-            glass_pill(ui, row_node, "Remove Photo", SettingsAction::RemoveAccountPhoto);
+            glass_pill(ui, row_node, tr("Remove Photo"), SettingsAction::RemoveAccountPhoto);
         }
         if let Some(status) = self.photo_status.clone() {
             self.note(ui, &status);
         }
-        let row_node = self.row(ui, "Colour");
+        let row_node = self.row(ui, tr("Colour"));
         swatches(ui, row_node, account.color, SettingsAction::AccountColor);
 
-        self.section(ui, "Password");
+        self.section(ui, tr("Password"));
         self.password_rows(ui);
         match self.account_status.clone() {
             Some(status) => self.note(ui, &status),
             None => {
-                self.note(ui, "One password for the whole account: it unlocks Passwords and private tabs.");
-                self.note(ui, "Axion can't recover it if you forget it.");
+                self.note(
+                    ui,
+                    tr("One password for the whole account: it unlocks Passwords and private tabs."),
+                );
+                self.note(ui, tr("Axion can't recover it if you forget it."));
             }
         }
 
-        self.section(ui, "Delete");
+        self.section(ui, tr("Delete"));
         if account.count > 1 {
-            let row_node = self.row(ui, "Delete this account and its data");
-            let text = if self.confirm_delete { "Click Again to Delete" } else { "Delete Account…" };
+            let row_node = self.row(ui, tr("Delete this account and its data"));
+            let text =
+                if self.confirm_delete { tr("Click Again to Delete") } else { tr("Delete Account…") };
             destructive_button(ui, row_node, text, SettingsAction::DeleteAccount, self.confirm_delete);
-            self.note(ui, "Removes its tabs, history, bookmarks, passwords, website data and settings.");
-            self.note(ui, "Axion then opens another account.");
+            self.note(ui, tr("Removes its tabs, history, bookmarks, passwords, website data and settings."));
+            self.note(ui, tr("Axion then opens another account."));
         } else {
-            self.row(ui, "The only account can't be deleted");
-            self.note(ui, "Add another account first, with the account button at the bottom of the sidebar.");
+            self.row(ui, tr("The only account can't be deleted"));
+            self.note(
+                ui,
+                tr("Add another account first, with the account button at the bottom of the sidebar."),
+            );
         }
     }
 
     /// The fields to set the account password, or to change it.
     fn password_rows(&mut self, ui: &mut Ui) {
         let current = if self.account.has_password {
-            let row_node = self.row(ui, "Current password");
-            Some(text_field(ui, row_node, "Required", 220.0, true))
+            let row_node = self.row(ui, tr("Current password"));
+            Some(text_field(ui, row_node, tr("Required"), 220.0, true))
         } else {
             None
         };
-        let row_node = self.row(ui, "New password");
-        let new = text_field(ui, row_node, &format!("At least {MIN_MASTER_LENGTH} characters"), 220.0, true);
-        let row_node = self.row(ui, "Confirm new password");
-        let confirm = text_field(ui, row_node, "Repeat it", 220.0, true);
+        let row_node = self.row(ui, tr("New password"));
+        let new = text_field(
+            ui,
+            row_node,
+            &tr_fmt!("At least {count} characters", count = MIN_MASTER_LENGTH),
+            220.0,
+            true,
+        );
+        let row_node = self.row(ui, tr("Confirm new password"));
+        let confirm = text_field(ui, row_node, tr("Repeat it"), 220.0, true);
         let row_node = self.row(ui, "");
-        let text = if self.account.has_password { "Change Password" } else { "Set Password" };
+        let text = if self.account.has_password { tr("Change Password") } else { tr("Set Password") };
         pill_button(ui, row_node, text, SettingsAction::SetPassword, false);
         self.password_fields = Some(PasswordFields { current, new, confirm });
     }
@@ -1774,30 +1847,30 @@ impl SettingsSheet {
     /// Data & Downloads (Safari's Downloads and "Clear History and Website Data", Chrome's
     /// "Delete browsing data", Firefox's "Cookies and Site Data").
     fn data_page(&mut self, ui: &mut Ui, config: &Config) {
-        self.section(ui, "Downloads");
+        self.section(ui, tr("Downloads"));
         let folder = crate::downloads::display_path(&crate::downloads::download_dir(config));
-        let row_node = self.row(ui, "Download location");
+        let row_node = self.row(ui, tr("Download location"));
         let label = ui.add_label(row_node, &folder, TextStyle::Callout, Style::default());
         if let Some(w) = ui.widget_mut(label) {
             w.set_paint(Paint::Secondary);
         }
-        pill_button(ui, row_node, "Change…", SettingsAction::ChooseDownloadFolder, false);
+        pill_button(ui, row_node, tr("Change…"), SettingsAction::ChooseDownloadFolder, false);
         for setting in [Setting::AskWhereToSave, Setting::OpenSafeFiles] {
             self.control(ui, config, setting);
         }
-        let row_node = self.row(ui, "Remove download list items");
+        let row_node = self.row(ui, tr("Remove download list items"));
         let options: Vec<(&str, ActionId)> = REMOVE_DOWNLOADS
             .iter()
-            .map(|(name, r)| (*name, SettingsAction::RemoveDownloads(*r).id()))
+            .map(|(name, r)| (tr(name), SettingsAction::RemoveDownloads(*r).id()))
             .collect();
         let current = REMOVE_DOWNLOADS.iter().position(|(_, r)| *r == config.downloads.remove_list_items);
         segmented(ui, row_node, &options, current);
-        self.note(ui, "“Safe” files are pictures, movies, sounds, PDF and text documents.");
+        self.note(ui, tr("“Safe” files are pictures, movies, sounds, PDF and text documents."));
 
-        self.section(ui, "Clear browsing data");
-        let row_node = self.row(ui, "Time range");
+        self.section(ui, tr("Clear browsing data"));
+        let row_node = self.row(ui, tr("Time range"));
         let options: Vec<(&str, ActionId)> =
-            CLEAR_RANGES.iter().map(|(name, r)| (*name, SettingsAction::ClearRange(*r).id())).collect();
+            CLEAR_RANGES.iter().map(|(name, r)| (tr(name), SettingsAction::ClearRange(*r).id())).collect();
         let current = CLEAR_RANGES.iter().position(|(_, r)| *r == config.data.clear_range);
         segmented(ui, row_node, &options, current);
         for setting in [Setting::ClearHistoryItem, Setting::ClearCookiesItem] {
@@ -1805,42 +1878,46 @@ impl SettingsSheet {
         }
         let cache = match self.cache_size {
             Some(size) => {
-                format!("{} ({})", Setting::ClearCacheItem.label(), crate::downloads::human_size(size as i64))
+                tr_fmt!(
+                    "{name} ({size})",
+                    name = Setting::ClearCacheItem.label(),
+                    size = crate::downloads::human_size(size as i64)
+                )
             }
             None => Setting::ClearCacheItem.label().to_owned(),
         };
         self.control_labeled(ui, config, Setting::ClearCacheItem, &cache);
         self.control(ui, config, Setting::ClearDownloadsItem);
         let row_node = self.row(ui, "");
-        let text = if self.confirm_clear_data { "Click Again to Clear" } else { "Clear Browsing Data…" };
+        let text =
+            if self.confirm_clear_data { tr("Click Again to Clear") } else { tr("Clear Browsing Data…") };
         destructive_button(ui, row_node, text, SettingsAction::ClearBrowsingData, self.confirm_clear_data);
         self.note(
             ui,
-            "A time range clears cookies only for the sites visited in it; the cache is cleared completely.",
+            tr("A time range clears cookies only for the sites visited in it; the cache is cleared completely."),
         );
 
-        self.section(ui, "Cookies and website data");
+        self.section(ui, tr("Cookies and website data"));
         self.control(ui, config, Setting::ClearCookiesOnQuit);
         match self.site_data.clone() {
             None => {
-                self.row(ui, "Looking for websites with data…");
+                self.row(ui, tr("Looking for websites with data…"));
             }
             Some(sites) => {
                 let summary = match sites.len() {
-                    0 => "No websites store cookies".to_owned(),
-                    1 => "1 website stores cookies".to_owned(),
-                    n => format!("{n} websites store cookies"),
+                    0 => tr("No websites store cookies").to_owned(),
+                    n => tr_n("{n} website stores cookies", "{n} websites store cookies", n),
                 };
                 let row_node = self.row(ui, &summary);
                 if !sites.is_empty() {
-                    let text = if self.confirm_remove_all { "Click Again to Remove" } else { "Remove All" };
+                    let text =
+                        if self.confirm_remove_all { tr("Click Again to Remove") } else { tr("Remove All") };
                     let confirming = self.confirm_remove_all;
                     destructive_button(ui, row_node, text, SettingsAction::RemoveAllSiteData, confirming);
                 }
                 for (i, (site, count)) in sites.iter().take(SITE_DATA_LIMIT).enumerate() {
                     let row_node = self.row_with_height(ui, site, 40.0);
-                    let cookies =
-                        if *count == 1 { "1 cookie".to_owned() } else { format!("{count} cookies") };
+                    let cookies = tr_n("{n} cookie", "{n} cookies", *count);
                     let label = ui.add_label(row_node, &cookies, TextStyle::Footnote, Style::default());
                     if let Some(w) = ui.widget_mut(label) {
                         w.set_paint(Paint::Secondary);
@@ -1861,7 +1938,7 @@ impl SettingsSheet {
                     ui.add(remove, cross, Style::default());
                 }
                 if sites.len() > SITE_DATA_LIMIT {
-                    self.note(ui, &format!("And {} more.", sites.len() - SITE_DATA_LIMIT));
+                    self.note(ui, &tr_fmt!("And {count} more.", count = sites.len() - SITE_DATA_LIMIT));
                 }
             }
         }
@@ -1970,7 +2047,7 @@ impl SettingsSheet {
                 .with_radius(BACKGROUND_CARD_RADIUS),
             card_style.clone(),
         );
-        let label = ui.add_label(none, "None", TextStyle::Footnote, Style::default());
+        let label = ui.add_label(none, tr("None"), TextStyle::Footnote, Style::default());
         if let Some(w) = ui.widget_mut(label) {
             w.set_paint(Paint::Secondary);
         }
@@ -2041,7 +2118,7 @@ impl SettingsSheet {
                 card_style,
             );
             ui.add(add, Widget::icon(Icon::Plus, 18.0).with_paint(Paint::Accent), Style::default());
-            let label = ui.add_label(add, "Add…", TextStyle::Footnote, Style::default());
+            let label = ui.add_label(add, tr("Add…"), TextStyle::Footnote, Style::default());
             if let Some(w) = ui.widget_mut(label) {
                 w.set_paint(Paint::Accent);
             }
@@ -2053,7 +2130,7 @@ impl SettingsSheet {
     fn show_results(&mut self, ui: &mut Ui, config: &Config) {
         ui.add_label(
             self.content,
-            "Search Results",
+            tr("Search Results"),
             TextStyle::Title1,
             Style {
                 margin: Rect {
@@ -2069,7 +2146,7 @@ impl SettingsSheet {
         if hits.is_empty() {
             let label = ui.add_label(
                 self.content,
-                &format!("No settings match “{}”.", self.query),
+                &tr_fmt!("No settings match “{query}”.", query = self.query),
                 TextStyle::Body,
                 Style::default(),
             );
@@ -2091,8 +2168,8 @@ impl SettingsSheet {
                 match hit.target {
                     search::Target::Control(setting) => self.control(ui, config, setting),
                     search::Target::Page(title) => {
-                        let row_node = self.row(ui, title);
-                        pill_button(ui, row_node, "Show", SettingsAction::Category(category), false);
+                        let row_node = self.row(ui, tr(title));
+                        pill_button(ui, row_node, tr("Show"), SettingsAction::Category(category), false);
                     }
                 }
             }
@@ -2112,7 +2189,8 @@ impl SettingsSheet {
                 ..row(64.0)
             },
         );
-        for (style, name) in [(TabBarStyle::Separate, "Separate"), (TabBarStyle::Compact, "Compact")] {
+        for (style, name) in [(TabBarStyle::Separate, tr("Separate")), (TabBarStyle::Compact, tr("Compact"))]
+        {
             let selected = config.layout.tab_bar == style;
             let choice = ui.add(
                 choices,
@@ -2160,9 +2238,11 @@ impl SettingsSheet {
         let mut shown = 0;
         let mut last_group = "";
         for action in shortcut_actions() {
-            let name = humanize(&action.to_string());
+            let name = shortcut_name(action);
             let chords: Vec<String> = keymap.chords_for(action).iter().map(ToString::to_string).collect();
-            let haystack = format!("{name} {}", chords.join(" ")).to_lowercase();
+            // Matches the translated name, the English one and the chords.
+            let haystack =
+                format!("{name} {} {}", shortcut_source_name(action), chords.join(" ")).to_lowercase();
             if !words.iter().all(|w| haystack.contains(w.as_str())) {
                 continue;
             }
@@ -2171,7 +2251,7 @@ impl SettingsSheet {
                 last_group = group;
                 self.section(ui, group);
             }
-            let row_node = self.row_with_height(ui, &name, 34.0);
+            let row_node = self.row_with_height(ui, name, 34.0);
             let label = ui.add_label(row_node, &chords.join("   "), TextStyle::Callout, Style::default());
             if let Some(w) = ui.widget_mut(label) {
                 w.set_paint(Paint::Secondary);
@@ -2179,7 +2259,7 @@ impl SettingsSheet {
             shown += 1;
         }
         if shown == 0 {
-            self.note(ui, "No shortcuts match.");
+            self.note(ui, tr("No shortcuts match."));
         }
         self.group = None;
         self.content = content;
@@ -2393,7 +2473,7 @@ impl SettingsSheet {
                 let text =
                     self.background_path.and_then(|f| ui.field_text(f)).unwrap_or_default().trim().to_owned();
                 if text.is_empty() {
-                    self.background_status = Some("Enter the image's path first.".to_owned());
+                    self.background_status = Some(tr("Enter the image's path first.").to_owned());
                     Outcome::Nothing
                 } else {
                     return Outcome::AddBackground(expand_home(&text));
@@ -2491,6 +2571,12 @@ impl SettingsSheet {
                 config.playlist.sort = sort;
                 Outcome::Changed
             }
+            // Saved at once; the interface is built in one language per run, so it takes
+            // effect at the next start (the note under the control says so).
+            SettingsAction::Language(language) => {
+                config.general.language = language;
+                Outcome::Changed
+            }
             SettingsAction::AddTrustedSite => {
                 let text = self.trusted_site.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned();
                 if config.media.add_trusted_site(&text) { Outcome::Changed } else { Outcome::Nothing }
@@ -2509,11 +2595,11 @@ impl SettingsSheet {
                 let (current, new, confirm) =
                     (fields.current.map(text), text(fields.new), text(fields.confirm));
                 let problem = if current.as_ref().is_some_and(|c| c.is_empty()) {
-                    Some("Enter the current password first.".to_owned())
+                    Some(tr("Enter the current password first.").to_owned())
                 } else if new.chars().count() < MIN_MASTER_LENGTH {
-                    Some(format!("Use at least {MIN_MASTER_LENGTH} characters."))
+                    Some(tr_fmt!("Use at least {count} characters.", count = MIN_MASTER_LENGTH))
                 } else if *new != *confirm {
-                    Some("The new passwords don't match.".to_owned())
+                    Some(tr("The new passwords don't match.").to_owned())
                 } else {
                     None
                 };
@@ -2534,9 +2620,9 @@ impl SettingsSheet {
                     self.passwords_secret.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned(),
                 );
                 let problem = if text.is_empty() {
-                    Some("Enter the file's path first.")
+                    Some(tr("Enter the file's path first."))
                 } else if action != SettingsAction::ImportPasswords && password.is_empty() {
-                    Some("Enter the password first.")
+                    Some(tr("Enter the password first."))
                 } else {
                     None
                 };
@@ -2857,22 +2943,70 @@ fn shortcut_group(action: KeyAction) -> &'static str {
     use KeyAction::*;
     match action {
         NewTab | CloseTab | ReopenClosedTab | NextTab | PreviousTab | PinTab | TabOverview | SelectTab(_)
-        | SelectLastTab => "Tabs",
-        FocusAddressBar | Back | Forward | Reload | HardReload => "Navigation",
-        Find | FindNext | FindPrevious | ZoomIn | ZoomOut | ZoomReset | Paste | PastePlainText => "Page",
+        | SelectLastTab => tr("Tabs"),
+        FocusAddressBar | Back | Forward | Reload | HardReload => tr("Navigation"),
+        Find | FindNext | FindPrevious | ZoomIn | ZoomOut | ZoomReset | Paste | PastePlainText => tr("Page"),
         BookmarkPage | ShowBookmarks | ShowHistory | OpenPlaylist | PlaylistAdd | OpenPasswords
-        | ToggleSidebar => "Panels",
-        Lock => "Privacy",
-        OpenSettings | ToggleFullscreen | Quit => "Window",
-        _ => "Media (fullscreen video)",
+        | ToggleSidebar => tr("Panels"),
+        Lock => tr("Privacy"),
+        OpenSettings | ToggleFullscreen | Quit => tr("Window"),
+        _ => tr("Media (fullscreen video)"),
     }
 }
 
-/// "focus_address_bar" → "Focus address bar".
-fn humanize(name: &str) -> String {
-    let text = name.replace('_', " ");
-    let mut chars = text.chars();
-    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+/// The name a shortcut is listed under, translated.
+fn shortcut_name(action: KeyAction) -> &'static str {
+    tr(shortcut_source_name(action))
+}
+
+/// The shortcut's English name.
+fn shortcut_source_name(action: KeyAction) -> &'static str {
+    use KeyAction::*;
+    match action {
+        NewTab => tr_mark("New tab"),
+        CloseTab => tr_mark("Close tab"),
+        ReopenClosedTab => tr_mark("Reopen closed tab"),
+        NextTab => tr_mark("Next tab"),
+        PreviousTab => tr_mark("Previous tab"),
+        PinTab => tr_mark("Pin tab"),
+        TabOverview => tr_mark("Tab overview"),
+        SelectTab(_) => tr_mark("Select tab"),
+        SelectLastTab => tr_mark("Select last tab"),
+        FocusAddressBar => tr_mark("Focus address bar"),
+        Back => tr_mark("Back"),
+        Forward => tr_mark("Forward"),
+        Reload => tr_mark("Reload"),
+        HardReload => tr_mark("Hard reload"),
+        Find => tr_mark("Find"),
+        FindNext => tr_mark("Find next"),
+        FindPrevious => tr_mark("Find previous"),
+        Paste => tr_mark("Paste"),
+        PastePlainText => tr_mark("Paste plain text"),
+        ZoomIn => tr_mark("Zoom in"),
+        ZoomOut => tr_mark("Zoom out"),
+        ZoomReset => tr_mark("Zoom reset"),
+        BookmarkPage => tr_mark("Bookmark page"),
+        ShowBookmarks => tr_mark("Show bookmarks"),
+        ShowHistory => tr_mark("Show history"),
+        OpenPlaylist => tr_mark("Open playlist"),
+        PlaylistAdd => tr_mark("Playlist add"),
+        OpenPasswords => tr_mark("Open passwords"),
+        ToggleSidebar => tr_mark("Toggle sidebar"),
+        OpenSettings => tr_mark("Open settings"),
+        ToggleFullscreen => tr_mark("Toggle fullscreen"),
+        Quit => tr_mark("Quit"),
+        Lock => tr_mark("Lock"),
+        MediaPlayPause => tr_mark("Media play pause"),
+        MediaSeekBack => tr_mark("Media seek back"),
+        MediaSeekForward => tr_mark("Media seek forward"),
+        MediaVolumeUp => tr_mark("Media volume up"),
+        MediaVolumeDown => tr_mark("Media volume down"),
+        MediaMute => tr_mark("Media mute"),
+        MediaFullscreen => tr_mark("Media fullscreen"),
+        MediaCaptions => tr_mark("Media captions"),
+        MediaSlower => tr_mark("Media slower"),
+        MediaFaster => tr_mark("Media faster"),
+    }
 }
 
 /// A tiny picture of a browser window with the given tab bar layout.
@@ -2986,6 +3120,7 @@ mod tests {
             SettingsAction::Close,
             SettingsAction::Category(Category::Privacy),
             SettingsAction::Theme(ThemeMode::Dark),
+            SettingsAction::Language(UiLanguage::German),
             SettingsAction::IconWeight(2),
             SettingsAction::SearchEngine(4),
             SettingsAction::Accent(5),
@@ -3035,7 +3170,7 @@ mod tests {
         assert!(
             (crop.size.x - 0.5).abs() < 1e-4 && (crop.origin.x - 0.25).abs() < 1e-4 && crop.size.y == 1.0
         );
-        assert_eq!(humanize("focus_address_bar"), "Focus address bar");
+        assert_eq!(shortcut_source_name(KeyAction::FocusAddressBar), "Focus address bar");
         // Same-group actions are contiguous, so every heading appears once.
         let mut seen = Vec::new();
         for action in shortcut_actions() {

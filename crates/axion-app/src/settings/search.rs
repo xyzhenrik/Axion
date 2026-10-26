@@ -1,6 +1,8 @@
 //! Settings search: every setting with the words people might type for it (aliases, also
 //! German ones), matched word by word.
 
+use axion_i18n::{tr, tr_mark};
+
 use super::{Category, Setting};
 
 /// What a search result shows: the setting's own control, or a row that opens its page.
@@ -18,11 +20,17 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// The English title (also what search matches, whatever the language).
     pub fn title(&self) -> &'static str {
         match self.target {
-            Target::Control(setting) => setting.label(),
+            Target::Control(setting) => setting.source_label(),
             Target::Page(title) => title,
         }
+    }
+
+    /// The title in the current language.
+    pub fn translated_title(&self) -> &'static str {
+        tr(self.title())
     }
 }
 
@@ -40,23 +48,23 @@ use Setting as S;
 pub const INDEX: &[Entry] = &[
     page(
         C::Account,
-        "Account",
+        tr_mark("Account"),
         &["accounts", "profile", "profiles", "user", "konto", "konten", "profil", "benutzer", "nutzer"],
     ),
     page(
         C::Account,
-        "Account name",
+        tr_mark("Account name"),
         &["rename", "name", "kontoname", "umbenennen", "name ändern", "profilname", "benutzername"],
     ),
-    page(C::Account, "Account colour", &["avatar", "color", "initials", "farbe", "kontofarbe"]),
+    page(C::Account, tr_mark("Account colour"), &["avatar", "color", "initials", "farbe", "kontofarbe"]),
     page(
         C::Account,
-        "Account photo",
+        tr_mark("Account photo"),
         &["avatar", "profile picture", "photo", "image", "profilbild", "foto", "bild"],
     ),
     page(
         C::Account,
-        "Account password",
+        tr_mark("Account password"),
         &[
             "password",
             "change password",
@@ -74,7 +82,7 @@ pub const INDEX: &[Entry] = &[
     ),
     page(
         C::Account,
-        "Switch or add accounts",
+        tr_mark("Switch or add accounts"),
         &[
             "switch account",
             "add account",
@@ -91,11 +99,11 @@ pub const INDEX: &[Entry] = &[
     ),
     page(
         C::Account,
-        "Delete account",
+        tr_mark("Delete account"),
         &["remove account", "delete profile", "konto löschen", "profil löschen", "entfernen", "löschen"],
     ),
     control(C::General, S::HomeButton, &["home", "haus", "startseite", "toolbar", "button"]),
-    page(C::General, "Homepage", &["start page", "new tab", "startseite", "home", "neuer tab"]),
+    page(C::General, tr_mark("Homepage"), &["start page", "new tab", "startseite", "home", "neuer tab"]),
     control(C::General, S::HomeClock, &["start page", "time", "uhr", "uhrzeit", "startseite", "24", "12"]),
     control(C::General, S::HomeGreeting, &["start page", "hello", "name", "begrüßung", "gruß", "startseite"]),
     control(C::General, S::HomeSearch, &["start page", "search box", "suchfeld", "suche", "startseite"]),
@@ -165,7 +173,7 @@ pub const INDEX: &[Entry] = &[
     ),
     page(
         C::General,
-        "Start page background",
+        tr_mark("Start page background"),
         &[
             "background image",
             "wallpaper",
@@ -215,16 +223,24 @@ pub const INDEX: &[Entry] = &[
             "startseite",
         ],
     ),
-    page(C::General, "Search engine", &["google", "duckduckgo", "bing", "suchmaschine", "default search"]),
+    page(
+        C::General,
+        tr_mark("Search engine"),
+        &["google", "duckduckgo", "bing", "suchmaschine", "default search"],
+    ),
     page(
         C::Appearance,
-        "Appearance",
+        tr_mark("Appearance"),
         &["dark mode", "light mode", "theme", "night", "dunkel", "hell", "design"],
     ),
-    page(C::Appearance, "Accent colour", &["color", "accent", "highlight", "akzentfarbe", "farbe", "tint"]),
     page(
         C::Appearance,
-        "Icon weight",
+        tr_mark("Accent colour"),
+        &["color", "accent", "highlight", "akzentfarbe", "farbe", "tint"],
+    ),
+    page(
+        C::Appearance,
+        tr_mark("Icon weight"),
         &["icons", "stroke", "bold", "thick", "thin", "line", "symbole", "strichstärke", "dicke", "fett"],
     ),
     control(C::Appearance, S::AdaptToPage, &["dark", "light", "page colour", "adapt", "anpassen"]),
@@ -244,16 +260,16 @@ pub const INDEX: &[Entry] = &[
     control(C::LiquidGlass, S::MergeDistance, &["blob", "connect", "drops", "verschmelzen", "goo"]),
     page(
         C::Keyboard,
-        "Keyboard shortcuts",
+        tr_mark("Keyboard shortcuts"),
         &["keys", "hotkeys", "keymap", "tastatur", "tastenkürzel", "bindings"],
     ),
-    page(C::Tabs, "Tab bar layout", &["compact", "separate", "tab strip", "tableiste", "kompakt"]),
+    page(C::Tabs, tr_mark("Tab bar layout"), &["compact", "separate", "tab strip", "tableiste", "kompakt"]),
     control(C::Tabs, S::TintFromPage, &["color", "page colour", "tint", "farbe"]),
     control(C::Tabs, S::OpenInBackground, &["new tab", "links", "hintergrund", "middle click"]),
-    page(C::Tabs, "Close tabs", &["auto close", "old tabs", "cleanup", "schließen", "aufräumen"]),
+    page(C::Tabs, tr_mark("Close tabs"), &["auto close", "old tabs", "cleanup", "schließen", "aufräumen"]),
     page(
         C::Tabs,
-        "Bookmarks bar",
+        tr_mark("Bookmarks bar"),
         &[
             "lesezeichenleiste",
             "favoriten",
@@ -273,7 +289,7 @@ pub const INDEX: &[Entry] = &[
     control(C::Media, S::HideControlsAfter, &["video", "player", "overlay", "timeout", "steuerung"]),
     page(
         C::Media,
-        "Sites that keep their own player",
+        tr_mark("Sites that keep their own player"),
         &["youtube", "twitch", "trusted", "exceptions", "ausnahmen"],
     ),
     control(
@@ -301,7 +317,7 @@ pub const INDEX: &[Entry] = &[
     ),
     page(
         C::Media,
-        "Playlist sort",
+        tr_mark("Playlist sort"),
         &[
             "playlist",
             "sort",
@@ -317,14 +333,14 @@ pub const INDEX: &[Entry] = &[
     ),
     page(
         C::Media,
-        "Playlist downloads",
+        tr_mark("Playlist downloads"),
         &["playlist", "folder", "directory", "ordner", "wiedergabeliste", "speicherort", "download location"],
     ),
     control(C::Media, S::HardwareDecoding, &["gpu", "vaapi", "acceleration", "hardware", "beschleunigung"]),
     control(C::Media, S::DesktopIntegration, &["mpris", "media keys", "medientasten", "lock screen", "kde"]),
     page(
         C::Shields,
-        "Shields on sites you haven't set",
+        tr_mark("Shields on sites you haven't set"),
         &["adblock", "ad blocker", "werbung", "tracker", "default"],
     ),
     control(C::Shields, S::HideAdElements, &["cosmetic", "adblock", "werbung", "ads"]),
@@ -332,28 +348,32 @@ pub const INDEX: &[Entry] = &[
     control(C::Shields, S::BlockRedirects, &["redirect", "weiterleitung", "hijack"]),
     control(C::Shields, S::StripTracking, &["utm", "fbclid", "tracking", "privacy", "links"]),
     control(C::Shields, S::ThirdPartyCookies, &["cookies", "tracking", "privacy", "datenschutz"]),
-    page(C::Shields, "Filter lists", &["easylist", "update", "lists", "listen", "adblock"]),
+    page(C::Shields, tr_mark("Filter lists"), &["easylist", "update", "lists", "listen", "adblock"]),
     control(
         C::Privacy,
         S::LockPrivateTabs,
         &["password", "passwort", "lock", "incognito", "privat", "sperren", "account", "konto"],
     ),
-    page(C::Privacy, "Browsing history", &["clear", "delete", "verlauf", "löschen", "history", "data"]),
+    page(
+        C::Privacy,
+        tr_mark("Browsing history"),
+        &["clear", "delete", "verlauf", "löschen", "history", "data"],
+    ),
     page(
         C::Data,
-        "Download location",
+        tr_mark("Download location"),
         &["downloads", "folder", "directory", "save", "speicherort", "ordner", "herunterladen"],
     ),
     control(C::Data, S::AskWhereToSave, &["downloads", "save as", "dialog", "speichern unter", "fragen"]),
     control(C::Data, S::OpenSafeFiles, &["downloads", "auto open", "pdf", "öffnen", "automatisch"]),
     page(
         C::Data,
-        "Remove download list items",
+        tr_mark("Remove download list items"),
         &["downloads", "list", "clear", "cleanup", "liste", "entfernen", "aufräumen"],
     ),
     page(
         C::Data,
-        "Clear browsing data",
+        tr_mark("Clear browsing data"),
         &["delete", "cache", "cookies", "history", "löschen", "daten", "browserdaten", "verlauf"],
     ),
     control(C::Data, S::ClearHistoryItem, &["clear", "verlauf", "history", "löschen"]),
@@ -367,12 +387,12 @@ pub const INDEX: &[Entry] = &[
     ),
     page(
         C::Data,
-        "Website data",
+        tr_mark("Website data"),
         &["cookies", "site data", "storage", "websitedaten", "websites", "manage", "verwalten"],
     ),
     page(
         C::Passwords,
-        "Saved passwords, cards and addresses",
+        tr_mark("Saved passwords, cards and addresses"),
         &[
             "passwords",
             "passwörter",
@@ -413,7 +433,7 @@ pub const INDEX: &[Entry] = &[
     ),
     page(
         C::Passwords,
-        "Import and export",
+        tr_mark("Import and export"),
         &[
             "import",
             "export",
@@ -440,8 +460,10 @@ fn normalize(text: &str) -> String {
 /// How well `entry` matches every word of the query (`None`: it doesn't), and whether some
 /// word matched only the page's name.
 fn score(entry: &Entry, words: &[String]) -> Option<(u32, bool)> {
-    let title = normalize(entry.title());
-    let category = normalize(entry.category.title());
+    // Both the translated and the English texts match, so "Lesezeichen" and "bookmarks" both
+    // work (the language is fixed per run, so this is the index built from the `tr` texts).
+    let title = format!("{} {}", normalize(entry.translated_title()), normalize(entry.title()));
+    let categories = [normalize(entry.category.title()), normalize(entry.category.source_title())];
     let aliases: Vec<String> = entry.aliases.iter().map(|a| normalize(a)).collect();
     let mut total = 0;
     let mut by_page = false;
@@ -454,7 +476,7 @@ fn score(entry: &Entry, words: &[String]) -> Option<(u32, bool)> {
             3
         } else if title.contains(word.as_str()) || aliases.iter().any(|a| a.contains(word.as_str())) {
             2
-        } else if category.starts_with(word.as_str()) {
+        } else if categories.iter().any(|c| c.starts_with(word.as_str())) {
             // The page's name ("shields", "tabs") lists the whole page; its later words
             // ("memory" in "Tabs & Memory") don't.
             by_page = true;
