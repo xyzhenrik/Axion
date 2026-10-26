@@ -660,6 +660,14 @@ pub struct Layout {
     /// so Chromium's frame of a size arrives as the panel gets there (the first estimate of
     /// Chromium's delay, then measured).
     pub sidebar_slide_lead: f32,
+    /// While the window is being resized: seconds the shown page may take to deliver its
+    /// frame of the size it was last given before it is given the window's newest size anyway
+    /// (sizes in between are skipped; each costs Chromium a layout and a frame). 0 resizes
+    /// the page with every step of the window.
+    pub window_resize_wait: f32,
+    /// Seconds after the window last changed size before the tabs in the background follow
+    /// it (they are not shown meanwhile; resizing them at every step made a resize lag).
+    pub background_resize_delay: f32,
     /// Always float the sidebar over the page as a rounded glass card (it never pushes the
     /// page), whatever the window size.
     pub float_sidebar: bool,
@@ -726,6 +734,8 @@ impl Default for Layout {
             sidebar_slide_resize: SidebarSlideResize::Live,
             sidebar_slide_resize_step: 2.0,
             sidebar_slide_lead: 0.05,
+            window_resize_wait: 0.1,
+            background_resize_delay: 0.3,
             float_sidebar: false,
             sidebar_corner_radius: 26.0,
             wide_from: 1280.0,
@@ -977,6 +987,10 @@ pub struct Ui {
     pub onboarding_max_height: f32,
     /// How strongly the window behind the introduction is veiled with the theme's ground colour (0-1); the steps sit directly on it, with no panel of their own.
     pub onboarding_dim: f32,
+    /// A frame that would look exactly like the one on screen is not composited and presented
+    /// again: while nothing moves the GPU rests (the window still checks for changes once per
+    /// display refresh). Off: every frame is drawn.
+    pub skip_unchanged_frames: bool,
 }
 
 impl Default for Ui {
@@ -989,6 +1003,7 @@ impl Default for Ui {
             onboarding_max_width: 880.0,
             onboarding_max_height: 640.0,
             onboarding_dim: 0.84,
+            skip_unchanged_frames: true,
         }
     }
 }

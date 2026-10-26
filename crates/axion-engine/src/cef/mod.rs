@@ -27,6 +27,7 @@ use cef::*;
 
 pub use gpu::render_node_for;
 pub use schedule::Waker;
+pub use stats::Counters;
 
 use crate::{
     DevToolsOptions, DevToolsPanel, DropData, Engine, EngineError, EngineEvent, FindRequest, Frame,
@@ -266,6 +267,11 @@ impl CefEngine {
             schedule,
             shut_down: false,
         })
+    }
+
+    /// Running totals of frame and resize work (benchmarks).
+    pub fn counters(&self) -> Counters {
+        self.shared.stats.counters()
     }
 
     fn private_context(&mut self) -> Option<RequestContext> {
@@ -796,15 +802,18 @@ impl Engine for CefEngine {
         let geometry = &state.ctx.geometry;
         let scale_changed = geometry.scale.get() != size.scale;
         tracing::trace!(?view, from = ?geometry.logical.get(), to = ?size.logical, "resize view");
-        if geometry.logical.get() != size.logical || scale_changed {
-            state.ctx.frames.resized();
+        if geometry.logical.get() == size.logical && !scale_changed {
+            // Chromium has this size: telling it again would only make it lay out and paint.
+            return;
         }
+        state.ctx.frames.resized();
         geometry.logical.set(size.logical);
         geometry.scale.set(size.scale);
         if let Some(host) = self.host(view) {
             if scale_changed {
                 host.notify_screen_info_changed();
             }
+            self.shared.stats.count(|c| c.view_resizes += 1);
             host.was_resized();
         }
     }

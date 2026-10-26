@@ -59,8 +59,13 @@ pub(super) struct ViewFrames {
     spare_checks: RefCell<Vec<wgpu::Buffer>>,
     /// A frame never got drawn: Chromium should paint again (taken by the engine).
     pub wants_repaint: Cell<bool>,
-    /// Software frames with a black bar skipped in a row (see `ViewContext::upload`).
+    /// Frames with a black bar skipped in a row (see `ViewContext::upload`, `resolve_frames`).
     pub skipped_bars: Cell<u32>,
+    /// The last frame shown had black edges of its own (a dark page, such as the dark start
+    /// page): the letterbox check can't tell a bar from the page then and is left out.
+    /// Without this every frame of such a page was skipped for as long as the window was being
+    /// resized: the page froze.
+    pub edges_black: Cell<bool>,
     /// Until when frames are checked for the letterboxed page of a resize (see
     /// `is_letterboxed`); `None` once a frame without bars came.
     pub letterbox_until: Cell<Option<Instant>>,
@@ -176,6 +181,7 @@ impl ViewContext {
             self.recycle_texture(old);
         }
         self.frames.serial.set(self.frames.serial.get() + 1);
+        self.shared.stats.count(|c| c.page_frames += 1);
     }
 
     fn recycle_texture(&self, texture: wgpu::Texture) {
@@ -299,7 +305,9 @@ impl ViewContext {
             };
             frame.check.unmap();
             let watching = frames.letterbox_until.get().filter(|until| Instant::now() < *until).is_some();
-            if drawn && watching && letterboxed {
+            let skipped = frames.skipped_bars.get();
+            if drawn && watching && letterboxed && !frames.edges_black.get() && skipped < MAX_SKIPPED_BARS {
+                frames.skipped_bars.set(skipped + 1);
                 // Right after a resize Chromium can capture its compositor's frame of the old
                 // size scaled into a buffer of the new size, with black bars, and reports it as
                 // a normal frame: the page shrank for a frame. The real one follows.
@@ -316,6 +324,8 @@ impl ViewContext {
                     frames.letterbox_until.set(None);
                 }
                 tracing::trace!(view = ?self.view, after = ?frame.since.elapsed(), "GPU frame taken");
+                frames.skipped_bars.set(0);
+                frames.edges_black.set(letterboxed);
                 self.recycle_check(frame.check);
                 self.store(frame.texture);
                 continue;
@@ -373,9 +383,13 @@ impl ViewContext {
 
     fn frame_texture(&self, size: wgpu::Extent3d, format: wgpu::TextureFormat) -> wgpu::Texture {
         let mut spare = self.frames.spare_textures.borrow_mut();
-        if let Some(i) = spare.iter().position(|t| t.size() == size && t.format() == format) {
-            return spare.swap_remove(i);
+        // Spares of another size are of a size the page had before a resize: kept, they would
+        // fill the spare slots for good and every later frame would get a new texture.
+        spare.retain(|t| t.size() == size && t.format() == format);
+        if let Some(texture) = spare.pop() {
+            return texture;
         }
+        self.shared.stats.count(|c| c.frame_textures += 1);
         self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("page frame"),
             size,
@@ -391,9 +405,12 @@ impl ViewContext {
     fn check_buffer(&self, width: u32) -> wgpu::Buffer {
         let size = check_buffer_size(width);
         let mut spare = self.frames.spare_checks.borrow_mut();
-        if let Some(i) = spare.iter().position(|b| b.size() == size) {
-            return spare.swap_remove(i);
+        // As for frame textures: buffers of an old width would block the spare slots.
+        spare.retain(|b| b.size() == size);
+        if let Some(buffer) = spare.pop() {
+            return buffer;
         }
+        self.shared.stats.count(|c| c.check_buffers += 1);
         self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame drawn check"),
             size,
@@ -416,7 +433,8 @@ impl ViewContext {
         // `is_scaled`): skip it, the real frame follows. At most a few in a row, so a page that
         // really has a black edge still gets drawn.
         let watching = self.frames.letterbox_until.get().is_some_and(|until| Instant::now() < until);
-        if watching && has_black_bar(pixels, width as usize, height as usize) {
+        let bar = has_black_bar(pixels, width as usize, height as usize);
+        if watching && bar && !self.frames.edges_black.get() {
             let skipped = self.frames.skipped_bars.get();
             if skipped < MAX_SKIPPED_BARS {
                 self.frames.skipped_bars.set(skipped + 1);
@@ -426,6 +444,7 @@ impl ViewContext {
             }
         }
         self.frames.skipped_bars.set(0);
+        self.frames.edges_black.set(bar);
         let reusable = self
             .frames
             .texture
@@ -439,6 +458,7 @@ impl ViewContext {
             })
             .cloned();
         let texture = reusable.unwrap_or_else(|| {
+            self.shared.stats.count(|c| c.frame_textures += 1);
             self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("cef software frame"),
                 size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },

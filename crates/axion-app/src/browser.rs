@@ -60,6 +60,7 @@ use crate::player::{
     PlayerOverlay,
 };
 use crate::private::{PrivateLock, TabDrop};
+use crate::resize_bench::{self, FrameTimes, Recorder, ResizeBench, ResizeCounters};
 use crate::settings::{AccountInfo, Category, Outcome, SettingsAction, SettingsSheet};
 use crate::shields::ShieldsState;
 use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
@@ -73,6 +74,7 @@ use crate::update::{InstallMode, Notice, Phase, Updater};
 use crate::update_alert::{AlertAction, AlertView, Tone, UpdateAlert};
 use crate::url::display_host;
 use crate::url::resolve_input;
+use crate::window_resize::{Debounce, ResizePacer};
 
 mod context;
 mod onboarding;
@@ -80,6 +82,8 @@ mod page_context;
 mod playlist;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
+/// `AXION_RESIZE_LOG`: a resize's timings are logged once no resize came for this long.
+const RESIZE_LOG_QUIET: Duration = Duration::from_millis(500);
 /// How long before a `--capture --overview` screenshot the overview opens.
 const OVERVIEW_CAPTURE_LEAD: Duration = Duration::from_secs(2);
 /// Settings changes are written to disk once they've been still for this long.
@@ -222,6 +226,8 @@ pub struct Options {
     pub account: Option<String>,
     /// Show the first-run introduction (`--onboarding`), whatever the profile says.
     pub onboarding: bool,
+    /// Run the scripted resize benchmark (`--bench-resize`, see `resize_bench`), then quit.
+    pub bench_resize: bool,
     /// Wakes the event loop when the engine has work.
     pub waker: Option<axion_engine::cef::Waker>,
 }
@@ -430,6 +436,36 @@ pub struct Browser {
     slide_sent: Vec<(Instant, f32)>,
     slide_seen_width: Option<f32>,
     page_lag: Option<f32>,
+    /// `--bench-resize`: the scripted run; `AXION_RESIZE_LOG=1`: frame timings of each real
+    /// resize (logged once it has been still for `RESIZE_LOG_QUIET`), and the counters both use.
+    resize_bench: Option<ResizeBench>,
+    /// What the window shows (see `ui.skip_unchanged_frames`): the presented scene's
+    /// fingerprint and its textures (held so no new view takes their identity), when the next
+    /// frame is due after a skipped one (no present waited for the display), the display's
+    /// frame interval, and the frames skipped so far.
+    shown_fingerprint: Option<u64>,
+    shown_textures: Vec<wgpu::TextureView>,
+    /// The shown page frame's texture and a view of it, kept while the texture is the same.
+    page_view: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The shown scene's layer fingerprints (trace logging only).
+    shown_layers: Vec<u64>,
+    idle_redraw_at: Option<Instant>,
+    frame_interval: Duration,
+    frames_skipped: u64,
+    frames_presented: u64,
+    /// The engine's page frame count at the last pump.
+    pumped_page_frames: u64,
+    /// The window's newest size, applied by the next frame (see `apply_window_size`).
+    pending_window_size: Option<winit::dpi::PhysicalSize<u32>>,
+    /// The shown view's resizes, one at a time, and the background tabs' once the window is
+    /// still (see `pace_page_resizes`).
+    page_pacer: ResizePacer,
+    paced_view: Option<ViewId>,
+    background_resize: Debounce,
+    resize_log: Option<(Recorder, Instant)>,
+    resize_log_enabled: bool,
+    resize_counters: ResizeCounters,
+    frame_times: FrameTimes,
 }
 
 impl Browser {
@@ -774,6 +810,24 @@ impl Browser {
             slide_sent: Vec::new(),
             slide_seen_width: None,
             page_lag: None,
+            resize_bench: options.bench_resize.then(|| ResizeBench::new(options.capture_after)),
+            shown_fingerprint: None,
+            shown_textures: Vec::new(),
+            shown_layers: Vec::new(),
+            page_view: None,
+            idle_redraw_at: None,
+            frame_interval: Duration::from_secs_f64(1.0 / f64::from(FALLBACK_FRAME_RATE)),
+            frames_skipped: 0,
+            frames_presented: 0,
+            pumped_page_frames: 0,
+            pending_window_size: None,
+            page_pacer: ResizePacer::default(),
+            paced_view: None,
+            background_resize: Debounce::default(),
+            resize_log: None,
+            resize_log_enabled: std::env::var_os("AXION_RESIZE_LOG").is_some(),
+            resize_counters: ResizeCounters::default(),
+            frame_times: FrameTimes::default(),
             sheet_origin: None,
             engine_icons: None,
             password_icons: None,
@@ -798,6 +852,7 @@ impl Browser {
             }),
         };
         browser.show_account();
+        browser.frame_interval = display_frame_interval(&browser.window);
         browser.update_layout();
         browser.start_onboarding(&options, accounts_file, config_file);
         browser.playlist_start();
@@ -835,6 +890,7 @@ impl Browser {
 
     /// Re-applies the responsive layout and resizes pages when the window or chrome changed.
     fn update_layout(&mut self) {
+        self.resize_counters.layouts += 1;
         let size = self.logical_size();
         self.ui.set_viewport(size, self.scale());
         self.chrome.apply_layout(&mut self.ui, &self.config, size);
@@ -849,10 +905,26 @@ impl Browser {
         // While the sidebar slides, the shown tab's size is managed by the slide (see
         // `redraw_frame`); resizing it here too would make Chromium render an extra size.
         let sliding = self.slide_view_size.map(|(view, _)| view);
-        for tab in self.tabs.all() {
-            if Some(tab.view) != sliding {
-                self.engine.resize(tab.view, view_size);
+        let shown = self.display_view().filter(|v| Some(*v) != sliding);
+        if let Some(view) = shown {
+            self.resize_shown_view(view, view_size);
+        }
+        // The overview shows every tab: they follow at once there. Elsewhere the tabs in the
+        // background follow once the window is still (see `pace_page_resizes`).
+        let background: Vec<ViewId> = self
+            .tabs
+            .all()
+            .iter()
+            .map(|t| t.view)
+            .filter(|v| Some(*v) != sliding && Some(*v) != shown)
+            .collect();
+        if self.overview.is_open() {
+            for view in background {
+                self.engine.resize(view, view_size);
             }
+        } else if !background.is_empty() {
+            let delay = Duration::from_secs_f32(self.config.layout.background_resize_delay.max(0.0));
+            self.background_resize.touch(Instant::now(), delay);
         }
         self.layout_size = size;
     }
@@ -3520,7 +3592,68 @@ impl Browser {
 
     /// Runs the engine and applies what happened. Call often (every loop iteration).
     pub fn pump(&mut self) {
+        let started = Instant::now();
         self.pump_engine();
+        let page_frames = self.engine.counters().page_frames;
+        if page_frames != self.pumped_page_frames {
+            // A page frame came: shown at once, not one refresh after a skipped frame.
+            self.pumped_page_frames = page_frames;
+            self.idle_redraw_at = None;
+        }
+        let took = started.elapsed();
+        let recorders = [
+            self.resize_bench.as_mut().and_then(|b| b.recorder.as_mut()),
+            self.resize_log.as_mut().map(|(r, _)| r),
+        ];
+        for recorder in recorders.into_iter().flatten() {
+            recorder.wakeup(took);
+        }
+    }
+
+    /// The browser's and the engine's resize/frame counters (benchmarks).
+    fn bench_counters(&self) -> ResizeCounters {
+        let engine = self.engine.counters();
+        ResizeCounters {
+            view_resizes: engine.view_resizes,
+            frame_textures: engine.frame_textures,
+            check_buffers: engine.check_buffers,
+            skipped_frames: self.frames_skipped,
+            page_frames: engine.page_frames,
+            ..self.resize_counters
+        }
+    }
+
+    /// `--bench-resize` and `AXION_RESIZE_LOG`: advances the script, records the frame.
+    fn bench_frame(&mut self) -> Result<()> {
+        let counters = self.bench_counters();
+        let times = std::mem::take(&mut self.frame_times);
+        if let Some((recorder, last)) = &mut self.resize_log {
+            recorder.frame(times);
+            if last.elapsed() >= RESIZE_LOG_QUIET {
+                recorder.log("window resize", counters);
+                self.resize_log = None;
+            }
+        }
+        let Some(bench) = &mut self.resize_bench else { return Ok(()) };
+        if let Some(recorder) = &mut bench.recorder {
+            recorder.frame(times);
+        }
+        match bench.tick(Instant::now(), counters) {
+            resize_bench::Step::Finish => bail!(CaptureDone),
+            resize_bench::Step::Resize(sizes) => {
+                for size in sizes {
+                    let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(size.x, size.y));
+                }
+            }
+            resize_bench::Step::Nothing => {}
+        }
+        let scrolls = bench.phase().scrolls();
+        if scrolls && self.wheel_frames == 0 {
+            self.wheel_frames = u32::MAX / 2;
+        } else if !scrolls && self.wheel_frames > 0 {
+            self.wheel_frames = 0;
+        }
+        Ok(())
     }
 
     fn pump_engine(&mut self) {
@@ -3548,6 +3681,10 @@ impl Browser {
         let events = self.engine.pump();
         let started = Instant::now();
         let count = events.len() as u32;
+        if count > 0 {
+            // Something happened in a page: the next frame runs at once.
+            self.idle_redraw_at = None;
+        }
         for event in events {
             match &event {
                 // Autofill messages may hold a submitted password: never log their content.
@@ -4605,15 +4742,25 @@ impl Browser {
 
     /// Returns `false` when the window should close.
     pub fn window_event(&mut self, event: WindowEvent) -> Result<bool> {
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            // Input: the next frame runs at once.
+            self.idle_redraw_at = None;
+        }
         match event {
             WindowEvent::CloseRequested => return Ok(false),
             WindowEvent::Resized(size) => {
+                self.resize_counters.events += 1;
+                if self.resize_log_enabled {
+                    let counters = self.bench_counters();
+                    let log =
+                        self.resize_log.get_or_insert_with(|| (Recorder::new(counters), Instant::now()));
+                    log.1 = Instant::now();
+                }
+                // Applied once, by the next frame: a resize sends a stream of these (dozens
+                // between two frames when the window manager catches up), and reconfiguring
+                // the swapchain and laying everything out for each one froze the window.
                 if size.width > 0 && size.height > 0 {
-                    self.surface_config.width = size.width;
-                    self.surface_config.height = size.height;
-                    self.surface.configure(&self.device, &self.surface_config);
-                    self.update_layout();
-                    self.sync_frame_rate();
+                    self.pending_window_size = Some(size);
                 }
             }
             WindowEvent::ScaleFactorChanged { .. } => {
@@ -5137,12 +5284,75 @@ impl Browser {
         let result = self.redraw_frame();
         let serial = self.active_view().and_then(|v| self.engine.frame(v)).map_or(0, |f| f.serial);
         self.frame_stats.record(started.elapsed(), serial);
-        result
+        // Resize events are applied inside the frame (`apply_window_size`).
+        self.frame_times.total = ms_since(started);
+        result?;
+        self.bench_frame()
+    }
+
+    /// The window's newest size from its `Resized` events since the last frame.
+    fn apply_window_size(&mut self) {
+        let Some(size) = self.pending_window_size.take() else { return };
+        let started = Instant::now();
+        if (size.width, size.height) != (self.surface_config.width, self.surface_config.height) {
+            self.resize_counters.configures += 1;
+            self.surface_config.width = size.width;
+            self.surface_config.height = size.height;
+            self.surface.configure(&self.device, &self.surface_config);
+        }
+        self.frame_times.configure += ms_since(started);
+        let laid = Instant::now();
+        self.update_layout();
+        self.frame_times.layout += ms_since(laid);
+        self.sync_frame_rate();
+        self.frame_times.resize_events += ms_since(started);
+    }
+
+    /// The shown page gets the window's sizes one at a time (see `window_resize`), the
+    /// background tabs once the window has been still for `layout.background_resize_delay`.
+    fn pace_page_resizes(&mut self, now: Instant) {
+        let wait = Duration::from_secs_f32(self.config.layout.window_resize_wait.max(0.0));
+        if let Some(view) = self.paced_view {
+            if let Some(frame) = self.engine.frame(view) {
+                self.page_pacer.frame(frame.texture.width(), frame.texture.height());
+            }
+            if !self.chrome.is_sliding()
+                && Some(view) == self.display_view()
+                && let Some(size) = self.page_pacer.poll(now, wait)
+            {
+                self.engine.resize(view, size);
+            }
+        }
+        if self.background_resize.take_due(now) {
+            let size = self.view_size();
+            let sliding = self.slide_view_size.map(|(view, _)| view);
+            let views: Vec<ViewId> = self.tabs.all().iter().map(|t| t.view).collect();
+            for view in views {
+                if Some(view) != sliding && Some(view) != self.paced_view {
+                    self.engine.resize(view, size);
+                }
+            }
+        }
+    }
+
+    /// Gives the shown view `size`, paced (see `pace_page_resizes`).
+    fn resize_shown_view(&mut self, view: ViewId, size: ViewSize) {
+        if self.paced_view != Some(view) {
+            self.paced_view = Some(view);
+            self.page_pacer.reset();
+        }
+        let wait = Duration::from_secs_f32(self.config.layout.window_resize_wait.max(0.0));
+        if let Some(size) = self.page_pacer.request(size, Instant::now(), wait) {
+            self.engine.resize(view, size);
+        }
     }
 
     fn redraw_frame(&mut self) -> Result<()> {
+        self.apply_window_size();
         if self.logical_size() != self.layout_size {
+            let started = Instant::now();
             self.update_layout();
+            self.frame_times.layout += ms_since(started);
         }
         let tabs_changed = self.tabs_changed;
         if std::mem::take(&mut self.tabs_changed) {
@@ -5939,28 +6149,30 @@ impl Browser {
         let hovered = if self.tab_drag.is_dragging() { None } else { self.ui.hovered() };
         self.chrome.update_hover(&mut self.ui, hovered);
         self.update_tab_drag(dt);
+        let started = Instant::now();
+        self.pace_page_resizes(now);
+        self.frame_times.layout += ms_since(started);
+        let started = Instant::now();
         self.ui.layout();
+        self.frame_times.ui_layout = ms_since(started);
         self.tab_drag.animate_rows(&mut self.ui, &self.chrome, &self.config, dt);
         if let Some(view) = self.display_view() {
             self.engine.request_frame(view);
         }
         self.snapshot_background_tabs();
 
-        let surface = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.surface_config);
-                return Ok(());
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
-            wgpu::CurrentSurfaceTexture::Validation => bail!("surface validation error"),
-        };
-        let output = surface.texture.create_view(&Default::default());
-
         // Locked private pages aren't drawn at all (the lock screen covers their place).
         let frame = self.display_view().filter(|_| !self.is_locked()).and_then(|v| self.engine.frame(v));
         self.probe_page_frame(frame.as_ref());
-        let page_view = frame.as_ref().map(|f| f.texture.create_view(&Default::default()));
+        // The same view while the frame texture stays: an unchanged scene keeps its fingerprint.
+        let page_view = frame.as_ref().map(|f| match &self.page_view {
+            Some((texture, view)) if *texture == f.texture => view.clone(),
+            _ => {
+                let view = f.texture.create_view(&Default::default());
+                self.page_view = Some((f.texture.clone(), view.clone()));
+                view
+            }
+        });
         let slide_frame = frame.as_ref().and_then(|f| self.slide_page_frame(&f.texture));
         let slide_view = slide_frame.as_ref().map(|t| t.create_view(&Default::default()));
         let fade = self.slide_fade.as_ref().filter(|_| frame.is_some()).map(|(t, a)| (t.clone(), a.value));
@@ -6057,7 +6269,9 @@ impl Browser {
                 }
             }
         }
+        let started = Instant::now();
         self.ui.paint(&mut layers);
+        self.frame_times.paint = ms_since(started);
         if std::mem::take(&mut self.flat_audit) {
             if self.config.glass.is_flat() {
                 let found = axion_ui::flat_violations(&layers, s);
@@ -6096,10 +6310,67 @@ impl Browser {
             .unwrap_or(theme.color(Paint::Ground));
         let scene = Scene { clear, layers };
         let size = (self.surface_config.width, self.surface_config.height);
+        // A frame that would look like the one on screen isn't drawn again (see
+        // `ui.skip_unchanged_frames`): the scene's fingerprint, the window's size and every
+        // page frame so far (pages' textures change content without changing identity).
+        let fingerprint = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::hash::DefaultHasher::new();
+            scene.fingerprint().hash(&mut h);
+            size.hash(&mut h);
+            self.engine.counters().page_frames.hash(&mut h);
+            h.finish()
+        };
+        let capture_due = self.capture.as_ref().is_some_and(|(_, at)| Instant::now() >= *at);
+        if self.config.ui.skip_unchanged_frames && self.shown_fingerprint == Some(fingerprint) && !capture_due
+        {
+            drop(scene);
+            self.frames_skipped += 1;
+            self.idle_redraw_at = Some(now + self.frame_interval);
+            return Ok(());
+        }
+        self.idle_redraw_at = None;
+        if tracing::enabled!(tracing::Level::TRACE) {
+            // Debug aid: which layers changed since the frame shown (why it was drawn).
+            let layers = scene.layer_fingerprints();
+            let changed: Vec<usize> = (0..layers.len().max(self.shown_layers.len()))
+                .filter(|&i| layers.get(i) != self.shown_layers.get(i))
+                .collect();
+            tracing::trace!(?changed, count = layers.len(), "frame drawn: layers changed");
+            self.shown_layers = layers;
+        }
+        let started = Instant::now();
+        let acquired = self.surface.get_current_texture();
+        self.frame_times.acquire = ms_since(started);
+        let surface = match acquired {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.surface_config);
+                self.shown_fingerprint = None;
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                self.shown_fingerprint = None;
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Validation => bail!("surface validation error"),
+        };
+        let output = surface.texture.create_view(&Default::default());
+        let started = Instant::now();
         self.compositor.render(&scene, &mut self.ui.fonts(), &output, size);
+        self.frame_times.render = ms_since(started);
+        // Kept until the next comparison: no new texture view can take one of these identities.
+        self.shown_textures = scene.textures();
         drop(scene);
+        let started = Instant::now();
         self.window.pre_present_notify();
         self.queue.present(surface);
+        self.frame_times.present = ms_since(started);
+        if self.shown_fingerprint.is_none() && self.frames_presented == 0 {
+            tracing::info!("first frame presented");
+        }
+        self.frames_presented += 1;
+        self.shown_fingerprint = Some(fingerprint);
         self.probe_presented();
 
         if let Some((path, at)) = &self.capture
@@ -6231,6 +6502,13 @@ impl Browser {
     /// Pages render at the refresh rate of the window's monitor (or the configured rate).
     fn sync_frame_rate(&mut self) {
         self.engine.set_frame_rate(page_frame_rate(&self.config, &self.window));
+        self.frame_interval = display_frame_interval(&self.window);
+    }
+
+    /// When the next frame should run, if not at once: after a frame that was skipped (nothing
+    /// changed, nothing presented, so nothing waited for the display), one display refresh later.
+    pub fn redraw_at(&self) -> Option<Instant> {
+        self.idle_redraw_at
     }
 
     /// While the sidebar slides: the frame to show for the page, drawn from the page
@@ -6362,6 +6640,8 @@ impl Browser {
             if let Some(probe) = &mut self.probe {
                 probe.tracker.sent(now);
             }
+            // Like a key event: the next frame runs at once.
+            self.idle_redraw_at = None;
             return;
         }
         let total = probe.spec.text.chars().count();
@@ -6590,6 +6870,11 @@ fn zoom_label(zoom: f64) -> String {
     format!("{:.0}%", ZOOM_BASE.powf(zoom) * 100.0)
 }
 
+/// Milliseconds since `started` (frame timings).
+fn ms_since(started: Instant) -> f32 {
+    started.elapsed().as_secs_f32() * 1000.0
+}
+
 fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
@@ -6632,6 +6917,15 @@ fn push_slide_page<'a>(
 
 /// Frames per second pages render at: `tabs.max_frame_rate`, or the window's monitor's
 /// refresh rate.
+/// One refresh of the window's monitor.
+fn display_frame_interval(window: &Window) -> Duration {
+    let hz = window
+        .current_monitor()
+        .and_then(|m| m.refresh_rate_millihertz())
+        .map_or(FALLBACK_FRAME_RATE as f64, |mhz| f64::from(mhz) / 1000.0);
+    Duration::from_secs_f64(1.0 / hz.max(1.0))
+}
+
 fn page_frame_rate(config: &Config, window: &Window) -> u32 {
     if config.tabs.max_frame_rate > 0 {
         return config.tabs.max_frame_rate;
