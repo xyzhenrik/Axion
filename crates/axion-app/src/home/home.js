@@ -338,6 +338,9 @@
 
   // ---- background ----
 
+  // A look slider (dim, blur) is being dragged.
+  let lookHeld = false;
+
   function renderBackground() {
     const b = state.background;
     const backdrop = $("backdrop");
@@ -347,14 +350,20 @@
       document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => meta.remove());
     }
     if (b.show) {
-      backdrop.style.backgroundImage = `url("/api/background?v=${b.version}")`;
-      backdrop.style.filter = b.blur > 0 ? `blur(${b.blur}px)` : "";
-      backdrop.style.setProperty("--dim", b.dim);
+      const url = `url("/api/background?v=${b.version}")`;
+      if (backdrop.style.backgroundImage !== url) backdrop.style.backgroundImage = url;
+      // While a slider is held, its live preview wins over the saved look.
+      if (!lookHeld) {
+        backdrop.style.filter = b.blur > 0 ? `blur(${b.blur}px)` : "";
+        backdrop.style.setProperty("--dim", b.dim);
+      }
     } else {
       backdrop.style.backgroundImage = "";
     }
-    $("dim").value = b.dim;
-    $("blur").value = b.blur;
+    if (!lookHeld) {
+      $("dim").value = b.dim;
+      $("blur").value = b.blur;
+    }
     $("background-rows").hidden = false;
     $("clear-background").hidden = !b.has;
   }
@@ -405,21 +414,28 @@
     const path = $("path").value.trim();
     if (path) post({ type: "backgroundPath", path });
   });
-  let lookTimer = 0;
-  const sendLook = () => {
-    // Live preview while dragging, saved when it rests.
-    const backdrop = $("backdrop");
-    const blur = Number($("blur").value);
-    backdrop.style.setProperty("--dim", $("dim").value);
-    backdrop.style.filter = blur > 0 ? `blur(${blur}px)` : "";
-    clearTimeout(lookTimer);
-    lookTimer = setTimeout(
-      () => post({ type: "backgroundLook", dim: Number($("dim").value), blur: Number($("blur").value) }),
-      200,
-    );
+  // Live preview while dragging (one style change per frame), saved once on release, so the
+  // page never re-renders under the thumb.
+  let lookFrame = 0;
+  const previewLook = () => {
+    if (lookFrame) return;
+    lookFrame = requestAnimationFrame(() => {
+      lookFrame = 0;
+      const backdrop = $("backdrop");
+      const blur = Number($("blur").value);
+      backdrop.style.setProperty("--dim", $("dim").value);
+      backdrop.style.filter = blur > 0 ? `blur(${blur}px)` : "";
+    });
   };
-  $("dim").addEventListener("input", sendLook);
-  $("blur").addEventListener("input", sendLook);
+  const saveLook = () => {
+    lookHeld = false;
+    post({ type: "backgroundLook", dim: Number($("dim").value), blur: Number($("blur").value) });
+  };
+  for (const id of ["dim", "blur"]) {
+    $(id).addEventListener("pointerdown", () => (lookHeld = true));
+    $(id).addEventListener("input", previewLook);
+    $(id).addEventListener("change", saveLook);
+  }
   $("more-settings").addEventListener("click", () => {
     togglePanel(false);
     post({ type: "openSettings" });

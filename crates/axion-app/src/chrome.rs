@@ -1009,7 +1009,7 @@ impl Chrome {
         ui.set_label_align(address_label, Align::Start);
         let address_field = ui.add_text_field(
             address,
-            "Search or enter website name",
+            crate::home::ADDRESS_PLACEHOLDER,
             TextStyle::Body,
             Style { size: Size { width: auto(), height: length(22.0) }, ..shrinking_label() },
         );
@@ -2153,6 +2153,10 @@ impl Chrome {
             _ => display_host(&tab.url),
         };
         ui.set_text(self.address_label, &host);
+        // On the start page it reads like the field's placeholder: grey, the same words.
+        if let Some(w) = ui.widget_mut(self.address_label) {
+            w.set_paint(if home && !self.locked { Paint::Secondary } else { Paint::Label });
+        }
         if ui.focused() != Some(self.address_field) {
             // The start page's address stays out of the field (typing starts fresh).
             ui.set_field_text(self.address_field, if home { "" } else { &tab.url });

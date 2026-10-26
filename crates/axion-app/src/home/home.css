@@ -260,6 +260,25 @@ main {
   /* Above the tiles and the Shields card, so the engine menu covers them. */
   z-index: 3;
 }
+/* The field's glass lies on a pseudo-element: glass on the form itself would make it the
+   backdrop root of the engine menu inside it, and the menu would blur only the field. */
+.search.glass {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.search.glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  z-index: -1;
+  pointer-events: none;
+}
+.search { isolation: isolate; }
 .search:focus-within { box-shadow: inset 0 1px 0 var(--glass-rim), 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent), var(--glass-shadow); }
 .engine {
   height: 40px;

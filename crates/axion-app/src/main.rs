@@ -19,6 +19,7 @@ mod desktop;
 mod downloads;
 mod downloads_popover;
 mod drip;
+mod engine_icons;
 mod favicons;
 mod filedrop;
 mod find;

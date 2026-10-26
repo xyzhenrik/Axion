@@ -288,6 +288,8 @@ pub struct Browser {
     open_at: Option<(Instant, String)>,
     /// Where the next Settings or Passwords sheet comes out of (taken when it opens).
     sheet_origin: Option<Origin>,
+    /// Search engine icons being fetched for the start page (once per run).
+    engine_icons: Option<std::sync::mpsc::Receiver<crate::engine_icons::EngineIcon>>,
     /// The page menu row clicked last (where a sheet it opens comes out of).
     menu_click_frame: Option<Rect>,
     /// Capture aid "sweep:X1:Y1:X2:Y2:N": the pointer moves from one point to the other in N
@@ -543,6 +545,7 @@ impl Browser {
             slide_page_size: None,
             slide_view_size: None,
             sheet_origin: None,
+            engine_icons: None,
             menu_click_frame: None,
             open_at: options.open.clone().filter(|_| options.capture.is_some()).map(|what| {
                 (
@@ -2354,6 +2357,38 @@ impl Browser {
         self.engine.set_page_script(Some(page_script(&self.config)));
     }
 
+    /// Fetches the icons of the search engines the start page offers that aren't cached yet,
+    /// so its engine menu shows them without the user having visited each engine.
+    fn fetch_engine_icons(&mut self) {
+        if self.engine_icons.is_some() {
+            return;
+        }
+        let Some(dir) = self.favicons.dir().map(std::path::Path::to_path_buf) else { return };
+        let hosts: Vec<String> = crate::settings::SEARCH_ENGINES
+            .iter()
+            .filter_map(|(_, url)| url.strip_prefix("https://")?.split('/').next())
+            .filter(|host| {
+                ![false, true].iter().any(|&dark| crate::favicons::cache_file(&dir, host, dark).exists())
+            })
+            .map(str::to_owned)
+            .collect();
+        if !hosts.is_empty() {
+            self.engine_icons = Some(crate::engine_icons::fetch(hosts));
+        }
+    }
+
+    /// Search engine icons that arrived: cached like any site's, shown on the start page.
+    fn take_engine_icons(&mut self) {
+        let Some(rx) = &self.engine_icons else { return };
+        let icons: Vec<_> = rx.try_iter().collect();
+        for icon in &icons {
+            self.favicons.insert(&icon.site, &icon.url, icon.width, icon.height, &icon.rgba, true);
+        }
+        if !icons.is_empty() {
+            self.home.icons_changed();
+        }
+    }
+
     fn edit_address(&mut self) {
         if let Some(view) = self.active_view() {
             self.engine.set_focus(view, false);
@@ -2799,6 +2834,9 @@ impl Browser {
                         } else if !loading && tab.loading {
                             let delay = self.page_color_delay();
                             self.page_colors.page_loaded(view, delay);
+                            if is_home_url(&tab.url) && !tab.private {
+                                self.fetch_engine_icons();
+                            }
                         }
                     }
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
@@ -4183,6 +4221,7 @@ impl Browser {
             });
         }
         self.settings.poll_search(&mut self.ui, &self.config, &self.keymap);
+        self.take_engine_icons();
         // Keeps the sidebar's scroll in range when its content got shorter (tabs closed).
         self.chrome.scroll_sections(&mut self.ui, 0.0);
         self.update_suggestions();
