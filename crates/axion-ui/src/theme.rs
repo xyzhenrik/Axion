@@ -77,7 +77,7 @@ const LENS_OPAQUE_MIX: f32 = 0.14;
 /// never blurred) and its shadow (logical px: offset, blur; strength in light / dark chrome).
 const FLAT_OPACITY: [f32; 3] = [0.94, 0.97, 1.0];
 const FLAT_SHADOW: [(f32, f32, [f32; 2]); 3] =
-    [(1.0, 6.0, [0.10, 0.34]), (2.0, 14.0, [0.12, 0.40]), (4.0, 28.0, [0.16, 0.50])];
+    [(1.0, 5.0, [0.08, 0.20]), (2.0, 14.0, [0.12, 0.34]), (4.0, 28.0, [0.16, 0.46])];
 /// Width of a flat card's border (logical px).
 pub const FLAT_BORDER: f32 = 1.0;
 /// A tinted (primary) button in flat mode: the colour, almost solid.

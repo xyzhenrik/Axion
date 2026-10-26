@@ -1386,9 +1386,7 @@ impl SettingsSheet {
                 segmented(ui, row_node, &styles, current);
                 self.note(
                     ui,
-                    "Flat draws solid cards instead of glass: no refraction, blur, merging drops or \
-                     bouncy physics, and the GPU skips the glass work entirely. Everything else works \
-                     the same; it also suits weak graphics hardware.",
+                    "Flat: solid cards, no refraction, blur or bounce. Skips the glass work (fast on weak GPUs).",
                 );
                 let row_node = self.row(ui, "Accent colour");
                 swatches(ui, row_node, config.appearance.accent, SettingsAction::Accent);

@@ -1715,6 +1715,8 @@ impl Ui {
                 stacks[depth + 1].glass.push(GlassItem { level, fade: quantize_fade(fade), tint, shape });
                 child_depth = depth + 1;
             }
+            // A soft plate only helps text over glass; a flat card is solid already.
+            Background::Soft(..) if flat => {}
             Background::Soft(paint, opacity, blur) => {
                 let mut color = theme.color(paint);
                 color[3] *= opacity * fade;
@@ -1944,9 +1946,8 @@ impl Ui {
     }
 
     /// A glass background painted without glass (flat mode): a solid card with a hairline border
-    /// and a soft shadow, in the plane's content at the glass's stacking position. Glass buttons
-    /// on glass have no card of their own (their hover and pressed tints are the feedback);
-    /// bridges between shapes aren't drawn.
+    /// and a soft shadow, in the plane's content at the glass's stacking position (glass on glass
+    /// is an inset instead, see `Theme::flat_paint`). Bridges between shapes aren't drawn.
     #[allow(clippy::too_many_arguments)]
     fn paint_flat_card(
         &self,
@@ -1967,10 +1968,9 @@ impl Ui {
             Background::Glass(level) => (level, None),
             _ => return,
         };
-        let button = widget.action.is_some() && widget.glass_density.is_none() && tint.is_none();
-        if button && nested && level != GlassLevel::Lens {
-            return;
-        }
+        // A panel that carries text (a popover on the bar's thin glass) is as solid as its
+        // density says: with no blur behind it, anything less would show the page through.
+        let level = if level == GlassLevel::Lens { level } else { widget.glass_density.unwrap_or(level) };
         let s = self.scale;
         let paint = match tint {
             Some(tint) => theme.flat_tinted(tint),
