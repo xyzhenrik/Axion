@@ -641,9 +641,11 @@ pub struct Layout {
     /// Preferred width of a tab in the separate tab bar and of the other tabs' segments in the
     /// compact one; all tabs share it, and they shrink equally when they don't fit.
     pub tab_width: f32,
-    /// Tabs shrink no further than this (logical px); beyond it they overflow.
+    /// Below this width a tab drops its title (and close button) and shows only its favicon.
     pub tab_min_width: f32,
-    /// Width of a pinned tab (favicon only).
+    /// Tabs shrink no further than this (icon only, logical px); beyond it they overflow.
+    pub tab_icon_width: f32,
+    /// Width of a pinned tab (favicon only); 0 = a square as high as the tab row.
     pub pinned_tab_width: f32,
     /// When the bookmarks bar under the toolbar is shown.
     pub bookmarks_bar: BookmarksBar,
@@ -699,7 +701,8 @@ impl Default for Layout {
             narrow_below: 800.0,
             tab_width: 260.0,
             tab_min_width: 72.0,
-            pinned_tab_width: 44.0,
+            tab_icon_width: 36.0,
+            pinned_tab_width: 0.0,
             bookmarks_bar: BookmarksBar::Always,
             page_corner_radius: 10.0,
             page_margin: 8.0,
