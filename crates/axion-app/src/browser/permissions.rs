@@ -129,12 +129,13 @@ impl Browser {
         let view = self.active_view().filter(|_| !self.is_locked() && !self.settings.is_open());
         let request = self.permissions.model.next_for(view).cloned();
         match request {
-            Some(request) => {
+            Some(request) if self.permissions.prompt.shown() != Some((request.view, request.id)) => {
                 // One prompt under the address field at a time.
                 self.passwords.hide_prompt(Some(request.view), true);
                 let picker = self.engine.screen_share_has_picker();
                 self.permissions.prompt.show(&mut self.ui, &self.config, &request, picker);
             }
+            Some(_) => {}
             None => self.permissions.prompt.hide(),
         }
     }

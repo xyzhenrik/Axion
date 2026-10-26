@@ -42,6 +42,8 @@ const CAPTURE_ROW: f32 = 40.0;
 pub const MICROPHONE_COLOR: Color = Color::rgb(0xFF9500);
 pub const CAMERA_COLOR: Color = Color::rgb(0x30B650);
 pub const SCREEN_COLOR: Color = Color::rgb(0xFF3B30);
+/// The Stop buttons: solid red, legible on any glass.
+const STOP_COLOR: Color = Color::rgb(0xE2453A);
 
 /// The icon of a kind.
 pub fn kind_icon(kind: PermissionKind) -> Icon {
@@ -453,7 +455,7 @@ fn pill(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str) {
         Widget::container()
             .with_action(action)
             .with_radius(CAPSULE)
-            .with_background(Background::Fill(Paint::Fixed(SCREEN_COLOR), 0.14)),
+            .with_background(Background::Fill(Paint::Fixed(STOP_COLOR), 1.0)),
         Style {
             size: Size { width: auto(), height: length(32.0) },
             padding: padding(14.0, 0.0),
@@ -461,9 +463,9 @@ fn pill(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str) {
             ..row(0.0)
         },
     );
-    let label = ui.add_label(button, text, TextStyle::Callout, Style::default());
+    let label = ui.add_label(button, text, TextStyle::BodyEmphasis, Style::default());
     if let Some(w) = ui.widget_mut(label) {
-        w.set_paint(Paint::Fixed(Color::rgb(0xD0362B)));
+        w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
     }
 }
 
