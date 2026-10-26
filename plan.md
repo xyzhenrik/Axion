@@ -28,7 +28,7 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   use Axion's accent colour; private tabs get a dark private variant. **Live wallpapers**:
   animated GIF/WebP/APNG and muted looping videos (webm, mp4 with H.264) as backgrounds
   (`home.live_wallpapers`, `home.max_background_mb`); paused while hidden/frozen, still frame
-  with Reduce Motion; the media bridge ignores them (no media tab, no audio icon, no MPRIS).
+  only if the user opts in to follow Reduce Motion (`home.live_wallpapers_ignore_reduce_motion`, default on = they play); the media bridge ignores them (no media tab, no audio icon, no MPRIS).
 
 ### 2.2 Liquid Glass
 - SDF-based shapes (rounded rects, capsules, circles) with lens-profile refraction.

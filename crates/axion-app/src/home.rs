@@ -440,7 +440,11 @@ impl HomePage {
             kinds: &kinds,
             mimes: &mimes,
             needs_thumb: &needs_thumb,
-            live: config.home.live_wallpapers && !config.glass.reduce_motion,
+            live: wallpapers_animated(
+                config.home.live_wallpapers,
+                config.glass.reduce_motion,
+                config.home.live_wallpapers_ignore_reduce_motion,
+            ),
             live_setting: config.home.live_wallpapers,
             error: self.add_error.as_deref().unwrap_or_default(),
         };
@@ -577,6 +581,12 @@ pub fn expand_home(path: &str) -> PathBuf {
 }
 
 /// The backgrounds `/api/state` lists.
+/// Whether animated wallpapers play: `home.live_wallpapers` is on, and Reduce Motion is off or
+/// the user let wallpapers ignore it (`home.live_wallpapers_ignore_reduce_motion`).
+fn wallpapers_animated(live_wallpapers: bool, reduce_motion: bool, ignore_reduce_motion: bool) -> bool {
+    live_wallpapers && (!reduce_motion || ignore_reduce_motion)
+}
+
 struct Backgrounds<'a> {
     /// The selected one, if any (and it exists).
     selected: Option<&'a str>,
@@ -587,9 +597,9 @@ struct Backgrounds<'a> {
     mimes: &'a [&'a str],
     /// Videos without a thumbnail: the page makes one from the first frame.
     needs_thumb: &'a [&'a str],
-    /// Animated images and videos play (`home.live_wallpapers`, not Reduce Motion).
+    /// Animated images and videos play (see `wallpapers_animated`).
     live: bool,
-    /// The `home.live_wallpapers` setting itself (`live` is also off with Reduce Motion).
+    /// The `home.live_wallpapers` setting itself (`live` is also off when Reduce Motion applies).
     live_setting: bool,
     /// Why the last file could not be added (empty: nothing to report).
     error: &'a str,
@@ -902,6 +912,25 @@ mod tests {
         assert!(!config.home.show_clock);
         assert_eq!(config.general.search_url, SEARCH_ENGINES[1].1);
         assert_eq!(config.home.clock_format, ClockFormat::H24);
+    }
+
+    #[test]
+    fn wallpaper_animation_decision() {
+        for live in [false, true] {
+            for reduce in [false, true] {
+                for ignore in [false, true] {
+                    let expected = live && (!reduce || ignore);
+                    assert_eq!(
+                        wallpapers_animated(live, reduce, ignore),
+                        expected,
+                        "{live} {reduce} {ignore}"
+                    );
+                }
+            }
+        }
+        assert!(wallpapers_animated(true, true, true));
+        assert!(!wallpapers_animated(true, true, false));
+        assert!(wallpapers_animated(true, false, false));
     }
 
     #[test]

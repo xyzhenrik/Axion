@@ -162,9 +162,12 @@ pub struct Home {
     /// Larger files are refused as backgrounds (MB). Live wallpapers (videos) are big.
     pub max_background_mb: u32,
     /// Animated GIF/WebP/APNG and video backgrounds play (muted, looped). Off (or with Reduce
-    /// Motion on, or while the tab is hidden) they show their first frame. Private tabs
+    /// Motion on and `live_wallpapers_ignore_reduce_motion` off, or while the tab is hidden) they show their first frame. Private tabs
     /// never show a background.
     pub live_wallpapers: bool,
+    /// Live wallpapers keep playing when Reduce Motion (`glass.reduce_motion`) is on. Off, they
+    /// follow Reduce Motion and show their first frame.
+    pub live_wallpapers_ignore_reduce_motion: bool,
     /// Darkens the background image for legibility (0–1).
     pub background_dim: f32,
     /// Blurs the background image (CSS px).
@@ -202,6 +205,7 @@ impl Default for Home {
             max_backgrounds: 24,
             max_background_mb: 200,
             live_wallpapers: true,
+            live_wallpapers_ignore_reduce_motion: true,
             background_dim: 0.2,
             background_blur: 0.0,
             stats_refresh_seconds: 2.0,
