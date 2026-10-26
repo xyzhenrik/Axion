@@ -4000,9 +4000,10 @@ impl Browser {
         }
         let appearance = &self.config.appearance;
         let adapt = appearance.adapt_to_page && appearance.theme == ThemeMode::Auto;
+        let tints = appearance.tint_from_page && appearance.tint_mode != axion_config::TintMode::Neutral;
         let view = self.active_view().filter(|_| !self.is_locked());
         if let (Some(view), Some(page)) = (view, page)
-            && (appearance.tint_from_page || adapt)
+            && (tints || adapt)
             && self.page_colors.wants_measure(view)
             && self.compositor.sample_palette(page)
         {
@@ -4010,7 +4011,7 @@ impl Browser {
         }
         let color = view.and_then(|v| self.page_colors.color(v, &params));
         let spring = crate::drip::spring(&self.config, self.config.motion.smooth);
-        let tint = color.filter(|_| self.config.appearance.tint_from_page);
+        let tint = color.filter(|_| tints);
         self.window_tint = self.page_colors.step(tint, spring, dt);
         let Some(color) = color.filter(|_| adapt) else { return };
         let dark = lightness(color) < DARK_BELOW;

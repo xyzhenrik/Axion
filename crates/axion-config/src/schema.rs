@@ -260,8 +260,11 @@ pub enum ThemeMode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TintMode {
-    /// The page's darkest (dark pages) or lightest (light pages) prominent colour.
+    /// The page's colour is never used: the glass sits on Apple's system greys (light: off-white
+    /// `#F2F2F7`, dark: `#1C1C1E`), whatever the website looks like. The default; see `Colors`.
     #[default]
+    Neutral,
+    /// The page's darkest (dark pages) or lightest (light pages) prominent colour.
     Extreme,
     /// The colour most of the page shows, evened out into a calm light or dark tone.
     Dominant,
@@ -279,7 +282,8 @@ pub struct Appearance {
     pub font_family: String,
     /// Scales every UI text size.
     pub text_scale: f32,
-    /// Switch the chrome between light and dark to stay legible over the page behind it.
+    /// Switch the chrome between light and dark to match the page's brightness (opt-in; off:
+    /// the chrome follows `theme` only, so it never depends on the website).
     pub adapt_to_page: bool,
     /// Icon stroke weight in the light chrome, as a multiple of the design's base stroke
     /// (1.75 in a 24-unit box). Dark-on-light icons look thinner than light-on-dark ones, so
@@ -288,13 +292,14 @@ pub struct Appearance {
     pub icon_stroke_light: f32,
     /// Icon stroke weight in the dark chrome (multiple of the base stroke, 1.0 = the design).
     pub icon_stroke_dark: f32,
-    /// Give the window around the page a colour of the page (like Safari), measured once per
-    /// page (see `tint_mode`).
+    /// Give the window around the page a colour of the page (like Safari's "colour in tab
+    /// bar"), measured once per page (opt-in; `tint_mode` must not be `neutral` for it to
+    /// show: turning this on in Settings switches `neutral` to `extreme`).
     pub tint_from_page: bool,
     /// The page's colour is measured this long after it finished loading (ms), so late
     /// styles and images are in.
     pub page_color_delay_ms: f32,
-    /// How the tint is picked: `extreme` (darkest/lightest prominent colour of the page's top
+    /// How the tint is picked: `neutral` (default: never from the page), `extreme` (darkest/lightest prominent colour of the page's top
     /// region, on the side of the page's overall brightness) or `dominant` (calmed main colour).
     pub tint_mode: TintMode,
     /// `extreme` mode: the top part of the page (0-1 of its height) the colour is taken from.
@@ -313,12 +318,12 @@ impl Default for Appearance {
             accent_tint: 0.06,
             font_family: "Inter".into(),
             text_scale: 1.0,
-            adapt_to_page: true,
+            adapt_to_page: false,
             icon_stroke_light: 1.2,
             icon_stroke_dark: 1.0,
-            tint_from_page: true,
+            tint_from_page: false,
             page_color_delay_ms: 350.0,
-            tint_mode: TintMode::Extreme,
+            tint_mode: TintMode::Neutral,
             tint_top_region: 0.25,
             tint_min_coverage: 0.03,
             tint_prefer_theme_color: false,
@@ -438,7 +443,7 @@ impl Default for Glass {
         Self {
             style: GlassStyle::Liquid,
             light: GlassMaterial {
-                tint: Color::rgb(0xFFFFFF),
+                tint: Color::rgb(LIGHT_GLASS_TINT),
                 opacity: Levels { thin: 0.30, regular: 0.48, thick: 0.66 },
                 blur,
                 refraction: 0.55,
@@ -447,7 +452,7 @@ impl Default for Glass {
                 shadow: 0.20,
             },
             dark: GlassMaterial {
-                tint: Color::rgb(0x16181E),
+                tint: Color::rgb(DARK_GLASS_TINT),
                 opacity: Levels { thin: 0.36, regular: 0.50, thick: 0.68 },
                 blur,
                 refraction: 0.55,
@@ -467,6 +472,21 @@ impl Default for Glass {
         }
     }
 }
+
+/// Apple's system greys, the neutral chrome of `appearance.tint_mode = "neutral"`. Apple
+/// uses neither pure white nor pure black as a background, and neither do we.
+/// Light: `systemGroupedBackground` for the ground (window behind the page card, bars,
+/// popovers, flat-mode and Reduce-Transparency surfaces), a hair lighter for raised surfaces
+/// (fields, cards) and for the glass tint.
+pub const LIGHT_GROUND: u32 = 0xF2F2F7;
+pub const LIGHT_SURFACE: u32 = 0xFAFAFC;
+pub const LIGHT_GLASS_TINT: u32 = 0xF9F9FB;
+/// Dark: `systemBackground`-dark grey for the ground, `secondarySystemBackground` for raised
+/// surfaces and the glass tint, `tertiarySystemBackground` for separators.
+pub const DARK_GROUND: u32 = 0x1C1C1E;
+pub const DARK_SURFACE: u32 = 0x2C2C2E;
+pub const DARK_GLASS_TINT: u32 = 0x2C2C2E;
+pub const DARK_TERTIARY: u32 = 0x3A3A3C;
 
 /// Neutral colours for one colour scheme.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -498,18 +518,18 @@ impl Default for Colors {
     fn default() -> Self {
         Self {
             light: Palette {
-                ground: Color::rgb(0xF3F4F7),
-                surface: Color::rgb(0xFFFFFF),
+                ground: Color::rgb(LIGHT_GROUND),
+                surface: Color::rgb(LIGHT_SURFACE),
                 label: Color::rgb(0x111318),
                 secondary: Color::rgb(0x4A5060),
                 hairline: Color::rgb(0xD9DCE3),
             },
             dark: Palette {
-                ground: Color::rgb(0x0E0F13),
-                surface: Color::rgb(0x1A1C22),
+                ground: Color::rgb(DARK_GROUND),
+                surface: Color::rgb(DARK_SURFACE),
                 label: Color::rgb(0xF5F6F8),
-                secondary: Color::rgb(0xA8AEBB),
-                hairline: Color::rgb(0x2C2F38),
+                secondary: Color::rgb(0xB9BDC8),
+                hairline: Color::rgb(DARK_TERTIARY),
             },
             shield: None,
         }
@@ -1366,6 +1386,23 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_chrome_is_neutral_by_default() {
+        let c = Config::default();
+        let a = &c.appearance;
+        assert_eq!(a.tint_mode, TintMode::Neutral);
+        assert!(!a.tint_from_page && !a.adapt_to_page);
+        assert_eq!(a.theme, ThemeMode::Auto);
+        // Apple's system greys, never pure white or black.
+        assert_eq!(c.colors.light.ground, Color::rgb(0xF2F2F7));
+        assert_eq!(c.colors.dark.ground, Color::rgb(0x1C1C1E));
+        assert_eq!(c.colors.dark.surface, Color::rgb(0x2C2C2E));
+        for tint in [c.glass.light.tint, c.glass.dark.tint, c.colors.light.surface] {
+            assert!(tint != Color::rgb(0xFFFFFF) && tint != Color::rgb(0x000000));
+        }
+        assert_eq!(c.glass.dark.tint, Color::rgb(DARK_GLASS_TINT));
+    }
+
     use super::*;
 
     #[test]
