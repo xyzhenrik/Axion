@@ -323,7 +323,10 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. â
   `layout.tab_icon_width`, then overflowing; `distribute_tab_widths`), springing to new widths; hairline separators in
   the separate tab bar (hidden beside the open and the hovered tab).
 - [x] Tab context menu (right click on tab bar, compact segments, sidebar rows; glass menu
-  flowing out of the tab, shortcuts from the keymap); pinned tabs (first, favicon only,
+  flowing out of the tab, shortcuts from the keymap; sidebar rows are covered by their menu
+  (`Placement::Over`), top-bar tabs get the menu dripping out *below* the tab (`BelowStart`, left edges
+  aligned, shallow bridge `BRIDGE_INTO_JOIN` so an inactive tab's label isn't cut): `Over` in the bar
+  plane merged with the capsule's own glass into a lumpy outline); pinned tabs (first, favicon only,
   `layout.pinned_tab_width`, kept in the session via the `session_pinned_tabs` meta key).
 - [x] Bookmarks bar (`layout.bookmarks_bar` = always/home/never; overflow chevron menu,
   middle click opens in the background, right click: Open in New Tab / Delete). Top-level

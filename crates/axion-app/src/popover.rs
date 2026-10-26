@@ -27,6 +27,8 @@ pub const LEVEL: GlassLevel = GlassLevel::Thin;
 pub const DENSITY: GlassLevel = GlassLevel::Thick;
 /// A bridge narrower than this (logical px) isn't drawn.
 const MIN_BRIDGE_WIDTH: f32 = 1.0;
+/// A bridge reaches at most to the middle of a shape.
+const MIDDLE: f32 = 0.5;
 
 pub struct Popover {
     parent: NodeId,
@@ -39,6 +41,8 @@ pub struct Popover {
     join: Option<(Frame, f32)>,
     /// How deep the bridge reaches into the shapes it joins (logical px; see [`bridge_frame`]).
     bridge_depth: f32,
+    /// At most this share (0..=0.5) of the joined glass's thickness is reached into.
+    bridge_into_join: f32,
     /// Content under the popover that would show through it, and fades out as it grows.
     covered: Vec<NodeId>,
     /// The bridge thins out as the popover settles and is gone once it is open: it only
@@ -84,10 +88,17 @@ impl Popover {
             radius,
             join: None,
             bridge_depth: 0.0,
+            bridge_into_join: MIDDLE,
             covered: Vec::new(),
             detach: false,
             target: Frame::default(),
         }
+    }
+
+    /// Limits how far into the glass it flows out of the bridge reaches (a share of its
+    /// thickness, 0.5 = to its middle, the default).
+    pub fn set_bridge_into_join(&mut self, share: f32) {
+        self.bridge_into_join = share;
     }
 
     /// The glass panel: the popover's content goes in here.
@@ -182,10 +193,9 @@ impl Popover {
         // Flat mode fades the card in and out instead (1 otherwise: nothing changes).
         ui.set_opacity(self.root, self.drip.fade());
         // Flat mode has no bridges: the card is just a card.
-        let mut bridge = self
-            .join
-            .filter(|_| !ui.theme().flat())
-            .and_then(|(join, r)| bridge_frame(join, r, frame, self.radius, self.bridge_depth));
+        let mut bridge = self.join.filter(|_| !ui.theme().flat()).and_then(|(join, r)| {
+            bridge_frame_reaching(join, r, frame, self.radius, self.bridge_depth, self.bridge_into_join)
+        });
         if self.detach {
             // Narrower the further it has flowed away from its anchor, gone when open.
             let from = self.drip.anchor();
@@ -240,6 +250,20 @@ pub fn bridge_frame(
     glass_radius: f32,
     depth: f32,
 ) -> Option<Frame> {
+    bridge_frame_reaching(join, join_radius, glass, glass_radius, depth, MIDDLE)
+}
+
+/// [`bridge_frame`] reaching at most `into_join` (0..=1) of the joined glass's thickness into
+/// it. A shallow bridge keeps clear of the content of a thin joined shape (a tab's label) whose
+/// own glass is too faint to hide the bridge's edge.
+pub fn bridge_frame_reaching(
+    join: Frame,
+    join_radius: f32,
+    glass: Frame,
+    glass_radius: f32,
+    depth: f32,
+    into_join: f32,
+) -> Option<Frame> {
     let (jmin, jmax) = (join.origin, join.origin + join.size);
     let (gmin, gmax) = (glass.origin, glass.origin + glass.size);
     let gaps = [
@@ -268,9 +292,11 @@ pub fn bridge_frame(
     }
     // Into each shape at least until it is as wide as the bridge (down to the widest line of a
     // round end), never past its middle.
-    let reach = |thickness: f32, r: f32, inset: f32| depth.max(r - inset).min(thickness / 2.0);
+    let reach = |thickness: f32, r: f32, inset: f32, share: f32| {
+        depth.max(r - inset).min(thickness * share.clamp(0.0, MIDDLE))
+    };
     let (jt, gt) = (jnear_max - jnear_min, gnear_max - gnear_min);
-    let (dj, dg) = (reach(jt, jr, ij), reach(gt, gr, ig));
+    let (dj, dg) = (reach(jt, jr, ij, into_join), reach(gt, gr, ig, MIDDLE));
     let (a, b) = if side % 2 == 0 {
         // The glass lies after the join (below, right).
         (jnear_max - dj, gnear_min + dg)
@@ -299,6 +325,22 @@ mod tests {
         // From the middle of the bar to a bezel's width into the menu.
         assert_eq!(b.origin.y, bar.center().y);
         assert_eq!(b.origin.y + b.size.y, menu.origin.y + DEPTH);
+    }
+
+    #[test]
+    fn shallow_bridge_keeps_clear_of_a_thin_tabs_label() {
+        // A 30 px tab with its menu below: the usual bridge starts at the tab's middle (where
+        // its label is), a shallow one lower down, but still inside the tab.
+        let tab = Frame::new(100.0, 74.0, 260.0, 30.0);
+        let menu = Frame::new(100.0, 118.0, 280.0, 200.0);
+        let deep = bridge_frame(tab, CAPSULE, menu, 22.0, DEPTH).expect("deep");
+        let shallow = bridge_frame_reaching(tab, CAPSULE, menu, 22.0, DEPTH, 0.3).expect("shallow");
+        assert_eq!(deep.origin.y, tab.center().y);
+        assert_eq!(shallow.origin.y, tab.origin.y + tab.size.y - 0.3 * tab.size.y);
+        assert!(shallow.origin.y > deep.origin.y && shallow.origin.y < tab.origin.y + tab.size.y);
+        // Same width, and it ends at the same depth in the menu.
+        assert_eq!((shallow.origin.x, shallow.size.x), (deep.origin.x, deep.size.x));
+        assert_eq!(shallow.origin.y + shallow.size.y, deep.origin.y + deep.size.y);
     }
 
     #[test]
