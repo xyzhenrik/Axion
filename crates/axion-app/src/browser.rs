@@ -61,6 +61,7 @@ use crate::tabdrag::{TabDrag, Target};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
 use crate::toast::Toast;
 use crate::tooltip::Tooltip;
+use crate::typing_probe;
 use crate::url::display_host;
 use crate::url::resolve_input;
 
@@ -107,6 +108,35 @@ impl FrameStats {
             );
             *self = Self::default();
         }
+    }
+}
+
+/// A running typing probe.
+struct ProbeRun {
+    spec: typing_probe::Spec,
+    started: Instant,
+    tracker: typing_probe::Tracker,
+    baseline: Option<Vec<u8>>,
+    last_serial: u64,
+    reported: bool,
+}
+
+impl ProbeRun {
+    fn new(spec: typing_probe::Spec) -> Self {
+        Self {
+            spec,
+            started: Instant::now(),
+            tracker: Default::default(),
+            baseline: None,
+            last_serial: 0,
+            reported: false,
+        }
+    }
+
+    fn char_due(&self, now: Instant) -> Option<char> {
+        let i = self.tracker.sent_count();
+        let at = self.started + self.spec.start_after + self.spec.interval * i as u32;
+        self.spec.text.chars().nth(i).filter(|_| now >= at)
     }
 }
 
@@ -221,6 +251,8 @@ pub struct Browser {
     /// The active page's last reported scroll position (CSS px).
     /// Frames saved so far by the `AXION_CAPTURE_FRAMES` debug aid.
     capture_frame: u32,
+    /// Typing latency probe (`AXION_TYPE_PROBE`, see `typing_probe`).
+    probe: Option<ProbeRun>,
     /// Those frames, kept in memory until the sequence is complete (saving each one at once
     /// would stall the frame loop and change the timing being looked at).
     captured_frames: Vec<image::RgbaImage>,
@@ -449,6 +481,14 @@ impl Browser {
                 },
                 no_sandbox: std::env::var_os("AXION_NO_SANDBOX").is_some(),
                 max_frame_rate: page_frame_rate(&config, &window),
+                frame_settle: Duration::from_secs_f32(
+                    std::env::var("AXION_FRAME_SETTLE_MS")
+                        .ok()
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .unwrap_or(config.tabs.gpu_frame_settle_ms)
+                        .max(0.0)
+                        / 1000.0,
+                ),
                 hardware_video_decoding: config.media.hardware_decoding,
                 waker: options.waker.clone(),
             },
@@ -557,6 +597,10 @@ impl Browser {
             playlist,
             playlist_ui,
             capture_frame: 0,
+            probe: std::env::var("AXION_TYPE_PROBE")
+                .ok()
+                .and_then(|v| typing_probe::Spec::parse(&v))
+                .map(ProbeRun::new),
             captured_frames: Vec::new(),
             pip: None,
             instance,
@@ -5189,6 +5233,7 @@ impl Browser {
 
         // Locked private pages aren't drawn at all (the lock screen covers their place).
         let frame = self.display_view().filter(|_| !self.is_locked()).and_then(|v| self.engine.frame(v));
+        self.probe_page_frame(frame.as_ref());
         let page_view = frame.as_ref().map(|f| f.texture.create_view(&Default::default()));
         let slide_frame = frame.as_ref().and_then(|f| self.slide_page_frame(&f.texture));
         let slide_view = slide_frame.as_ref().map(|t| t.create_view(&Default::default()));
@@ -5312,6 +5357,7 @@ impl Browser {
         drop(scene);
         self.window.pre_present_notify();
         self.queue.present(surface);
+        self.probe_presented();
 
         if let Some((path, at)) = &self.capture
             && Instant::now() >= *at
@@ -5548,6 +5594,86 @@ impl Browser {
     /// When the event loop should wake up next at the latest (the engine's next pump).
     pub fn next_wakeup(&self) -> Option<Instant> {
         self.engine.next_pump()
+    }
+
+    /// Typing probe: types the next character when it is due (between frames, as a key event
+    /// would arrive), and logs the summary once everything is typed and shown.
+    pub fn tick_probe(&mut self) {
+        let now = Instant::now();
+        let Some(probe) = &self.probe else { return };
+        if let Some(c) = probe.char_due(now) {
+            let target = probe.spec.target;
+            match target {
+                typing_probe::Target::Page { .. } => {
+                    if let Some(view) = self.active_view() {
+                        for key in input::typed_keys(&c.to_string()) {
+                            self.engine.send_input(view, &key);
+                        }
+                    }
+                }
+                typing_probe::Target::Native => {
+                    let (_, events) = self.ui.handle(UiInput::Text(c.to_string()));
+                    self.handle_ui_events(events);
+                }
+            }
+            if let Some(probe) = &mut self.probe {
+                probe.tracker.sent(now);
+            }
+            return;
+        }
+        let total = probe.spec.text.chars().count();
+        let last_at = probe.started
+            + probe.spec.start_after
+            + probe.spec.interval * total as u32
+            + std::time::Duration::from_secs(2);
+        if !probe.reported && probe.tracker.sent_count() == total && now >= last_at {
+            let summary = probe.tracker.summary();
+            if let Some(probe) = &mut self.probe {
+                probe.reported = true;
+            }
+            match summary {
+                Some(s) => {
+                    let ms: Vec<String> = s
+                        .latency
+                        .iter()
+                        .map(|l| l.map_or("never".to_owned(), |d| format!("{:.0}", d.as_secs_f32() * 1000.0)))
+                        .collect();
+                    tracing::info!(latency_ms = %ms.join(" "), vanished = s.regressions, "typing probe");
+                    let frames: Vec<String> = s.shown.iter().map(|(t, n)| format!("{t}:{n}")).collect();
+                    tracing::debug!(frames = %frames.join(" "), "typing probe frames");
+                }
+                None => tracing::info!("typing probe: nothing measured"),
+            }
+        }
+    }
+
+    /// Typing probe, page target: samples the field in every new page frame.
+    fn probe_page_frame(&mut self, frame: Option<&axion_engine::Frame>) {
+        let Some(probe) = &mut self.probe else { return };
+        let typing_probe::Target::Page { region } = probe.spec.target else { return };
+        let Some(frame) = frame.filter(|f| f.serial != probe.last_serial) else { return };
+        probe.last_serial = frame.serial;
+        let Some(pixels) = typing_probe::read_region(&self.device, &self.queue, &frame.texture, region)
+        else {
+            return;
+        };
+        let started = probe.started + probe.spec.start_after;
+        if Instant::now() < started || probe.tracker.sent_count() == 0 {
+            probe.baseline = Some(pixels);
+            return;
+        }
+        if let Some(baseline) = &probe.baseline {
+            probe.tracker.sample(Instant::now(), typing_probe::ink(baseline, &pixels));
+        }
+    }
+
+    /// Typing probe, chrome target: the frame that follows a typed character is presented.
+    fn probe_presented(&mut self) {
+        let Some(probe) = &mut self.probe else { return };
+        if probe.spec.target == typing_probe::Target::Native && probe.tracker.sent_count() > 0 {
+            let typed = probe.tracker.sent_count() as u32;
+            probe.tracker.sample(Instant::now(), typed);
+        }
     }
 
     pub fn request_redraw(&self) {

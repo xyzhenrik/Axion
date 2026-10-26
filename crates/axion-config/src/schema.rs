@@ -915,6 +915,12 @@ pub struct Tabs {
     pub drag_threshold: f32,
     /// Pages draw at most this many frames per second; 0 follows the display's refresh rate.
     pub max_frame_rate: u32,
+    /// GPU-shared page frames are copied this many milliseconds after Chromium hands them over
+    /// (0: at once). Chromium reports a frame once its drawing is *submitted*, and the driver
+    /// gives no fence to wait for, so a copy made at once can still hold the buffer's previous
+    /// content (typed letters vanish for a frame, or until the next one comes). Longer is safer
+    /// on a busy GPU, shorter adds less delay to every frame.
+    pub gpu_frame_settle_ms: f32,
 }
 
 impl Default for Tabs {
@@ -931,6 +937,7 @@ impl Default for Tabs {
             check_interval_seconds: 5.0,
             drag_threshold: 6.0,
             max_frame_rate: 0,
+            gpu_frame_settle_ms: 6.0,
         }
     }
 }

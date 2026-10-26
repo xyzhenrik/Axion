@@ -2272,6 +2272,27 @@ mod tests {
     }
 
     #[test]
+    fn typing_dirties_the_layout_and_the_next_frame_has_every_letter() {
+        let mut ui = ui();
+        let (_, _, field) = row(&mut ui);
+        ui.set_secure(field, true);
+        ui.focus(field);
+        ui.layout();
+        assert!(!ui.needs_layout);
+        for (i, letter) in "hunter2".chars().enumerate() {
+            ui.handle(UiInput::Text(letter.to_string()));
+            // Each keystroke asks for a layout, and the text shown after it is complete.
+            assert!(ui.needs_layout, "typing {letter:?} must dirty the layout");
+            ui.layout();
+            let Some(Widget { kind: WidgetKind::TextField(f), .. }) = ui.widget(field) else {
+                panic!("no field");
+            };
+            assert_eq!(f.display_text().chars().count(), i + 1);
+        }
+        assert_eq!(ui.field_text(field), Some("hunter2"));
+    }
+
+    #[test]
     fn secure_fields_hide_and_keep_their_text() {
         let mut ui = ui();
         let (_, _, field) = row(&mut ui);

@@ -143,6 +143,9 @@ AXION_MONITOR=HDMI-A-1 ...   # open on that monitor (X11/XWayland only: run with
 AXION_CHROMIUM_SWITCHES=autoplay-policy=no-user-gesture-required ...   # extra Chromium switches (comma-separated)
 axion url1 url2 --overview --capture=out.png   # several tabs; screenshot of the tab overview
 axion url --after=20 --capture=out.png        # capture after 20 s instead of 8
+AXION_TYPE_PROBE=page:X,Y,W,H,INTERVAL_MS,START_S,TEXT axion url --capture=… --after=12   # typing latency per character into a page field (rect of an empty, caret-less field; logs `typing probe`; run on native Wayland, the GPU frame path is not used under XWayland)
+AXION_TYPE_PROBE=native:INTERVAL_MS,START_S,TEXT axion --open=add-account --lead=8000 …     # same for a focused chrome field
+AXION_FRAME_SETTLE_MS=N ...   # override tabs.gpu_frame_settle_ms (0 = copy GPU frames at once)
 ```
 
 ## Things to watch
