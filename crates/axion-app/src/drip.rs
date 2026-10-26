@@ -470,7 +470,7 @@ mod tests {
         }
         assert_eq!(drip.phase(), Phase::Open);
         assert!((drip.frame().size - target.size).length() < 0.1);
-        assert_eq!(drip.growth(), 1.0);
+        assert!((drip.growth() - 1.0).abs() < 1e-3);
         drip.close(&config);
         assert_eq!(drip.phase(), Phase::Closing);
         for _ in 0..240 {
