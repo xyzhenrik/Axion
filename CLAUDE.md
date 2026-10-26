@@ -99,6 +99,13 @@ and dark backdrops with `--capture` before calling it done.
 
 Provide a "Reduce Transparency" / "Reduce Motion" setting that degrades gracefully.
 
+**Flat mode** (`glass.style = "flat"`, the performance mode): the same UI without glass: solid
+cards, one toolbar surface, no refraction/blur/merging/drips/stretch/bounce, and no `Layer::Glass`
+at all (the compositor skips every glass pass). New UI must work in both modes: use
+`Background::Glass` (+ `FlatRole` where it is not a card), take springs from config through
+`drip::spring` / `Glass::damping`, chrome geometry from `Config::effective_layout`, and never read
+`glass.squash` / `merge_distance` / `popover_bridge_fillet` directly (use the methods).
+
 ## Conventions
 
 - Verify visual changes with `--capture` (never screenshot the user's desktop) and perf

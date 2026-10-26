@@ -313,8 +313,8 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
   captions, hairlines and side submenus (Zoom › − 100% +).
 - [x] Adaptive legibility (light/dark chrome from the page's top colour); Reduce Transparency.
 - [ ] Drag a tab pill: stretch, reorder, pull out into its own glass droplet; fling.
-- [ ] Performance mode for weak GPUs, and measuring the full app (not just the playground)
-  against the 120 fps / iGPU budget.
+- [x] Performance mode for weak GPUs: flat mode (`glass.style = "flat"`) skips all glass passes
+  (see the decisions log; `axion-ui` example `flat_bench`). *Open:* a frame-time overlay in the full app.
 
 ### Phase 4 — Shields
 - [x] adblock-rust request interception via CEF `ResourceRequestHandler` (IO thread, behind
@@ -628,6 +628,37 @@ Windows/macOS, touchscreen-first mode.
   - Playing from the Playlist pauses the page resting under it.
   - `playlist.forward_clicks` is obsolete (kept so old config files load). New keys:
     `resolve_timeout_seconds`, `resolve_settle_seconds`, `resolve_click_seconds`, `sniff_limit`.
+
+- 2026-10-26 (user request, "Mode completely without glass"): **flat mode**, `glass.style = "liquid" |
+  "flat"` (Settings > Appearance > Glass; live-switchable, also by editing the config file).
+  - One switch, `Theme::flat()` / `Glass::is_flat()`, read in a few central places instead of `if flat`
+    in widgets: `axion-ui` paints every `Background::Glass(level)` as a solid card (surface colour,
+    1px hairline, soft shadow: `Theme::flat_paint(level, nested)`; thin cards 0.94 opaque, regular
+    0.97, thick and anything with `glass_density` thick opaque; glass on glass is a shadowless inset in
+    the ground colour; a lens-level background is a faint label-colour highlight; tinted glass is the
+    colour at 0.96). It emits plain `Content` quads (new `Quad::ring` border and `card_shadow`), so
+    **no `Layer::Glass` exists in flat mode: no backdrop copies, no blur chain**. Reduce Transparency's
+    opaque lens colour is not needed (hover/pressed are label-colour tints as there).
+  - Physics: `Glass::squash()` / `merge_distance()` / `popover_bridge_fillet()` are 0 and
+    `Glass::damping()` raises every spring to critical damping (`Spring::critical()`, `Spring::CRISP`);
+    no press swell or lens (`press_target` is `None`), knobs and the segmented pill stay plain,
+    tab drag follows the pointer directly. `Drip` in flat mode has no edge animation: the card is at
+    its target and fades in/out with a 0.96 -> 1 scale on a critically damped spring (`Drip::fade`);
+    popover bridges and the sheet's hand-off proxy are skipped; tooltips use the same fade.
+  - Layout (`Config::effective_layout`): the chrome is one conventional toolbar. A `toolbar_band`
+    surface (surface colour, bottom hairline) spans the window beside a docked sidebar down to the page
+    top; nav/action groups are `FlatRole::Bare`; the address field is a `Field` (separate tab bar) or a
+    `Raised` pill on the tab capsule (compact); margins shrink to <= 8 px, the page is square and
+    full-bleed (`page_margin` 0), a docked sidebar is a square full-height panel, an overlay sidebar a
+    card with shadow. Locked private browsing and the Playlist page hide the band as before (the
+    sidebar button then stands on a card). Everything else (popovers anchored to buttons, find bar,
+    narrow layout, bookmarks bar) uses the unchanged layout code.
+  - Rule for new UI: it must work in both modes (use `Background::Glass`/`FlatRole`, springs from
+    config via `drip::spring`/`Glass::damping`, `Config::effective_layout` for chrome geometry).
+  - Performance mode (answers the Phase 3 item): `cargo run -p axion-ui --example flat_bench --release`
+    renders a browser-like chrome (sidebar rows, toolbar, popover) over a page at 2560x1440. RTX 3070 Ti
+    1.80 ms liquid (6 glass passes) -> 0.23 ms flat; Radeon 610M (`AXION_GPU=low`) 29.3 ms liquid
+    (34 fps) -> 1.6 ms flat.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)
