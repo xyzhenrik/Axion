@@ -424,6 +424,19 @@ pub enum SidebarMode {
     Overlay,
 }
 
+/// How the page follows a docked sidebar that slides in or out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarSlideResize {
+    /// The page is re-laid out continuously while the panel moves (a new size every few
+    /// pixels); Chromium's frames lag a frame or two behind the rectangle.
+    #[default]
+    Live,
+    /// The page is resized once, as the slide starts, and stands still under or beside the
+    /// panel until the slide settles.
+    Final,
+}
+
 /// Window chrome geometry in logical pixels.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -434,6 +447,15 @@ pub struct Layout {
     pub sidebar_width: f32,
     pub sidebar: SidebarMode,
     pub sidebar_visible: bool,
+    /// Whether the page resizes with a docked sidebar while it slides, or once it has settled.
+    pub sidebar_slide_resize: SidebarSlideResize,
+    /// With `sidebar_slide_resize = "live"`: the page is resized again once the panel moved
+    /// this many logical pixels (each size costs Chromium a layout and a frame).
+    pub sidebar_slide_resize_step: f32,
+    /// With `sidebar_slide_resize = "live"`: seconds the page is resized ahead of the panel,
+    /// so Chromium's frame of a size arrives as the panel gets there (the first estimate of
+    /// Chromium's delay, then measured).
+    pub sidebar_slide_lead: f32,
     /// Always float the sidebar over the page as a rounded glass card (it never pushes the
     /// page), whatever the window size.
     pub float_sidebar: bool,
@@ -495,6 +517,9 @@ impl Default for Layout {
             sidebar_width: 316.0,
             sidebar: SidebarMode::Auto,
             sidebar_visible: true,
+            sidebar_slide_resize: SidebarSlideResize::Live,
+            sidebar_slide_resize_step: 2.0,
+            sidebar_slide_lead: 0.05,
             float_sidebar: false,
             sidebar_corner_radius: 26.0,
             wide_from: 1280.0,

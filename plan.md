@@ -405,6 +405,18 @@ Windows/macOS, touchscreen-first mode.
   leaves. The page's own element fullscreen (video) stays separate. `Chrome::is_fullscreen`
   tells transient UI (find bar…) that nothing else may cover the page.
 
+- 2026-10-26: **Sidebar slide, page follows live** (supersedes "the page stands still while the
+  sidebar slides"). With `layout.sidebar_slide_resize = "live"` (default; `"final"` = the old
+  single resize + page standing still) the shown page is resized while the docked sidebar slides
+  (`resize_page_live`): a new size every `layout.sidebar_slide_resize_step` px, sent *ahead* by
+  the measured Chromium latency (`page_lag`, first guess `layout.sidebar_slide_lead`) times the
+  rectangle's speed, clamped to the settled width, so frames arrive about when the rectangle
+  gets there. The latest frame is drawn stretched over the rectangle (a few percent), so no
+  edge is uncovered, nothing is cropped, centred and left-aligned pages and Home all follow
+  and nothing pops at the end. The software paint path now also drops the "old page scaled with
+  a black bar" frames Chromium emits right after a resize (`has_black_bar`; the shared-buffer
+  path already did), which showed as a 5-15 px vertical jump per frame in live mode.
+
 - 2026-10-26: **Axion's own pages** are served by the browser through a CEF custom scheme
   (`axion://`, standard + secure + display-isolated + fetch-enabled, not CORS-enabled), behind
   the engine's `InternalPages` trait. Page → browser: `POST /api/message`, accepted only from
