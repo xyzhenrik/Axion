@@ -46,6 +46,10 @@ pub enum Action {
     BookmarkPage,
     ShowBookmarks,
     ShowHistory,
+    /// Open the Axion Playlist page.
+    OpenPlaylist,
+    /// Add the page's video to the Playlist.
+    PlaylistAdd,
     OpenPasswords,
     /// Locks private tabs and password filling (the account menu's Lock).
     Lock,
@@ -114,6 +118,8 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::BookmarkPage, "bookmark_page"),
     (Action::ShowBookmarks, "show_bookmarks"),
     (Action::ShowHistory, "show_history"),
+    (Action::OpenPlaylist, "open_playlist"),
+    (Action::PlaylistAdd, "playlist_add"),
     (Action::OpenPasswords, "open_passwords"),
     (Action::Lock, "lock"),
     (Action::Find, "find"),
@@ -385,6 +391,8 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::BookmarkPage, &["Ctrl+D"]);
     bind(Action::ShowBookmarks, &["Ctrl+B"]);
     bind(Action::ShowHistory, &["Ctrl+H"]);
+    bind(Action::OpenPlaylist, &["Ctrl+Shift+P"]);
+    bind(Action::PlaylistAdd, &["Ctrl+Shift+D"]);
     bind(Action::OpenPasswords, &["Ctrl+P"]);
     bind(Action::Lock, &["Ctrl+L"]);
     bind(Action::Find, &["Ctrl+F"]);
@@ -491,7 +499,14 @@ mod tests {
         for action in tab_actions {
             assert!(keymap.chords_for(action).iter().any(|c| c.modifiers.alt), "{action}");
         }
-        for action in [Action::OpenPasswords, Action::ShowHistory, Action::ShowBookmarks, Action::Find] {
+        for action in [
+            Action::OpenPasswords,
+            Action::ShowHistory,
+            Action::ShowBookmarks,
+            Action::Find,
+            Action::OpenPlaylist,
+            Action::PlaylistAdd,
+        ] {
             assert!(keymap.chords_for(action).iter().all(|c| c.modifiers.ctrl), "{action}");
         }
     }

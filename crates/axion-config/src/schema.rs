@@ -20,6 +20,7 @@ pub struct Config {
     pub shields: Shields,
     pub tabs: Tabs,
     pub media: Media,
+    pub playlist: Playlist,
     pub downloads: Downloads,
     pub data: Data,
     pub passwords: Passwords,
@@ -1002,6 +1003,71 @@ impl Default for Media {
             desktop_integration: true,
             pip_keep_aspect: true,
             pip_aspect_settle_seconds: 0.3,
+        }
+    }
+}
+
+/// How the Playlist page lists its videos.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaylistView {
+    #[default]
+    Grid,
+    List,
+}
+
+/// Axion Playlist: videos saved for later, optionally downloaded for offline use.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Playlist {
+    /// Show the Add to Playlist button in the address field on pages with a video.
+    pub quick_action: bool,
+    /// Download a video for offline use as soon as it is added (when it is a plain file).
+    pub auto_download: bool,
+    /// Folder for downloaded videos; empty means a "Axion Playlist" folder inside the
+    /// download folder.
+    pub directory: String,
+    /// Removing an item also deletes the file it downloaded.
+    pub delete_files_on_remove: bool,
+    /// The most items the Playlist keeps; adding more is refused with a message.
+    pub max_items: u32,
+    /// Titles are cut to this many characters.
+    pub max_title_chars: u32,
+    /// Grid of cards or a list of rows.
+    pub view: PlaylistView,
+    /// Thumbnails are scaled down to at most this many pixels on the long side.
+    pub thumbnail_max_px: u32,
+    /// How long Axion waits for a thumbnail from the page before giving up (seconds).
+    pub thumbnail_wait_seconds: f32,
+    /// An item counts as watched once this much of it (0–1) has played.
+    pub watched_fraction: f32,
+    /// The playback position is saved at most this often while playing (seconds).
+    pub position_save_seconds: f32,
+    /// Positions before this (seconds) are not worth resuming from.
+    pub min_resume_seconds: f32,
+    /// Resuming starts this many seconds before where playback stopped.
+    pub resume_rewind_seconds: f32,
+    /// Thumbnails decoded onto the GPU per frame while the page fills in.
+    pub thumbnails_per_frame: u32,
+}
+
+impl Default for Playlist {
+    fn default() -> Self {
+        Self {
+            quick_action: true,
+            auto_download: false,
+            directory: String::new(),
+            delete_files_on_remove: true,
+            max_items: 1000,
+            max_title_chars: 200,
+            view: PlaylistView::Grid,
+            thumbnail_max_px: 480,
+            thumbnail_wait_seconds: 8.0,
+            watched_fraction: 0.9,
+            position_save_seconds: 5.0,
+            min_resume_seconds: 5.0,
+            resume_rewind_seconds: 2.0,
+            thumbnails_per_frame: 3,
         }
     }
 }

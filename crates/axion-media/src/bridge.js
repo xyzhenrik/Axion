@@ -117,6 +117,7 @@
       volume: el.volume, muted: el.muted, rate: el.playbackRate, buffered: buffered,
       captions: captions, caption: caption, native: !!el.__axNative,
       trusted: TRUSTED,
+      src: el.currentSrc || el.src || '', poster: el.poster || '',
       fullscreen: !!document.fullscreenElement &&
         (document.fullscreenElement === el || document.fullscreenElement.contains(el)) || (takeover && takeover.el === el) || false
     };
@@ -127,6 +128,31 @@
     if (!m) return childSession;
     var art = (m.artwork && m.artwork.length) ? m.artwork[m.artwork.length - 1].src : '';
     return { title: m.title || '', artist: m.artist || '', album: m.album || '', artwork: art };
+  }
+
+  // The page's own preview picture (Open Graph / Twitter card), for the Playlist's thumbnail.
+  function pageImage() {
+    var m = document.querySelector('meta[property="og:image"],meta[name="og:image"],meta[name="twitter:image"],meta[property="twitter:image"]');
+    var url = m && m.getAttribute('content');
+    if (!url) return '';
+    try { return new URL(url, document.baseURI).href; } catch (e) { return ''; }
+  }
+
+  // A small JPEG of the video's current frame; empty when the page's CORS rules forbid it.
+  function snapshot(el, max) {
+    var data = '';
+    try {
+      var w = el.videoWidth, h = el.videoHeight;
+      if (w && h) {
+        var k = Math.min(1, max / Math.max(w, h));
+        var c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(w * k));
+        c.height = Math.max(1, Math.round(h * k));
+        c.getContext('2d').drawImage(el, 0, 0, c.width, c.height);
+        data = c.toDataURL('image/jpeg', 0.8);
+      }
+    } catch (e) {}
+    event({ e: 'snapshot', id: el.__axId, data: data });
   }
 
   function schedule() { if (!timer) timer = setTimeout(report, 120); }
@@ -149,7 +175,7 @@
     });
     var s = session();
     if (isTop) {
-      var msg = JSON.stringify({ t: 'state', players: list, dpr: window.devicePixelRatio, session: s });
+      var msg = JSON.stringify({ t: 'state', players: list, dpr: window.devicePixelRatio, session: s, image: list.length ? pageImage() : '' });
       if (msg !== lastSent) { lastSent = msg; log(MARK + msg); }
     } else {
       var key = JSON.stringify([list, s]);
@@ -201,6 +227,7 @@
         for (var i = 0; i < el.textTracks.length; i++) el.textTracks[i].mode = (i === v) ? 'showing' : 'disabled';
         break;
       case 'takeover': setTakeover(el, !!v); break;
+      case 'snapshot': snapshot(el, v || 480); break;
       case 'probe':
         log(MARK + JSON.stringify({ t: 'probe', frame: location.href, src: el.currentSrc, ready: el.readyState,
           network: el.networkState, error: el.error && el.error.code, paused: el.paused,
