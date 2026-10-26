@@ -52,6 +52,7 @@ mod playlist_page;
 mod playlist_popover;
 mod popover;
 mod private;
+mod resize_bench;
 mod settings;
 mod shields;
 mod shields_popover;
@@ -117,10 +118,20 @@ fn main() -> Result<()> {
         maximized: args.iter().any(|a| a == "--maximized"),
         account: args.iter().find_map(|a| a.strip_prefix("--account=")).map(str::to_owned),
         onboarding: args.iter().any(|a| a == "--onboarding"),
+        bench_resize: args.iter().any(|a| a == "--bench-resize"),
         waker: None,
     };
 
-    let event_loop = EventLoop::new()?;
+    let mut builder = EventLoop::builder();
+    // Test aid: `AXION_WINDOW_X11=1` puts the window on X11 (XWayland, where it can be placed
+    // and resized by `--bench-resize`) while Chromium stays on Wayland, so pages keep sharing
+    // GPU frames as in a normal Wayland session.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("AXION_WINDOW_X11").is_some() {
+        use winit::platform::x11::EventLoopBuilderExtX11 as _;
+        builder.with_x11();
+    }
+    let event_loop = builder.build()?;
     // Chromium's message loop is pumped from ours: the engine wakes it when it has work, and
     // says when it wants to run next (see `App::about_to_wait`).
     let proxy = event_loop.create_proxy();

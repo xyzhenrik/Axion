@@ -60,6 +60,7 @@ use crate::player::{
     PlayerOverlay,
 };
 use crate::private::{PrivateLock, TabDrop};
+use crate::resize_bench::{self, FrameTimes, Recorder, ResizeBench, ResizeCounters};
 use crate::settings::{AccountInfo, Category, Outcome, SettingsAction, SettingsSheet};
 use crate::shields::ShieldsState;
 use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
@@ -80,6 +81,8 @@ mod page_context;
 mod playlist;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
+/// `AXION_RESIZE_LOG`: a resize's timings are logged once no resize came for this long.
+const RESIZE_LOG_QUIET: Duration = Duration::from_millis(500);
 /// How long before a `--capture --overview` screenshot the overview opens.
 const OVERVIEW_CAPTURE_LEAD: Duration = Duration::from_secs(2);
 /// Settings changes are written to disk once they've been still for this long.
@@ -224,6 +227,8 @@ pub struct Options {
     pub account: Option<String>,
     /// Show the first-run introduction (`--onboarding`), whatever the profile says.
     pub onboarding: bool,
+    /// Run the scripted resize benchmark (`--bench-resize`, see `resize_bench`), then quit.
+    pub bench_resize: bool,
     /// Wakes the event loop when the engine has work.
     pub waker: Option<axion_engine::cef::Waker>,
 }
@@ -426,6 +431,13 @@ pub struct Browser {
     slide_sent: Vec<(Instant, f32)>,
     slide_seen_width: Option<f32>,
     page_lag: Option<f32>,
+    /// `--bench-resize`: the scripted run; `AXION_RESIZE_LOG=1`: frame timings of each real
+    /// resize (logged once it has been still for `RESIZE_LOG_QUIET`), and the counters both use.
+    resize_bench: Option<ResizeBench>,
+    resize_log: Option<(Recorder, Instant)>,
+    resize_log_enabled: bool,
+    resize_counters: ResizeCounters,
+    frame_times: FrameTimes,
 }
 
 impl Browser {
@@ -746,6 +758,11 @@ impl Browser {
             slide_sent: Vec::new(),
             slide_seen_width: None,
             page_lag: None,
+            resize_bench: options.bench_resize.then(|| ResizeBench::new(options.capture_after)),
+            resize_log: None,
+            resize_log_enabled: std::env::var_os("AXION_RESIZE_LOG").is_some(),
+            resize_counters: ResizeCounters::default(),
+            frame_times: FrameTimes::default(),
             sheet_origin: None,
             engine_icons: None,
             password_icons: None,
@@ -807,6 +824,7 @@ impl Browser {
 
     /// Re-applies the responsive layout and resizes pages when the window or chrome changed.
     fn update_layout(&mut self) {
+        self.resize_counters.layouts += 1;
         let size = self.logical_size();
         self.ui.set_viewport(size, self.scale());
         self.chrome.apply_layout(&mut self.ui, &self.config, size);
@@ -3492,7 +3510,60 @@ impl Browser {
 
     /// Runs the engine and applies what happened. Call often (every loop iteration).
     pub fn pump(&mut self) {
+        let started = Instant::now();
         self.pump_engine();
+        let took = started.elapsed();
+        let recorders = [
+            self.resize_bench.as_mut().and_then(|b| b.recorder.as_mut()),
+            self.resize_log.as_mut().map(|(r, _)| r),
+        ];
+        for recorder in recorders.into_iter().flatten() {
+            recorder.wakeup(took);
+        }
+    }
+
+    /// The browser's and the engine's resize/frame counters (benchmarks).
+    fn bench_counters(&self) -> ResizeCounters {
+        let engine = self.engine.counters();
+        ResizeCounters {
+            view_resizes: engine.view_resizes,
+            frame_textures: engine.frame_textures,
+            page_frames: engine.page_frames,
+            ..self.resize_counters
+        }
+    }
+
+    /// `--bench-resize` and `AXION_RESIZE_LOG`: advances the script, records the frame.
+    fn bench_frame(&mut self) -> Result<()> {
+        let counters = self.bench_counters();
+        let times = std::mem::take(&mut self.frame_times);
+        if let Some((recorder, last)) = &mut self.resize_log {
+            recorder.frame(times);
+            if last.elapsed() >= RESIZE_LOG_QUIET {
+                recorder.log("window resize", counters);
+                self.resize_log = None;
+            }
+        }
+        let Some(bench) = &mut self.resize_bench else { return Ok(()) };
+        if let Some(recorder) = &mut bench.recorder {
+            recorder.frame(times);
+        }
+        match bench.tick(Instant::now(), counters) {
+            resize_bench::Step::Finish => bail!(CaptureDone),
+            resize_bench::Step::Resize(sizes) => {
+                for size in sizes {
+                    let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(size.x, size.y));
+                }
+            }
+            resize_bench::Step::Nothing => {}
+        }
+        let scrolls = bench.phase().scrolls();
+        if scrolls && self.wheel_frames == 0 {
+            self.wheel_frames = u32::MAX / 2;
+        } else if !scrolls && self.wheel_frames > 0 {
+            self.wheel_frames = 0;
+        }
+        Ok(())
     }
 
     fn pump_engine(&mut self) {
@@ -4519,12 +4590,21 @@ impl Browser {
         match event {
             WindowEvent::CloseRequested => return Ok(false),
             WindowEvent::Resized(size) => {
+                self.resize_counters.events += 1;
+                if self.resize_log_enabled {
+                    let counters = self.bench_counters();
+                    let log = self.resize_log.get_or_insert_with(|| (Recorder::new(counters), Instant::now()));
+                    log.1 = Instant::now();
+                }
                 if size.width > 0 && size.height > 0 {
+                    let started = Instant::now();
+                    self.resize_counters.configures += 1;
                     self.surface_config.width = size.width;
                     self.surface_config.height = size.height;
                     self.surface.configure(&self.device, &self.surface_config);
                     self.update_layout();
                     self.sync_frame_rate();
+                    self.frame_times.resize_events += ms_since(started);
                 }
             }
             WindowEvent::ScaleFactorChanged { .. } => {
@@ -5048,12 +5128,16 @@ impl Browser {
         let result = self.redraw_frame();
         let serial = self.active_view().and_then(|v| self.engine.frame(v)).map_or(0, |f| f.serial);
         self.frame_stats.record(started.elapsed(), serial);
-        result
+        self.frame_times.total = ms_since(started) + self.frame_times.resize_events;
+        result?;
+        self.bench_frame()
     }
 
     fn redraw_frame(&mut self) -> Result<()> {
         if self.logical_size() != self.layout_size {
+            let started = Instant::now();
             self.update_layout();
+            self.frame_times.layout += ms_since(started);
         }
         let tabs_changed = self.tabs_changed;
         if std::mem::take(&mut self.tabs_changed) {
@@ -5838,14 +5922,19 @@ impl Browser {
         let hovered = if self.tab_drag.is_dragging() { None } else { self.ui.hovered() };
         self.chrome.update_hover(&mut self.ui, hovered);
         self.update_tab_drag(dt);
+        let started = Instant::now();
         self.ui.layout();
+        self.frame_times.ui_layout = ms_since(started);
         self.tab_drag.animate_rows(&mut self.ui, &self.chrome, &self.config, dt);
         if let Some(view) = self.display_view() {
             self.engine.request_frame(view);
         }
         self.snapshot_background_tabs();
 
-        let surface = match self.surface.get_current_texture() {
+        let started = Instant::now();
+        let acquired = self.surface.get_current_texture();
+        self.frame_times.acquire = ms_since(started);
+        let surface = match acquired {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.surface_config);
@@ -5956,7 +6045,9 @@ impl Browser {
                 }
             }
         }
+        let started = Instant::now();
         self.ui.paint(&mut layers);
+        self.frame_times.paint = ms_since(started);
         if tracing::enabled!(tracing::Level::TRACE) {
             let kinds: Vec<String> = layers
                 .iter()
@@ -5984,10 +6075,14 @@ impl Browser {
             .unwrap_or(theme.color(Paint::Ground));
         let scene = Scene { clear, layers };
         let size = (self.surface_config.width, self.surface_config.height);
+        let started = Instant::now();
         self.compositor.render(&scene, &mut self.ui.fonts(), &output, size);
+        self.frame_times.render = ms_since(started);
         drop(scene);
+        let started = Instant::now();
         self.window.pre_present_notify();
         self.queue.present(surface);
+        self.frame_times.present = ms_since(started);
         self.probe_presented();
 
         if let Some((path, at)) = &self.capture
@@ -6476,6 +6571,11 @@ fn bridge_secret() -> String {
 /// The page zoom as shown in the page menu ("100%").
 fn zoom_label(zoom: f64) -> String {
     format!("{:.0}%", ZOOM_BASE.powf(zoom) * 100.0)
+}
+
+/// Milliseconds since `started` (frame timings).
+fn ms_since(started: Instant) -> f32 {
+    started.elapsed().as_secs_f32() * 1000.0
 }
 
 fn unix_now() -> i64 {

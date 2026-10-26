@@ -27,6 +27,7 @@ use cef::*;
 
 pub use gpu::render_node_for;
 pub use schedule::Waker;
+pub use stats::Counters;
 
 use crate::{
     DevToolsOptions, DevToolsPanel, DropData, Engine, EngineError, EngineEvent, FindRequest, Frame,
@@ -248,6 +249,11 @@ impl CefEngine {
             schedule,
             shut_down: false,
         })
+    }
+
+    /// Running totals of frame and resize work (benchmarks).
+    pub fn counters(&self) -> Counters {
+        self.shared.stats.counters()
     }
 
     fn private_context(&mut self) -> Option<RequestContext> {
@@ -787,6 +793,7 @@ impl Engine for CefEngine {
             if scale_changed {
                 host.notify_screen_info_changed();
             }
+            self.shared.stats.count(|c| c.view_resizes += 1);
             host.was_resized();
         }
     }

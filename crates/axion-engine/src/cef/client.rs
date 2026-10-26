@@ -176,6 +176,7 @@ impl ViewContext {
             self.recycle_texture(old);
         }
         self.frames.serial.set(self.frames.serial.get() + 1);
+        self.shared.stats.count(|c| c.page_frames += 1);
     }
 
     fn recycle_texture(&self, texture: wgpu::Texture) {
@@ -376,6 +377,7 @@ impl ViewContext {
         if let Some(i) = spare.iter().position(|t| t.size() == size && t.format() == format) {
             return spare.swap_remove(i);
         }
+        self.shared.stats.count(|c| c.frame_textures += 1);
         self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("page frame"),
             size,
@@ -439,6 +441,7 @@ impl ViewContext {
             })
             .cloned();
         let texture = reusable.unwrap_or_else(|| {
+            self.shared.stats.count(|c| c.frame_textures += 1);
             self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("cef software frame"),
                 size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },

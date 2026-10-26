@@ -48,9 +48,32 @@ pub(super) struct Stats {
     window: RefCell<Window>,
     /// When input was sent that no page frame has shown yet.
     pending_input: Cell<Option<Instant>>,
+    /// Running totals for benchmarks (see [`Counters`]).
+    counters: Cell<Counters>,
+}
+
+/// Running totals of the engine's frame and resize work, for benchmarks (`--bench-resize`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counters {
+    /// Views told they were resized (`was_resized`).
+    pub view_resizes: u64,
+    /// Page frame textures created (GPU copies and software uploads).
+    pub frame_textures: u64,
+    /// Page frames that became a view's frame.
+    pub page_frames: u64,
 }
 
 impl Stats {
+    pub fn counters(&self) -> Counters {
+        self.counters.get()
+    }
+
+    pub fn count(&self, f: impl FnOnce(&mut Counters)) {
+        let mut c = self.counters.get();
+        f(&mut c);
+        self.counters.set(c);
+    }
+
     pub fn paint(&self, took: Duration) {
         self.window.borrow_mut().paint.add(took);
         if let Some(sent) = self.pending_input.take() {
