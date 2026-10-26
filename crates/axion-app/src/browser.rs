@@ -806,6 +806,9 @@ impl Browser {
         let previous = self.tabs.active().map(|t| t.view);
         if self.tabs.select(index) {
             self.on_active_changed(previous);
+        } else {
+            // Picking the tab that is already active still leaves the Playlist page covering it.
+            self.close_playlist();
         }
     }
 
@@ -895,6 +898,8 @@ impl Browser {
                 let previous = self.active_view();
                 if self.tabs.select_relative(if action == Action::NextTab { 1 } else { -1 }) {
                     self.on_active_changed(previous);
+                } else {
+                    self.close_playlist();
                 }
             }
             Action::SelectTab(n) => self.select_tab(n as usize - 1),
