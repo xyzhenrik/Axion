@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
     ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, GlassStyle, Keymap,
-    PlaylistSort, RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode, UiLanguage,
+    PlaylistSort, RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode, TintMode, UiLanguage,
 };
 use axion_i18n::{tr, tr_fmt, tr_mark, tr_n};
 use axion_ui::taffy::prelude::*;
@@ -457,7 +457,12 @@ impl Setting {
             Setting::DevTools => c.devtools.enabled = on,
             Setting::HomeDim => c.home.background_dim = (v * 20.0).round() / 20.0,
             Setting::HomeBlur => c.home.background_blur = v.round(),
-            Setting::TintFromPage => c.appearance.tint_from_page = on,
+            Setting::TintFromPage => {
+                c.appearance.tint_from_page = on;
+                if on && c.appearance.tint_mode == TintMode::Neutral {
+                    c.appearance.tint_mode = TintMode::Extreme;
+                }
+            }
             Setting::FloatSidebar => c.layout.float_sidebar = on,
             Setting::AdaptToPage => c.appearance.adapt_to_page = on,
             Setting::ReduceTransparency => c.glass.reduce_transparency = on,
@@ -545,6 +550,8 @@ pub enum SettingsAction {
     UpdateFilterLists,
     TabBar(TabBarStyle),
     BookmarksBar(BookmarksBar),
+    /// `appearance.tint_mode` while the page colour is on.
+    TintMode(TintMode),
     PlaylistSort(PlaylistSort),
     Language(UiLanguage),
     CloseAfter(u32),
@@ -611,6 +618,9 @@ const CLOSE_AFTER: [(&str, u32); 4] = [
     (tr_mark("After a Week"), 7),
     (tr_mark("After a Month"), 30),
 ];
+
+const TINT_MODES: [(&str, TintMode); 2] =
+    [(tr_mark("Extreme"), TintMode::Extreme), (tr_mark("Dominant"), TintMode::Dominant)];
 
 const BOOKMARKS_BAR: [(&str, BookmarksBar); 3] = [
     (tr_mark("Always"), BookmarksBar::Always),
@@ -685,6 +695,13 @@ impl SettingsAction {
                     SettingsAction::BookmarksBar(mode) => {
                         76 + BOOKMARKS_BAR.iter().position(|(_, m)| *m == mode).unwrap_or(0) as u32
                     }
+                    SettingsAction::TintMode(mode) => {
+                        if mode == TintMode::Dominant {
+                            79
+                        } else {
+                            69
+                        }
+                    }
                     SettingsAction::PlaylistSort(sort) => {
                         81 + crate::playlist::SORTS.iter().position(|(s, ..)| *s == sort).unwrap_or(0) as u32
                     }
@@ -746,6 +763,8 @@ impl SettingsAction {
             71 => SettingsAction::TabBar(TabBarStyle::Compact),
             72..=75 => SettingsAction::CloseAfter(CLOSE_AFTER[(n - 72) as usize].1),
             76..=78 => SettingsAction::BookmarksBar(BOOKMARKS_BAR[(n - 76) as usize].1),
+            69 => SettingsAction::TintMode(TintMode::Extreme),
+            79 => SettingsAction::TintMode(TintMode::Dominant),
             80 => SettingsAction::AddTrustedSite,
             81..=83 => SettingsAction::PlaylistSort(crate::playlist::SORTS[(n - 81) as usize].0),
             85 => SettingsAction::OpenPasswords,
@@ -1518,9 +1537,17 @@ impl SettingsSheet {
             }
             Category::Tabs => {
                 self.tab_bar_choice(ui, config);
-                for setting in [Setting::TintFromPage, Setting::OpenInBackground] {
-                    self.control(ui, config, setting);
+                self.control(ui, config, Setting::TintFromPage);
+                if config.appearance.tint_from_page {
+                    let row_node = self.row(ui, tr("Page colour"));
+                    let options: Vec<(&str, ActionId)> = TINT_MODES
+                        .iter()
+                        .map(|(name, mode)| (tr(name), SettingsAction::TintMode(*mode).id()))
+                        .collect();
+                    let current = TINT_MODES.iter().position(|(_, m)| *m == config.appearance.tint_mode);
+                    segmented(ui, row_node, &options, current);
                 }
+                self.control(ui, config, Setting::OpenInBackground);
                 let row_node = self.row(ui, tr("Close tabs"));
                 let options: Vec<(&str, ActionId)> = CLOSE_AFTER
                     .iter()
@@ -2434,7 +2461,7 @@ impl SettingsSheet {
             Some(&(_, setting)) => {
                 setting.set(config, value);
                 // The Privacy page shows the password fields while the lock has no password.
-                self.rebuild |= setting == Setting::LockPrivateTabs;
+                self.rebuild |= matches!(setting, Setting::LockPrivateTabs | Setting::TintFromPage);
                 // The preview dims live; its blur follows once it is made (see the browser).
                 if setting == Setting::HomeDim
                     && let Some(node) = self.preview_node
@@ -2599,6 +2626,10 @@ impl SettingsSheet {
             }
             SettingsAction::BookmarksBar(mode) => {
                 config.layout.bookmarks_bar = mode;
+                Outcome::Changed
+            }
+            SettingsAction::TintMode(mode) => {
+                config.appearance.tint_mode = mode;
                 Outcome::Changed
             }
             SettingsAction::PlaylistSort(sort) => {

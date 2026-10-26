@@ -1,7 +1,8 @@
 //! One stable colour per page for the window around it (`appearance.tint_from_page`, Safari's
 //! "colour in tab bar") and for flipping the chrome light or dark (`appearance.adapt_to_page`).
 //!
-//! In `extreme` mode (`appearance.tint_mode`, the default) the colour is the page's darkest
+//! In `neutral` mode (`appearance.tint_mode`, the default) the page's colour is never used.
+//! In `extreme` mode the colour is the page's darkest
 //! prominent colour on a dark page and its lightest on a light page, taken from the top region
 //! of the page (next to the bar). In `dominant` mode it is the page's `theme-color` if it has
 //! one, else the colour most of the page shows, evened out into a calm light or dark tone.
@@ -161,6 +162,7 @@ impl PageTint {
         let page = self.pages.get(&view)?;
         let theme = theme_color(&page.theme, self.dark);
         match params.mode {
+            TintMode::Neutral => None,
             TintMode::Dominant => Some(in_scheme(theme.or(page.measured.map(|m| m.dominant))?, self.dark)),
             TintMode::Extreme => {
                 let theme = theme.filter(|_| params.prefer_theme_color);
@@ -426,6 +428,19 @@ mod tests {
         let blue = [99, 124, 249];
         assert!(lightness(in_scheme(blue, true)) < 0.25);
         assert!(lightness(in_scheme(blue, false)) > 0.8);
+    }
+
+    #[test]
+    fn neutral_mode_never_uses_the_page() {
+        let view = ViewId(1);
+        let mut tint = PageTint::new(false);
+        tint.page_loaded(view, Duration::ZERO);
+        tint.measuring(view);
+        tint.measured(&[[200, 30, 30]; 4], &DOM);
+        tint.theme_colors(view, &[ThemeColor { rgb: [200, 30, 30], media: String::new() }], Duration::ZERO);
+        let neutral = TintParams { mode: TintMode::Neutral, ..DOM };
+        assert_eq!(tint.color(view, &neutral), None);
+        assert!(tint.color(view, &DOM).is_some());
     }
 
     #[test]

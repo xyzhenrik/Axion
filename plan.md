@@ -582,6 +582,16 @@ Windows/macOS, touchscreen-first mode.
 - 2026-10-25: The window area around the page takes the **page's top colour** (solid, measured
   on the GPU; `appearance.tint_from_page`), like Safari. The page itself still never shows
   behind the bar.
+- 2026-10-26: **Supersedes the page-colour default above.** The glass's ground is neutral and
+  independent of the website (`appearance.tint_mode = "neutral"`, the default): Apple's system
+  greys, never pure white/black. Light: ground `#F2F2F7`, raised surfaces `#FAFAFC`, glass tint
+  `#F9F9FB`. Dark: ground `#1C1C1E`, surfaces and glass tint `#2C2C2E`, separators `#3A3A3C`
+  (tokens in `axion-config` `schema.rs`, also used by flat mode and Reduce Transparency).
+  Chrome light/dark follows `appearance.theme` only: `adapt_to_page` and `tint_from_page`
+  default to off and stay opt-in switches (Settings > Appearance / Tabs); turning "Colour in
+  tab bar" on switches the mode to `extreme`, with an Extreme/Dominant choice. Only defaults
+  changed: a config file that sets these keys keeps its values (the writer only saves
+  changes from the defaults, but a file written by an older build may hold `true` pinned).
 
 - 2026-10-25: Shields levels per site are stored by host (without `www.`) in the profile's
   `site_settings` table; a level equal to the default is not stored, so changing the default

@@ -76,8 +76,9 @@ frame textures).
 3. The page starts below the bar and beside a docked sidebar, and ends there: the page never
    shows behind the bar (user decision). The page area is a rounded card
    (`layout.page_corner_radius`, `layout.page_margin`); the OS window keeps its normal frame. Floating panels (overlay sidebar) do refract it.
-   A GPU luminance probe of the page's top edge flips the chrome light/dark
-   (`appearance.adapt_to_page`).
+   By default the chrome is neutral Apple grey and ignores the page (`appearance.tint_mode = neutral`).
+   Opt-in: a GPU luminance probe of the page's top edge flips the chrome light/dark
+   (`appearance.adapt_to_page`) and tints the window (`tint_from_page`).
 4. Glass shapes are described as **signed distance fields**. Neighbouring shapes are merged
    with a smooth-min, which gives the "two drops connect" effect for free.
 5. The refraction offset comes from the SDF's gradient (surface normal) and a lens height
