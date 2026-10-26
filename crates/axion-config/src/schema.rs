@@ -992,7 +992,7 @@ impl Default for Ui {
 /// with a GitHub-compatible releases API via `updates.api_url`). **Fill this in once the
 /// project's repository exists**; while it and `updates.manifest_url` are both empty, the
 /// updater does nothing at all (no network access, no notices).
-pub const DEFAULT_REPOSITORY: &str = "";
+pub const DEFAULT_REPOSITORY: &str = "xyzhenrik/Axion";
 
 /// Which releases the updater offers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
