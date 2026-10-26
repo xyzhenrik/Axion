@@ -409,6 +409,11 @@ pub struct Layout {
     pub sidebar_width: f32,
     pub sidebar: SidebarMode,
     pub sidebar_visible: bool,
+    /// Always float the sidebar over the page as a rounded glass card (it never pushes the
+    /// page), whatever the window size.
+    pub float_sidebar: bool,
+    /// Corner radius of a floating sidebar card.
+    pub sidebar_corner_radius: f32,
     /// From this window width up, the sidebar docks (with `sidebar = "auto"`).
     pub wide_from: f32,
     /// Below this window width, tabs collapse into a single compact capsule.
@@ -465,6 +470,8 @@ impl Default for Layout {
             sidebar_width: 316.0,
             sidebar: SidebarMode::Auto,
             sidebar_visible: true,
+            float_sidebar: false,
+            sidebar_corner_radius: 26.0,
             wide_from: 1280.0,
             narrow_below: 800.0,
             tab_width: 260.0,

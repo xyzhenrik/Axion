@@ -715,7 +715,12 @@ impl Ui {
         if widget.clip && !widget.frame.contains(p) {
             return None;
         }
-        let children = self.tree.children(node).unwrap_or_default();
+        // A segmented control takes the pointer itself (its segments may carry actions).
+        let children = if matches!(widget.kind, WidgetKind::Segmented { .. }) {
+            Vec::new()
+        } else {
+            self.tree.children(node).unwrap_or_default()
+        };
         for child in children.into_iter().rev() {
             if let Some(hit) = self.hit_in(child, p) {
                 return Some(hit);
@@ -1063,7 +1068,11 @@ impl Ui {
         {
             *selected = index;
         }
-        Some(UiEvent::ValueChanged { node, value: index as f32 })
+        // A segment with an action reports that (settings rows); else the new index.
+        match children.get(index).and_then(|&c| self.widget(c).and_then(|w| w.action.map(|a| (a, c)))) {
+            Some((action, child)) => Some(UiEvent::Clicked { action, node: child }),
+            None => Some(UiEvent::ValueChanged { node, value: index as f32 }),
+        }
     }
 
     /// Lets go of a held switch or slider.

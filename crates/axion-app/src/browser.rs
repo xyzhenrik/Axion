@@ -3993,6 +3993,8 @@ impl Browser {
                     self.settings.set_category(Category::Data);
                     self.run(Action::OpenSettings);
                 }
+                // Capture aid: toggle the sidebar.
+                "sidebar" => self.run(Action::ToggleSidebar),
                 // Capture aid: type "type:TEXT" into the address bar like the keyboard does.
                 typed if typed.starts_with("type:") => {
                     self.edit_address();

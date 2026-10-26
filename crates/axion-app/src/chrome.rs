@@ -1227,6 +1227,7 @@ impl Chrome {
 
     fn sidebar_docked(&self, config: &Config) -> bool {
         match config.layout.sidebar {
+            _ if config.layout.float_sidebar => false,
             SidebarMode::Docked => self.mode != Mode::Narrow,
             SidebarMode::Overlay => false,
             SidebarMode::Auto => self.mode == Mode::Wide,
@@ -1716,7 +1717,9 @@ impl Chrome {
         if show_sidebar && !ui.is_visible(self.sidebar) {
             self.slide.snap(hidden_x);
         }
-        self.slide.target = if show_sidebar { 0.0 } else { hidden_x };
+        // Floating, the sidebar is a rounded card at a margin from the window's edges.
+        let gap = if self.docked { 0.0 } else { l.margin };
+        self.slide.target = if show_sidebar { gap } else { hidden_x };
         let motion = &config.motion;
         self.slide.spring = if config.glass.reduce_motion {
             Spring::new(0.2, 1.0)
@@ -1726,7 +1729,7 @@ impl Chrome {
         let mut side = ui.style(self.sidebar);
         side.size = Size { width: length(l.sidebar_width), height: auto() };
         side.inset =
-            Rect { left: length(self.slide.value), right: auto(), top: length(0.0), bottom: length(0.0) };
+            Rect { left: length(self.slide.value), right: auto(), top: length(gap), bottom: length(gap) };
         side.display =
             if show_sidebar || ui.is_visible(self.sidebar) { Display::Flex } else { Display::None };
         ui.set_style(self.sidebar, side);
@@ -1734,6 +1737,7 @@ impl Chrome {
             // Docked it's a panel beside the page; floating it needs more separation.
             w.background =
                 Background::Glass(if self.docked { GlassLevel::Regular } else { GlassLevel::Thick });
+            w.radius = if self.docked { 0.0 } else { l.sidebar_corner_radius };
         }
 
         let narrow = self.mode == Mode::Narrow || self.locked;

@@ -145,6 +145,7 @@ enum Setting {
     AdaptToPage,
     TextScale,
     PageCorner,
+    FloatSidebar,
     ReduceTransparency,
     ReduceMotion,
     Refraction,
@@ -196,6 +197,7 @@ impl Setting {
             Setting::AdaptToPage => "Light or dark chrome to match the page",
             Setting::TextScale => "Text size",
             Setting::PageCorner => "Page corner radius",
+            Setting::FloatSidebar => "Float sidebar over the page",
             Setting::ReduceTransparency => "Reduce transparency",
             Setting::ReduceMotion => "Reduce motion",
             Setting::Refraction => "Refraction",
@@ -244,6 +246,7 @@ impl Setting {
                 | Setting::HomeTopSites
                 | Setting::HomeStats
                 | Setting::TintFromPage
+                | Setting::FloatSidebar
                 | Setting::AdaptToPage
                 | Setting::ReduceTransparency
                 | Setting::ReduceMotion
@@ -350,6 +353,7 @@ impl Setting {
             Setting::HomeDim => c.home.background_dim,
             Setting::HomeBlur => c.home.background_blur,
             Setting::TintFromPage => return c.appearance.tint_from_page as u8 as f32,
+            Setting::FloatSidebar => return c.layout.float_sidebar as u8 as f32,
             Setting::AdaptToPage => return c.appearance.adapt_to_page as u8 as f32,
             Setting::ReduceTransparency => return c.glass.reduce_transparency as u8 as f32,
             Setting::ReduceMotion => return c.glass.reduce_motion as u8 as f32,
@@ -407,6 +411,7 @@ impl Setting {
             Setting::HomeDim => c.home.background_dim = (v * 20.0).round() / 20.0,
             Setting::HomeBlur => c.home.background_blur = v.round(),
             Setting::TintFromPage => c.appearance.tint_from_page = on,
+            Setting::FloatSidebar => c.layout.float_sidebar = on,
             Setting::AdaptToPage => c.appearance.adapt_to_page = on,
             Setting::ReduceTransparency => c.glass.reduce_transparency = on,
             Setting::ReduceMotion => c.glass.reduce_motion = on,
@@ -1236,7 +1241,9 @@ impl SettingsSheet {
                 segmented(ui, row_node, &themes, current);
                 let row_node = self.row(ui, "Accent colour");
                 swatches(ui, row_node, config.appearance.accent, SettingsAction::Accent);
-                for setting in [Setting::AdaptToPage, Setting::TextScale, Setting::PageCorner] {
+                for setting in
+                    [Setting::AdaptToPage, Setting::TextScale, Setting::PageCorner, Setting::FloatSidebar]
+                {
                     self.control(ui, config, setting);
                 }
             }
@@ -2473,30 +2480,37 @@ pub fn avatar(ui: &mut Ui, parent: NodeId, initials: &str, color: Color, side: f
 
 /// A segmented control: options as capsules, the current one filled.
 pub fn segmented(ui: &mut Ui, parent: NodeId, options: &[(&str, ActionId)], current: Option<usize>) {
-    let group = ui.add(
-        parent,
-        Widget::container().with_background(Background::Fill(Paint::Label, 0.07)).with_radius(CAPSULE),
-        Style { size: Size { width: auto(), height: length(36.0) }, padding: padding(3.0, 3.0), ..row(2.0) },
-    );
+    let style = Style {
+        size: Size { width: auto(), height: length(SEGMENTED_HEIGHT) },
+        padding: padding(SEGMENTED_INSET, SEGMENTED_INSET),
+        ..row(2.0)
+    };
+    let background = Background::Fill(Paint::Label, 0.07);
+    // With a selection, the Liquid Glass control of the tab overview carries the pill (a tap
+    // reports the segment's action); without one the segments are plain.
+    let widget = match current {
+        Some(i) => Widget::segmented(i),
+        None => Widget::container(),
+    };
+    let group = ui.add(parent, widget.with_background(background).with_radius(CAPSULE), style);
     for (i, (label, action)) in options.iter().enumerate() {
-        let selected = Some(i) == current;
         let segment = ui.add(
             group,
-            Widget::container().with_action(*action).with_radius(CAPSULE).with_background(if selected {
-                Background::Fill(Paint::Surface, 1.0)
-            } else {
-                Background::None
-            }),
+            Widget::container().with_action(*action).with_radius(CAPSULE),
             Style {
-                size: Size { width: auto(), height: length(30.0) },
+                size: Size { width: auto(), height: length(SEGMENTED_HEIGHT - 2.0 * SEGMENTED_INSET) },
                 padding: padding(14.0, 0.0),
                 ..row(0.0)
             },
         );
-        let style = if selected { TextStyle::BodyEmphasis } else { TextStyle::Body };
+        let style = if Some(i) == current { TextStyle::BodyEmphasis } else { TextStyle::Body };
         ui.add_label(segment, label, style, Style::default());
     }
 }
+
+/// Height of a settings segmented control and the gap between its edge and the pill.
+const SEGMENTED_HEIGHT: f32 = 36.0;
+const SEGMENTED_INSET: f32 = 3.0;
 
 fn shortcut_actions() -> Vec<KeyAction> {
     use KeyAction::*;
