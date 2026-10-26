@@ -6,6 +6,8 @@
 //! fallback rate applies. It is looked at again every `CHECK_INTERVAL`: before, the rate was
 //! only updated on a resize, so a window on a 240 Hz monitor rendered pages at 60 until the
 //! first resize (fullscreen, say) and then suddenly at 240.
+//!
+//! Also here: when the event loop asks for the next frame ([`wake_plan`]).
 
 use std::time::{Duration, Instant};
 
@@ -63,9 +65,53 @@ impl RefreshWatch {
     }
 }
 
+/// What the event loop does before it sleeps (see `App::about_to_wait`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WakePlan {
+    /// Ask for a frame now (the compositor's frame callback paces it on Wayland).
+    pub redraw: bool,
+    /// Sleep until then at the latest (`None`: don't sleep).
+    pub until: Option<Instant>,
+}
+
+/// After a frame that was skipped as unchanged the next one is due at `redraw_at` (one display
+/// refresh later: nothing was presented, so nothing waits for the display); otherwise a frame
+/// is asked for now. Chromium's next work (`engine_at`) wakes the loop in any case, so a page
+/// frame that arrives meanwhile is shown at once (the browser clears `redraw_at` then).
+pub fn wake_plan(now: Instant, redraw_at: Option<Instant>, engine_at: Option<Instant>) -> WakePlan {
+    match redraw_at.filter(|at| *at > now) {
+        Some(at) => WakePlan { redraw: false, until: Some(engine_at.map_or(at, |e| e.min(at))) },
+        None => WakePlan { redraw: true, until: engine_at },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_skipped_frame_sleeps_until_the_next_refresh_or_chromium() {
+        let t = Instant::now();
+        let refresh = Duration::from_millis(4);
+        let plan = wake_plan(t, Some(t + refresh), Some(t + Duration::from_millis(30)));
+        assert_eq!(plan, WakePlan { redraw: false, until: Some(t + refresh) });
+        // Chromium wants to run sooner: it wakes the loop first.
+        let plan = wake_plan(t, Some(t + refresh), Some(t + Duration::from_millis(1)));
+        assert_eq!(plan.until, Some(t + Duration::from_millis(1)));
+        assert!(!plan.redraw);
+    }
+
+    #[test]
+    fn a_due_or_cleared_redraw_asks_for_a_frame() {
+        let t = Instant::now();
+        let engine = Some(t + Duration::from_millis(30));
+        // Its time has come: re-armed, never left waiting.
+        assert_eq!(wake_plan(t, Some(t), engine), WakePlan { redraw: true, until: engine });
+        assert!(wake_plan(t + Duration::from_millis(5), Some(t), engine).redraw);
+        // Input, a page frame or a page event cleared it.
+        assert_eq!(wake_plan(t, None, engine), WakePlan { redraw: true, until: engine });
+        assert_eq!(wake_plan(t, None, None), WakePlan { redraw: true, until: None });
+    }
 
     #[test]
     fn the_configured_rate_wins() {

@@ -213,18 +213,11 @@ impl ApplicationHandler for App {
             // wakes us), input, or Chromium's next work, whichever comes first. After a frame
             // that was skipped (nothing changed, nothing presented) the next one is due a
             // display refresh later instead of at once.
-            let wakeup = browser.next_wakeup();
-            match browser.redraw_at().filter(|at| *at > std::time::Instant::now()) {
-                Some(at) => {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(wakeup.map_or(at, |w| w.min(at))));
-                }
-                None => {
-                    event_loop.set_control_flow(match wakeup {
-                        Some(at) => ControlFlow::WaitUntil(at),
-                        None => ControlFlow::Poll,
-                    });
-                    browser.request_redraw();
-                }
+            let plan =
+                frame_rate::wake_plan(std::time::Instant::now(), browser.redraw_at(), browser.next_wakeup());
+            event_loop.set_control_flow(plan.until.map_or(ControlFlow::Poll, ControlFlow::WaitUntil));
+            if plan.redraw {
+                browser.request_redraw();
             }
         }
     }

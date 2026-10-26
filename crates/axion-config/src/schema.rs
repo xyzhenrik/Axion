@@ -1290,8 +1290,9 @@ pub struct Tabs {
     pub max_frame_rate: u32,
     /// Following the display (`max_frame_rate = 0`), pages draw at most this many frames per
     /// second (0: as many as the display shows). Each page frame costs Chromium a frame of its
-    /// own GPU work and Axion a copy: a busy chat-app-like page kept the GPU 11 % busy at 60,
-    /// 18 % at 120 and 25 % at 240 frames per second, for motion that hardly looks smoother.
+    /// own GPU work and Axion a copy: a busy chat-app-like page (DOM updates, WebGL, canvas,
+    /// video) kept Chromium's processes at 0.75 CPU cores at 60, 1.3 at 120 and 1.55 at 240
+    /// frames per second, for motion that hardly looks smoother.
     pub max_frame_rate_cap: u32,
     /// GPU-shared page frames are copied this many milliseconds after Chromium hands them over
     /// (0: at once). Chromium reports a frame once its drawing is *submitted*, and the driver
