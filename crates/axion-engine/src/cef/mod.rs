@@ -12,6 +12,7 @@ mod gpu;
 mod input;
 mod network;
 mod paste;
+mod permission;
 mod schedule;
 mod scheme;
 mod settle;
@@ -31,7 +32,8 @@ pub use stats::Counters;
 
 use crate::{
     DevToolsOptions, DevToolsPanel, DropData, Engine, EngineError, EngineEvent, FindRequest, Frame,
-    InputEvent, MediaViewOptions, Modifiers, PasteData, RequestPolicy, ViewId, ViewSize,
+    InputEvent, MediaViewOptions, Modifiers, PasteData, PermissionAnswer, PermissionId, PermissionKind,
+    RequestPolicy, ViewId, ViewSize,
 };
 use client::{FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, build_client, favicon_callback};
 use input::InputState;
@@ -96,12 +98,22 @@ wrap_app! {
             if on_x11() {
                 command_line.append_switch_with_value(Some(&"ozone-platform".into()), Some(&"x11".into()));
             }
+            // Screen sharing on Wayland goes through the desktop's screen cast portal and
+            // PipeWire (the portal shows its own picker), and a shared screen's sound is the
+            // PulseAudio (PipeWire) monitor of the output.
+            let mut features = vec!["WebRTCPipeWireCapturer", "PulseaudioLoopbackForScreenShare"];
             if self.flags.hardware_video_decoding {
                 // VA-API video decoding (Chromium's Linux names for it since M131).
-                command_line.append_switch_with_value(
-                    Some(&"enable-features".into()),
-                    Some(&"AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL".into()),
-                );
+                features.extend(["AcceleratedVideoDecodeLinuxGL", "AcceleratedVideoDecodeLinuxZeroCopyGL"]);
+            }
+            command_line
+                .append_switch_with_value(Some(&"enable-features".into()), Some(&features.join(",").as_str().into()));
+            // Test aid only: Chromium's fake camera and microphone (a test pattern and a beep)
+            // instead of the real devices, so test runs never record anyone. The permission
+            // flow stays the real one.
+            if fake_media_devices() {
+                tracing::warn!("AXION_FAKE_MEDIA_DEVICES: pages get Chromium's fake camera and microphone");
+                command_line.append_switch(Some(&"use-fake-device-for-media-stream".into()));
             }
             for (name, value) in &self.flags.extra_switches {
                 match value {
@@ -126,6 +138,18 @@ wrap_app! {
             }
         }
     }
+}
+
+/// `AXION_FAKE_MEDIA_DEVICES=1`: tests use Chromium's fake capture devices.
+fn fake_media_devices() -> bool {
+    std::env::var("AXION_FAKE_MEDIA_DEVICES").is_ok_and(|v| v == "1")
+}
+
+/// Whether Chromium's screen capture goes through the screen cast portal (with the desktop's
+/// own picker): what WebRTC checks, a Wayland session with a Wayland display.
+fn screen_cast_portal() -> bool {
+    std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland")
+        && std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
 /// Whether Chromium runs on X11 (`--ozone-platform=x11`, see `on_before_command_line_processing`)
@@ -420,6 +444,7 @@ impl CefEngine {
             let private = state.private;
             ctx.frames.import_failures.set(0);
             ctx.frames.release_shared();
+            self.shared.permissions.drop_view(id);
             match self.create_browser(&ctx, &url, private) {
                 Ok((browser, browser_id)) => {
                     if let (Some(dark), Some(host)) = (self.dark, browser.host()) {
@@ -731,6 +756,7 @@ impl Engine for CefEngine {
         frames.release_shared();
         // Events of the closed page (its `Closed` included) no longer match and are dropped.
         state.browser_id = NO_BROWSER;
+        self.shared.permissions.drop_view(view);
         if let Some(host) = browser.host() {
             host.close_browser(1);
         }
@@ -951,6 +977,61 @@ impl Engine for CefEngine {
         self.net.set_media_view(view, options);
     }
 
+    fn answer_permission(&mut self, view: ViewId, id: PermissionId, answer: PermissionAnswer) {
+        self.shared.permissions.answer(view, id, answer);
+    }
+
+    fn set_site_permission(
+        &mut self,
+        origin: &str,
+        kind: PermissionKind,
+        allow: Option<bool>,
+        private: bool,
+    ) {
+        let context = if private { self.private_context() } else { request_context_get_global_context() };
+        if let Some(context) = context {
+            permission::set_site_setting(&context, origin, kind, allow);
+        }
+    }
+
+    fn set_permission_default(&mut self, kind: PermissionKind, blocked: bool) {
+        if let Some(context) = request_context_get_global_context() {
+            permission::set_default_setting(&context, kind, blocked);
+        }
+    }
+
+    fn stop_capture(&mut self, view: ViewId, kinds: &[PermissionKind]) {
+        let Some(browser) = self.browser(view) else { return };
+        let mut names: Vec<&str> = kinds
+            .iter()
+            .filter_map(|kind| match kind {
+                PermissionKind::Microphone => Some("'microphone'"),
+                PermissionKind::Camera => Some("'camera'"),
+                PermissionKind::ScreenShare | PermissionKind::ScreenAudio => Some("'screen'"),
+                _ => None,
+            })
+            .collect();
+        names.dedup();
+        if names.is_empty() {
+            return;
+        }
+        let function = client::STOP_CAPTURE_FUNCTION;
+        let script = format!("window.{function} && window.{function}([{}]);", names.join(","));
+        // Every frame: a call (or a shared screen) can live in an iframe.
+        let mut ids = CefStringList::new();
+        browser.frame_identifiers(Some(&mut ids));
+        for id in client::string_list(&mut ids) {
+            if let Some(frame) = browser.frame_by_identifier(Some(&id.as_str().into())) {
+                frame.execute_java_script(Some(&script.as_str().into()), None, 0);
+            }
+        }
+        tracing::info!(?view, ?kinds, "stopping capture");
+    }
+
+    fn screen_share_has_picker(&self) -> bool {
+        screen_cast_portal() && !on_x11()
+    }
+
     fn request_frame(&mut self, _view: ViewId) {
         // Chromium renders on its own timer (see `create_browser`).
     }
@@ -1025,6 +1106,9 @@ impl Engine for CefEngine {
                 | EngineEvent::MediaSniffed { view, .. }
                 | EngineEvent::NavigationBlocked { view, .. }
                 | EngineEvent::FindResult { view, .. }
+                | EngineEvent::PermissionRequest { view, .. }
+                | EngineEvent::PermissionCancelled { view, .. }
+                | EngineEvent::CaptureChanged { view, .. }
                 | EngineEvent::Closed { view } => *view,
                 // Not tied to a view (and never queued here).
                 EngineEvent::DownloadUpdated(_) | EngineEvent::SiteData(_) => {
@@ -1042,6 +1126,7 @@ impl Engine for CefEngine {
                 EngineEvent::AddressChanged { url, .. } => state.url.clone_from(url),
                 EngineEvent::Closed { .. } => {
                     self.net.set_media_view(view, None);
+                    self.shared.permissions.drop_view(view);
                     self.views.remove(&view);
                     if let Some(inspected) = tools_of.and_then(|v| self.views.get_mut(&v)) {
                         inspected.devtools = None;

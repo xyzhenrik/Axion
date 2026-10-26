@@ -25,6 +25,10 @@ use crate::{
 const PAGE_META_PREFIX: &str = "\u{1}axion-meta:";
 /// Reports icon links and theme colours of every top-level document.
 const PAGE_META_SCRIPT: &str = include_str!("page_meta.js");
+/// Keeps the page's capture tracks so `Engine::stop_capture` can end them; run in every frame.
+const CAPTURE_SCRIPT: &str = include_str!("capture.js");
+/// The function [`CAPTURE_SCRIPT`] installs.
+pub(super) const STOP_CAPTURE_FUNCTION: &str = "__axionStopCapture";
 
 /// Events from all views, tagged with the CEF browser they came from so events from a browser
 /// that was replaced (see the software fallback) can be dropped.
@@ -35,6 +39,8 @@ pub(super) struct Shared {
     pub page_script: RefCell<Option<String>>,
     pub downloads: Rc<super::download::Downloads>,
     pub stats: super::stats::Stats,
+    /// Permission requests waiting for the browser's answer.
+    pub permissions: super::permission::Permissions,
     /// How long after Chromium hands over a GPU frame it is copied (`ViewContext::submit_gpu_frame`).
     pub frame_settle: Duration,
     /// DevTools browsers Chromium created for a view (see `Engine::open_devtools`), until the
@@ -633,6 +639,22 @@ wrap_display_handler! {
             self.ctx.emit(browser, EngineEvent::FullscreenRequested { view: self.ctx.view, fullscreen });
         }
 
+        fn on_media_access_change(
+            &self,
+            browser: Option<&mut Browser>,
+            has_video_access: ::std::os::raw::c_int,
+            has_audio_access: ::std::os::raw::c_int,
+        ) {
+            if self.ctx.devtools {
+                return;
+            }
+            self.ctx.emit(browser, EngineEvent::CaptureChanged {
+                view: self.ctx.view,
+                audio: has_audio_access != 0,
+                video: has_video_access != 0,
+            });
+        }
+
         fn on_cursor_change(
             &self,
             browser: Option<&mut Browser>,
@@ -689,6 +711,7 @@ wrap_load_handler! {
             if self.ctx.devtools || is_internal(&url) {
                 return;
             }
+            frame.execute_java_script(Some(&CAPTURE_SCRIPT.into()), Some(&url.as_str().into()), 0);
             let page_script = self.ctx.shared.page_script.borrow().clone();
             if let Some(script) = page_script {
                 frame.execute_java_script(Some(&script.as_str().into()), Some(&url.as_str().into()), 0);
@@ -904,7 +927,7 @@ fn parse_page_meta(text: &str) -> PageMeta {
 
 /// The strings of a list CEF lends to a callback. (The `cef` crate's `clone().into_iter()`
 /// of a borrowed list yields nothing, so the list is read in place.)
-fn string_list(list: &mut CefStringList) -> Vec<String> {
+pub(super) fn string_list(list: &mut CefStringList) -> Vec<String> {
     let raw: *mut cef::sys::_cef_string_list_t = list.into();
     if raw.is_null() {
         return Vec::new();
@@ -930,36 +953,79 @@ pub(super) fn favicon_callback(request: FaviconRequest) -> DownloadImageCallback
     FaviconCallbackBuilder::new(request)
 }
 
-// A media view may reach the local network and this computer (a video on a home server, a
-// local test page): Chromium asks for that permission, and Alloy style would ignore the ask.
+// Off-screen (Alloy style) Chromium shows no permission UI: without this, media access is
+// denied and every other prompt ignored. Requests go to the browser as events and wait for its
+// answer (`Engine::answer_permission`).
 wrap_permission_handler! {
     pub(super) struct PermissionHandlerBuilder {
-        net: Arc<Network>,
-        view: ViewId,
+        ctx: ViewContext,
     }
 
     impl PermissionHandler {
+        fn on_request_media_access_permission(
+            &self,
+            browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            requesting_origin: Option<&CefString>,
+            requested_permissions: u32,
+            callback: Option<&mut MediaAccessCallback>,
+        ) -> ::std::os::raw::c_int {
+            let (kinds, unknown) = super::permission::media_kinds(requested_permissions);
+            let Some(callback) = callback else { return 0 };
+            // The DevTools frontend never captures; unknown kinds get Chromium's default (denied).
+            if self.ctx.devtools || kinds.is_empty() || unknown != 0 {
+                return 0;
+            }
+            let permissions = &self.ctx.shared.permissions;
+            let id = permissions.add_media(self.ctx.view, callback.clone(), requested_permissions);
+            let origin = requesting_origin.map(|o| o.to_string()).unwrap_or_default();
+            tracing::debug!(view = ?self.ctx.view, %origin, ?kinds, "media access requested");
+            self.ctx.emit(browser, EngineEvent::PermissionRequest { view: self.ctx.view, id, origin, kinds });
+            1
+        }
+
         fn on_show_permission_prompt(
             &self,
-            _browser: Option<&mut Browser>,
-            _prompt_id: u64,
-            _requesting_origin: Option<&CefString>,
+            browser: Option<&mut Browser>,
+            prompt_id: u64,
+            requesting_origin: Option<&CefString>,
             requested_permissions: u32,
             callback: Option<&mut PermissionPromptCallback>,
         ) -> ::std::os::raw::c_int {
-            use cef::sys::cef_permission_request_types_t as types;
-            let network = types::CEF_PERMISSION_TYPE_LOCAL_NETWORK as u32
-                | types::CEF_PERMISSION_TYPE_LOOPBACK_NETWORK as u32;
-            if self.net.media_view(self.view).is_none()
-                || requested_permissions == 0
-                || requested_permissions & !network != 0
+            let Some(callback) = callback else { return 0 };
+            // A media view may reach the local network and this computer (a video on a home
+            // server, a local test page) without asking.
+            let network = super::permission::LOCAL_NETWORK_BITS;
+            if self.ctx.net.media_view(self.ctx.view).is_some()
+                && requested_permissions != 0
+                && requested_permissions & !network == 0
             {
+                callback.cont(cef::sys::cef_permission_request_result_t::CEF_PERMISSION_RESULT_ACCEPT.into());
+                return 1;
+            }
+            let (kinds, unknown) = super::permission::prompt_kinds(requested_permissions);
+            if self.ctx.devtools || kinds.is_empty() || unknown != 0 {
+                // Chromium's default for off-screen browsers: ignored.
+                tracing::debug!(requested_permissions, "permission prompt left to Chromium");
                 return 0;
             }
-            if let Some(callback) = callback {
-                callback.cont(cef::sys::cef_permission_request_result_t::CEF_PERMISSION_RESULT_ACCEPT.into());
-            }
+            let id = self.ctx.shared.permissions.add_prompt(self.ctx.view, callback.clone(), prompt_id);
+            let origin = requesting_origin.map(|o| o.to_string()).unwrap_or_default();
+            tracing::debug!(view = ?self.ctx.view, %origin, ?kinds, "permission prompt");
+            self.ctx.emit(browser, EngineEvent::PermissionRequest { view: self.ctx.view, id, origin, kinds });
             1
+        }
+
+        fn on_dismiss_permission_prompt(
+            &self,
+            browser: Option<&mut Browser>,
+            prompt_id: u64,
+            _result: PermissionRequestResult,
+        ) {
+            // Still waiting: Chromium closed it itself (navigation, closing).
+            if let Some((view, id)) = self.ctx.shared.permissions.prompt_closed(prompt_id) {
+                self.ctx.emit(browser, EngineEvent::PermissionCancelled { view, id });
+            }
         }
     }
 }
@@ -1083,10 +1149,7 @@ pub(super) fn build_client(ctx: &ViewContext) -> Client {
         DisplayHandlerBuilder::new(ctx.clone()),
         LoadHandlerBuilder::new(ctx.clone()),
         LifeSpanHandlerBuilder::new(ctx.clone()),
-        (
-            build_request_handler(&ctx.net, ctx.view),
-            PermissionHandlerBuilder::new(Arc::clone(&ctx.net), ctx.view),
-        ),
+        (build_request_handler(&ctx.net, ctx.view), PermissionHandlerBuilder::new(ctx.clone())),
         super::download::build_download_handler(&ctx.shared.downloads),
         (FindHandlerBuilder::new(ctx.clone()), ContextMenuHandlerBuilder::new(ctx.clone())),
     )
