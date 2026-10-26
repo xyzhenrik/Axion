@@ -2548,7 +2548,7 @@ impl Browser {
             ),
         );
         if self.config.devtools.enabled {
-            let mut tools = MenuItem::new(Icon::Code, "Developer Tools", MenuAction::DevTools);
+            let mut tools = MenuItem::new(Icon::Code, tr("Developer Tools"), MenuAction::DevTools);
             if let Some(keys) = self.keymap.chords_for(Action::DevTools).first() {
                 tools = tools.with_detail(keys.to_string());
             }

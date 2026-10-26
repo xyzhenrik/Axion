@@ -105,10 +105,10 @@ impl ItemData {
     pub fn title(&self) -> String {
         let or = |a: &str, b: &str| if a.trim().is_empty() { b.to_owned() } else { a.trim().to_owned() };
         match self {
-            ItemData::Login(l) => or(&crate::site::display_host(&l.site), "Login"),
-            ItemData::Card(c) => or(&c.label, &or(&c.cardholder, "Card")),
-            ItemData::Address(a) => or(&a.name, &or(&a.street, "Address")),
-            ItemData::Note(n) => or(&n.title, "Note"),
+            ItemData::Login(l) => or(&crate::site::display_host(&l.site), axion_i18n::tr("Login")),
+            ItemData::Card(c) => or(&c.label, &or(&c.cardholder, axion_i18n::tr("Card"))),
+            ItemData::Address(a) => or(&a.name, &or(&a.street, axion_i18n::tr("Address"))),
+            ItemData::Note(n) => or(&n.title, axion_i18n::tr("Note")),
         }
     }
 

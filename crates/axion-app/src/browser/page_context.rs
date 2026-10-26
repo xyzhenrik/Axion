@@ -2,6 +2,7 @@
 //! right-clicked, and what its rows do.
 
 use axion_engine::{ContextCommand, ContextMenuParams};
+use axion_i18n::tr;
 use axion_media::{Action as MediaAction, Command as MediaCommand, Kind, Player};
 
 use super::*;
@@ -47,6 +48,7 @@ impl Browser {
             }),
             system_clipboard: self.engine.has_system_clipboard(),
             search_engine: page_menu::search_engine_name(&self.config.general.search_url),
+            devtools: self.config.devtools.enabled,
             label_chars: self.config.ui.page_context_menu_label_chars as usize,
         };
         let items = page_menu::items(&params, &info, &self.keymap);
@@ -85,7 +87,7 @@ impl Browser {
             PageCommand::OpenLink => self.open_page_link(view, &link, true),
             PageCommand::OpenLinkInBackground => self.open_page_link(view, &link, false),
             PageCommand::OpenLinkInPrivate => self.open_private_tab(&link),
-            PageCommand::CopyLink => self.copy_text(&link, "Link copied"),
+            PageCommand::CopyLink => self.copy_text(&link, tr("Link copied")),
             PageCommand::SaveLink => self.save_to_downloads(view, &link),
             PageCommand::OpenImage => self.open_page_link(view, &source, true),
             PageCommand::SaveImage | PageCommand::SaveMedia => self.save_to_downloads(view, &source),
@@ -94,7 +96,7 @@ impl Browser {
                 self.engine.fetch_image(view, &source, self.config.ui.copy_image_max_px);
             }
             PageCommand::CopyImageAddress | PageCommand::CopyMediaAddress => {
-                self.copy_text(&source, "Address copied");
+                self.copy_text(&source, tr("Address copied"));
             }
             PageCommand::MediaToggle => {
                 // Straight to the element (not `media_command`, which clicks site players: a
@@ -151,6 +153,16 @@ impl Browser {
             PageCommand::Forward => self.run(Action::Forward),
             PageCommand::Reload => self.run(Action::Reload),
             PageCommand::SavePage => self.save_to_downloads(view, params.page_url.trim()),
+            PageCommand::Inspect => {
+                if self.config.devtools.enabled {
+                    // The click in the page's own coordinates (logical px, like the engine's).
+                    let (x, y) = (params.pos.x.round() as i32, params.pos.y.round() as i32);
+                    tracing::info!(x, y, "inspecting the element");
+                    if let Err(e) = self.engine.inspect_element(view, x, y) {
+                        tracing::error!("inspecting the element failed: {e}");
+                    }
+                }
+            }
             PageCommand::ViewSource => {
                 let url = format!("view-source:{}", params.page_url.trim());
                 self.open_page_link(view, &url, true);
@@ -174,7 +186,7 @@ impl Browser {
             return;
         }
         if self.private_locked() {
-            self.show_toast(Icon::Lock, "Private tabs are locked");
+            self.show_toast(Icon::Lock, tr("Private tabs are locked"));
             return;
         }
         let result = if self.private_mode {
@@ -202,7 +214,7 @@ impl Browser {
             return;
         }
         self.engine.start_download(view, url, downloads::download_dir(&self.config));
-        self.show_toast(Icon::Download, "Downloading…");
+        self.show_toast(Icon::Download, tr("Downloading…"));
     }
 
     fn copy_quietly(&mut self, text: &str) {
@@ -227,7 +239,7 @@ impl Browser {
             .and_then(|tab| self.tab_candidates(tab).into_iter().find(|c| c.player == player.id));
         match candidate {
             Some(candidate) => self.add_to_playlist(view, candidate, false),
-            None => self.show_toast(Icon::Playlist, "No video to add"),
+            None => self.show_toast(Icon::Playlist, tr("No video to add")),
         }
     }
 
@@ -244,17 +256,17 @@ impl Browser {
             bytes: std::borrow::Cow::Owned(rgba),
         };
         match clipboard.set_image(image) {
-            Ok(()) => self.show_toast(Icon::Check, "Image copied"),
+            Ok(()) => self.show_toast(Icon::Check, tr("Image copied")),
             Err(e) => {
                 tracing::warn!("copying the image failed: {e}");
-                self.show_toast(Icon::Close, "Couldn’t copy the image");
+                self.show_toast(Icon::Close, tr("Couldn’t copy the image"));
             }
         }
     }
 
     pub(super) fn image_failed(&mut self, view: ViewId) {
         if self.copy_image.take() == Some(view) {
-            self.show_toast(Icon::Close, "Couldn’t copy the image");
+            self.show_toast(Icon::Close, tr("Couldn’t copy the image"));
         }
     }
 }

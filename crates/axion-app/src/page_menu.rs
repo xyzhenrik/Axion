@@ -9,6 +9,7 @@
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{Action, Keymap};
 use axion_engine::{ContextMedia, ContextMenuParams};
+use axion_i18n::{tr, tr_fmt};
 use axion_media::Player;
 use glam::Vec2;
 
@@ -46,6 +47,8 @@ pub enum PageCommand {
     Reload,
     SavePage,
     ViewSource,
+    /// Open the developer tools with the clicked element selected.
+    Inspect,
 }
 
 /// The state of the clicked video or audio, from the media bridge.
@@ -71,6 +74,8 @@ pub struct PageMenuInfo {
     /// The engine reaches the desktop clipboard by itself (otherwise Chromium can't tell
     /// whether there is anything to paste, and Paste is always offered in a field).
     pub system_clipboard: bool,
+    /// The developer tools are enabled (`devtools.enabled`): the menu ends with Inspect.
+    pub devtools: bool,
     /// The default search engine's name ("DuckDuckGo").
     pub search_engine: String,
     /// The most characters of the selection shown in the search row.
@@ -174,15 +179,15 @@ pub fn items(params: &ContextMenuParams, info: &PageMenuInfo, keymap: &Keymap) -
     if !link.is_empty() {
         let mut group = Vec::new();
         if is_web_address(link) {
-            group.push(row(Icon::Plus, "Open Link in New Tab", PageCommand::OpenLink));
-            group.push(row(Icon::TabGroup, "Open in Background Tab", PageCommand::OpenLinkInBackground));
+            group.push(row(Icon::Plus, tr("Open Link in New Tab"), PageCommand::OpenLink));
+            group.push(row(Icon::TabGroup, tr("Open in Background Tab"), PageCommand::OpenLinkInBackground));
             if info.private_ok {
-                group.push(row(Icon::Hand, "Open in Private Tab", PageCommand::OpenLinkInPrivate));
+                group.push(row(Icon::Hand, tr("Open in Private Tab"), PageCommand::OpenLinkInPrivate));
             }
         }
-        group.push(row(Icon::Copy, "Copy Link Address", PageCommand::CopyLink));
+        group.push(row(Icon::Copy, tr("Copy Link Address"), PageCommand::CopyLink));
         if is_downloadable(link) {
-            group.push(row(Icon::Download, "Save Link As…", PageCommand::SaveLink));
+            group.push(row(Icon::Download, tr("Save Link As…"), PageCommand::SaveLink));
         }
         groups.push(group);
     }
@@ -192,56 +197,63 @@ pub fn items(params: &ContextMenuParams, info: &PageMenuInfo, keymap: &Keymap) -
         ContextMedia::Image => {
             let source = params.source_url.trim();
             groups.push(vec![
-                row(Icon::Plus, "Open Image in New Tab", PageCommand::OpenImage)
+                row(Icon::Plus, tr("Open Image in New Tab"), PageCommand::OpenImage)
                     .enabled(is_web_address(source) || source.starts_with("data:")),
-                row(Icon::Download, "Save Image As…", PageCommand::SaveImage)
+                row(Icon::Download, tr("Save Image As…"), PageCommand::SaveImage)
                     .enabled(is_downloadable(source)),
-                row(Icon::Copy, "Copy Image", PageCommand::CopyImage)
+                row(Icon::Copy, tr("Copy Image"), PageCommand::CopyImage)
                     .enabled(params.has_image_contents && is_fetchable_image(source)),
-                row(Icon::Globe, "Copy Image Address", PageCommand::CopyImageAddress)
+                row(Icon::Globe, tr("Copy Image Address"), PageCommand::CopyImageAddress)
                     .enabled(!source.is_empty() && !source.starts_with("data:")),
             ]);
         }
         ContextMedia::Video | ContextMedia::Audio => {
             let video = params.media == ContextMedia::Video;
-            let noun = if video { "Video" } else { "Audio" };
             let source = params.source_url.trim();
             let known = info.media.is_some();
             let state = info.media.unwrap_or_default();
             let mut group = vec![
                 if state.playing {
-                    row(Icon::Pause, "Pause", PageCommand::MediaToggle)
+                    row(Icon::Pause, tr("Pause"), PageCommand::MediaToggle)
                 } else {
-                    row(Icon::Play, "Play", PageCommand::MediaToggle)
+                    row(Icon::Play, tr("Play"), PageCommand::MediaToggle)
                 }
                 .enabled(known),
                 if state.muted {
-                    row(Icon::Volume, "Unmute", PageCommand::MediaMute)
+                    row(Icon::Volume, tr("Unmute"), PageCommand::MediaMute)
                 } else {
-                    row(Icon::Muted, "Mute", PageCommand::MediaMute)
+                    row(Icon::Muted, tr("Mute"), PageCommand::MediaMute)
                 }
                 .enabled(known),
             ];
             if video {
                 group.push(
-                    row(Icon::PictureInPicture, "Picture in Picture", PageCommand::MediaPictureInPicture)
+                    row(Icon::PictureInPicture, tr("Picture in Picture"), PageCommand::MediaPictureInPicture)
                         .enabled(known),
                 );
                 if info.playlist_ok {
                     group.push(
-                        row(Icon::PlaylistAdd, "Add to Playlist", PageCommand::MediaAddToPlaylist)
+                        row(Icon::PlaylistAdd, tr("Add to Playlist"), PageCommand::MediaAddToPlaylist)
                             .enabled(known),
                     );
                 }
             }
             group.push(
-                row(Icon::Download, &format!("Save {noun} As…"), PageCommand::SaveMedia)
-                    .enabled(is_downloadable(source))
-                    .separated(),
+                row(
+                    Icon::Download,
+                    if video { tr("Save Video As…") } else { tr("Save Audio As…") },
+                    PageCommand::SaveMedia,
+                )
+                .enabled(is_downloadable(source))
+                .separated(),
             );
             group.push(
-                row(Icon::Globe, &format!("Copy {noun} Address"), PageCommand::CopyMediaAddress)
-                    .enabled(!source.is_empty() && !source.starts_with("blob:")),
+                row(
+                    Icon::Globe,
+                    if video { tr("Copy Video Address") } else { tr("Copy Audio Address") },
+                    PageCommand::CopyMediaAddress,
+                )
+                .enabled(!source.is_empty() && !source.starts_with("blob:")),
             );
             groups.push(group);
         }
@@ -250,43 +262,53 @@ pub fn items(params: &ContextMenuParams, info: &PageMenuInfo, keymap: &Keymap) -
 
     let selection = params.selection_text.trim();
     let search = || {
-        let label = format!("Search {} for “{}”", info.search_engine, shorten(selection, info.label_chars));
+        let label = tr_fmt!(
+            "Search {engine} for “{text}”",
+            engine = info.search_engine,
+            text = shorten(selection, info.label_chars)
+        );
         row(Icon::Search, &label, PageCommand::SearchSelection)
     };
     if params.editable {
         let edit = params.edit;
         let mut group = vec![
-            row(Icon::Back, "Undo", PageCommand::Undo).enabled(edit.undo),
-            row(Icon::Forward, "Redo", PageCommand::Redo).enabled(edit.redo),
-            row(Icon::Close, "Cut", PageCommand::Cut).enabled(edit.cut).separated(),
-            row(Icon::Copy, "Copy", PageCommand::Copy).enabled(edit.copy),
-            keyed(Icon::Note, "Paste", PageCommand::Paste, Action::Paste)
+            row(Icon::Back, tr("Undo"), PageCommand::Undo).enabled(edit.undo),
+            row(Icon::Forward, tr("Redo"), PageCommand::Redo).enabled(edit.redo),
+            row(Icon::Close, tr("Cut"), PageCommand::Cut).enabled(edit.cut).separated(),
+            row(Icon::Copy, tr("Copy"), PageCommand::Copy).enabled(edit.copy),
+            keyed(Icon::Note, tr("Paste"), PageCommand::Paste, Action::Paste)
                 .enabled(edit.paste || !info.system_clipboard),
-            row(Icon::Overview, "Select All", PageCommand::SelectAll).enabled(edit.select_all).separated(),
+            row(Icon::Overview, tr("Select All"), PageCommand::SelectAll)
+                .enabled(edit.select_all)
+                .separated(),
         ];
         if !selection.is_empty() {
             group.push(search().separated());
         }
         groups.push(group);
     } else if !selection.is_empty() {
-        groups.push(vec![row(Icon::Copy, "Copy", PageCommand::Copy), search()]);
+        groups.push(vec![row(Icon::Copy, tr("Copy"), PageCommand::Copy), search()]);
     }
 
     // Nothing in particular under the pointer: the page itself.
     if groups.is_empty() {
         let page = params.page_url.trim();
         groups.push(vec![
-            keyed(Icon::Back, "Back", PageCommand::Back, Action::Back).enabled(info.can_go_back),
-            keyed(Icon::Forward, "Forward", PageCommand::Forward, Action::Forward)
+            keyed(Icon::Back, tr("Back"), PageCommand::Back, Action::Back).enabled(info.can_go_back),
+            keyed(Icon::Forward, tr("Forward"), PageCommand::Forward, Action::Forward)
                 .enabled(info.can_go_forward),
-            keyed(Icon::Reload, "Reload", PageCommand::Reload, Action::Reload),
+            keyed(Icon::Reload, tr("Reload"), PageCommand::Reload, Action::Reload),
         ]);
         groups.push(vec![
-            row(Icon::Download, "Save Page As…", PageCommand::SavePage).enabled(is_downloadable(page)),
-            row(Icon::Eye, "View Page Source", PageCommand::ViewSource)
+            row(Icon::Download, tr("Save Page As…"), PageCommand::SavePage).enabled(is_downloadable(page)),
+            row(Icon::Eye, tr("View Page Source"), PageCommand::ViewSource)
                 .enabled(is_document(page) && !page.starts_with("view-source:")),
         ]);
-        groups.push(vec![row(Icon::Overview, "Select All", PageCommand::SelectAll)]);
+        groups.push(vec![row(Icon::Overview, tr("Select All"), PageCommand::SelectAll)]);
+    }
+
+    if info.devtools {
+        groups.push(vec![row(Icon::Code, tr("Inspect"), PageCommand::Inspect)]);
     }
 
     let mut out = Vec::new();
@@ -331,6 +353,39 @@ mod tests {
 
     fn enabled(rows: &[(String, bool)], label: &str) -> bool {
         rows.iter().find(|(l, _)| l == label).unwrap_or_else(|| panic!("{label} missing in {rows:?}")).1
+    }
+
+    #[test]
+    fn inspect_ends_every_menu_when_devtools_are_enabled() {
+        let on = PageMenuInfo { devtools: true, ..info() };
+        let contexts = [
+            page(),
+            ContextMenuParams { link_url: "https://example.com/x".into(), ..page() },
+            ContextMenuParams {
+                media: ContextMedia::Image,
+                source_url: "https://example.com/a.png".into(),
+                ..page()
+            },
+            ContextMenuParams {
+                media: ContextMedia::Video,
+                source_url: "https://e.com/v.mp4".into(),
+                ..page()
+            },
+            ContextMenuParams { selection_text: "word".into(), ..page() },
+            ContextMenuParams { editable: true, ..page() },
+        ];
+        for params in &contexts {
+            let items = items(params, &on, &Keymap::default());
+            let last = items.last().expect("rows");
+            assert_eq!(last.label, "Inspect");
+            assert!(last.separated && !last.disabled);
+            assert_eq!(items.iter().filter(|i| i.label == "Inspect").count(), 1);
+            // Hidden when the developer tools are disabled.
+            assert!(!labels(params, &info()).contains(&"Inspect".to_owned()));
+        }
+        let names = labels(&page(), &on);
+        assert_eq!(names.last().map(String::as_str), Some("Inspect"));
+        assert_eq!(names.len(), 7);
     }
 
     #[test]

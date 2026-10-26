@@ -633,3 +633,48 @@
 "Developer console" = "Entwicklerkonsole"
 "Developer tools" = "Entwicklertools"
 "View source" = "Quelltext anzeigen"
+
+# crates/axion-app/src/browser.rs
+"Developer Tools" = "Entwicklertools"
+
+# crates/axion-app/src/browser/page_context.rs
+"Address copied" = "Adresse kopiert"
+"Couldn’t copy the image" = "Bild konnte nicht kopiert werden"
+"Image copied" = "Bild kopiert"
+"No video to add" = "Kein Video zum Hinzufügen"
+"Private tabs are locked" = "Private Tabs sind gesperrt"
+
+# crates/axion-app/src/downloads.rs
+"{n} bytes" = "{n} Byte"
+
+# crates/axion-app/src/page_menu.rs
+"Copy" = "Kopieren"
+"Copy Audio Address" = "Audioadresse kopieren"
+"Copy Image" = "Bild kopieren"
+"Copy Image Address" = "Bildadresse kopieren"
+"Copy Link Address" = "Linkadresse kopieren"
+"Copy Video Address" = "Videoadresse kopieren"
+"Cut" = "Ausschneiden"
+"Inspect" = "Untersuchen"
+"Open Image in New Tab" = "Bild in neuem Tab öffnen"
+"Open Link in New Tab" = "Link in neuem Tab öffnen"
+"Open in Background Tab" = "In Hintergrund-Tab öffnen"
+"Open in Private Tab" = "In privatem Tab öffnen"
+"Pause" = "Pause"
+"Redo" = "Wiederholen"
+"Save Audio As…" = "Audio sichern unter…"
+"Save Image As…" = "Bild sichern unter…"
+"Save Link As…" = "Link sichern unter…"
+"Save Page As…" = "Seite sichern unter…"
+"Save Video As…" = "Video sichern unter…"
+"Search {engine} for “{text}”" = "{engine}-Suche nach „{text}“"
+"Select All" = "Alles auswählen"
+"Undo" = "Widerrufen"
+"Unmute" = "Ton ein"
+"View Page Source" = "Seitenquelltext anzeigen"
+
+# crates/axion-app/src/settings.rs
+"Chromium's own developer tools (F12, Ctrl+Shift+I) open in a window of their own; Ctrl+U shows the page source. Off, none of these shortcuts do anything." = "Die Entwicklertools von Chromium (F12, Ctrl+Shift+I) öffnen sich in einem eigenen Fenster; Ctrl+U zeigt den Seitenquelltext. Aus: Keines dieser Kürzel tut etwas."
+
+# crates/axion-vault/src/item.rs
+"Login" = "Login"
