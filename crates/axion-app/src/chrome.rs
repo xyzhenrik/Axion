@@ -12,7 +12,9 @@ use axion_compositor::{Icon, IconWeight, Rect as Frame};
 use axion_config::{Action, Color, Config, SidebarMode, TabBarStyle};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Align, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
+use axion_ui::{
+    ActionId, Align, Background, CAPSULE, FlatRole, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget,
+};
 use glam::Vec2;
 
 use axion_engine::ViewId;
@@ -338,6 +340,8 @@ const ROW_FAVICON: f32 = 20.0;
 const CHEVRON_BUTTON: f32 = 28.0;
 
 pub struct Chrome {
+    /// Flat mode: the one surface the toolbar rows lie on (and its bottom rule).
+    toolbar_band: NodeId,
     account: NodeId,
     account_avatar: NodeId,
     account_initials: NodeId,
@@ -673,6 +677,7 @@ fn glass_group(ui: &mut Ui, parent: NodeId) -> NodeId {
         parent,
         Widget::container()
             .with_background(Background::Glass(GlassLevel::Thin))
+            .with_flat_role(FlatRole::Bare)
             .with_radius(CAPSULE)
             .pressed_whole(),
         Style {
@@ -712,6 +717,24 @@ impl Chrome {
     pub fn build(ui: &mut Ui, config: &Config) -> Self {
         let root = ui.root();
         let layout = &config.layout;
+
+        // ---- flat mode's toolbar surface (first, so everything lies above it) ----
+        let toolbar_band = ui.add(
+            root,
+            Widget::container().with_background(Background::Fill(Paint::Surface, 1.0)),
+            Style { position: Position::Absolute, ..Default::default() },
+        );
+        ui.add(
+            toolbar_band,
+            Widget::container().with_background(Background::Fill(Paint::Hairline, 1.0)),
+            Style {
+                position: Position::Absolute,
+                inset: Rect { left: length(0.0), right: length(0.0), top: auto(), bottom: length(0.0) },
+                size: Size { width: auto(), height: length(1.0) },
+                ..Default::default()
+            },
+        );
+        ui.set_visible(toolbar_band, false);
 
         // ---- sidebar ----
         let sidebar = ui.add(
@@ -1204,6 +1227,7 @@ impl Chrome {
             ui.set_children(root, &planes);
         }
         let mut chrome = Self {
+            toolbar_band,
             account,
             account_avatar,
             account_initials,
@@ -1359,7 +1383,7 @@ impl Chrome {
         let width = config.layout.sidebar_width;
         // The docked card floats at the page margin from the window's edge: the page starts
         // that same margin after its right edge.
-        (width + self.slide.value).clamp(0.0, width + config.layout.page_margin)
+        (width + self.slide.value).clamp(0.0, width + config.effective_layout().page_margin)
     }
 
     /// The sidebar is sliding, or the chrome is moving for F11 fullscreen (the page and
@@ -1884,7 +1908,8 @@ impl Chrome {
     /// Positions the toolbar and sidebar for the window size (logical px).
     pub fn apply_layout(&mut self, ui: &mut Ui, config: &Config, window: Vec2) {
         self.window = window;
-        let l = &config.layout;
+        let layout_in_use = config.effective_layout();
+        let l = &layout_in_use;
         self.mode = if window.x >= l.wide_from {
             Mode::Wide
         } else if window.x >= l.narrow_below {
@@ -1974,16 +1999,40 @@ impl Chrome {
         side.display =
             if show_sidebar || ui.is_visible(self.sidebar) { Display::Flex } else { Display::None };
         ui.set_style(self.sidebar, side);
+        let flat = config.glass.is_flat();
         if let Some(w) = ui.widget_mut(self.sidebar) {
             // Docked it's a panel beside the page; floating it needs more separation.
             w.background =
                 Background::Glass(if self.docked { GlassLevel::Regular } else { GlassLevel::Thick });
-            w.radius = l.sidebar_corner_radius;
+            // Flat: a docked sidebar is a full-height panel (square), a floating one a card.
+            w.radius = if flat && self.docked { 0.0 } else { l.sidebar_corner_radius };
+        }
+        // Flat: the address field is a field sunk into the toolbar (separate bar) or a pill
+        // raised from the tab capsule (compact).
+        if let Some(w) = ui.widget_mut(self.address) {
+            w.flat_role = if separate { FlatRole::Field } else { FlatRole::Raised };
         }
 
         // Locked private browsing and the Playlist page show no address bar, tab row or page
         // buttons: only the sidebar's button remains.
         let bare = self.locked || self.playlist_page;
+        // Flat: the toolbar rows lie on one surface spanning the window beside a docked sidebar,
+        // down to the page's top edge. Its groups are bare; with no toolbar the sidebar button
+        // stands on a card of its own.
+        let band_left = self.docked_sidebar_width(config).max(0.0);
+        let band_height = self.page_rect(config, window).origin.y;
+        let band = flat && !bare && !self.page_fullscreen && band_height > 0.0;
+        ui.set_visible(self.toolbar_band, band);
+        let mut band_style = ui.style(self.toolbar_band);
+        band_style.inset = Rect { left: length(band_left), right: auto(), top: length(0.0), bottom: auto() };
+        band_style.size =
+            Size { width: length((window.x - band_left).max(0.0)), height: length(band_height) };
+        ui.set_style(self.toolbar_band, band_style);
+        for group in [self.nav, self.actions] {
+            if let Some(w) = ui.widget_mut(group) {
+                w.flat_role = if bare { FlatRole::Auto } else { FlatRole::Bare };
+            }
+        }
         let narrow = self.mode == Mode::Narrow || bare;
         // With the sidebar open, its own header holds the toggle.
         ui.set_visible(self.bar_sidebar_button, !show_sidebar);
@@ -2027,7 +2076,8 @@ impl Chrome {
         if away >= 1.0 {
             return Frame { origin: Vec2::ZERO, size: window };
         }
-        let l = &config.layout;
+        let layout_in_use = config.effective_layout();
+        let l = &layout_in_use;
         // The page's left edge follows the sidebar as it slides.
         let left = sidebar + l.page_margin;
         let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 }
@@ -2041,7 +2091,7 @@ impl Chrome {
 
     /// The page card's corner radius (logical px): square while fullscreen.
     pub fn page_corner_radius(&self, config: &Config) -> f32 {
-        config.layout.page_corner_radius * (1.0 - self.chrome_away())
+        config.effective_layout().page_corner_radius * (1.0 - self.chrome_away())
     }
 
     /// The page's rectangle once the sidebar's slide and the F11 transition have settled (see
@@ -2052,7 +2102,7 @@ impl Chrome {
         }
         let sidebar = if self.docked {
             let width = config.layout.sidebar_width;
-            (width + self.slide.target).clamp(0.0, width + config.layout.page_margin)
+            (width + self.slide.target).clamp(0.0, width + config.effective_layout().page_margin)
         } else {
             0.0
         };
@@ -2187,7 +2237,7 @@ impl Chrome {
     /// The card the Playlist page fills: the whole window beside a docked sidebar, with the
     /// page card's margins.
     pub fn playlist_rect(&self, config: &Config, window: Vec2) -> Frame {
-        let margin = config.layout.page_margin;
+        let margin = config.effective_layout().page_margin;
         let origin = Vec2::new(self.docked_sidebar_width(config).max(0.0) + margin, margin);
         Frame { origin, size: (window - origin - Vec2::splat(margin)).max(Vec2::ONE) }
     }
@@ -2861,7 +2911,8 @@ impl Chrome {
     // ---- bookmarks bar ----
 
     fn layout_bookmarks_bar(&mut self, ui: &mut Ui, config: &Config, left: f32, window_width: f32) {
-        let l = &config.layout;
+        let layout_in_use = config.effective_layout();
+        let l = &layout_in_use;
         let m = l.margin;
         let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 };
         let bar = self.bookmarks.bar;

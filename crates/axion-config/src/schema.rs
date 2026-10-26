@@ -1279,7 +1279,23 @@ impl Default for Playlist {
     }
 }
 
+/// Flat mode: the gap around the toolbar's rows (logical px), at most.
+pub const FLAT_MARGIN: f32 = 8.0;
+
 impl Config {
+    /// The layout as used: in flat mode the chrome is one conventional toolbar surface with the
+    /// page filling the area under (and beside) it: small margins, no page margin, square page.
+    /// Liquid mode uses `layout` as configured.
+    pub fn effective_layout(&self) -> Layout {
+        let mut layout = self.layout.clone();
+        if self.glass.is_flat() {
+            layout.margin = layout.margin.min(FLAT_MARGIN);
+            layout.page_margin = 0.0;
+            layout.page_corner_radius = 0.0;
+        }
+        layout
+    }
+
     /// The full default configuration as TOML, for documentation and the settings UI.
     pub fn default_toml() -> String {
         toml::to_string_pretty(&Self::default()).unwrap_or_default()

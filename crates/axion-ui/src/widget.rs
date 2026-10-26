@@ -138,6 +138,20 @@ pub struct Tooltip {
     pub action: Option<axion_config::Action>,
 }
 
+/// How a glass background is drawn without glass (flat mode). By default a card at the top
+/// level and an inset inside another card.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FlatRole {
+    #[default]
+    Auto,
+    /// Nothing: the widget only groups content that lies on the toolbar's surface.
+    Bare,
+    /// A field sunk into the surface it lies on (the address field on the toolbar).
+    Field,
+    /// A pill raised from a tinted strip (the open tab on the tab strip).
+    Raised,
+}
+
 pub struct Widget {
     pub kind: WidgetKind,
     pub background: Background,
@@ -171,6 +185,8 @@ pub struct Widget {
     /// surface of its own (see `Ui::glass_at`); and it has no tint of its own, so across it
     /// the tint blends from the glass it joins.
     pub join_only: bool,
+    /// How a glass background is drawn in flat mode (see [`FlatRole`]); ignored with glass.
+    pub flat_role: FlatRole,
     /// Glass that is one element (the toolbar's nav capsule, the address field): pressing any
     /// button in it turns the whole glass into one lens that swells, follows the pointer and
     /// stretches, carrying all its content along, instead of the button becoming a lens of
@@ -207,6 +223,7 @@ impl Widget {
             glass_density: None,
             glass_merge: None,
             join_only: false,
+            flat_role: FlatRole::Auto,
             press_whole: false,
             hover_fill: true,
             clip: false,
@@ -304,6 +321,12 @@ impl Widget {
     /// See [`Widget::glass_merge`].
     pub fn with_glass_merge(mut self, merge: f32) -> Self {
         self.glass_merge = Some(merge);
+        self
+    }
+
+    /// See [`Widget::flat_role`].
+    pub fn with_flat_role(mut self, role: FlatRole) -> Self {
+        self.flat_role = role;
         self
     }
 

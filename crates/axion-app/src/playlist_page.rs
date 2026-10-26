@@ -371,7 +371,7 @@ impl PlaylistPage {
             ui.root(),
             Widget::container()
                 .with_background(Background::Fill(Paint::Ground, 1.0))
-                .with_radius(config.layout.page_corner_radius)
+                .with_radius(config.effective_layout().page_corner_radius)
                 .with_clip(),
             Style { position: Position::Absolute, flex_direction: FlexDirection::Row, ..Default::default() },
         );
@@ -881,7 +881,7 @@ impl PlaylistPage {
         style.size = Size { width: length(rect.size.x), height: length(rect.size.y) };
         ui.set_style(self.root, style);
         if let Some(w) = ui.widget_mut(self.root) {
-            w.radius = config.layout.page_corner_radius;
+            w.radius = config.effective_layout().page_corner_radius;
         }
         let list_width = LIST_WIDTH.min((rect.size.x * LIST_SHARE).max(LIST_MIN));
         let mut col = ui.style(self.list_col);

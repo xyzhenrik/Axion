@@ -253,6 +253,18 @@ impl Theme {
         }
     }
 
+    /// A pill raised from a tinted strip (the open tab): the surface colour with a hairline, no shadow.
+    pub fn flat_raised(&self) -> FlatPaint {
+        let surface = self.color(Paint::Surface);
+        FlatPaint {
+            fill: [surface[0], surface[1], surface[2], 1.0],
+            border: self.color(Paint::Hairline),
+            shadow: [0.0; 4],
+            shadow_dy: 0.0,
+            shadow_blur: 0.0,
+        }
+    }
+
     /// A tinted card (a primary button) in flat mode: the colour, no outline, no shadow.
     pub fn flat_tinted(&self, tint: [f32; 4]) -> FlatPaint {
         FlatPaint {

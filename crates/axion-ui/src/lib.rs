@@ -27,7 +27,7 @@ use taffy::prelude::*;
 pub use editor::Editor;
 use knob::Knob;
 pub use theme::{FLAT_BORDER, FlatPaint, GlassLevel, Paint, TextStyle, Theme};
-pub use widget::{ActionId, Align, Background, CAPSULE, Shadow, Tooltip, Widget, WidgetKind};
+pub use widget::{ActionId, Align, Background, CAPSULE, FlatRole, Shadow, Tooltip, Widget, WidgetKind};
 use widget::{caret_x, index_at, measure, new_buffer, set_buffer_text};
 
 const CARET_BLINK: Duration = Duration::from_millis(530);
@@ -1691,8 +1691,13 @@ impl Ui {
         match widget.background {
             Background::Glass(_) | Background::TintedGlass(..) if flat => {
                 // No glass: the same surface as a plain card (see `Theme::flat_paint`).
-                self.paint_flat_card(widget, theme, bg_px, bg_radius, fade, depth, stacks);
-                child_depth = depth + 1;
+                // A bare group draws nothing and is no surface for what lies in it.
+                if widget.flat_role == FlatRole::Bare {
+                    child_depth = depth;
+                } else {
+                    self.paint_flat_card(widget, theme, bg_px, bg_radius, fade, depth, stacks);
+                    child_depth = depth + 1;
+                }
             }
             Background::Glass(_) | Background::TintedGlass(..) => {
                 let (level, tint) = match widget.background {
@@ -1972,9 +1977,11 @@ impl Ui {
         // density says: with no blur behind it, anything less would show the page through.
         let level = if level == GlassLevel::Lens { level } else { widget.glass_density.unwrap_or(level) };
         let s = self.scale;
-        let paint = match tint {
-            Some(tint) => theme.flat_tinted(tint),
-            None => theme.flat_paint(level, nested),
+        let paint = match (tint, widget.flat_role) {
+            (Some(tint), _) => theme.flat_tinted(tint),
+            (None, FlatRole::Field) => theme.flat_paint(level, true),
+            (None, FlatRole::Raised) => theme.flat_raised(),
+            (None, _) => theme.flat_paint(level, nested),
         };
         let faded = |mut c: [f32; 4]| {
             c[3] *= fade;
