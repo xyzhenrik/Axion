@@ -5,7 +5,7 @@
 //!
 //! Secrets stay out of logs; only the user's clicks put them on the clipboard or into a page.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -22,6 +22,7 @@ use glam::Vec2;
 use zeroize::Zeroizing;
 
 use crate::drip::Phase;
+use crate::favicons::{Favicons, SiteIcon};
 use crate::morph::{Origin, SheetMorph};
 use crate::popover::Popover;
 
@@ -78,6 +79,8 @@ const PROMPT_LINE: f32 = 44.0;
 const PROMPT_ERROR: f32 = 18.0;
 /// Most logins the fill prompt lists.
 const PROMPT_LOGINS: usize = 3;
+/// The icon in a list row.
+const LIST_ICON: f32 = 30.0;
 /// The account password (the vault's master password) is at least this long.
 pub const MIN_MASTER_LENGTH: usize = 8;
 /// The password capture aids give throwaway test accounts.
@@ -293,6 +296,20 @@ pub struct Passwords {
     account: String,
     /// The alert asks again before this (see [`Reauth`]).
     asking: Option<Reauth>,
+    /// The user name from the first step of a two-step sign-in, until the password step.
+    step_user: Option<StepUser>,
+    /// The related-domain groups the vault was given (to apply config changes).
+    related_applied: Vec<Vec<String>>,
+    /// Site icons of the logins in the list, by host.
+    icons: HashMap<String, SiteIcon>,
+    /// Hosts whose icon was asked for since the sheet opened.
+    icons_requested: HashSet<String>,
+}
+
+/// The user name typed on a sign-in's first step. Kept in memory only, never on disk.
+struct StepUser {
+    username: String,
+    at: Instant,
 }
 
 fn padding(h: f32, v: f32) -> Rect<LengthPercentage> {
@@ -395,6 +412,11 @@ fn icon_button(ui: &mut Ui, parent: NodeId, action: ActionId, icon: Icon, size: 
 
 /// The kind's icon in a tinted circle.
 fn badge(ui: &mut Ui, parent: NodeId, kind: Kind, size: f32) {
+    badge_icon(ui, parent, kind_icon(kind), size);
+}
+
+/// `icon` in a tinted circle.
+fn badge_icon(ui: &mut Ui, parent: NodeId, icon: Icon, size: f32) {
     let circle = ui.add(
         parent,
         Widget::container().with_radius(CAPSULE).with_background(Background::Fill(Paint::Accent, 0.14)),
@@ -405,7 +427,7 @@ fn badge(ui: &mut Ui, parent: NodeId, kind: Kind, size: f32) {
             ..row(0.0)
         },
     );
-    ui.add(circle, Widget::icon(kind_icon(kind), size * 0.55).with_paint(Paint::Accent), Style::default());
+    ui.add(circle, Widget::icon(icon, size * 0.55).with_paint(Paint::Accent), Style::default());
 }
 
 /// A grey rounded box holding a text field; returns the field.
@@ -659,7 +681,70 @@ impl Passwords {
             unlock_dismissed: HashSet::new(),
             account: account.to_owned(),
             asking: None,
+            step_user: None,
+            related_applied: Vec::new(),
+            icons: HashMap::new(),
+            icons_requested: HashSet::new(),
         }
+    }
+
+    /// Hands the vault the configured related-domain groups (when they changed).
+    fn sync_related(&mut self, config: &Config) {
+        let groups = &config.passwords.related_domains;
+        if *groups == self.related_applied {
+            return;
+        }
+        if let Some(vault) = &mut self.vault {
+            vault.set_related(site::Related::new(groups));
+        }
+        self.related_applied.clone_from(groups);
+    }
+
+    /// The user name remembered from a sign-in's first step, if it is recent enough.
+    fn recent_step_user(&self, config: &Config) -> Option<&str> {
+        let step = self.step_user.as_ref()?;
+        let limit = Duration::from_secs_f32(config.passwords.two_step_memory_seconds.max(0.0));
+        (step.at.elapsed() <= limit).then_some(step.username.as_str())
+    }
+
+    /// Looks up the icons of the logins in the list (the browser calls this while the sheet is
+    /// open). Returns the hosts to fetch icons for: saved sites with no cached icon, up to
+    /// `passwords.icon_fetch_limit` per opening.
+    pub fn sync_icons(&mut self, ui: &mut Ui, config: &Config, favicons: &Favicons) -> Vec<String> {
+        let mut missing = Vec::new();
+        if !self.open {
+            return missing;
+        }
+        let Some(vault) = self.vault.as_ref().filter(|v| v.is_unlocked()) else { return missing };
+        let sites: Vec<String> = vault
+            .items()
+            .iter()
+            .filter_map(|i| match &i.data {
+                ItemData::Login(l) => Some(l.site.clone()),
+                _ => None,
+            })
+            .collect();
+        let limit = config.passwords.icon_fetch_limit as usize;
+        let mut changed = false;
+        for site in sites {
+            let host = site::display_host(&site);
+            if self.icons.contains_key(&host) {
+                continue;
+            }
+            if let Some(icon) = favicons.get(&site) {
+                self.icons.insert(host, icon);
+                changed = true;
+            } else if config.passwords.fetch_missing_icons
+                && missing.len() < limit
+                && self.icons_requested.insert(host.clone())
+            {
+                missing.push(host);
+            }
+        }
+        if changed {
+            self.rebuild_list(ui);
+        }
+        missing
     }
 
     pub fn is_open(&self) -> bool {
@@ -683,6 +768,7 @@ impl Passwords {
     /// Unlocks with the account password from elsewhere (the private tabs' lock screen): the
     /// sheet, a waiting unlock prompt and a pending save carry on as if unlocked here.
     pub fn unlock_with(&mut self, ui: &mut Ui, config: &Config, password: &str) -> Result<(), VaultError> {
+        self.sync_related(config);
         let vault = self.vault.as_mut().ok_or(VaultError::NotSetUp)?;
         vault.unlock(password)?;
         tracing::info!("account unlocked");
@@ -771,8 +857,10 @@ impl Passwords {
         origin: Origin,
         fallback: Origin,
     ) -> Outcome {
+        self.sync_related(config);
         self.origin = Some((origin, fallback));
         self.open = true;
+        self.icons_requested.clear();
         self.prompt.hide();
         self.asking = self.has_password().then_some(Reauth::OpenSheet);
         ui.set_visible(self.root, true);
@@ -1022,6 +1110,8 @@ impl Passwords {
         if let Some(vault) = &mut self.vault {
             vault.lock();
         }
+        self.step_user = None;
+        self.icons.clear();
         self.shown = Detail::Empty;
         self.list_ids.clear();
         ui.clear_children(self.list);
@@ -1078,7 +1168,26 @@ impl Passwords {
                         ..row(10.0)
                     },
                 );
-                badge(ui, row_node, kind, 30.0);
+                let icon = match &item.data {
+                    ItemData::Login(l) => self.icons.get(&site::display_host(&l.site)),
+                    _ => None,
+                };
+                match icon {
+                    Some(image) => {
+                        let node = ui.add(
+                            row_node,
+                            Widget::image().with_radius(LIST_ICON * 0.22),
+                            Style {
+                                size: Size { width: length(LIST_ICON), height: length(LIST_ICON) },
+                                flex_shrink: 0.0,
+                                ..Default::default()
+                            },
+                        );
+                        ui.set_image(node, Some(image.clone()));
+                    }
+                    None if kind == Kind::Login => badge_icon(ui, row_node, Icon::Globe, LIST_ICON),
+                    None => badge(ui, row_node, kind, LIST_ICON),
+                }
                 let texts = ui.add(row_node, Widget::container(), Style { ..column(0.0) });
                 let mut style = ui.style(texts);
                 style.flex_grow = 1.0;
@@ -1461,6 +1570,7 @@ impl Passwords {
         pointer: Option<Vec2>,
         event: UiEvent,
     ) -> Outcome {
+        self.sync_related(config);
         if let Some(vault) = &mut self.vault {
             vault.touch();
         }
@@ -1717,18 +1827,26 @@ impl Passwords {
         if self.open {
             return;
         }
+        self.sync_related(config);
         match event {
-            PageEvent::Form => {
+            PageEvent::Form | PageEvent::IdentifierForm => {
                 if !config.passwords.autofill || matches!(self.prompt.state, Some(PromptState::Save(_))) {
                     return;
                 }
                 let Some(vault) = &self.vault else { return };
                 if !vault.is_unlocked() {
-                    // Locked: which sites have logins is encrypted too, so offer to unlock on
-                    // every sign-in form, unless the user said "Not Now" for this site.
-                    if vault.is_set_up() && !self.unlock_dismissed.contains(&site::display_host(url)) {
+                    // Locked: only ask when the vault's keyed site index says this site has
+                    // logins (or has no index yet, a vault from before it: the first unlock
+                    // builds it). Sites without saved logins never prompt, unless the user
+                    // said "Not Now" for this site.
+                    if vault.is_set_up()
+                        && vault.site_known(url) != Some(false)
+                        && !self.unlock_dismissed.contains(&site::display_host(url))
+                    {
                         self.prompt.state = Some(PromptState::Unlock { view, url: url.to_owned() });
                         self.build_prompt(ui, config);
+                    } else if matches!(self.prompt.state, Some(PromptState::Unlock { .. })) {
+                        self.prompt.hide();
                     }
                     return;
                 }
@@ -1743,7 +1861,21 @@ impl Passwords {
                     self.prompt.hide();
                 }
             }
-            PageEvent::Submit { username, password } => {
+            PageEvent::Identifier { username } => {
+                // First step of a two-step sign-in: the password comes on the next page.
+                self.step_user = Some(StepUser { username, at: Instant::now() });
+            }
+            PageEvent::Submit { mut username, password } => {
+                // A password-only page after a user-name-only one: the user name is the one
+                // typed before (if recent), unless this page asked for one itself.
+                let remembered = self.step_user.take();
+                if username.is_empty()
+                    && let Some(step) = remembered
+                    && step.at.elapsed()
+                        <= Duration::from_secs_f32(config.passwords.two_step_memory_seconds.max(0.0))
+                {
+                    username = step.username;
+                }
                 if !config.passwords.offer_to_save || self.vault.is_none() {
                     return;
                 }
@@ -1764,7 +1896,22 @@ impl Passwords {
     fn show_fill(&mut self, ui: &mut Ui, config: &Config, view: ViewId, url: &str) -> bool {
         let ids: Vec<String> = match &self.vault {
             Some(vault) if vault.is_unlocked() => {
-                vault.logins_for(url).iter().take(PROMPT_LOGINS).map(|i| i.id.clone()).collect()
+                let logins = vault.logins_for(url);
+                // After a two-step sign-in's first step: the login of the user name just typed.
+                let typed = self.recent_step_user(config).map(str::to_lowercase);
+                let chosen: Vec<_> = typed
+                    .map(|name| {
+                        logins
+                            .iter()
+                            .filter(|i| {
+                                matches!(&i.data, ItemData::Login(l) if l.username.to_lowercase() == name)
+                            })
+                            .copied()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let list = if chosen.is_empty() { logins } else { chosen };
+                list.iter().take(PROMPT_LOGINS).map(|i| i.id.clone()).collect()
             }
             _ => return false,
         };

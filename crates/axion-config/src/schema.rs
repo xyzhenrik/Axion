@@ -600,10 +600,22 @@ pub struct Passwords {
     pub generator_length: u32,
     /// Generated passwords include symbols.
     pub generator_symbols: bool,
+    /// Groups of registrable domains that share one sign-in: a login saved for one is offered
+    /// on the others (google.com and youtube.com). Subdomains of a member belong to it.
+    /// Domains of one registrable domain (accounts.google.com, google.com) always match.
+    pub related_domains: Vec<Vec<String>>,
+    /// How long the user name typed on the first step of a two-step sign-in is remembered, to
+    /// pair it with the password asked on the next page (0: don't pair).
+    pub two_step_memory_seconds: f32,
+    /// Fetch the icons of saved logins' sites that aren't cached yet, for the Passwords list.
+    pub fetch_missing_icons: bool,
+    /// At most this many icons are fetched each time the list opens.
+    pub icon_fetch_limit: u32,
 }
 
 impl Default for Passwords {
     fn default() -> Self {
+        let group = |domains: &[&str]| domains.iter().map(|d| (*d).to_owned()).collect::<Vec<_>>();
         Self {
             offer_to_save: true,
             autofill: true,
@@ -611,6 +623,28 @@ impl Default for Passwords {
             clear_clipboard_seconds: 60.0,
             generator_length: 20,
             generator_symbols: true,
+            related_domains: vec![
+                group(&["google.com", "youtube.com", "gmail.com"]),
+                group(&[
+                    "microsoft.com",
+                    "live.com",
+                    "microsoftonline.com",
+                    "office.com",
+                    "outlook.com",
+                    "xbox.com",
+                    "bing.com",
+                    "skype.com",
+                ]),
+                group(&["apple.com", "icloud.com"]),
+                group(&["facebook.com", "instagram.com", "messenger.com", "meta.com"]),
+                group(&["amazon.com", "amazon.de", "amazon.co.uk", "amazon.fr", "amazon.it", "amazon.es"]),
+                group(&["adobe.com", "adobelogin.com"]),
+                group(&["twitter.com", "x.com"]),
+                group(&["yahoo.com", "aol.com"]),
+            ],
+            two_step_memory_seconds: 300.0,
+            fetch_missing_icons: true,
+            icon_fetch_limit: 40,
         }
     }
 }

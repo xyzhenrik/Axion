@@ -44,6 +44,25 @@ const FINDERS: &str = r#"
     }
     return user || scope.querySelector('input[autocomplete~=username]');
   }
+  // The first step of a two-step sign-in (user name or e-mail, then "Next"): the page's only
+  // visible text field, when it looks like one, and no password field is there yet.
+  function identifierField() {
+    if (passwordField()) return null;
+    var all = document.querySelectorAll('input'), texts = [];
+    for (var i = 0; i < all.length; i++) {
+      var t = (all[i].type || 'text').toLowerCase();
+      if ((t === 'text' || t === 'email' || t === 'tel') && visible(all[i])) texts.push(all[i]);
+    }
+    if (texts.length !== 1) return null;
+    var el = texts[0], type = (el.type || 'text').toLowerCase();
+    var auto = (el.getAttribute('autocomplete') || '').toLowerCase();
+    var hint = (auto + ' ' + el.name + ' ' + el.id).toLowerCase();
+    if (/(^|\s)(username|email)(\s|$)/.test(auto)) return el;
+    if (/user|login|ident|signin|account/.test(hint)) return el;
+    var form = el.form ? ((el.form.action || '') + ' ' + el.form.id + ' ' + el.form.className).toLowerCase() : '';
+    if (type === 'email' && /sign|log|auth|account/.test(form)) return el;
+    return null;
+  }
 "#;
 
 const FILL: &str = r#"
@@ -59,7 +78,12 @@ const FILL: &str = r#"
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
   var pw = passwordField();
-  if (!pw) return;
+  if (!pw) {
+    // First step of a two-step sign-in: only the user name.
+    var id = identifierField();
+    if (id && data.user) set(id, data.user);
+    return;
+  }
   var user = userField(pw);
   if (user && data.user) set(user, data.user);
   set(pw, data.pass);
@@ -75,6 +99,10 @@ pub fn page_script() -> String {
 pub enum PageEvent {
     /// A sign-in form is on the page.
     Form,
+    /// The first step of a two-step sign-in is on the page (user name only, no password yet).
+    IdentifierForm,
+    /// The user submitted that first step with this user name.
+    Identifier { username: String },
     /// No (more) sign-in form.
     NoForm,
     /// The user submitted a form with these credentials.
@@ -86,6 +114,8 @@ impl std::fmt::Debug for PageEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PageEvent::Form => f.write_str("Form"),
+            PageEvent::IdentifierForm => f.write_str("IdentifierForm"),
+            PageEvent::Identifier { .. } => f.write_str("Identifier"),
             PageEvent::NoForm => f.write_str("NoForm"),
             PageEvent::Submit { .. } => f.write_str("Submit"),
         }
@@ -113,6 +143,10 @@ pub fn parse(console_message: &str) -> Option<PageEvent> {
     let password = Zeroizing::new(wire.pass);
     match wire.e.as_str() {
         "form" => Some(PageEvent::Form),
+        "idform" => Some(PageEvent::IdentifierForm),
+        "user" if !wire.user.trim().is_empty() => {
+            Some(PageEvent::Identifier { username: wire.user.trim().to_owned() })
+        }
         "noform" => Some(PageEvent::NoForm),
         "submit" if !password.is_empty() => {
             Some(PageEvent::Submit { username: wire.user.trim().to_owned(), password })
@@ -147,11 +181,16 @@ mod tests {
         assert_eq!((username.as_str(), password.as_str()), ("me", "test-only-pass"));
         assert!(!format!("{submit:?}").contains("test-only-pass"));
         assert!(parse("\u{1}axion:vault:{\"e\":\"submit\",\"pass\":\"\"}").is_none());
+        assert!(matches!(parse("\u{1}axion:vault:{\"e\":\"idform\"}"), Some(PageEvent::IdentifierForm)));
+        let step = parse("\u{1}axion:vault:{\"e\":\"user\",\"user\":\" me@x.com \"}");
+        assert!(matches!(&step, Some(PageEvent::Identifier { username }) if username == "me@x.com"));
+        assert!(parse("\u{1}axion:vault:{\"e\":\"user\",\"user\":\" \"}").is_none());
         assert!(parse("\u{1}axion:{\"e\":\"form\"}").is_none() && !is_message("\u{1}axion:{}"));
     }
 
     #[test]
     fn scripts() {
+        assert!(page_script().contains("function identifierField"));
         assert!(page_script().contains("function passwordField") && !page_script().contains("/*FINDERS*/"));
         let script = fill_script("https://login.example.com/x", "me", "a\"b'</script>").unwrap();
         assert!(script.contains(r#"location.hostname !== "login.example.com""#));

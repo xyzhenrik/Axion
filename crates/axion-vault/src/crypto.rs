@@ -5,12 +5,13 @@ use chacha20poly1305::aead::rand_core::RngCore;
 use chacha20poly1305::aead::{Aead, OsRng, Payload};
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 pub const KEY_LEN: usize = 32;
 pub const SALT_LEN: usize = 16;
 pub const NONCE_LEN: usize = 24;
+pub const SITE_TAG_LEN: usize = 16;
 
 /// Argon2id cost. Stored with the vault so it can be raised later without breaking old vaults.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +85,26 @@ pub fn device_check(device_secret: &[u8; KEY_LEN], salt: &[u8]) -> Result<[u8; K
         .expand(DEVICE_CHECK_INFO, &mut check)
         .map_err(|_| CryptoError::Kdf)?;
     Ok(check)
+}
+
+/// HKDF `info` for the key of the locked-state site index.
+const SITE_INDEX_INFO: &[u8] = b"axion-vault/v2/site-index";
+
+/// A short keyed tag of a registrable domain: the vault stores one per saved login (outside
+/// the encrypted items) so it can tell, while locked, whether a site has logins at all. The
+/// key comes from the device secret, so the file alone tells nothing about the sites.
+pub fn site_tag(device_secret: &[u8; KEY_LEN], domain: &str) -> Result<[u8; SITE_TAG_LEN], CryptoError> {
+    let mut key = Zeroizing::new([0; KEY_LEN]);
+    Hkdf::<Sha256>::new(None, device_secret)
+        .expand(SITE_INDEX_INFO, key.as_mut())
+        .map_err(|_| CryptoError::Kdf)?;
+    let mut hasher = Sha256::new();
+    hasher.update(key.as_ref());
+    hasher.update(domain.as_bytes());
+    let digest = hasher.finalize();
+    let mut tag = [0; SITE_TAG_LEN];
+    tag.copy_from_slice(&digest[..SITE_TAG_LEN]);
+    Ok(tag)
 }
 
 /// Encrypts `plaintext`; `aad` (e.g. the item's id) is authenticated but not encrypted, so a
