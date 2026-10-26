@@ -59,6 +59,8 @@ pub struct Counters {
     pub view_resizes: u64,
     /// Page frame textures created (GPU copies and software uploads).
     pub frame_textures: u64,
+    /// Read-back buffers created for the drawn check of GPU frames.
+    pub check_buffers: u64,
     /// Page frames that became a view's frame.
     pub page_frames: u64,
 }

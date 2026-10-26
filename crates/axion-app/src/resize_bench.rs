@@ -35,6 +35,8 @@ pub struct FrameTimes {
     pub total: f32,
     /// Handling `WindowEvent::Resized` since the last frame.
     pub resize_events: f32,
+    /// Swapchain reconfigurations (in resize events or the frame).
+    pub configure: f32,
     /// `update_layout` (responsive layout, page resizes).
     pub layout: f32,
     /// Taffy layout and text shaping of the widget tree.
@@ -53,6 +55,7 @@ impl FrameTimes {
     fn add(&mut self, o: &FrameTimes) {
         self.total += o.total;
         self.resize_events += o.resize_events;
+        self.configure += o.configure;
         self.layout += o.layout;
         self.ui_layout += o.ui_layout;
         self.acquire += o.acquire;
@@ -75,6 +78,8 @@ pub struct ResizeCounters {
     pub view_resizes: u64,
     /// Page frame textures created (GPU and software paths).
     pub frame_textures: u64,
+    /// Read-back buffers created for GPU frames' drawn check.
+    pub check_buffers: u64,
     /// Page frames that arrived.
     pub page_frames: u64,
 }
@@ -87,6 +92,7 @@ impl ResizeCounters {
             layouts: self.layouts - start.layouts,
             view_resizes: self.view_resizes - start.view_resizes,
             frame_textures: self.frame_textures - start.frame_textures,
+            check_buffers: self.check_buffers - start.check_buffers,
             page_frames: self.page_frames - start.page_frames,
         }
     }
@@ -215,6 +221,7 @@ impl Recorder {
             frame_p95_ms = format!("{:.2}", pct(0.95)),
             frame_max_ms = format!("{:.2}", pct(1.0)),
             resize_events_ms = format!("{:.2}", sum.resize_events / n),
+            configure_ms = format!("{:.2}", sum.configure / n),
             layout_ms = format!("{:.2}", sum.layout / n),
             ui_layout_ms = format!("{:.2}", sum.ui_layout / n),
             acquire_ms = format!("{:.2}", sum.acquire / n),
@@ -228,10 +235,12 @@ impl Recorder {
             layouts = c.layouts,
             view_resizes = c.view_resizes,
             frame_textures = c.frame_textures,
+            check_buffers = c.check_buffers,
             page_fps = format!("{:.1}", c.page_frames as f32 / secs),
             cpu_main_pct = format!("{main_cpu:.0}"),
             cpu_chromium_pct = format!("{child_cpu:.0}"),
             rss_mb = rss_mb().map_or(-1, |m| m as i64),
+            pid = std::process::id(),
             "resize bench"
         );
     }
@@ -305,11 +314,22 @@ impl ResizeBench {
             // A size of its own, which no frame before had: what stays after a resize.
             Phase::Settle if self.step == 0 => {
                 self.step = 1;
-                Step::Resize(vec![AFTER])
+                Step::Resize(vec![after_size()])
             }
             _ => Step::Nothing,
         }
     }
+}
+
+/// The size the window is left at: `AFTER`, or `AXION_BENCH_AFTER=WxH` (logical px).
+fn after_size() -> Vec2 {
+    std::env::var("AXION_BENCH_AFTER")
+        .ok()
+        .and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some(Vec2::new(w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or(AFTER)
 }
 
 /// Size at sweep step `step` (1-based): from `SMALL` to `LARGE` and back, linearly.

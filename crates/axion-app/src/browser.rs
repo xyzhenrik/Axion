@@ -3528,6 +3528,7 @@ impl Browser {
         ResizeCounters {
             view_resizes: engine.view_resizes,
             frame_textures: engine.frame_textures,
+            check_buffers: engine.check_buffers,
             page_frames: engine.page_frames,
             ..self.resize_counters
         }
@@ -4602,7 +4603,10 @@ impl Browser {
                     self.surface_config.width = size.width;
                     self.surface_config.height = size.height;
                     self.surface.configure(&self.device, &self.surface_config);
+                    self.frame_times.configure += ms_since(started);
+                    let laid = Instant::now();
                     self.update_layout();
+                    self.frame_times.layout += ms_since(laid);
                     self.sync_frame_rate();
                     self.frame_times.resize_events += ms_since(started);
                 }

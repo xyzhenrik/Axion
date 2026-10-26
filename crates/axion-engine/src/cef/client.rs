@@ -374,8 +374,11 @@ impl ViewContext {
 
     fn frame_texture(&self, size: wgpu::Extent3d, format: wgpu::TextureFormat) -> wgpu::Texture {
         let mut spare = self.frames.spare_textures.borrow_mut();
-        if let Some(i) = spare.iter().position(|t| t.size() == size && t.format() == format) {
-            return spare.swap_remove(i);
+        // Spares of another size are of a size the page had before a resize: kept, they would
+        // fill the spare slots for good and every later frame would get a new texture.
+        spare.retain(|t| t.size() == size && t.format() == format);
+        if let Some(texture) = spare.pop() {
+            return texture;
         }
         self.shared.stats.count(|c| c.frame_textures += 1);
         self.device.create_texture(&wgpu::TextureDescriptor {
@@ -393,9 +396,12 @@ impl ViewContext {
     fn check_buffer(&self, width: u32) -> wgpu::Buffer {
         let size = check_buffer_size(width);
         let mut spare = self.frames.spare_checks.borrow_mut();
-        if let Some(i) = spare.iter().position(|b| b.size() == size) {
-            return spare.swap_remove(i);
+        // As for frame textures: buffers of an old width would block the spare slots.
+        spare.retain(|b| b.size() == size);
+        if let Some(buffer) = spare.pop() {
+            return buffer;
         }
+        self.shared.stats.count(|c| c.check_buffers += 1);
         self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame drawn check"),
             size,
