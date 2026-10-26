@@ -1586,7 +1586,7 @@ impl Ui {
                     _ => unreachable!("matched above"),
                 };
                 let mut shape = GlassShape::rounded_rect(bg_px.center(), bg_px.size * 0.5, bg_radius);
-                shape.tint_opacity = widget.glass_density.map(|l| theme.glass_opacity(l));
+                shape.tint_opacity = glass_tint_opacity(widget, theme);
                 shape.merge = widget.glass_merge.map(|m| m * s);
                 shape.join_only = widget.join_only;
                 if let Some(xf) = &press_xf {
@@ -1635,7 +1635,7 @@ impl Ui {
                     );
                     shape.stretch = xf.stretch;
                     shape.stretch_angle = xf.angle;
-                    shape.tint_opacity = glass.glass_density.map(|l| theme.glass_opacity(l));
+                    shape.tint_opacity = glass_tint_opacity(glass, theme);
                     shape.glow = lens_glow.unwrap_or(0.0);
                     stacks[depth].glass.push(GlassItem { level, fade: quantize_fade(fade), tint, shape });
                 }
@@ -2077,6 +2077,17 @@ fn transform_content(c: &mut Content<'_>, m: &Mark, xf: &PressXf) {
     }
 }
 
+/// The tint strength of a glass widget's shape: its own density if it has one, else the
+/// button strength for a button (a widget with an action) so a glass button is pure refractive
+/// glass without a grey plate (tinted primary buttons excepted), else `None` (the pass's level strength).
+fn glass_tint_opacity(widget: &Widget, theme: &Theme) -> Option<f32> {
+    widget.glass_density.map(|l| theme.glass_opacity(l)).or_else(|| {
+        // A tinted (primary) button keeps its level's strength: the colour is its point.
+        (widget.action.is_some() && matches!(widget.background, Background::Glass(_)))
+            .then(|| theme.glass_button_opacity())
+    })
+}
+
 fn quantize_fade(fade: f32) -> f32 {
     ((fade * GLASS_FADE_STEPS).round() / GLASS_FADE_STEPS).clamp(0.0, 1.0)
 }
@@ -2132,6 +2143,26 @@ mod tests {
         let mut ui = Ui::new(Theme::new(&axion_config::Config::default(), false), 1.0);
         ui.set_viewport(Vec2::new(800.0, 600.0), 1.0);
         ui
+    }
+
+    #[test]
+    fn glass_buttons_are_clear_glass_not_a_plate() {
+        let theme = Theme::new(&axion_config::Config::default(), false);
+        let panel = Widget::container().with_background(Background::Glass(GlassLevel::Thin));
+        let button =
+            Widget::container().with_action(ActionId(1)).with_background(Background::Glass(GlassLevel::Thin));
+        let primary = Widget::container()
+            .with_action(ActionId(1))
+            .with_background(Background::TintedGlass(GlassLevel::Thin, Paint::Accent));
+        // A panel keeps its level's strength, a glass button is far clearer, a primary button
+        // keeps its colour; none of them has a fill of its own.
+        assert_eq!(glass_tint_opacity(&panel, &theme), None);
+        let clear = glass_tint_opacity(&button, &theme).expect("button strength");
+        assert!(clear <= 0.1 && clear < theme.glass_opacity(GlassLevel::Thin) / 3.0);
+        assert_eq!(glass_tint_opacity(&primary, &theme), None);
+        for w in [&button, &primary] {
+            assert!(matches!(w.background, Background::Glass(_) | Background::TintedGlass(..)));
+        }
     }
 
     fn row(ui: &mut Ui) -> (NodeId, NodeId, NodeId) {

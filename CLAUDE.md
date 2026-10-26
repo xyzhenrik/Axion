@@ -109,6 +109,11 @@ Provide a "Reduce Transparency" / "Reduce Motion" setting that degrades graceful
   (hot reload in debug builds is still to do).
 - Every user-facing behaviour gets a config key in `axion-config` with a sensible default.
   Hard-coded magic numbers for timing, sizes or limits are a bug.
+- **Every glass button is pure refractive glass**: no grey/opaque plate, no `Background::Fill`/`Soft`
+  behind it. A glass widget with an action gets the `glass.button_opacity` tint automatically
+  (`glass_tint_opacity` in `axion-ui`); text-bearing panels keep their level's tint, primary buttons use
+  `TintedGlass`. Never add a fill to a glass button to make it "readable" — raise the tint through that
+  config key or the glass tint parameters instead.
 - Keybinds go through the keymap (`axion-config::keymap`), never matched directly in UI code.
 - Tests: unit tests next to the code; shields filter tests use fixture lists in `tests/fixtures/`.
 
