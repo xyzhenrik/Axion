@@ -950,6 +950,16 @@ pub struct Media {
     /// How long after the last resize step of the PiP window it snaps to the video's aspect
     /// (window managers resize in many small steps).
     pub pip_aspect_settle_seconds: f32,
+    /// Size of the PiP window's controls (buttons, icons and the progress bar), as a multiple
+    /// of the base size. Shrinks by itself in a small window so everything still fits.
+    pub pip_control_scale: f32,
+    /// Width (logical px) of the PiP window's edge band that resizes it. Controls stay clear
+    /// of it, so the progress bar can be grabbed right at the bottom.
+    pub pip_resize_border: f32,
+    /// The smallest size (logical px) of any PiP control, however small the window is.
+    pub pip_min_target: f32,
+    /// Narrowest the PiP window can be made (logical px).
+    pub pip_min_width: f32,
 }
 
 impl Media {
@@ -1002,6 +1012,10 @@ impl Default for Media {
             desktop_integration: true,
             pip_keep_aspect: true,
             pip_aspect_settle_seconds: 0.3,
+            pip_control_scale: 1.3,
+            pip_resize_border: 6.0,
+            pip_min_target: 36.0,
+            pip_min_width: 272.0,
         }
     }
 }

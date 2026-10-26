@@ -4,7 +4,7 @@
 //! black bars, shape, margin or transparency of ours. The window takes the video's aspect and
 //! snaps back to it after the user resizes it (`media.pip_keep_aspect`); while the aspects
 //! differ the video covers the window (a sliver cropped) rather than being letterboxed.
-//! Dragging the video moves the window, its edges resize it. Glass controls (close, back to
+//! Dragging the video moves the window, its thin edge band resizes it (never the controls: they keep clear of it). Glass controls (close, back to
 //! the tab, ±10 s, play/pause, progress) show while the pointer is over it (Safari, iPadOS 26).
 //!
 //! The picture is the video's tab's frame: cropped to the video while that tab is shown in the
@@ -42,13 +42,21 @@ const ACTION_BASE: u32 = 9700;
 /// The window's width (logical px); the height follows the video.
 const WIDTH: f32 = 480.0;
 const MAX_HEIGHT: f32 = 480.0;
-const MIN_WIDTH: f32 = 240.0;
-/// How close to the window's edge (logical px) a drag resizes instead of moving it: the
-/// window has no frame of its own to grab.
-const RESIZE_BORDER: f32 = 8.0;
-const BUTTON: f32 = 34.0;
-const PLAY: f32 = 50.0;
+/// After scrubbing, the player's reports still carry the old time for a moment; ignore them.
+const SCRUB_SETTLE: Duration = Duration::from_millis(600);
+
+/// Base sizes of the controls (logical px) at `media.pip_control_scale` 1; none gets smaller
+/// than `media.pip_min_target`.
+const TOP_BUTTON: f32 = 36.0;
 const SKIP: f32 = 40.0;
+const PLAY: f32 = 52.0;
+const BAR: f32 = 36.0;
+const CENTRE_GAP: f32 = 24.0;
+/// The glyph's share of its button.
+const ICON_RATIO: f32 = 0.5;
+/// The least space between two controls, and the space the controls keep to the resize band.
+const GAP_MIN: f32 = 12.0;
+const EDGE_CLEARANCE: f32 = 4.0;
 pub const TITLE: &str = "Axion - Picture in Picture";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,14 +98,16 @@ pub enum PipOutcome {
     BackToTab(ViewId),
 }
 
-fn circle(
-    ui: &mut Ui,
-    parent: NodeId,
-    control: PipControl,
-    icon: Icon,
-    side: f32,
-    text: Option<&str>,
-) -> NodeId {
+/// A control: a glass circle with its glyph (and the seconds inside the skip buttons). Placed
+/// and sized by [`layout`] afterwards.
+struct Button {
+    node: NodeId,
+    glyph: NodeId,
+    label: Option<NodeId>,
+}
+
+fn circle(ui: &mut Ui, parent: NodeId, control: PipControl, icon: Icon, text: Option<&str>) -> Button {
+    let side = TOP_BUTTON;
     let node = ui.add(
         parent,
         Widget::container()
@@ -107,6 +117,7 @@ fn circle(
             .pressed_whole()
             .without_hover_fill(),
         Style {
+            position: Position::Absolute,
             size: Size { width: length(side), height: length(side) },
             flex_shrink: 0.0,
             justify_content: JustifyContent::CENTER,
@@ -114,8 +125,9 @@ fn circle(
             ..Default::default()
         },
     );
-    let glyph_side = side * 0.5;
+    let glyph_side = side * ICON_RATIO;
     let glyph = ui.add(node, Widget::icon(icon, glyph_side).with_paint(Paint::Label), Style::default());
+    let mut label_node = None;
     if let Some(text) = text {
         let label = ui.add_label(
             node,
@@ -134,8 +146,145 @@ fn circle(
             },
         );
         ui.set_label_align(label, Align::Center);
+        label_node = Some(label);
     }
-    glyph
+    Button { node, glyph, label: label_node }
+}
+
+/// Where the controls go in a window of `size` (logical px): all in the same order as
+/// [`CONTROLS`], plus the progress bar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Layout {
+    buttons: [Frame; 5],
+    bar: Frame,
+    /// The control scale actually used (the configured one, shrunk to fit a small window).
+    scale: f32,
+}
+
+/// The sizes the controls are laid out with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Sizing {
+    scale: f32,
+    /// Width of the edge band that resizes the window.
+    border: f32,
+    /// No control is smaller than this.
+    min_target: f32,
+}
+
+impl Sizing {
+    fn new(config: &Config) -> Self {
+        let m = &config.media;
+        Self {
+            scale: m.pip_control_scale.max(0.1),
+            border: m.pip_resize_border.max(0.0),
+            min_target: m.pip_min_target.max(1.0),
+        }
+    }
+
+    /// How far the controls keep from the window's edges.
+    fn inset(&self) -> f32 {
+        self.border + EDGE_CLEARANCE
+    }
+
+    /// The shortest window the controls fit in, without overlapping each other.
+    fn min_height(&self) -> f32 {
+        2.0 * self.inset() + 3.0 * self.min_target + 2.0 * GAP_MIN
+    }
+
+    fn size(&self, base: f32, scale: f32) -> f32 {
+        (base * scale).max(self.min_target)
+    }
+}
+
+/// Close and "back to the tab" sit in the top corners; the progress bar is a glass bar along
+/// the bottom, as tall as a button and lifted clear of the resize band; skip, play and skip sit
+/// between them, centred in the window as far as the space allows. The control
+/// scale shrinks (to the minimum target) when the window is too small for the configured one.
+fn layout(window: Vec2, sizing: Sizing) -> Layout {
+    let inset = sizing.inset();
+    let fits = |s: f32| {
+        let vertical = 2.0 * inset
+            + sizing.size(TOP_BUTTON, s)
+            + sizing.size(BAR, s)
+            + sizing.min_target
+            + 2.0 * GAP_MIN;
+        let row = 2.0 * sizing.size(SKIP, s) + sizing.size(PLAY, s) + 2.0 * GAP_MIN;
+        vertical <= window.y && row <= window.x - 2.0 * inset
+    };
+    let mut scale = sizing.scale;
+    while scale > 0.1 && !fits(scale) {
+        scale -= 0.05;
+    }
+    let top = sizing.size(TOP_BUTTON, scale);
+    let bar_h = sizing.size(BAR, scale);
+    let band_top = inset + top + GAP_MIN;
+    let band_bottom = window.y - inset - bar_h - GAP_MIN;
+    let band = (band_bottom - band_top).max(sizing.min_target);
+    let skip = sizing.size(SKIP, scale).min(band);
+    let play = sizing.size(PLAY, scale).min(band);
+    let gap = ((window.x - 2.0 * inset - 2.0 * skip - play) / 2.0).min(CENTRE_GAP * scale).max(GAP_MIN);
+    let row = 2.0 * skip + play + 2.0 * gap;
+    let x0 = (window.x - row) / 2.0;
+    let play_y = (window.y / 2.0 - play / 2.0).clamp(band_top, (band_bottom - play).max(band_top));
+    let centre_y = play_y + play / 2.0;
+    let square = |x: f32, y: f32, side: f32| Frame { origin: Vec2::new(x, y), size: Vec2::splat(side) };
+    Layout {
+        buttons: [
+            square(inset, inset, top),
+            square(window.x - inset - top, inset, top),
+            square(x0, centre_y - skip / 2.0, skip),
+            square(x0 + skip + gap, play_y, play),
+            square(x0 + skip + gap + play + gap, centre_y - skip / 2.0, skip),
+        ],
+        bar: Frame {
+            origin: Vec2::new(inset, window.y - inset - bar_h),
+            size: Vec2::new((window.x - 2.0 * inset).max(1.0), bar_h),
+        },
+        scale,
+    }
+}
+
+impl Layout {
+    fn rects(&self) -> impl Iterator<Item = Frame> + '_ {
+        self.buttons.iter().copied().chain(std::iter::once(self.bar))
+    }
+}
+
+/// What a press at `p` in a window of `size` starts. Controls win over the resize band (they
+/// keep clear of it anyway); the band only resizes along the window's edges, and anything
+/// else moves the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Press {
+    Control,
+    Resize(ResizeDirection),
+    Move,
+}
+
+fn press_at(layout: &Layout, size: Vec2, border: f32, p: Vec2) -> Press {
+    if layout.rects().any(|r| r.contains(p)) {
+        return Press::Control;
+    }
+    match edge_at(size, border, p) {
+        Some(direction) => Press::Resize(direction),
+        None => Press::Move,
+    }
+}
+
+/// Which edge or corner of a window of `size` the point `p` (logical px) grabs, if any.
+fn edge_at(size: Vec2, border: f32, p: Vec2) -> Option<ResizeDirection> {
+    let (left, right) = (p.x < border, p.x > size.x - border);
+    let (top, bottom) = (p.y < border, p.y > size.y - border);
+    Some(match (left, right, top, bottom) {
+        (true, _, true, _) => ResizeDirection::NorthWest,
+        (_, true, true, _) => ResizeDirection::NorthEast,
+        (true, _, _, true) => ResizeDirection::SouthWest,
+        (_, true, _, true) => ResizeDirection::SouthEast,
+        (true, ..) => ResizeDirection::West,
+        (_, true, ..) => ResizeDirection::East,
+        (_, _, true, _) => ResizeDirection::North,
+        (_, _, _, true) => ResizeDirection::South,
+        _ => return None,
+    })
 }
 
 /// The OS window and its surface: only while PiP is on. Fields drop in order, so the surface
@@ -153,6 +302,7 @@ impl Output {
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
         size: LogicalSize<f32>,
+        min_size: LogicalSize<f32>,
     ) -> Result<Self> {
         let attributes = Window::default_attributes()
             .with_title(TITLE)
@@ -160,7 +310,7 @@ impl Output {
             .with_decorations(false)
             .with_resizable(true)
             .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_min_inner_size(LogicalSize::new(MIN_WIDTH, MIN_WIDTH * 9.0 / 16.0))
+            .with_min_inner_size(min_size)
             .with_inner_size(size);
         #[cfg(target_os = "linux")]
         let attributes = {
@@ -229,8 +379,21 @@ pub struct PipWindow {
     ui: Ui,
     picture: NodeId,
     controls: NodeId,
+    buttons: [Button; 5],
     play_icon: NodeId,
+    bar: NodeId,
     progress: NodeId,
+    /// The window size and control sizing the controls were last laid out for.
+    laid_out: Option<(Vec2, Sizing)>,
+    sizing: Sizing,
+    /// The narrowest window (logical px).
+    min_width: f32,
+    /// The controls' places, for hit-testing (valid once laid out).
+    layout: Option<Layout>,
+    /// The progress bar is being scrubbed, or was a moment ago.
+    scrubbed_at: Option<Instant>,
+    /// Presses and window-manager calls are simulated (capture aids): no real grab.
+    pub synthetic: bool,
     controls_opacity: Animated<f32>,
     hovered: bool,
     /// The pointer (logical px), for resizing at the edges.
@@ -281,41 +444,39 @@ impl PipWindow {
                 ..Default::default()
             },
         );
-        let top = ui.add(
+        let make = |ui: &mut Ui, control, icon, text| circle(ui, controls, control, icon, text);
+        let buttons = [
+            make(&mut ui, PipControl::Close, Icon::Close, None),
+            make(&mut ui, PipControl::BackToTab, Icon::PictureInPicture, None),
+            make(&mut ui, PipControl::SkipBack, Icon::SkipBack, Some("10")),
+            make(&mut ui, PipControl::PlayPause, Icon::Pause, None),
+            make(&mut ui, PipControl::SkipForward, Icon::SkipForward, Some("10")),
+        ];
+        let play_icon = buttons[3].glyph;
+        // The progress bar: a glass capsule as tall as a button around the slider, so the
+        // whole capsule is the thing to grab (not a thin line).
+        let bar = ui.add(
             controls,
-            Widget::container(),
+            Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(CAPSULE),
             Style {
                 position: Position::Absolute,
-                inset: Rect { left: length(10.0), right: length(10.0), top: length(10.0), bottom: auto() },
-                justify_content: JustifyContent::SPACE_BETWEEN,
                 flex_direction: FlexDirection::Row,
+                padding: Rect {
+                    left: length(16.0),
+                    right: length(16.0),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
                 ..Default::default()
             },
         );
-        circle(&mut ui, top, PipControl::Close, Icon::Close, BUTTON, None);
-        circle(&mut ui, top, PipControl::BackToTab, Icon::PictureInPicture, BUTTON, None);
-        let centre = ui.add(
-            controls,
-            Widget::container(),
-            Style {
-                size: Size { width: percent(1.0), height: percent(1.0) },
-                flex_direction: FlexDirection::Row,
-                justify_content: JustifyContent::CENTER,
-                align_items: AlignItems::CENTER,
-                gap: Size { width: length(26.0), height: length(0.0) },
-                ..Default::default()
-            },
-        );
-        circle(&mut ui, centre, PipControl::SkipBack, Icon::SkipBack, SKIP, Some("10"));
-        let play_icon = circle(&mut ui, centre, PipControl::PlayPause, Icon::Pause, PLAY, None);
-        circle(&mut ui, centre, PipControl::SkipForward, Icon::SkipForward, SKIP, Some("10"));
         let progress = ui.add(
-            controls,
+            bar,
             Widget::line_slider(0.0),
             Style {
-                position: Position::Absolute,
-                inset: Rect { left: length(16.0), right: length(16.0), top: auto(), bottom: length(10.0) },
-                size: Size { width: auto(), height: length(10.0) },
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                min_size: Size { width: length(20.0), height: auto() },
                 ..Default::default()
             },
         );
@@ -327,8 +488,16 @@ impl PipWindow {
             ui,
             picture,
             controls,
+            buttons,
             play_icon,
+            bar,
             progress,
+            laid_out: None,
+            sizing: Sizing::new(config),
+            min_width: config.media.pip_min_width,
+            layout: None,
+            scrubbed_at: None,
+            synthetic: false,
             controls_opacity: Animated::new(0.0, Spring::SNAPPY),
             hovered: false,
             pointer: None,
@@ -388,8 +557,10 @@ impl PipWindow {
                 Vec2::new(height * self.aspect, height)
             }
         };
+        let min =
+            LogicalSize::new(self.min_width, (self.min_width * 9.0 / 16.0).max(self.sizing.min_height()));
         let output =
-            Output::open(event_loop, instance, adapter, &self.device, LogicalSize::new(size.x, size.y))?;
+            Output::open(event_loop, instance, adapter, &self.device, LogicalSize::new(size.x, size.y), min)?;
         let format = output.config.format;
         if self.compositor.as_ref().is_none_or(|(_, f)| *f != format) {
             let compositor = Compositor::new(&self.device, &self.queue, format, &mut self.ui.fonts());
@@ -450,24 +621,48 @@ impl PipWindow {
 
     pub fn set_theme(&mut self, config: &Config) {
         self.ui.set_theme(Theme::new(config, true));
+        self.sizing = Sizing::new(config);
+        self.min_width = config.media.pip_min_width;
+        self.laid_out = None;
     }
 
-    /// Which edge or corner of the window `p` (logical px) grabs, if any.
-    fn edge_at(&self, p: Vec2) -> Option<ResizeDirection> {
+    /// Places and sizes the controls for the window's size (when it or the sizing changed).
+    fn apply_layout(&mut self) {
+        let Some(output) = &self.output else { return };
+        let size = output.logical_size();
+        if self.laid_out == Some((size, self.sizing)) {
+            return;
+        }
+        self.laid_out = Some((size, self.sizing));
+        let l = layout(size, self.sizing);
+        self.layout = Some(l);
+        let place = |ui: &mut Ui, node: NodeId, r: Frame| {
+            let mut style = ui.style(node);
+            style.position = Position::Absolute;
+            style.inset =
+                Rect { left: length(r.origin.x), top: length(r.origin.y), right: auto(), bottom: auto() };
+            style.size = Size { width: length(r.size.x), height: length(r.size.y) };
+            ui.set_style(node, style);
+        };
+        for (button, rect) in self.buttons.iter().zip(l.buttons) {
+            place(&mut self.ui, button.node, rect);
+            let glyph = rect.size.x * ICON_RATIO;
+            self.ui.set_icon_size(button.glyph, glyph);
+            if let Some(label) = button.label {
+                let mut style = self.ui.style(label);
+                style.size = Size { width: length(glyph), height: length(glyph) };
+                style.margin.left = length(-glyph);
+                self.ui.set_style(label, style);
+            }
+        }
+        place(&mut self.ui, self.bar, l.bar);
+    }
+
+    /// What a press at `p` (logical px) starts.
+    fn press_at(&self, p: Vec2) -> Option<Press> {
         let size = self.output.as_ref()?.logical_size();
-        let (left, right) = (p.x < RESIZE_BORDER, p.x > size.x - RESIZE_BORDER);
-        let (top, bottom) = (p.y < RESIZE_BORDER, p.y > size.y - RESIZE_BORDER);
-        Some(match (left, right, top, bottom) {
-            (true, _, true, _) => ResizeDirection::NorthWest,
-            (_, true, true, _) => ResizeDirection::NorthEast,
-            (true, _, _, true) => ResizeDirection::SouthWest,
-            (_, true, _, true) => ResizeDirection::SouthEast,
-            (true, ..) => ResizeDirection::West,
-            (_, true, ..) => ResizeDirection::East,
-            (_, _, true, _) => ResizeDirection::North,
-            (_, _, _, true) => ResizeDirection::South,
-            _ => return None,
-        })
+        let layout = self.layout?;
+        Some(press_at(&layout, size, self.sizing.border, p))
     }
 
     /// Input for the PiP window. Dragging the edges resizes it, anywhere else but on a button
@@ -486,59 +681,103 @@ impl PipWindow {
             }
             WindowEvent::CursorEntered { .. } => self.hovered = true,
             WindowEvent::CursorLeft { .. } => {
-                self.hovered = false;
-                self.pointer = None;
-                self.ui.handle(UiInput::PointerLeave);
+                // A slider being scrubbed keeps the pointer even outside the window.
+                if self.ui.dragging().is_none() {
+                    self.hovered = false;
+                    self.pointer = None;
+                    self.ui.handle(UiInput::PointerLeave);
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.hovered = true;
-                let output = self.output.as_ref()?;
-                let p = Vec2::new(position.x as f32, position.y as f32) / output.scale();
-                self.pointer = Some(p);
-                self.ui.handle(UiInput::PointerMove(p));
-                let cursor = match self.edge_at(p) {
-                    Some(ResizeDirection::NorthWest | ResizeDirection::SouthEast) => CursorIcon::NwseResize,
-                    Some(ResizeDirection::NorthEast | ResizeDirection::SouthWest) => CursorIcon::NeswResize,
-                    Some(ResizeDirection::West | ResizeDirection::East) => CursorIcon::EwResize,
-                    Some(ResizeDirection::North | ResizeDirection::South) => CursorIcon::NsResize,
-                    None => CursorIcon::Default,
-                };
-                if let Some(output) = &self.output {
-                    output.window.set_cursor(cursor);
-                }
+                let scale = self.output.as_ref()?.scale();
+                return self.pointer_moved(Vec2::new(position.x as f32, position.y as f32) / scale, config);
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
-                if state == ElementState::Pressed {
-                    let window = self.output.as_ref()?.window.clone();
-                    if let Some(direction) = self.pointer.and_then(|p| self.edge_at(p)) {
-                        // The window manager resizes it (there is no frame of its own to grab).
-                        if let Err(e) = window.drag_resize_window(direction) {
-                            tracing::debug!("PiP window resize: {e}");
-                        }
-                        return None;
-                    }
-                    let (consumed, _) = self.ui.handle(UiInput::PointerDown);
-                    if (!consumed || self.ui.pressed_action().is_none())
-                        && let Err(e) = window.drag_window()
-                    {
-                        // Not on a button: the window follows the pointer (the window manager
-                        // moves it, so it can go anywhere on the screen).
-                        tracing::debug!("PiP window move: {e}");
-                    }
-                } else {
-                    let (_, events) = self.ui.handle(UiInput::PointerUp);
-                    for event in events {
-                        if let UiEvent::Clicked { action, .. } = event
-                            && let Some(control) = PipControl::from_id(action)
-                        {
-                            return self.click(control, config);
-                        }
-                    }
-                }
+                return self.button(state == ElementState::Pressed, config);
             }
             _ => {}
         }
         None
+    }
+
+    /// The pointer moved to `p` (logical px): hover, the resize cursor, a scrub in progress.
+    pub fn pointer_moved(&mut self, p: Vec2, config: &Config) -> Option<PipOutcome> {
+        self.hovered = true;
+        let output = self.output.as_ref()?;
+        self.pointer = Some(p);
+        let (_, events) = self.ui.handle(UiInput::PointerMove(p));
+        let cursor = match self.press_at(p).filter(|_| self.ui.dragging().is_none()) {
+            Some(Press::Resize(ResizeDirection::NorthWest | ResizeDirection::SouthEast)) => {
+                CursorIcon::NwseResize
+            }
+            Some(Press::Resize(ResizeDirection::NorthEast | ResizeDirection::SouthWest)) => {
+                CursorIcon::NeswResize
+            }
+            Some(Press::Resize(ResizeDirection::West | ResizeDirection::East)) => CursorIcon::EwResize,
+            Some(Press::Resize(ResizeDirection::North | ResizeDirection::South)) => CursorIcon::NsResize,
+            _ => CursorIcon::Default,
+        };
+        output.window.set_cursor(cursor);
+        self.outcome_of(events, config)
+    }
+
+    /// The left button went down or up at the pointer.
+    pub fn button(&mut self, pressed: bool, config: &Config) -> Option<PipOutcome> {
+        if pressed {
+            let window = self.output.as_ref()?.window.clone();
+            let press = self.pointer.and_then(|p| self.press_at(p)).unwrap_or(Press::Move);
+            if let Press::Resize(direction) = press {
+                // The window manager resizes it (there is no frame of its own to grab).
+                // Only in the narrow edge band: the controls never reach it.
+                if !self.synthetic
+                    && let Err(e) = window.drag_resize_window(direction)
+                {
+                    tracing::debug!("PiP window resize: {e}");
+                }
+                return None;
+            }
+            let (_, events) = self.ui.handle(UiInput::PointerDown);
+            // A button or the progress bar took the press: it never moves the window.
+            let on_control = self.ui.pressed_action().is_some() || self.ui.dragging().is_some();
+            if !on_control
+                && !self.synthetic
+                && let Err(e) = window.drag_window()
+            {
+                // Not on a control: the window follows the pointer (the window manager
+                // moves it, so it can go anywhere on the screen).
+                tracing::debug!("PiP window move: {e}");
+            }
+            return self.outcome_of(events, config);
+        }
+        let (_, events) = self.ui.handle(UiInput::PointerUp);
+        self.outcome_of(events, config)
+    }
+
+    /// What the browser should do after these UI events: a click on a control, or the
+    /// progress bar seeking (live while it is dragged).
+    fn outcome_of(&mut self, events: Vec<UiEvent>, config: &Config) -> Option<PipOutcome> {
+        let mut seek = None;
+        for event in events {
+            match event {
+                UiEvent::Clicked { action, .. } => {
+                    if let Some(control) = PipControl::from_id(action) {
+                        return self.click(control, config);
+                    }
+                }
+                UiEvent::ValueChanged { node, value } if node == self.progress => seek = Some(value),
+                _ => {}
+            }
+        }
+        let value = seek?;
+        let (view, player) = (self.view?, self.player.clone()?);
+        if player.duration <= 0.0 {
+            return None;
+        }
+        self.scrubbed_at = Some(Instant::now());
+        Some(PipOutcome::Command(
+            view,
+            Command::new(&player.id, Action::Seek(f64::from(value) * player.duration)),
+        ))
     }
 
     pub fn click(&mut self, control: PipControl, config: &Config) -> Option<PipOutcome> {
@@ -590,7 +829,10 @@ impl PipWindow {
         }
         if let Some(player) = &self.player {
             self.ui.set_icon(self.play_icon, if player.is_playing() { Icon::Pause } else { Icon::Play });
-            if player.duration > 0.0 {
+            // Not while the user scrubs (or a moment after): the reports still carry the old time.
+            let scrubbing = self.ui.dragging() == Some(self.progress)
+                || self.scrubbed_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
+            if !scrubbing && player.duration > 0.0 {
                 self.ui.set_value(self.progress, (player.time / player.duration) as f32);
             }
         }
@@ -599,6 +841,7 @@ impl PipWindow {
         self.controls_opacity.step(dt);
         self.ui.set_opacity(self.controls, self.controls_opacity.value.clamp(0.0, 1.0));
         self.ui.set_visible(self.controls, self.controls_opacity.value > 0.01);
+        self.apply_layout();
         self.ui.animate(dt);
         self.ui.layout();
 
@@ -761,6 +1004,85 @@ mod tests {
         assert_eq!(aspect_size(Vec2::new(490.0, 360.0), start, 16.0 / 9.0), Vec2::new(640.0, 360.0));
         // A new video's aspect, same size: the width stays.
         assert_eq!(aspect_size(start, start, 4.0 / 3.0), Vec2::new(480.0, 360.0));
+    }
+
+    fn sizing() -> Sizing {
+        Sizing::new(&Config::default())
+    }
+
+    /// The smallest and the default window, and a few other shapes.
+    const WINDOWS: [(f32, f32); 6] =
+        [(272.0, 153.0), (272.0, 204.0), (320.0, 180.0), (480.0, 270.0), (480.0, 480.0), (640.0, 360.0)];
+
+    #[test]
+    fn controls_are_big_enough_and_clear_of_the_resize_band() {
+        let z = sizing();
+        for (w, h) in WINDOWS {
+            let size = Vec2::new(w, h);
+            let l = layout(size, z);
+            for r in l.rects() {
+                assert!(r.size.x >= z.min_target && r.size.y >= z.min_target, "{w}x{h}: {r:?} too small");
+                assert!(r.origin.x >= z.border && r.origin.y >= z.border, "{w}x{h}: {r:?} in the band");
+                assert!(
+                    r.origin.x + r.size.x <= w - z.border && r.origin.y + r.size.y <= h - z.border,
+                    "{w}x{h}: {r:?} in the band"
+                );
+            }
+            // No two controls overlap.
+            let all: Vec<Frame> = l.rects().collect();
+            for (i, a) in all.iter().enumerate() {
+                for b in &all[i + 1..] {
+                    let apart = a.origin.x + a.size.x <= b.origin.x
+                        || b.origin.x + b.size.x <= a.origin.x
+                        || a.origin.y + a.size.y <= b.origin.y
+                        || b.origin.y + b.size.y <= a.origin.y;
+                    assert!(apart, "{w}x{h}: {a:?} overlaps {b:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_minimum_window_fits_the_controls() {
+        let z = sizing();
+        let c = Config::default().media;
+        assert!(c.pip_min_width * 9.0 / 16.0 >= z.min_height() - 1.0, "min height {}", z.min_height());
+        // Default size: larger than the base sizes.
+        assert!(layout(Vec2::new(480.0, 270.0), z).scale > 1.2);
+    }
+
+    #[test]
+    fn controls_win_over_the_resize_band() {
+        let z = sizing();
+        let size = Vec2::new(480.0, 270.0);
+        let l = layout(size, z);
+        // The middle of the progress bar and of its bottom, just above the band: the bar.
+        let bar = l.bar;
+        let bottom = Vec2::new(bar.origin.x + bar.size.x / 2.0, bar.origin.y + bar.size.y - 1.0);
+        assert_eq!(press_at(&l, size, z.border, bottom), Press::Control);
+        assert!(bottom.y < size.y - z.border);
+        // Every control's centre and corners (inside) are controls.
+        for r in l.rects() {
+            for p in
+                [r.origin + r.size / 2.0, r.origin + Vec2::splat(1.0), r.origin + r.size - Vec2::splat(1.0)]
+            {
+                assert_eq!(press_at(&l, size, z.border, p), Press::Control);
+            }
+        }
+        // The band still resizes, corners too; the open video moves the window.
+        assert_eq!(
+            press_at(&l, size, z.border, Vec2::new(240.0, size.y - 1.0)),
+            Press::Resize(ResizeDirection::South)
+        );
+        assert_eq!(
+            press_at(&l, size, z.border, Vec2::new(1.0, 1.0)),
+            Press::Resize(ResizeDirection::NorthWest)
+        );
+        assert_eq!(
+            press_at(&l, size, z.border, Vec2::new(size.x - 1.0, size.y - 1.0)),
+            Press::Resize(ResizeDirection::SouthEast)
+        );
+        assert_eq!(press_at(&l, size, z.border, Vec2::new(240.0, 80.0)), Press::Move);
     }
 
     #[test]

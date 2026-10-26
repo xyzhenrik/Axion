@@ -4356,6 +4356,24 @@ impl Browser {
                         pip.request_size(winit::dpi::LogicalSize::new(w, h), &self.config);
                     }
                 }
+                // Capture aids: the pointer in the PiP window (logical px) as a user drags: move
+                // to "pip-move:X:Y", press "pip-press" there, let go with "pip-release". No
+                // window-manager grab is started.
+                pointer if pointer.starts_with("pip-move:") => {
+                    let n: Vec<f32> = pointer.split(':').skip(1).filter_map(|v| v.parse().ok()).collect();
+                    if let ([x, y], Some(pip)) = (&n[..], &mut self.pip) {
+                        pip.synthetic = true;
+                        let outcome = pip.pointer_moved(Vec2::new(*x, *y), &self.config);
+                        self.pip_outcome(outcome);
+                    }
+                }
+                "pip-press" | "pip-release" => {
+                    if let Some(pip) = &mut self.pip {
+                        pip.synthetic = true;
+                        let outcome = pip.button(what == "pip-press", &self.config);
+                        self.pip_outcome(outcome);
+                    }
+                }
                 // Capture aid: start Picture in Picture for the page's main video.
                 "player-pip" => {
                     let target = self

@@ -1140,6 +1140,17 @@ impl Ui {
         }
     }
 
+    /// Resizes an icon widget's glyph (logical px).
+    pub fn set_icon_size(&mut self, node: NodeId, side: f32) {
+        if let Some(WidgetKind::Icon { size, .. }) = self.tree.get_node_context_mut(node).map(|w| &mut w.kind)
+            && (*size - side).abs() > f32::EPSILON
+        {
+            *size = side;
+            let _ = self.tree.mark_dirty(node);
+            self.needs_layout = true;
+        }
+    }
+
     /// The slider being dragged, if any.
     pub fn dragging(&self) -> Option<NodeId> {
         self.dragging
