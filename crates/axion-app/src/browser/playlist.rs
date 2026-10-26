@@ -145,7 +145,7 @@ fn item_detail(item: &PlaylistItem, progress: Option<Option<f32>>) -> String {
         (dl::DOWNLOADING | dl::QUEUED, _) => parts.push("Downloading".to_owned()),
         (dl::DONE, _) => parts.push(downloads::human_size(item.dl_size)),
         (dl::FAILED, _) => parts.push("Download failed".to_owned()),
-        (dl::STREAMING, _) => parts.push("Streaming only".to_owned()),
+        (dl::STREAMING, _) => parts.push(playlist::STATE_NOT_DOWNLOADED.to_owned()),
         _ => {}
     }
     if item.watched {
@@ -168,6 +168,23 @@ impl Browser {
 
     /// Reads the list from the profile (once the store is open).
     pub(super) fn playlist_start(&mut self) {
+        self.playlist.reload(self.store.as_ref(), &self.config);
+    }
+
+    /// Renames the list (Settings › Media › Playlist): its items move along with the name.
+    pub(super) fn rename_playlist(&mut self, name: &str) {
+        let name: String = name.trim().chars().take(self.config.playlist.max_title_chars as usize).collect();
+        let old = self.config.playlist.list_name.clone();
+        if name.is_empty() || name == old {
+            return;
+        }
+        if let Some(store) = &self.store
+            && let Err(e) = store.rename_playlist(&old, &name)
+        {
+            tracing::warn!("renaming the Playlist failed: {e}");
+            return;
+        }
+        self.config.playlist.list_name = name;
         self.playlist.reload(self.store.as_ref(), &self.config);
     }
 
@@ -554,7 +571,7 @@ impl Browser {
             DownloadPlan::Unavailable(note) => {
                 self.set_item_download(id, dl::STREAMING, "", 0, &note);
                 if announce {
-                    self.show_toast(Icon::Playlist, "Streaming only — can’t be downloaded");
+                    self.show_toast(Icon::Playlist, playlist::DOWNLOAD_UNAVAILABLE_TOAST);
                 }
             }
             DownloadPlan::Start(url) => {
@@ -721,6 +738,7 @@ impl Browser {
         self.playlist_ui.inset = inset;
         self.playlist_ui.page.open(&mut self.ui, &self.config, rect, inset);
         self.chrome.set_playlist_page(&mut self.ui, &self.config, true);
+        self.tabs_changed = true;
         self.order_lock_planes(self.is_locked());
         // The page below rests while the Playlist covers it.
         if let Some(view) = self.active_view() {
@@ -740,6 +758,7 @@ impl Browser {
         self.stop_playlist_playback(true);
         self.playlist_ui.page.close(&mut self.ui, &self.config);
         self.chrome.set_playlist_page(&mut self.ui, &self.config, false);
+        self.tabs_changed = true;
         self.order_lock_planes(self.is_locked());
         if let Some(view) = self.playlist_ui.resting.take()
             && Some(view) == self.active_view()
@@ -1114,7 +1133,8 @@ impl Browser {
                 );
                 item.checked = true;
                 let window = self.logical_size();
-                self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, vec![item]);
+                let at = self.playlist_ui.page.menu_at(&self.ui, PageAction::ListMenu);
+                self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, vec![item], at);
             }
             PageAction::Edit => {
                 self.playlist.editing = !self.playlist.editing;
@@ -1175,7 +1195,8 @@ impl Browser {
                     })
                     .collect();
                 let window = self.logical_size();
-                self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items);
+                let at = self.playlist_ui.page.menu_at(&self.ui, PageAction::Speed);
+                self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items, at);
             }
             PageAction::Sleep => {
                 let anchor = self.playlist_ui.page.frame_of(&self.ui, PageAction::Sleep);
@@ -1195,7 +1216,8 @@ impl Browser {
                 end.checked = sleep == Sleep::EndOfVideo;
                 items.push(end);
                 let window = self.logical_size();
-                self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items);
+                let at = self.playlist_ui.page.menu_at(&self.ui, PageAction::Sleep);
+                self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items, at);
             }
             PageAction::SelectAll => {
                 if self.playlist.selected.len() == ids.len() {
@@ -1245,7 +1267,7 @@ impl Browser {
             PageAction::RowMenu(i) => {
                 if let (Some(&id), Some(anchor)) = (ids.get(i), self.playlist_ui.page.row_frame(&self.ui, i))
                 {
-                    self.open_row_menu(id, anchor);
+                    self.open_row_menu(id, i, anchor);
                 }
             }
         }
@@ -1258,7 +1280,7 @@ impl Browser {
         self.playlist.dirty = true;
     }
 
-    fn open_row_menu(&mut self, id: i64, row: Rect) {
+    fn open_row_menu(&mut self, id: i64, index: usize, row: Rect) {
         let Some(item) = self.playlist.item(id) else { return };
         let item = item.clone();
         let mut items = vec![MenuItem::new(Icon::Play, "Play", MenuAction::Playlist(Command::Play(id)))];
@@ -1279,17 +1301,17 @@ impl Browser {
             DownloadPlan::Start(_) => {
                 items.push(MenuItem::new(
                     Icon::Download,
-                    "Download",
+                    playlist::DOWNLOAD_ACTION,
                     MenuAction::Playlist(Command::Download(id)),
                 ));
             }
             _ => {
                 let mut stream = MenuItem::new(
                     Icon::Download,
-                    "Streaming only",
+                    playlist::DOWNLOAD_ACTION,
                     MenuAction::Playlist(Command::Download(id)),
                 );
-                stream.detail = Some("can’t download".to_owned());
+                stream.detail = Some(playlist::DOWNLOAD_UNAVAILABLE_DETAIL.to_owned());
                 items.push(stream);
             }
         }
@@ -1297,13 +1319,9 @@ impl Browser {
             MenuItem::new(Icon::Globe, "Open Page", MenuAction::Playlist(Command::OpenPage(id))).separated(),
         );
         items.push(MenuItem::new(Icon::Close, "Remove", MenuAction::Playlist(Command::Remove(id))));
-        // Opens beside the "…" button, at the row's right edge.
-        let anchor = Rect {
-            origin: Vec2::new(row.origin.x + row.size.x - 40.0, row.origin.y),
-            size: Vec2::new(40.0, row.size.y),
-        };
         let window = self.logical_size();
-        self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items);
+        let at = self.playlist_ui.page.row_menu_at(&self.ui, index);
+        self.playlist_ui.page.open_menu(&mut self.ui, &self.config, row, window, items, at);
     }
 
     /// A choice in one of the Playlist's menus.

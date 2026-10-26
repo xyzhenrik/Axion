@@ -760,6 +760,8 @@ pub struct SettingsSheet {
     key_query: String,
     /// The "add a trusted player site" field (Media page).
     trusted_site: Option<NodeId>,
+    /// The Playlist's list name field (Media page).
+    playlist_name: Option<NodeId>,
     /// The account password fields (current, new, confirm) where shown.
     password_fields: Option<PasswordFields>,
     account_name: Option<NodeId>,
@@ -951,6 +953,7 @@ impl SettingsSheet {
             controls: Vec::new(),
             values: Vec::new(),
             homepage: None,
+            playlist_name: None,
             key_search: None,
             key_list: None,
             key_query: String::new(),
@@ -1046,6 +1049,10 @@ impl SettingsSheet {
     /// The Keyboard page's shortcut filter field (while that page is shown).
     pub fn key_search_field(&self) -> Option<NodeId> {
         self.key_search
+    }
+
+    pub fn playlist_name_field(&self) -> Option<NodeId> {
+        self.playlist_name
     }
 
     pub fn homepage_field(&self) -> Option<NodeId> {
@@ -1198,6 +1205,7 @@ impl SettingsSheet {
         self.key_search = None;
         self.key_list = None;
         self.trusted_site = None;
+        self.playlist_name = None;
         self.password_fields = None;
         self.account_name = None;
         self.passwords_file = None;
@@ -1410,6 +1418,26 @@ impl SettingsSheet {
                 ] {
                     self.control(ui, config, setting);
                 }
+                let row_node = self.row(ui, "Playlist name");
+                let field_box = ui.add(
+                    row_node,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Label, 0.06))
+                        .with_radius(12.0),
+                    Style {
+                        size: Size { width: auto(), height: length(38.0) },
+                        padding: padding(12.0, 0.0),
+                        ..row(0.0)
+                    },
+                );
+                let field = ui.add_text_field(
+                    field_box,
+                    "Play Later",
+                    TextStyle::Body,
+                    Style { size: Size { width: length(220.0), height: length(22.0) }, ..Default::default() },
+                );
+                ui.set_field_text(field, &config.playlist.list_name);
+                self.playlist_name = Some(field);
                 let folder = crate::downloads::display_path(&crate::playlist::download_directory(config));
                 let row_node = self.row(ui, "Playlist downloads");
                 let label = ui.add_label(row_node, &folder, TextStyle::Callout, Style::default());

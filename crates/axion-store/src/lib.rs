@@ -486,6 +486,12 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Renames a list: its items move to `to` (merging with one of that name).
+    pub fn rename_playlist(&self, from: &str, to: &str) -> Result<()> {
+        self.conn.execute("UPDATE playlist SET list = ?2 WHERE list = ?1", rusqlite::params![from, to])?;
+        Ok(())
+    }
+
     /// The names of the lists that have items.
     pub fn playlist_lists(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare_cached("SELECT DISTINCT list FROM playlist ORDER BY list")?;
@@ -1130,6 +1136,9 @@ mod tests {
         s.move_playlist_item(a, true).unwrap();
         let ids: Vec<i64> = s.playlist_items("Play Later").unwrap().iter().map(|i| i.id).collect();
         assert_eq!(ids, [a, b]);
+        s.rename_playlist("Play Later", "Weekend").unwrap();
+        assert_eq!(s.playlist_items("Weekend").unwrap().len(), 2);
+        assert!(s.playlist_items("Play Later").unwrap().is_empty());
     }
 
     #[test]

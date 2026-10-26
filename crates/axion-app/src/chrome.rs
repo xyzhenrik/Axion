@@ -452,6 +452,8 @@ pub struct Chrome {
     actions: NodeId,
     /// The Playlist page is up: the toolbar shows only the sidebar button.
     playlist_page: bool,
+    /// The sidebar's Playlist row, which holds the selection highlight while the page is up.
+    playlist_row: Option<NodeId>,
     progress: NodeId,
     /// Inactive tab segments, rebuilt by `sync_tabs`.
     pills: Vec<NodeId>,
@@ -839,7 +841,9 @@ impl Chrome {
         sidebar_row(ui, saved_list, ChromeAction::Bookmarks, Icon::Book, "Bookmarks", None);
         sidebar_row(ui, saved_list, ChromeAction::ReadingList, Icon::Glasses, "Reading List", None);
         sidebar_row(ui, saved_list, ChromeAction::History, Icon::History, "History", None);
-        sidebar_row(ui, saved_list, ChromeAction::Playlist, Icon::Playlist, "Playlist", None);
+        let (playlist_label, _) =
+            sidebar_row(ui, saved_list, ChromeAction::Playlist, Icon::Playlist, "Playlist", None);
+        let playlist_row = ui.parent(playlist_label);
         sidebar_row(ui, saved_list, ChromeAction::Downloads, Icon::Download, "Downloads", None);
         sidebar_row(ui, saved_list, ChromeAction::Passwords, Icon::Key, "Passwords", None);
 
@@ -1322,6 +1326,7 @@ impl Chrome {
             playlist_icon,
             actions,
             playlist_page: false,
+            playlist_row,
             progress,
             pills: Vec::new(),
             overview,
@@ -2154,7 +2159,19 @@ impl Chrome {
             return;
         }
         self.playlist_page = on;
+        self.mark_playlist_row(ui);
         self.apply_layout(ui, config, self.window);
+    }
+
+    /// The selection highlight (the thin glass capsule) sits on the Playlist row while its
+    /// page is up; the tab rows give theirs up (`sync_tabs`).
+    fn mark_playlist_row(&mut self, ui: &mut Ui) {
+        if let Some(row) = self.playlist_row
+            && let Some(w) = ui.widget_mut(row)
+        {
+            w.background =
+                if self.playlist_page { Background::Glass(GlassLevel::Thin) } else { Background::None };
+        }
     }
 
     /// The Playlist button of the address field: hidden (`None`), or add (`Some(false)`) /
@@ -2491,7 +2508,8 @@ impl Chrome {
             if hide_current {
                 break;
             }
-            let active = i == tabs.active_index();
+            // While the Playlist page is up, the highlight is on its row instead.
+            let active = i == tabs.active_index() && !self.playlist_page;
             let node =
                 sidebar_tab_row(ui, self.sidebar_tabs, tab, active, ChromeAction::SelectTab(i), favicons);
             self.items.push(TabItem { node, view: tab.view, private, index: i, surface: Surface::Sidebar });

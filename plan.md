@@ -138,8 +138,8 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   `playlist.directory` or "Axion Playlist" in the download folder, no save dialog) and the
   Downloads list; Shields' request policy is asked first (blocked = failed with a note).
   Plain files (mp4/webm/audio…) download with progress in the row; **HLS / DASH / `blob:`
-  streams are "streaming only"** with a stated reason (row, popover, menu) — never a silent
-  failure. Removing an item deletes its downloaded file (`playlist.delete_files_on_remove`,
+  streams can't be fetched** (the row says "Not downloaded"; the *Download* action says why on click) — never a silent
+  failure. The wording lives in `playlist.rs` (`DOWNLOAD_ACTION` …). Removing an item deletes its downloaded file (`playlist.delete_files_on_remove`,
   never a file that was the user's own `file://` video); "Remove Download" keeps the item.
 - **The page** (native Axion UI, not an `axion://` page; `playlist_page.rs`): it fills the
   window to the right of the sidebar, the toolbar/address/tab row are hidden (the locked-private
@@ -147,7 +147,7 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   lists the videos: round play-all, list name with a menu chevron, "N items 17h 17min", *Edit*
   (select, remove, download, move up/down), rows with a rounded thumbnail (download / watched
   badges), up to three title lines, length and state, a "…" menu (Play, Download / Remove
-  Download / Streaming only, Show in Folder, Open Page, Remove) and the playing row highlighted.
+  Download, Show in Folder, Open Page, Remove) and the playing row highlighted.
   The right side is the player: PiP, an expanding glass search field (filters live) and ×
   (Esc closes) on top, the video area (black, rounded), title, progress with elapsed/remaining,
   shuffle / previous / play / next / repeat (off, all, one), speed menu, sleep timer menu
@@ -161,7 +161,9 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   tabs showing a saved video (page or downloaded file) save their position too. Fullscreen and
   PiP hand the video over to a tab (Axion's fullscreen player / PiP window belong to tabs), at
   the same position.
-- Settings › Media › Playlist: button on/off, auto-download, delete files on remove, folder.
+- Settings › Media › Playlist: button on/off, auto-download, delete files on remove, list name
+  (renaming moves the items), folder. While the page is open the sidebar's selection highlight
+  sits on the *Playlist* row; its menus grow out of their buttons (`Placement::Over` / `OverCentered`).
 
 ### 2.8 Customization
 - Settings UI (glass sheet) + `~/.config/axion/config.toml`, live-reloaded.

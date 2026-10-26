@@ -86,6 +86,10 @@ pub enum Placement {
     /// sidebar, whose glass is another material than the menu's and so can't be bridged to
     /// it). It grows upward from the button's bottom edge when it doesn't fit below.
     Over,
+    /// Like `Over`, but centred on the anchor's centre line (not left-aligned) and always
+    /// growing upward from the anchor's bottom edge: for a button under a row of controls
+    /// (the Playlist's sleep timer under the play button).
+    OverCentered,
 }
 
 /// A compact button in a row of buttons (the zoom submenu's − 100% +).
@@ -328,7 +332,7 @@ impl Menu {
         let width = match self.placement {
             Placement::Below | Placement::BelowStart => WIDTH,
             // As wide as the row it covers, so none of the row pokes out at the sides.
-            Placement::Over => anchor.size.x.max(WIDTH),
+            Placement::Over | Placement::OverCentered => anchor.size.x.max(WIDTH),
             Placement::Above => anchor.size.x.max(WIDTH * 0.75),
         };
         let max_left = (window.x - width - WINDOW_MARGIN).max(WINDOW_MARGIN);
@@ -362,6 +366,13 @@ impl Menu {
                 } else {
                     bottom_up
                 };
+                Frame::new(left, top, width, height)
+            }
+            Placement::OverCentered => {
+                let left =
+                    (anchor.origin.x + anchor.size.x / 2.0 - width / 2.0).clamp(WINDOW_MARGIN, max_left);
+                let top = (anchor.origin.y + anchor.size.y - height)
+                    .clamp(WINDOW_MARGIN, (window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN));
                 Frame::new(left, top, width, height)
             }
             Placement::Above => {

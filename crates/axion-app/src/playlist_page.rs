@@ -313,7 +313,8 @@ pub struct PlaylistPage {
     delete_label: NodeId,
     viewport: NodeId,
     list: NodeId,
-    empty: NodeId,
+    /// The list has no items: the video area says "No Videos".
+    list_empty: bool,
     search_box: NodeId,
     search_field: NodeId,
     search_width: Animated<f32>,
@@ -464,34 +465,6 @@ impl PlaylistPage {
                 ..column(2.0)
             },
         );
-        let empty = ui.add(
-            viewport,
-            Widget::container(),
-            Style {
-                position: Position::Absolute,
-                inset: Rect { left: length(PAD), right: length(PAD), top: length(40.0), bottom: auto() },
-                align_items: AlignItems::CENTER,
-                ..column(10.0)
-            },
-        );
-        ui.add(empty, Widget::icon(Icon::Playlist, 34.0).with_paint(Paint::Secondary), Style::default());
-        let title = ui.add_label(empty, "No videos yet", TextStyle::BodyEmphasis, Style::default());
-        let _ = title;
-        let hint = ui.add_label(
-            empty,
-            "On a page with a video, press the Playlist button",
-            TextStyle::Footnote,
-            Style::default(),
-        );
-        secondary(ui, hint);
-        let hint2 = ui.add_label(
-            empty,
-            "in the address field to save it here.",
-            TextStyle::Footnote,
-            Style::default(),
-        );
-        secondary(ui, hint2);
-        ui.set_visible(empty, false);
 
         // ---- the player column ----
         let player_col = ui.add(
@@ -664,8 +637,28 @@ impl PlaylistPage {
                 ..row(0.0)
             },
         );
+        // Three equal slots, so the sleep button sits exactly under the play button whatever
+        // the speed button's width is.
+        let slot = |ui: &mut Ui, justify: JustifyContent| {
+            ui.add(
+                bottom,
+                Widget::container(),
+                Style {
+                    flex_grow: 1.0,
+                    flex_basis: length(0.0),
+                    size: Size { width: auto(), height: length(BOTTOM_BUTTON) },
+                    justify_content: justify,
+                    ..row(0.0)
+                },
+            )
+        };
+        let (left_slot, middle_slot, right_slot) = (
+            slot(ui, JustifyContent::START),
+            slot(ui, JustifyContent::CENTER),
+            slot(ui, JustifyContent::END),
+        );
         let speed = ui.add(
-            bottom,
+            left_slot,
             Widget::container()
                 .with_action(PageAction::Speed.id())
                 .with_radius(CAPSULE)
@@ -680,8 +673,16 @@ impl PlaylistPage {
         let speed_label = ui.add_label(speed, "1×", TextStyle::BodyEmphasis, Style::default());
         ui.set_label_align(speed_label, Align::Center);
         let (_, sleep_icon) =
-            glass_circle(ui, bottom, PageAction::Sleep, Icon::Moon, BOTTOM_BUTTON, 20.0, "Sleep Timer");
-        glass_circle(ui, bottom, PageAction::Fullscreen, Icon::Fullscreen, BOTTOM_BUTTON, 20.0, "Fullscreen");
+            glass_circle(ui, middle_slot, PageAction::Sleep, Icon::Moon, BOTTOM_BUTTON, 20.0, "Sleep Timer");
+        glass_circle(
+            ui,
+            right_slot,
+            PageAction::Fullscreen,
+            Icon::Fullscreen,
+            BOTTOM_BUTTON,
+            20.0,
+            "Fullscreen",
+        );
 
         // The menu of the rows, the list's name, the speeds and the sleep timer: after
         // everything, so it lies above.
@@ -701,7 +702,7 @@ impl PlaylistPage {
             delete_label,
             viewport,
             list,
-            empty,
+            list_empty: true,
             search_box,
             search_field,
             search_width: Animated::new(
@@ -848,7 +849,7 @@ impl PlaylistPage {
             let nodes = self.build_row(ui, i, m, editing, chars, favicons);
             self.rows.push(nodes);
         }
-        ui.set_visible(self.empty, models.is_empty());
+        self.list_empty = models.is_empty();
         self.content_height = models.len() as f32 * (ROW_HEIGHT + 2.0) + PAD;
         self.clamp_scroll(ui);
     }
@@ -1087,9 +1088,15 @@ impl PlaylistPage {
         self.rows.get(i).map(|r| ui.frame(r.row))
     }
 
+    /// Placement and covered nodes for the menu of row `i`: it grows out of the row and covers
+    /// it (the row's content fades out), like a tab row's context menu.
+    pub fn row_menu_at(&self, ui: &Ui, i: usize) -> (Placement, Vec<NodeId>) {
+        (Placement::Over, self.rows.get(i).map(|r| ui.children(r.row)).unwrap_or_default())
+    }
+
     /// The header's list name, for anchoring the lists menu.
     pub fn name_frame(&self, ui: &Ui) -> Frame {
-        ui.frame(self.header_name)
+        ui.parent(self.header_name).map_or_else(|| ui.frame(self.header_name), |n| ui.frame(n))
     }
 
     pub fn frame_of(&self, ui: &Ui, action: PageAction) -> Frame {
@@ -1138,6 +1145,9 @@ impl PlaylistPage {
     }
 
     /// Menus (rows, list, speed, sleep timer) opening from `anchor`.
+    ///
+    /// `cover`: the nodes the menu grows over (the button it flows out of, the controls
+    /// next to it); they fade out as the menu grows.
     pub fn open_menu(
         &mut self,
         ui: &mut Ui,
@@ -1145,8 +1155,38 @@ impl PlaylistPage {
         anchor: Frame,
         window: Vec2,
         items: Vec<MenuItem>,
+        (placement, cover): (Placement, Vec<NodeId>),
     ) {
+        self.menu.set_placement(placement);
+        self.menu.set_covered_nodes(ui, cover);
         self.menu.open(ui, config, anchor, window, items);
+    }
+
+    /// Placement and covered node for the menu of a button of the player.
+    pub fn menu_at(&self, ui: &Ui, action: PageAction) -> (Placement, Vec<NodeId>) {
+        let parent = |n: NodeId| ui.parent(n);
+        match action {
+            PageAction::Sleep => {
+                // The sleep button and the whole transport row it grows over.
+                let transport = parent(self.play_icon).and_then(parent);
+                let mut nodes: Vec<NodeId> = transport.map(|t| ui.children(t)).unwrap_or_default();
+                nodes.extend(parent(self.sleep_icon));
+                (Placement::OverCentered, nodes)
+            }
+            PageAction::Speed => {
+                // The speed button, and the shuffle and previous buttons it grows over.
+                let transport = parent(self.play_icon).and_then(parent);
+                let mut nodes: Vec<NodeId> =
+                    transport.map(|t| ui.children(t).into_iter().take(2).collect()).unwrap_or_default();
+                nodes.extend(parent(self.speed_label));
+                (Placement::Over, nodes)
+            }
+            PageAction::ListMenu => {
+                let name_row = parent(self.header_name);
+                (Placement::Over, name_row.map(|n| ui.children(n)).unwrap_or_default())
+            }
+            _ => (Placement::BelowStart, Vec::new()),
+        }
     }
 
     pub fn menu(&mut self) -> &mut Menu {
@@ -1212,7 +1252,10 @@ impl PlaylistPage {
             (None, note) => {
                 ui.set_visible(self.video, false);
                 self.shown_aspect = 0.0;
-                ui.set_text(self.video_note, note.unwrap_or("Choose a video"));
+                ui.set_text(
+                    self.video_note,
+                    note.unwrap_or(if self.list_empty { "No Videos" } else { "Choose a video" }),
+                );
                 if let Some(parent) = ui.parent(self.video_note) {
                     ui.set_visible(parent, true);
                 }

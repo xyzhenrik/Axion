@@ -211,6 +211,16 @@ pub fn same_video(item: &PlaylistItem, c: &Candidate) -> bool {
     }
 }
 
+/// The wording around downloads, in one place: the action is always called "Download"; what a
+/// row says about a stream it can't fetch is its state, and the toast on a click says why.
+pub const DOWNLOAD_ACTION: &str = "Download";
+/// A row's state for an item that can only be watched online.
+pub const STATE_NOT_DOWNLOADED: &str = "Not downloaded";
+/// The menu row's secondary text when the Download action can't succeed.
+pub const DOWNLOAD_UNAVAILABLE_DETAIL: &str = "can’t download";
+/// The toast when Download is chosen for an item that can't be fetched.
+pub const DOWNLOAD_UNAVAILABLE_TOAST: &str = "Can’t be downloaded — it can only be streamed";
+
 /// What a download of an item would be.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DownloadPlan {
