@@ -1046,8 +1046,8 @@ pub struct Playlist {
     pub quick_action: bool,
     /// Download a video for offline use as soon as it is added (when it is a plain file).
     pub auto_download: bool,
-    /// Folder for downloaded videos; empty means a "Axion Playlist" folder inside the
-    /// download folder.
+    /// Folder for downloaded videos; empty means `<profile>/playlist` (the account's own data).
+    /// Changing it only affects new downloads.
     pub directory: String,
     /// Removing an item also deletes the file it downloaded.
     pub delete_files_on_remove: bool,
@@ -1069,7 +1069,8 @@ pub struct Playlist {
     pub resume_rewind_seconds: f32,
     /// Thumbnails decoded onto the GPU per frame while the page fills in.
     pub thumbnails_per_frame: u32,
-    /// Name of the list new videos go to.
+    /// Name of the list new videos go to (shown as the Playlist page's title). The old
+    /// default "Play Later" counts as "Playlist".
     pub list_name: String,
     /// The sleep timer's choices (minutes); "Off" and "End of video" are always offered.
     pub sleep_timer_minutes: Vec<u32>,
@@ -1109,7 +1110,7 @@ impl Default for Playlist {
             min_resume_seconds: 5.0,
             resume_rewind_seconds: 2.0,
             thumbnails_per_frame: 3,
-            list_name: "Play Later".to_owned(),
+            list_name: "Playlist".to_owned(),
             sleep_timer_minutes: vec![15, 30, 45, 60],
             thumbnail_frame_after_seconds: 1.0,
             forward_clicks: true,
@@ -1174,7 +1175,7 @@ mod tests {
     fn playlist_defaults_and_keys() {
         let p = Playlist::default();
         assert!(p.quick_action && !p.auto_download && p.delete_files_on_remove);
-        assert_eq!(p.list_name, "Play Later");
+        assert_eq!(p.list_name, "Playlist");
         let c: Config = toml::from_str("[playlist]\nauto_download = true").unwrap();
         assert!(c.playlist.auto_download);
         assert_eq!(c.playlist.max_items, p.max_items);

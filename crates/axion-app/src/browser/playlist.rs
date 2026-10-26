@@ -182,24 +182,26 @@ impl Browser {
 
     /// Reads the list from the profile (once the store is open).
     pub(super) fn playlist_start(&mut self) {
+        self.migrate_list_name();
         self.playlist.reload(self.store.as_ref(), &self.config);
     }
 
-    /// Renames the list (Settings › Media › Playlist): its items move along with the name.
-    pub(super) fn rename_playlist(&mut self, name: &str) {
-        let name: String = name.trim().chars().take(self.config.playlist.max_title_chars as usize).collect();
-        let old = self.config.playlist.list_name.clone();
-        if name.is_empty() || name == old {
-            return;
+    /// The old default list name, from before the list was simply "Playlist".
+    const OLD_LIST_NAME: &'static str = "Play Later";
+
+    /// Profiles from when the list was called "Play Later": show it as "Playlist" and move the
+    /// stored items along, so they stay visible.
+    fn migrate_list_name(&mut self) {
+        let old = Self::OLD_LIST_NAME;
+        let new = axion_config::Playlist::default().list_name;
+        if self.config.playlist.list_name == old {
+            self.config.playlist.list_name = new.clone();
         }
         if let Some(store) = &self.store
-            && let Err(e) = store.rename_playlist(&old, &name)
+            && let Err(e) = store.rename_playlist(old, &new)
         {
-            tracing::warn!("renaming the Playlist failed: {e}");
-            return;
+            tracing::warn!("renaming the old Playlist failed: {e}");
         }
-        self.config.playlist.list_name = name;
-        self.playlist.reload(self.store.as_ref(), &self.config);
     }
 
     // ---- the Add button ----
@@ -626,7 +628,10 @@ impl Browser {
                 else {
                     return;
                 };
-                let directory = playlist::download_directory(&self.config);
+                let directory = playlist::download_directory(&self.config, &self.playlist.download_dir);
+                if let Err(e) = std::fs::create_dir_all(&directory) {
+                    tracing::warn!("creating the Playlist download folder failed: {e}");
+                }
                 self.playlist.downloads.insert(url.clone(), id);
                 self.playlist.progress.insert(id, None);
                 self.set_item_download(id, dl::QUEUED, "", 0, "");
@@ -1533,18 +1538,6 @@ impl Browser {
                     self.playlist_play(first);
                 }
             }
-            PageAction::ListMenu => {
-                let anchor = self.playlist_ui.page.name_frame(&self.ui);
-                let mut item = MenuItem::new(
-                    Icon::Playlist,
-                    &self.config.playlist.list_name.clone(),
-                    MenuAction::Playlist(Command::List(0)),
-                );
-                item.checked = true;
-                let window = self.logical_size();
-                let at = self.playlist_ui.page.menu_at(&self.ui, PageAction::ListMenu);
-                self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, vec![item], at);
-            }
             PageAction::Edit => {
                 self.playlist.editing = !self.playlist.editing;
                 self.playlist.selected.clear();
@@ -1765,7 +1758,6 @@ impl Browser {
                         Sleep::At(Instant::now() + Duration::from_secs(u64::from(minutes) * 60));
                 }
             }
-            Command::List(_) => {}
             Command::Add => self.playlist_add_action(),
             Command::Show => self.open_playlist(),
         }

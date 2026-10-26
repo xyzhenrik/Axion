@@ -126,7 +126,7 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   (media-session title, else the tab title), page address, the media file's address when it is
   a plain file (`currentSrc` from the bridge, never `blob:`), thumbnail file in
   `<profile>/playlist/thumbs`, duration, added time, position, watched flag, download state /
-  path / size / note, list name (`playlist.list_name`, default "Play Later") and an order.
+  path / size / note, list name (`playlist.list_name`, default "Playlist") and an order.
   The same file (or, for streams, the same page) is never added twice; the downloaded copy
   counts as the same item.
 - **Thumbnails.** The page's own picture first (video `poster`, media-session artwork,
@@ -135,7 +135,8 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   rectangle), for downloaded files a frame once they play. Rows without any show the site's
   icon on a neutral glass tile.
 - **Downloads** go through the engine's download machinery (`Engine::start_download`, folder
-  `playlist.directory` or "Axion Playlist" in the download folder, no save dialog) and the
+  `playlist.directory`, default `<profile>/playlist` of the account (Axion's own data, not
+  ~/Downloads), no save dialog) and the
   Downloads list; Shields' request policy is asked first (blocked = failed with a note).
   Plain files (mp4/webm/audio…) download with progress in the row; **HLS / DASH / `blob:`
   streams can't be fetched** (the row says "Not downloaded"; the *Download* action says why on click) — never a silent
@@ -554,8 +555,9 @@ Windows/macOS, touchscreen-first mode.
   - The page is a plane over the page card (everything else of the chrome except the sidebar
     button hides, reusing the locked-private layout); any tab switch, navigation or tab-related
     shortcut closes it first (`keeps_playlist` lists what leaves it open).
-  - One list, "Play Later" (`playlist.list_name`); the table has a `list` column and the header
-    a menu, so several lists are a UI task only.
+  - One list, "Playlist" (`playlist.list_name`; users cannot create lists, so the header has no
+    list menu; profiles still saying "Play Later" are migrated at start-up). The table keeps its
+    `list` column for a future multi-list UI.
   - Playback lives in a view of its own (not a tab, no history/session). Superseded
     2026-10-26 (see below): Axion's fullscreen and PiP players now work on that view directly.
   - Thumbnails come from the page's own pictures first; frame grabs read the engine's frame
