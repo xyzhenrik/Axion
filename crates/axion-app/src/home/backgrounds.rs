@@ -133,17 +133,20 @@ impl std::fmt::Display for AddError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         const MB: u64 = 1024 * 1024;
         match self {
-            Self::TooBig { size, max_bytes } => write!(
-                f,
-                "That file is {} MB; backgrounds can be at most {} MB (home.max_background_mb).",
-                size.div_ceil(MB),
-                max_bytes / MB
-            ),
-            Self::Unsupported => f.write_str(
+            Self::TooBig { size, max_bytes } => f.write_str(&axion_i18n::tr_fmt!(
+                "That file is {size} MB; backgrounds can be at most {max} MB (home.max_background_mb).",
+                size = size.div_ceil(MB),
+                max = max_bytes / MB
+            )),
+            Self::Unsupported => f.write_str(axion_i18n::tr(
                 "That file isn't an image or video Axion can show (PNG, JPEG, GIF, WebP, AVIF, BMP, MP4, WebM).",
-            ),
-            Self::TooMany(max) => write!(f, "There are {max} backgrounds already; remove one first."),
-            Self::Io(e) => write!(f, "Saving the background failed: {e}"),
+            )),
+            Self::TooMany(max) => {
+                f.write_str(&axion_i18n::tr_fmt!("There are {max} backgrounds already; remove one first.", max = max))
+            }
+            Self::Io(e) => {
+                f.write_str(&axion_i18n::tr_fmt!("Saving the background failed: {error}", error = e))
+            }
         }
     }
 }
