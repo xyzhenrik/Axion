@@ -327,6 +327,7 @@ impl Output {
     ) -> Result<Self> {
         let attributes = Window::default_attributes()
             .with_title(TITLE)
+            .with_window_icon(crate::app_icon::window_icon())
             // No title bar: the window manager's own window, with only the video in it.
             .with_decorations(false)
             .with_resizable(true)

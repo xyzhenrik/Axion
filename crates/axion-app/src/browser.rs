@@ -417,17 +417,21 @@ impl Browser {
             .inspect_err(|e| tracing::warn!("live config reload unavailable: {e}"))
             .ok();
 
-        let window = Arc::new(
-            event_loop.create_window(
-                Window::default_attributes()
-                    .with_title("Axion")
-                    .with_inner_size(winit::dpi::LogicalSize::<f64>::from(
-                        options.size.unwrap_or(DEFAULT_WINDOW_SIZE),
-                    ))
-                    .with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 360.0))
-                    .with_maximized(options.maximized),
-            )?,
-        );
+        let attributes = Window::default_attributes()
+            .with_title("Axion")
+            .with_window_icon(crate::app_icon::window_icon())
+            .with_inner_size(winit::dpi::LogicalSize::<f64>::from(
+                options.size.unwrap_or(DEFAULT_WINDOW_SIZE),
+            ))
+            .with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 360.0))
+            .with_maximized(options.maximized);
+        // Wayland app id / X11 class: matches `axion.desktop`, so the shell shows our icon.
+        #[cfg(target_os = "linux")]
+        let attributes = {
+            use winit::platform::wayland::WindowAttributesExtWayland as _;
+            attributes.with_name("axion", "axion")
+        };
+        let window = Arc::new(event_loop.create_window(attributes)?);
 
         match options.position {
             Some((x, y)) => window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y)),

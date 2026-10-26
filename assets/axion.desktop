@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Axion
+GenericName=Web Browser
+Comment=Browse the web with Liquid Glass
+Exec=axion %U
+Icon=axion
+Terminal=false
+StartupWMClass=axion
+StartupNotify=true
+Categories=Network;WebBrowser;
+MimeType=text/html;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;

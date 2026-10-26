@@ -12,6 +12,7 @@
 //! that monitor (X11/XWayland only).
 
 mod accounts;
+mod app_icon;
 mod avatars;
 mod browser;
 mod chrome;
