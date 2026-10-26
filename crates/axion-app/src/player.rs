@@ -179,7 +179,9 @@ fn absolute(
     Style { position: Position::Absolute, inset: Rect { left, right, top, bottom }, ..Default::default() }
 }
 
-/// A dark glass circle with an icon (and, for the skip buttons, the seconds inside it).
+/// A dark glass circle with an icon (and, for the skip buttons, the seconds inside it). Pure
+/// glass at any size: no highlight fill under the pointer, and pressed it becomes a lens of
+/// its own that swells and follows the pointer, like the other glass buttons.
 fn circle(
     ui: &mut Ui,
     parent: NodeId,
@@ -193,7 +195,9 @@ fn circle(
         Widget::container()
             .with_action(control.id())
             .with_radius(CAPSULE)
-            .with_background(Background::Glass(GlassLevel::Thick)),
+            .with_background(Background::Glass(GlassLevel::Thick))
+            .pressed_whole()
+            .without_hover_fill(),
         Style { size: square(side), flex_shrink: 0.0, justify_content: JustifyContent::CENTER, ..row(0.0) },
     );
     let glyph_side = side * ICON_RATIO;

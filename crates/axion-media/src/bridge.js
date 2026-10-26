@@ -108,6 +108,7 @@
     return {
       id: el.__axId, kind: el.tagName === 'VIDEO' ? 'video' : 'audio',
       x: r.left, y: r.top, w: r.width, h: r.height, vw: el.videoWidth || 0, vh: el.videoHeight || 0,
+      fit: el.tagName === 'VIDEO' ? (getComputedStyle(el).objectFit || '') : '',
       paused: el.paused, ended: el.ended, time: el.currentTime || 0,
       duration: isFinite(el.duration) ? el.duration : 0, live: el.duration === Infinity,
       volume: el.volume, muted: el.muted, rate: el.playbackRate, buffered: buffered,
@@ -200,7 +201,11 @@
       case 'probe':
         log(MARK + JSON.stringify({ t: 'probe', frame: location.href, src: el.currentSrc, ready: el.readyState,
           network: el.networkState, error: el.error && el.error.code, paused: el.paused,
-          jw: window.jwplayer && window.jwplayer().getState && window.jwplayer().getState() }));
+          jw: window.jwplayer && window.jwplayer().getState && window.jwplayer().getState(),
+          jwError: (document.querySelector('.jw-error-msg, .jw-error-text') || {}).textContent,
+          h264: window.MediaSource && MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"'),
+          aac: window.MediaSource && MediaSource.isTypeSupported('audio/mp4; codecs="mp4a.40.2"'),
+          mp4: el.canPlayType('video/mp4; codecs="avc1.42E01E, mp4a.40.2"') }));
         break;
       case 'fullscreen':
         if (v) { if (el.requestFullscreen) el.requestFullscreen().catch(function () { setTakeover(el, true); }); else setTakeover(el, true); }
@@ -253,18 +258,6 @@
     schedule();
   });
   window.addEventListener('scroll', schedule, { passive: true, capture: true });
-  // The top frame's scroll position, for the browser's bars (hide while scrolling down).
-  if (isTop) {
-    var lastScroll = -1, scrollTimer = 0;
-    window.addEventListener('scroll', function () {
-      if (scrollTimer) return;
-      scrollTimer = setTimeout(function () {
-        scrollTimer = 0;
-        var y = Math.round(window.scrollY);
-        if (y !== lastScroll) { lastScroll = y; log(MARK + JSON.stringify({ t: 'scroll', y: y })); }
-      }, 60);
-    }, { passive: true });
-  }
   window.addEventListener('resize', schedule);
   window.addEventListener('pagehide', function () {
     media.clear(); children.clear();

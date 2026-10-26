@@ -69,6 +69,10 @@ pub enum CursorKind {
     Grab,
     Grabbing,
     NotAllowed,
+    /// Dropping here copies (a drag).
+    Copy,
+    /// Dropping here links (a drag).
+    Alias,
     ResizeHorizontal,
     ResizeVertical,
     Hidden,

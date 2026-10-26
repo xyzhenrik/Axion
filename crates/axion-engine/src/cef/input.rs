@@ -12,6 +12,11 @@ pub(super) struct InputState {
 }
 
 impl InputState {
+    /// Forgets a held button (its release went somewhere else, e.g. ended a drag).
+    pub fn release(&mut self, button: MouseButton) {
+        self.buttons &= !button_flag(button).0;
+    }
+
     pub fn send(&mut self, host: &BrowserHost, event: &InputEvent) {
         match event {
             InputEvent::MouseMove { pos, modifiers } => {
@@ -21,18 +26,12 @@ impl InputState {
                 host.send_mouse_move_event(Some(&self.mouse(-1.0, -1.0, *modifiers)), 1);
             }
             InputEvent::MouseButton { pos, button, pressed, click_count, modifiers } => {
-                let (kind, flag) = match button {
-                    MouseButton::Left => {
-                        (cef_mouse_button_type_t::MBT_LEFT, cef_event_flags_t::EVENTFLAG_LEFT_MOUSE_BUTTON)
-                    }
-                    MouseButton::Middle => (
-                        cef_mouse_button_type_t::MBT_MIDDLE,
-                        cef_event_flags_t::EVENTFLAG_MIDDLE_MOUSE_BUTTON,
-                    ),
-                    MouseButton::Right => {
-                        (cef_mouse_button_type_t::MBT_RIGHT, cef_event_flags_t::EVENTFLAG_RIGHT_MOUSE_BUTTON)
-                    }
+                let kind = match button {
+                    MouseButton::Left => cef_mouse_button_type_t::MBT_LEFT,
+                    MouseButton::Middle => cef_mouse_button_type_t::MBT_MIDDLE,
+                    MouseButton::Right => cef_mouse_button_type_t::MBT_RIGHT,
                 };
+                let flag = button_flag(*button);
                 if *pressed {
                     self.buttons |= flag.0;
                 } else {
@@ -74,7 +73,7 @@ impl InputState {
         }
     }
 
-    fn mouse(&self, x: f32, y: f32, modifiers: Modifiers) -> MouseEvent {
+    pub fn mouse(&self, x: f32, y: f32, modifiers: Modifiers) -> MouseEvent {
         MouseEvent { x: x.round() as i32, y: y.round() as i32, modifiers: self.flags(modifiers) }
     }
 
@@ -91,5 +90,13 @@ impl InputState {
             }
         }
         flags
+    }
+}
+
+fn button_flag(button: MouseButton) -> cef_event_flags_t {
+    match button {
+        MouseButton::Left => cef_event_flags_t::EVENTFLAG_LEFT_MOUSE_BUTTON,
+        MouseButton::Middle => cef_event_flags_t::EVENTFLAG_MIDDLE_MOUSE_BUTTON,
+        MouseButton::Right => cef_event_flags_t::EVENTFLAG_RIGHT_MOUSE_BUTTON,
     }
 }

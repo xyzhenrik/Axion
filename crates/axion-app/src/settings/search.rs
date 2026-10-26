@@ -89,7 +89,58 @@ pub const INDEX: &[Entry] = &[
         "Delete account",
         &["remove account", "delete profile", "konto löschen", "profil löschen", "entfernen", "löschen"],
     ),
-    page(C::General, "Homepage", &["start page", "new tab", "startseite", "home"]),
+    control(C::General, S::HomeButton, &["home", "haus", "startseite", "toolbar", "button"]),
+    page(C::General, "Homepage", &["start page", "new tab", "startseite", "home", "neuer tab"]),
+    control(C::General, S::HomeClock, &["start page", "time", "uhr", "uhrzeit", "startseite", "24", "12"]),
+    control(C::General, S::HomeGreeting, &["start page", "hello", "name", "begrüßung", "gruß", "startseite"]),
+    control(C::General, S::HomeSearch, &["start page", "search box", "suchfeld", "suche", "startseite"]),
+    control(
+        C::General,
+        S::HomeTopSites,
+        &[
+            "start page",
+            "most visited",
+            "favourites",
+            "favorites",
+            "tiles",
+            "meistbesucht",
+            "häufig besucht",
+            "top seiten",
+            "kacheln",
+            "startseite",
+        ],
+    ),
+    control(
+        C::General,
+        S::HomeStats,
+        &[
+            "start page",
+            "blocked",
+            "trackers",
+            "ads",
+            "bandwidth",
+            "time saved",
+            "statistik",
+            "blockiert",
+            "werbung",
+            "gespart",
+            "startseite",
+        ],
+    ),
+    control(
+        C::General,
+        S::HomeBackground,
+        &[
+            "start page",
+            "wallpaper",
+            "picture",
+            "photo",
+            "hintergrund",
+            "hintergrundbild",
+            "bild",
+            "startseite",
+        ],
+    ),
     page(C::General, "Search engine", &["google", "duckduckgo", "bing", "suchmaschine", "default search"]),
     page(
         C::Appearance,
@@ -118,9 +169,20 @@ pub const INDEX: &[Entry] = &[
     ),
     page(C::Tabs, "Tab bar layout", &["compact", "separate", "tab strip", "tableiste", "kompakt"]),
     control(C::Tabs, S::TintFromPage, &["color", "page colour", "tint", "farbe"]),
-    control(C::Tabs, S::HideBarOnScroll, &["fullscreen", "autohide", "ausblenden", "scroll"]),
     control(C::Tabs, S::OpenInBackground, &["new tab", "links", "hintergrund", "middle click"]),
     page(C::Tabs, "Close tabs", &["auto close", "old tabs", "cleanup", "schließen", "aufräumen"]),
+    page(
+        C::Tabs,
+        "Bookmarks bar",
+        &[
+            "lesezeichenleiste",
+            "favoriten",
+            "bookmarks bar",
+            "favorites bar",
+            "lesezeichen",
+            "favoritenleiste",
+        ],
+    ),
     control(C::Tabs, S::FreezeAfter, &["sleep", "suspend", "pause", "einfrieren", "battery", "cpu"]),
     control(C::Tabs, S::DiscardAfter, &["unload", "sleep", "memory", "entladen", "ram"]),
     control(C::Tabs, S::LimitMemory, &["ram", "memory saver", "speicher", "arbeitsspeicher"]),
@@ -238,6 +300,10 @@ pub const INDEX: &[Entry] = &[
             "importieren",
             "exportieren",
             "backup",
+            "restore",
+            "wiederherstellen",
+            "device",
+            "gerät",
         ],
     ),
 ];
@@ -314,6 +380,11 @@ mod tests {
         assert!(titles("passwort ändern").contains(&"Account password"));
         assert!(titles("benutzer").contains(&"Account"));
         assert!(titles("konto löschen").contains(&"Delete account"));
+        assert!(titles("lesezeichenleiste").contains(&"Bookmarks bar"));
+        assert!(titles("favoriten").contains(&"Bookmarks bar"));
+        assert!(titles("hintergrundbild").contains(&"Background image"));
+        assert!(titles("meistbesucht").contains(&"Top sites"));
+        assert!(titles("uhrzeit").contains(&"Clock"));
     }
 
     #[test]

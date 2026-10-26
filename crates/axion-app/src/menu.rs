@@ -52,6 +52,7 @@ pub enum MenuAction {
     ZoomOut,
     ZoomReset,
     HardReload,
+    FindOnPage,
     Settings,
     /// Switch to the account at this index of the list.
     SwitchAccount(usize),
@@ -59,6 +60,10 @@ pub enum MenuAction {
     AccountSettings,
     /// Lock private tabs and Passwords now.
     LockAccount,
+    /// A tab's context menu (see `context_menu`).
+    Tab(crate::context_menu::TabCommand),
+    /// A bookmark's context menu, or the bookmarks bar's overflow menu.
+    Bookmark(crate::context_menu::BookmarkCommand),
 }
 
 /// Where a menu opens relative to its button.
@@ -68,6 +73,8 @@ pub enum Placement {
     Below,
     /// Above, as wide as the button (the account menu).
     Above,
+    /// Below, left-aligned with the button (a tab's or a bookmark's context menu).
+    BelowStart,
 }
 
 /// A compact button in a row of buttons (the zoom submenu's − 100% +).
@@ -233,6 +240,11 @@ impl Menu {
         }
     }
 
+    /// Where the next `open` places the menu.
+    pub fn set_placement(&mut self, placement: Placement) {
+        self.placement = placement;
+    }
+
     /// Open (or opening): clicks on rows count, outside clicks close it.
     pub fn is_open(&self) -> bool {
         self.popover.is_open()
@@ -269,7 +281,7 @@ impl Menu {
         self.parent_slots = self.slots.len();
         self.parent_labels = self.labels.len();
         let width = match self.placement {
-            Placement::Below => WIDTH,
+            Placement::Below | Placement::BelowStart => WIDTH,
             Placement::Above => anchor.size.x.max(WIDTH * 0.75),
         };
         let max_left = (window.x - width - WINDOW_MARGIN).max(WINDOW_MARGIN);
@@ -279,6 +291,12 @@ impl Menu {
                 let right = anchor.origin.x + anchor.size.x + BEYOND_ANCHOR;
                 let left = (right - width).clamp(WINDOW_MARGIN, max_left);
                 Frame::new(left, anchor.origin.y + anchor.size.y + GAP_TO_ANCHOR, width, height)
+            }
+            Placement::BelowStart => {
+                let left = anchor.origin.x.clamp(WINDOW_MARGIN, max_left);
+                let max_top = (window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN);
+                let top = (anchor.origin.y + anchor.size.y + GAP_TO_ANCHOR).min(max_top);
+                Frame::new(left, top, width, height)
             }
             Placement::Above => {
                 let left = anchor.origin.x.clamp(WINDOW_MARGIN, max_left);

@@ -70,6 +70,10 @@ const PULL_LIMIT: f32 = 5.0;
 /// … and how much it stretches toward it (relative to the pull over the glass's size).
 const PULL_STRETCH: f32 = 1.4;
 const PRESS_SETTLED: f32 = 0.001;
+/// Clicks closer together than this (time, then distance in logical px) count as a double
+/// (or triple) click in a text field.
+const MULTI_CLICK_TIME: std::time::Duration = std::time::Duration::from_millis(450);
+const MULTI_CLICK_DISTANCE: f32 = 4.0;
 /// A pressed button on glass becomes a glass lens of its own: it swells by at most this
 /// factor (the round back button, like iPadOS 26) …
 const LENS_PRESS_SCALE: f32 = 1.4;
@@ -163,6 +167,11 @@ pub struct Ui {
     pointer: Option<Vec2>,
     hover: Option<NodeId>,
     pressed: Option<NodeId>,
+    /// A text field whose selection follows the held pointer, and how: by characters, or by
+    /// whole words from the word a double click picked (its start, end).
+    field_select: Option<(NodeId, Option<(usize, usize)>)>,
+    /// The last click in a text field: when, where, and how many in a row.
+    last_click: Option<(Instant, Vec2, u8)>,
     /// Glass that swells while a button on it is held, springing back on release.
     press_scale: HashMap<NodeId, Press>,
     /// The glass (or lens) being held and where the pointer went down (for the pull toward
@@ -200,6 +209,8 @@ impl Ui {
             pointer: None,
             hover: None,
             pressed: None,
+            field_select: None,
+            last_click: None,
             focus: None,
             dragging: None,
             press_scale: HashMap::new(),
@@ -800,6 +811,15 @@ impl Ui {
                     }
                     return (true, events);
                 }
+                if let Some((node, word)) = self.field_select
+                    && let Some(index) = self.field_index_at(node, p)
+                {
+                    match word {
+                        Some((start, end)) => self.edit_field(node, |e| e.extend_by_words(start, end, index)),
+                        None => self.edit_field(node, |e| e.move_to(index, true)),
+                    }
+                    return (true, events);
+                }
                 self.pull_glass(p);
                 let hit = self.hit(p);
                 self.hover = hit.and_then(|n| self.actionable(n));
@@ -812,6 +832,7 @@ impl Ui {
             }
             UiInput::PointerDown => self.pointer_down(&mut events),
             UiInput::PointerUp => {
+                self.field_select = None;
                 if let Some(node) = self.dragging.take() {
                     events.extend(self.release_knob(node));
                     return (true, events);
@@ -882,12 +903,32 @@ impl Ui {
         let is_field = self.widget(hit).is_some_and(Widget::is_focusable);
         if is_field {
             if self.focus == Some(hit) {
-                // Place the caret where clicked.
-                let scale = self.scale;
-                if let Some(Widget { kind: WidgetKind::TextField(field), frame, .. }) = self.widget(hit) {
-                    let x = (p.x - frame.origin.x + field.scroll_x) * scale;
-                    let index = field.real_index(index_at(&field.buffer, x));
-                    self.edit_field(hit, |e| e.move_to(index, false));
+                // One click places the caret (and dragging selects), two select a word, three
+                // everything.
+                let now = Instant::now();
+                let count = match self.last_click {
+                    Some((at, q, n))
+                        if now.duration_since(at) < MULTI_CLICK_TIME
+                            && q.distance(p) < MULTI_CLICK_DISTANCE =>
+                    {
+                        n % 3 + 1
+                    }
+                    _ => 1,
+                };
+                self.last_click = Some((now, p, count));
+                if let Some(index) = self.field_index_at(hit, p) {
+                    match count {
+                        1 => {
+                            self.edit_field(hit, |e| e.move_to(index, false));
+                            self.field_select = Some((hit, None));
+                        }
+                        2 => {
+                            self.edit_field(hit, |e| e.select_word_at(index));
+                            let word = self.field_editor(hit).map(|e| e.word_at(index));
+                            self.field_select = word.map(|w| (hit, Some(w)));
+                        }
+                        _ => self.edit_field(hit, Editor::select_all),
+                    }
                 }
             } else {
                 events.extend(self.focus(hit));
@@ -902,6 +943,22 @@ impl Ui {
             self.press_anchor = Some((held, p));
         }
         true
+    }
+
+    fn field_editor(&self, node: NodeId) -> Option<&Editor> {
+        match &self.widget(node)?.kind {
+            WidgetKind::TextField(field) => Some(&field.editor),
+            _ => None,
+        }
+    }
+
+    /// The text index under `p` (logical px) in text field `node`.
+    fn field_index_at(&self, node: NodeId, p: Vec2) -> Option<usize> {
+        let Some(Widget { kind: WidgetKind::TextField(field), frame, .. }) = self.widget(node) else {
+            return None;
+        };
+        let x = (p.x - frame.origin.x + field.scroll_x) * self.scale;
+        Some(field.real_index(index_at(&field.buffer, x)))
     }
 
     fn is_toggle(&self, node: NodeId) -> bool {
@@ -1575,7 +1632,7 @@ impl Ui {
                 0.0
             } else if self.pressed == Some(node) {
                 PRESS_ALPHA
-            } else if self.hover == Some(node) && self.pressed.is_none() {
+            } else if self.hover == Some(node) && self.pressed.is_none() && widget.hover_fill {
                 // While a button is held, others under the pointer don't light up.
                 HOVER_ALPHA
             } else {

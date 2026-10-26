@@ -38,17 +38,36 @@ const TAB_STRIP_HEIGHT: f32 = 38.0;
 /// Tint of the capsule under the tabs that aren't open.
 const TAB_CAPSULE_TINT: f32 = 0.06;
 const TAB_STRIP_GAP: f32 = 8.0;
-/// The pill with the site's name while the bars are hidden.
-const MINI_HEIGHT: f32 = 28.0;
-const MINI_TOP: f32 = 6.0;
+/// Below this the F11 fullscreen transition counts as settled.
+const PRESENTATION_SETTLED: f32 = 0.001;
 /// The address field's widest size with the separate tab bar.
 const SEPARATE_ADDRESS_MAX: f32 = 680.0;
+/// The loading line's distance from the address field's ends.
+const PROGRESS_INSET: f32 = 16.0;
 const ADDRESS_FAVICON: f32 = 18.0;
 const NOW_PLAYING_RADIUS: f32 = 20.0;
 const DOWNLOAD_BAR_WIDTH: f32 = 18.0;
 const PANEL_PROGRESS_HEIGHT: f32 = 4.0;
 /// Extra height of a panel row with a progress bar.
 const PANEL_PROGRESS_ROOM: f32 = 12.0;
+/// Between two tabs (separate tab bar and compact capsule), and the strip's inner padding.
+const TAB_GAP: f32 = 4.0;
+const TAB_STRIP_PADDING: f32 = 4.0;
+const TAB_CAPSULE_PADDING: f32 = 5.0;
+/// Tabs never get narrower than this, even when the preferred width doesn't fit (then they
+/// overflow the bar).
+const TAB_HARD_MIN: f32 = 56.0;
+/// The hairline between two tabs of the separate tab bar.
+const TAB_SEPARATOR_HEIGHT: f32 = 18.0;
+/// Its strength (label colour at this opacity, so it reads on light and dark chrome).
+const TAB_SEPARATOR_ALPHA: f32 = 0.22;
+/// The bookmarks bar under the toolbar (and the separate tab bar), its items and their gap.
+const BOOKMARKS_BAR_HEIGHT: f32 = 34.0;
+const BOOKMARK_ITEM_HEIGHT: f32 = 26.0;
+const BOOKMARK_MAX_WIDTH: f32 = 180.0;
+const BOOKMARK_GAP: f32 = 2.0;
+const BOOKMARKS_BAR_PADDING: f32 = 5.0;
+const BOOKMARK_FAVICON: f32 = 16.0;
 
 /// What a click in the chrome means.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,10 +92,14 @@ pub enum ChromeAction {
     ClosePanel,
     /// The speaker in the address field: mutes or unmutes the active tab.
     MuteTab,
-    /// The small pill shown while the bars are hidden: brings them back.
-    ExpandBars,
     /// The Now Playing card: open its tab.
     NowPlaying,
+    /// The bookmarks bar's chevron: the bookmarks that don't fit, as a menu.
+    BookmarksOverflow,
+    /// The toolbar's home button: opens the homepage.
+    Home,
+    /// A bookmark of the bookmarks bar (index into the bar's list).
+    OpenBookmark(usize),
     NowPlayingToggle,
     SelectTab(usize),
     /// A tab of the other group (private while browsing normally, or the reverse): switches
@@ -153,11 +176,12 @@ const PANEL_ITEM_BASE: u32 = 7000;
 const DELETE_PANEL_ITEM_BASE: u32 = 10_000;
 const SELECT_OTHER_TAB_BASE: u32 = 12_000;
 const PANEL_BUTTON_BASE: u32 = 13_000;
+const BOOKMARK_BASE: u32 = 18_000;
 /// Trailing buttons a panel entry can have.
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 29] = [
+    const SIMPLE: [ChromeAction; 30] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -179,7 +203,6 @@ impl ChromeAction {
         ChromeAction::NowPlaying,
         ChromeAction::NowPlayingToggle,
         ChromeAction::MuteTab,
-        ChromeAction::ExpandBars,
         ChromeAction::ClearPanel,
         ChromeAction::Downloads,
         ChromeAction::DownloadsButton,
@@ -187,6 +210,8 @@ impl ChromeAction {
         ChromeAction::Account,
         ChromeAction::CollapseTabs,
         ChromeAction::CollapsePrivate,
+        ChromeAction::BookmarksOverflow,
+        ChromeAction::Home,
     ];
 
     pub fn id(self) -> ActionId {
@@ -197,13 +222,17 @@ impl ChromeAction {
             ChromeAction::OpenPanelItem(i) => PANEL_ITEM_BASE + i as u32,
             ChromeAction::DeletePanelItem(i) => DELETE_PANEL_ITEM_BASE + i as u32,
             ChromeAction::PanelButton(i, k) => PANEL_BUTTON_BASE + (i * PANEL_BUTTONS + k) as u32,
+            ChromeAction::OpenBookmark(i) => BOOKMARK_BASE + i as u32,
             simple => 1 + Self::SIMPLE.iter().position(|&a| a == simple).unwrap_or(0) as u32,
         })
     }
 
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
-            n @ 1..=29 => Some(Self::SIMPLE[n as usize - 1]),
+            n if (1..=Self::SIMPLE.len() as u32).contains(&n) => Some(Self::SIMPLE[n as usize - 1]),
+            n if (BOOKMARK_BASE..BOOKMARK_BASE + 1000).contains(&n) => {
+                Some(ChromeAction::OpenBookmark((n - BOOKMARK_BASE) as usize))
+            }
             n if (PANEL_BUTTON_BASE..PANEL_BUTTON_BASE + 1000 * PANEL_BUTTONS as u32).contains(&n) => {
                 let k = (n - PANEL_BUTTON_BASE) as usize;
                 Some(ChromeAction::PanelButton(k / PANEL_BUTTONS, k % PANEL_BUTTONS))
@@ -347,19 +376,18 @@ pub struct Chrome {
     bar_sidebar_button: NodeId,
     back: NodeId,
     forward: NodeId,
+    home_button: NodeId,
     tab_capsule: NodeId,
     /// Where the address segment goes with the separate tab bar.
     address_slot: NodeId,
     /// The separate tab bar's row of tabs.
     tab_strip: NodeId,
     tab_bar: TabBarStyle,
-    mini: NodeId,
-    mini_label: NodeId,
-    /// The bars are hidden (scrolled away) …
-    collapsed: bool,
-    /// … animated 0 (shown) → 1 (hidden).
-    collapse: Animated<f32>,
-    /// The bar's resting top inset (logical px), for the collapse animation.
+    /// Whole-page fullscreen (F11): all of the chrome gives way to the page …
+    presentation: bool,
+    /// … animated 0 (chrome shown) → 1 (only the page).
+    presentation_k: Animated<f32>,
+    /// The bar's resting top inset (logical px), for the fullscreen transition.
     bar_top: f32,
     /// The active tab's segment; persistent so typing survives tab-list rebuilds.
     address: NodeId,
@@ -385,6 +413,82 @@ pub struct Chrome {
     download_fill: NodeId,
     /// What the download button last showed (visible, progress in %).
     download_state: Option<(bool, Option<u8>)>,
+    tab_widths: TabWidths,
+    bookmarks: BookmarkRow,
+}
+
+/// Tab segment widths: every tab of the bar is equally wide (the preferred width, shrinking
+/// equally when they don't all fit), and changes spring there.
+struct TabWidths {
+    /// Segments that follow the shared width (not the compact address segment), and whether
+    /// each is pinned (pinned tabs have their own, fixed width).
+    pills: Vec<(NodeId, bool)>,
+    width: Animated<f32>,
+    /// The width was set once (the first one snaps instead of springing from nothing).
+    ready: bool,
+    applied: f32,
+    preferred: f32,
+    min: f32,
+    pinned: f32,
+    reduce_motion: bool,
+    /// The separate tab bar's tabs: (segment, the hairline before it, active).
+    separators: Vec<(NodeId, Option<NodeId>, bool)>,
+    /// The hovered node the hairlines were last shown for (`None`: not yet).
+    separator_hover: Option<Option<NodeId>>,
+    /// Where the separate tab bar may lie (left edge, width; logical px): it is only as wide
+    /// as its tabs, centred in this span.
+    strip_area: (f32, f32),
+    /// The strip's applied left edge and width.
+    strip_applied: (f32, f32),
+}
+
+/// The bookmarks bar: favicons and titles on a glass capsule, what doesn't fit behind a
+/// chevron.
+struct BookmarkRow {
+    bar: NodeId,
+    list: NodeId,
+    more: NodeId,
+    hint: NodeId,
+    items: Vec<NodeId>,
+    /// The items' natural widths, measured after they were built (`None` until then).
+    widths: Option<Vec<f32>>,
+    /// How many items fit (the rest are in the chevron's menu).
+    fit: usize,
+    /// What the items were built from (url, title, has a favicon), to rebuild only on change.
+    signature: Vec<(String, String, bool)>,
+    shown: bool,
+    /// Where the bar lies (left edge, width; logical px).
+    area: (f32, f32),
+    /// The bar's applied left edge and width.
+    applied: (f32, f32),
+}
+
+/// The width each of `count` equally wide tabs gets in `available` px (gaps between them
+/// included): `preferred`, or less when they don't fit, but never under `min`.
+pub fn equal_tab_width(available: f32, count: usize, gap: f32, preferred: f32, min: f32) -> f32 {
+    if count == 0 {
+        return preferred.max(min);
+    }
+    let share = (available - gap * (count - 1) as f32) / count as f32;
+    share.min(preferred).max(min)
+}
+
+/// How many of the bookmarks bar's items (natural `widths`, `gap` apart) fit into `available`
+/// px; when not all do, room for the chevron (`more` px) is kept.
+pub fn bookmarks_that_fit(widths: &[f32], gap: f32, available: f32, more: f32) -> usize {
+    let total: f32 = widths.iter().sum::<f32>() + gap * widths.len().saturating_sub(1) as f32;
+    if total <= available {
+        return widths.len();
+    }
+    let room = available - more - gap;
+    let mut used = 0.0;
+    for (i, w) in widths.iter().enumerate() {
+        used += w + if i > 0 { gap } else { 0.0 };
+        if used > room {
+            return i;
+        }
+    }
+    widths.len()
 }
 
 fn square(side: f32) -> Size<Dimension> {
@@ -837,6 +941,8 @@ impl Chrome {
         let (back, _) = icon_button(ui, nav, ChromeAction::Back, Widget::icon(Icon::Back, 21.0), BUTTON);
         let (forward, _) =
             icon_button(ui, nav, ChromeAction::Forward, Widget::icon(Icon::Forward, 21.0), BUTTON);
+        let (home_button, _) =
+            icon_button(ui, nav, ChromeAction::Home, Widget::icon(Icon::Home, 20.0), BUTTON);
 
         // Separate tab bar: the address segment sits here, centred between the groups.
         let address_slot = ui.add(
@@ -855,10 +961,12 @@ impl Chrome {
             Style {
                 flex_grow: 1.0,
                 flex_shrink: 1.0,
+                // Its width is the room between the groups, whatever the tabs in it want.
+                flex_basis: length(0.0),
                 min_size: Size { width: length(160.0), height: auto() },
                 size: Size { width: auto(), height: length(BAR_CAPSULE) },
-                padding: padding(5.0, 5.0, 0.0, 0.0),
-                ..row(4.0)
+                padding: padding(TAB_CAPSULE_PADDING, TAB_CAPSULE_PADDING, 0.0, 0.0),
+                ..row(TAB_GAP)
             },
         );
         let address = ui.add(
@@ -900,7 +1008,7 @@ impl Chrome {
         ui.set_label_align(address_label, Align::Start);
         let address_field = ui.add_text_field(
             address,
-            "Search or enter website name",
+            crate::home::ADDRESS_PLACEHOLDER,
             TextStyle::Body,
             Style { size: Size { width: auto(), height: length(22.0) }, ..shrinking_label() },
         );
@@ -914,7 +1022,12 @@ impl Chrome {
             Widget::progress(Paint::Accent),
             Style {
                 position: Position::Absolute,
-                inset: Rect { left: length(16.0), right: length(16.0), top: auto(), bottom: length(0.0) },
+                inset: Rect {
+                    left: length(PROGRESS_INSET),
+                    right: length(PROGRESS_INSET),
+                    top: auto(),
+                    bottom: length(0.0),
+                },
                 size: Size { width: auto(), height: length(3.0) },
                 ..Default::default()
             },
@@ -930,28 +1043,14 @@ impl Chrome {
             Style {
                 position: Position::Absolute,
                 size: Size { width: auto(), height: length(TAB_STRIP_HEIGHT) },
-                padding: padding(4.0, 4.0, 0.0, 0.0),
-                ..row(4.0)
+                padding: padding(TAB_STRIP_PADDING, TAB_STRIP_PADDING, 0.0, 0.0),
+                // Equal-width tabs sit in the middle of the strip until they fill it.
+                justify_content: JustifyContent::CENTER,
+                ..row(TAB_GAP)
             },
         );
         ui.set_visible(tab_strip, false);
-        // While scrolling down the bars give way to this pill with the site's name (Safari).
-        let mini = ui.add(
-            root,
-            Widget::container()
-                .with_background(Background::Glass(GlassLevel::Thin))
-                .with_radius(CAPSULE)
-                .with_action(ChromeAction::ExpandBars.id())
-                .pressed_whole(),
-            Style {
-                position: Position::Absolute,
-                size: Size { width: auto(), height: length(MINI_HEIGHT) },
-                padding: padding(16.0, 16.0, 0.0, 0.0),
-                ..row(0.0)
-            },
-        );
-        let mini_label = ui.add_label(mini, "", TextStyle::Footnote, Style::default());
-        ui.set_visible(mini, false);
+        let bookmarks = BookmarkRow::build(ui, root);
         // While downloads run (Safari): an arrow over a thin progress bar; opens the list.
         let downloads = ui.add(
             actions,
@@ -1003,6 +1102,14 @@ impl Chrome {
             planes.insert(bar_at, tab_strip);
             ui.set_children(root, &planes);
         }
+        // The bookmarks bar before both, so their menus lie above it.
+        let mut planes = ui.children(root);
+        if let Some(at) = planes.iter().position(|&n| n == bookmarks.bar) {
+            planes.remove(at);
+            let strip_at = planes.iter().position(|&n| n == tab_strip).unwrap_or(0);
+            planes.insert(strip_at, bookmarks.bar);
+            ui.set_children(root, &planes);
+        }
         let mut chrome = Self {
             account,
             account_avatar,
@@ -1052,14 +1159,13 @@ impl Chrome {
             bar_sidebar_button,
             back,
             forward,
+            home_button,
             tab_capsule,
             address_slot,
             tab_strip,
             tab_bar: TabBarStyle::Compact,
-            mini,
-            mini_label,
-            collapsed: false,
-            collapse: Animated::new(0.0, Spring::SMOOTH),
+            presentation: false,
+            presentation_k: Animated::new(0.0, Spring::SMOOTH),
             bar_top: 0.0,
             address,
             address_close,
@@ -1081,6 +1187,21 @@ impl Chrome {
             download_track,
             download_fill,
             download_state: None,
+            tab_widths: TabWidths {
+                pills: Vec::new(),
+                width: Animated::new(layout.tab_width, Spring::SMOOTH),
+                ready: false,
+                applied: -1.0,
+                preferred: layout.tab_width,
+                min: layout.tab_min_width,
+                pinned: layout.pinned_tab_width,
+                reduce_motion: false,
+                separators: Vec::new(),
+                separator_hover: None,
+                strip_area: (0.0, 0.0),
+                strip_applied: (-1.0, -1.0),
+            },
+            bookmarks,
         };
         chrome.apply_layout(ui, config, Vec2::new(1440.0, 900.0));
         chrome
@@ -1103,9 +1224,10 @@ impl Chrome {
         (width + self.slide.value).clamp(0.0, width)
     }
 
-    /// The sidebar is sliding (the page and toolbar follow it every frame).
+    /// The sidebar is sliding, or the chrome is moving for F11 fullscreen (the page and
+    /// toolbar follow it every frame).
     pub fn is_sliding(&self) -> bool {
-        !self.slide.is_settled(SLIDE_SETTLED)
+        !self.slide.is_settled(SLIDE_SETTLED) || !self.presentation_k.is_settled(PRESENTATION_SETTLED)
     }
 
     pub fn sidebar_open(&self) -> bool {
@@ -1385,67 +1507,91 @@ impl Chrome {
         }
     }
 
-    /// Hides the bars (scrolling down) or shows them again. Returns whether that changed, so
-    /// the page can be resized.
-    pub fn set_collapsed(&mut self, collapsed: bool, config: &Config) -> bool {
-        if collapsed == self.collapsed {
+    /// Whole-page fullscreen (F11) on or off: the bars slide up and fade, the sidebar slides
+    /// away and the page grows to the whole window (or all of it comes back). Returns whether
+    /// that changed; the caller relayouts (the sidebar's slide starts in `apply_layout`).
+    pub fn set_presentation(&mut self, on: bool, config: &Config) -> bool {
+        if on == self.presentation {
             return false;
         }
-        self.collapsed = collapsed;
+        self.presentation = on;
         let motion = &config.motion;
-        self.collapse.spring = if config.glass.reduce_motion {
+        self.presentation_k.spring = if config.glass.reduce_motion {
             Spring::new(0.2, 1.0)
         } else {
             Spring::new(motion.smooth.response * motion.speed, motion.smooth.damping)
         };
-        self.collapse.target = if collapsed { 1.0 } else { 0.0 };
+        self.presentation_k.target = if on { 1.0 } else { 0.0 };
         true
     }
 
-    /// The site shown in the pill while the bars are hidden.
-    pub fn set_mini_host(&self, ui: &mut Ui, host: &str) {
-        ui.set_text(self.mini_label, host);
+    /// Whole-page fullscreen (F11) is on.
+    pub fn presentation(&self) -> bool {
+        self.presentation
     }
 
-    fn animate_collapse(&mut self, ui: &mut Ui, dt: f32, centre_x: f32) {
-        self.collapse.step(dt);
-        let k = self.collapse.value.clamp(0.0, 1.0);
+    /// Something is fullscreen — the whole page (F11) or an element of it (video): Axion's
+    /// chrome is out of the way, so nothing but transient UI may cover the page.
+    pub fn is_fullscreen(&self) -> bool {
+        self.presentation || self.page_fullscreen
+    }
+
+    /// How far the chrome has given way to the page (0 shown … 1 page only).
+    fn chrome_away(&self) -> f32 {
+        if self.page_fullscreen { 1.0 } else { self.presentation_k.value.clamp(0.0, 1.0) }
+    }
+
+    /// F11 fullscreen has fully hidden the bars.
+    fn chrome_gone(&self) -> bool {
+        self.presentation && self.presentation_k.is_settled(PRESENTATION_SETTLED)
+    }
+
+    fn animate_presentation(&mut self, ui: &mut Ui, dt: f32) {
+        self.presentation_k.step(dt);
+        let k = self.presentation_k.value.clamp(0.0, 1.0);
         let shift = k * (self.bar_top + 2.0 * (TAB_STRIP_HEIGHT + TAB_STRIP_GAP) + BAR_CAPSULE);
-        for (node, top) in
-            [(self.bar, self.bar_top), (self.tab_strip, self.bar_top + BAR_CAPSULE + TAB_STRIP_GAP)]
-        {
+        let gone = self.chrome_gone();
+        let separate = self.tab_bar == TabBarStyle::Separate;
+        for (node, top, shown) in [
+            (self.bar, self.bar_top, true),
+            (self.tab_strip, self.bar_top + BAR_CAPSULE + TAB_STRIP_GAP, separate),
+        ] {
             let mut style = ui.style(node);
             style.inset.top = length(top - shift);
             ui.set_style(node, style);
             ui.set_opacity(node, 1.0 - k);
-        }
-        let visible = k > 0.01 && !self.page_fullscreen;
-        ui.set_visible(self.mini, visible);
-        if visible {
-            let width = ui.frame(self.mini).size.x;
-            let mut style = ui.style(self.mini);
-            style.inset = Rect {
-                left: length((centre_x - width / 2.0).max(0.0)),
-                right: auto(),
-                top: length(MINI_TOP),
-                bottom: auto(),
-            };
-            ui.set_style(self.mini, style);
-            ui.set_opacity(self.mini, k);
+            // Gone entirely once out of sight: no glass is drawn over the page.
+            ui.set_visible(node, shown && !self.page_fullscreen && !gone);
         }
     }
 
-    /// Advances the sidebar's slide and the bars' collapse. Call every frame.
-    /// `centre_x`: the page's horizontal centre, where the pill sits while the bars are hidden.
-    pub fn animate_all(&mut self, ui: &mut Ui, dt: f32, centre_x: f32) {
-        if !self.collapse.is_settled(0.001) || self.collapsed {
-            self.animate_collapse(ui, dt, centre_x);
+    /// Advances the sidebar's slide and the F11 fullscreen transition. Call every frame.
+    pub fn animate_all(&mut self, ui: &mut Ui, dt: f32) {
+        if !self.presentation_k.is_settled(PRESENTATION_SETTLED) || self.presentation {
+            self.animate_presentation(ui, dt);
         }
         self.animate(ui, dt);
     }
 
-    /// Advances the sidebar's slide. Call every frame.
+    /// Keeps the loading line inside the address field. Its insets alone resolved against the
+    /// field's unclamped width (the separate tab bar caps the field), so it ran past the end.
+    fn fit_progress(&self, ui: &mut Ui) {
+        let width = (ui.frame(self.address).size.x - 2.0 * PROGRESS_INSET).max(0.0);
+        let mut style = ui.style(self.progress);
+        let wanted = length(width);
+        if style.size.width != wanted {
+            style.size.width = wanted;
+            style.inset.right = auto();
+            ui.set_style(self.progress, style);
+        }
+    }
+
+    /// Advances the sidebar's slide (and the tabs' widths, the bookmarks bar's fit). Call
+    /// every frame.
     pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
+        self.animate_tab_widths(ui, dt);
+        self.fit_bookmarks(ui);
+        self.fit_progress(ui);
         if self.slide.is_settled(SLIDE_SETTLED) {
             if self.slide.target < 0.0 && ui.is_visible(self.sidebar) {
                 ui.set_visible(self.sidebar, false);
@@ -1469,7 +1615,7 @@ impl Chrome {
             Mode::Narrow
         };
         self.docked = self.sidebar_docked(config);
-        let show_sidebar = self.sidebar_open() && !self.page_fullscreen;
+        let show_sidebar = self.sidebar_open() && !self.is_fullscreen();
         let m = l.margin;
 
         // Docked, the toolbar starts where the (possibly sliding) sidebar ends.
@@ -1481,19 +1627,35 @@ impl Chrome {
         ui.set_style(self.bar, bar_style);
 
         // Separate tab bar: the address alone in the toolbar, the tabs in a row below.
+        if self.tab_bar != l.tab_bar {
+            self.tab_widths.ready = false;
+        }
         self.tab_bar = l.tab_bar;
+        ui.set_visible(self.home_button, l.home_button);
         let separate = l.tab_bar == TabBarStyle::Separate;
         ui.set_visible(self.tab_capsule, !separate);
         ui.set_visible(self.address_slot, separate);
-        ui.set_visible(self.tab_strip, separate && !self.page_fullscreen);
+        ui.set_visible(self.tab_strip, separate && !self.page_fullscreen && !self.chrome_gone());
         let mut strip = ui.style(self.tab_strip);
-        strip.inset = Rect {
-            left: length(bar_left),
-            right: length(m),
-            top: length(m + l.bar_height + TAB_STRIP_GAP),
-            bottom: auto(),
-        };
+        // Left and width follow the tabs (see `animate_tab_widths`).
+        let area = (bar_left, (window.x - bar_left - m).max(0.0));
+        if area != self.tab_widths.strip_area {
+            self.tab_widths.strip_area = area;
+            self.tab_widths.strip_applied = (-1.0, -1.0);
+        }
+        strip.inset.top = length(m + l.bar_height + TAB_STRIP_GAP);
+        strip.inset.bottom = auto();
+        strip.inset.right = auto();
         ui.set_style(self.tab_strip, strip);
+        self.layout_bookmarks_bar(ui, config, bar_left, window.x);
+        let widths = &mut self.tab_widths;
+        widths.preferred = l.tab_width;
+        widths.min = l.tab_min_width;
+        widths.pinned = l.pinned_tab_width;
+        widths.reduce_motion = config.glass.reduce_motion;
+        widths.width.spring =
+            Spring::new(config.motion.smooth.response * config.motion.speed, config.motion.smooth.damping);
+        widths.applied = -1.0;
         let mut address = ui.style(self.address);
         if separate {
             address.flex_grow = 1.0;
@@ -1503,6 +1665,7 @@ impl Chrome {
             address.size.height = length(BAR_CAPSULE);
         } else {
             address.size.height = length(SEGMENT_HEIGHT);
+            // The other tabs are as wide as the tab width; the address takes the rest.
             address.flex_grow = ACTIVE_SEGMENT_GROW;
             address.max_size = Size { width: auto(), height: auto() };
             address.min_size = Size { width: length(ACTIVE_SEGMENT_MIN), height: auto() };
@@ -1548,33 +1711,45 @@ impl Chrome {
     /// The page's rectangle (logical px): below the toolbar, beside a docked sidebar, with a
     /// small margin to the window edges so its rounded corners read as a card.
     pub fn page_rect(&self, config: &Config, window: Vec2) -> Frame {
-        if self.page_fullscreen {
+        self.card_rect(config, window, self.chrome_away(), self.docked_sidebar_width(config))
+    }
+
+    /// The page card for a docked sidebar `sidebar` wide, with the chrome `away` (0–1) gone
+    /// (F11: the card's margins shrink away as the chrome leaves).
+    fn card_rect(&self, config: &Config, window: Vec2, away: f32, sidebar: f32) -> Frame {
+        if away >= 1.0 {
             return Frame { origin: Vec2::ZERO, size: window };
         }
         let l = &config.layout;
         // The page's left edge follows the sidebar as it slides.
-        let left = self.docked_sidebar_width(config) + l.page_margin;
-        let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 };
-        let top = if self.collapsed {
-            MINI_TOP + MINI_HEIGHT + l.page_margin / 2.0
-        } else {
-            l.margin + l.bar_height + strip + l.margin / 2.0
-        };
-        let origin = Vec2::new(left, top);
-        let size = window - origin - Vec2::splat(l.page_margin);
+        let left = sidebar + l.page_margin;
+        let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 }
+            + self.bookmarks_room();
+        let top = l.margin + l.bar_height + strip + l.margin / 2.0;
+        let keep = 1.0 - away;
+        let origin = Vec2::new(left, top) * keep;
+        let size = window - origin - Vec2::splat(l.page_margin * keep);
         Frame { origin, size: size.max(Vec2::ONE) }
     }
 
-    /// The page's rectangle once the sidebar's slide has settled (see [`Self::page_rect`]).
+    /// The page card's corner radius (logical px): square while fullscreen.
+    pub fn page_corner_radius(&self, config: &Config) -> f32 {
+        config.layout.page_corner_radius * (1.0 - self.chrome_away())
+    }
+
+    /// The page's rectangle once the sidebar's slide and the F11 transition have settled (see
+    /// [`Self::page_rect`]).
     pub fn settled_page_rect(&self, config: &Config, window: Vec2) -> Frame {
-        let mut rect = self.page_rect(config, window);
-        if self.docked && !self.page_fullscreen {
-            let width = config.layout.sidebar_width;
-            let shift = (width + self.slide.target).clamp(0.0, width) - self.docked_sidebar_width(config);
-            rect.origin.x += shift;
-            rect.size.x = (rect.size.x - shift).max(1.0);
+        if self.page_fullscreen || self.presentation {
+            return Frame { origin: Vec2::ZERO, size: window };
         }
-        rect
+        let sidebar = if self.docked {
+            let width = config.layout.sidebar_width;
+            (width + self.slide.target).clamp(0.0, width)
+        } else {
+            0.0
+        };
+        self.card_rect(config, window, 0.0, sidebar)
     }
 
     /// The toolbar node: popovers that should flow out of the bar's glass live in it.
@@ -1762,6 +1937,7 @@ impl Chrome {
     /// Lights the tab row under the pointer with a glass highlight (rows have no flat hover
     /// fill). Call every frame with the UI's hovered node.
     pub fn update_hover(&mut self, ui: &mut Ui, hovered: Option<NodeId>) {
+        self.update_separators(ui, hovered);
         let row = hovered.filter(|&n| {
             self.items.iter().any(|i| i.node == n && i.surface == Surface::Sidebar)
                 && ui.widget(n).is_some_and(|w| w.background != Background::Glass(GlassLevel::Thin))
@@ -1791,6 +1967,9 @@ impl Chrome {
         }
         self.items.clear();
         self.hovered_row = None;
+        self.tab_widths.pills.clear();
+        self.tab_widths.separators.clear();
+        self.tab_widths.separator_hover = None;
         let narrow = self.mode == Mode::Narrow;
         let separate = self.tab_bar == TabBarStyle::Separate;
         let mut order = Vec::with_capacity(tabs.len());
@@ -1815,7 +1994,10 @@ impl Chrome {
             }
             let parent = if separate { self.tab_strip } else { self.tab_capsule };
             let background = if active { Background::Glass(GlassLevel::Thin) } else { Background::None };
-            let height = if separate { TAB_STRIP_HEIGHT - 8.0 } else { SEGMENT_HEIGHT };
+            let height = if separate { TAB_STRIP_HEIGHT - 2.0 * TAB_STRIP_PADDING } else { SEGMENT_HEIGHT };
+            // Every tab is equally wide (see `animate_tab_widths`); pinned ones are just their
+            // favicon.
+            let width = if tab.pinned { self.tab_widths.pinned } else { self.tab_widths.width.value };
             let pill = ui.add(
                 parent,
                 Widget::container()
@@ -1824,22 +2006,54 @@ impl Chrome {
                     .with_background(background)
                     .pressed_whole(),
                 Style {
-                    flex_grow: 1.0,
-                    flex_shrink: 1.0,
-                    flex_basis: length(0.0),
-                    min_size: Size { width: length(56.0), height: auto() },
-                    size: Size { width: auto(), height: length(height) },
-                    padding: padding(if active { 6.0 } else { 14.0 }, 14.0, 0.0, 0.0),
-                    justify_content: if separate { JustifyContent::CENTER } else { JustifyContent::START },
+                    flex_grow: 0.0,
+                    flex_shrink: if tab.pinned { 0.0 } else { 1.0 },
+                    min_size: Size { width: length(TAB_HARD_MIN.min(width)), height: auto() },
+                    size: Size { width: length(width), height: length(height) },
+                    padding: if tab.pinned {
+                        padding(0.0, 0.0, 0.0, 0.0)
+                    } else {
+                        padding(if active && separate { 6.0 } else { 14.0 }, 14.0, 0.0, 0.0)
+                    },
+                    justify_content: if separate || tab.pinned {
+                        JustifyContent::CENTER
+                    } else {
+                        JustifyContent::START
+                    },
                     ..row(9.0)
                 },
             );
-            if active {
+            if active && separate && !tab.pinned {
                 close_dot(ui, pill, ChromeAction::CloseTab(i), 24.0);
             }
             favicon_node(ui, pill, &tab.url, 16.0, favicons);
-            let style = if active { TextStyle::BodyEmphasis } else { TextStyle::Callout };
-            ui.add_label(pill, &tab.label(), style, shrinking_label());
+            if !tab.pinned {
+                let style = if active { TextStyle::BodyEmphasis } else { TextStyle::Callout };
+                ui.add_label(pill, &tab.label(), style, shrinking_label());
+            }
+            if separate {
+                // A hairline before every tab but the first (shown by `update_separators`).
+                let separator = (!order.is_empty()).then(|| {
+                    ui.add(
+                        pill,
+                        Widget::container()
+                            .with_background(Background::Fill(Paint::Label, TAB_SEPARATOR_ALPHA)),
+                        Style {
+                            position: Position::Absolute,
+                            inset: Rect {
+                                left: length(-TAB_GAP / 2.0 - 0.5),
+                                right: auto(),
+                                top: length((height - TAB_SEPARATOR_HEIGHT) / 2.0),
+                                bottom: auto(),
+                            },
+                            size: Size { width: length(1.0), height: length(TAB_SEPARATOR_HEIGHT) },
+                            ..Default::default()
+                        },
+                    )
+                });
+                self.tab_widths.separators.push((pill, separator, active));
+            }
+            self.tab_widths.pills.push((pill, tab.pinned));
             ui.set_visible(pill, !narrow || separate);
             self.pills.push(pill);
             order.push(pill);
@@ -1855,7 +2069,11 @@ impl Chrome {
         }
         if separate {
             ui.set_children(self.tab_capsule, &[]);
-            ui.set_children(self.tab_strip, &order);
+            // The strip is also a plane for menus (tab context menus): their glass stays, after
+            // the tabs.
+            let menus = ui.children(self.tab_strip).into_iter().filter(|n| !order.contains(n));
+            let children: Vec<NodeId> = order.iter().copied().chain(menus).collect();
+            ui.set_children(self.tab_strip, &children);
             ui.set_children(self.address_slot, &[self.address]);
         } else {
             ui.set_children(self.address_slot, &[]);
@@ -1927,10 +2145,20 @@ impl Chrome {
     /// Updates the active segment (address, back/forward, reload/stop, progress).
     pub fn sync_active(&mut self, ui: &mut Ui, tabs: &Tabs) {
         let Some(tab) = tabs.active() else { return };
-        let host = if self.locked { "Private Browsing".to_owned() } else { display_host(&tab.url) };
+        let home = crate::home::is_home_url(&tab.url);
+        let host = match () {
+            _ if self.locked => "Private Browsing".to_owned(),
+            _ if home => crate::home::ADDRESS_PLACEHOLDER.to_owned(),
+            _ => display_host(&tab.url),
+        };
         ui.set_text(self.address_label, &host);
+        // On the start page it reads like the field's placeholder: grey, the same words.
+        if let Some(w) = ui.widget_mut(self.address_label) {
+            w.set_paint(if home && !self.locked { Paint::Secondary } else { Paint::Label });
+        }
         if ui.focused() != Some(self.address_field) {
-            ui.set_field_text(self.address_field, &tab.url);
+            // The start page's address stays out of the field (typing starts fresh).
+            ui.set_field_text(self.address_field, if home { "" } else { &tab.url });
         }
         if let Some(w) = ui.widget_mut(self.back) {
             w.enabled = tab.can_go_back;
@@ -2002,5 +2230,362 @@ fn sidebar_tab_row(
     let mut layout = ui.style(label);
     layout.margin = Rect { left: length(6.0), right: length(0.0), top: length(0.0), bottom: length(0.0) };
     ui.set_style(label, layout);
+    if tab.pinned {
+        ui.add(row_node, Widget::icon(Icon::Pin, 14.0).with_paint(Paint::Secondary), Style::default());
+    }
     row_node
+}
+
+impl BookmarkRow {
+    /// Puts the bar at `width` (at most `span`), centred in the span starting at `left`.
+    fn place(&mut self, ui: &mut Ui, left: f32, span: f32, width: f32) {
+        let width = width.min(span);
+        let placed = (left + (span - width) / 2.0, width);
+        if (placed.0 - self.applied.0).abs() < 0.05 && (placed.1 - self.applied.1).abs() < 0.05 {
+            return;
+        }
+        self.applied = placed;
+        let mut style = ui.style(self.bar);
+        style.inset.left = length(placed.0);
+        style.size.width = length(placed.1);
+        ui.set_style(self.bar, style);
+    }
+
+    fn build(ui: &mut Ui, root: NodeId) -> Self {
+        let bar = ui.add(
+            root,
+            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
+            Style {
+                position: Position::Absolute,
+                size: Size { width: auto(), height: length(BOOKMARKS_BAR_HEIGHT) },
+                padding: padding(BOOKMARKS_BAR_PADDING, BOOKMARKS_BAR_PADDING, 0.0, 0.0),
+                ..row(BOOKMARK_GAP)
+            },
+        );
+        // Items that don't fit are hidden (`fit_bookmarks`); the clip only covers the frame
+        // before they are measured.
+        let list = ui.add(
+            bar,
+            Widget::container().with_clip(),
+            Style {
+                // Always its natural width, so its items measure true; the bar is sized to the
+                // ones that fit and hides the rest.
+                flex_grow: 0.0,
+                flex_shrink: 0.0,
+                flex_basis: auto(),
+                min_size: Size { width: length(0.0), height: auto() },
+                size: Size { width: auto(), height: length(BOOKMARK_ITEM_HEIGHT) },
+                overflow: axion_ui::taffy::Point {
+                    x: axion_ui::taffy::Overflow::Hidden,
+                    y: axion_ui::taffy::Overflow::Hidden,
+                },
+                ..row(BOOKMARK_GAP)
+            },
+        );
+        let hint = ui.add_label(
+            list,
+            "Bookmarks you add appear here",
+            TextStyle::Footnote,
+            Style { padding: padding(10.0, 10.0, 0.0, 0.0), ..Default::default() },
+        );
+        if let Some(w) = ui.widget_mut(hint) {
+            w.set_paint(Paint::Secondary);
+        }
+        let glyph = Widget::icon(Icon::ChevronDown, 14.0).with_paint(Paint::Secondary);
+        let (more, _) = icon_button(ui, bar, ChromeAction::BookmarksOverflow, glyph, BOOKMARK_ITEM_HEIGHT);
+        ui.set_visible(more, false);
+        ui.set_visible(bar, false);
+        Self {
+            bar,
+            list,
+            more,
+            hint,
+            items: Vec::new(),
+            widths: None,
+            fit: 0,
+            signature: Vec::new(),
+            shown: false,
+            area: (0.0, 0.0),
+            applied: (-1.0, -1.0),
+        }
+    }
+}
+
+impl Chrome {
+    /// Springs the tabs' shared width towards what fits now (all tabs equally wide: the
+    /// preferred width, or less when they don't fit), and gives it to every tab segment.
+    fn animate_tab_widths(&mut self, ui: &mut Ui, dt: f32) {
+        let separate = self.tab_bar == TabBarStyle::Separate;
+        let (container, inner_padding, reserved) = if separate {
+            (self.tab_strip, TAB_STRIP_PADDING, 0.0)
+        } else {
+            // The address segment keeps at least its minimum.
+            (self.tab_capsule, TAB_CAPSULE_PADDING, ACTIVE_SEGMENT_MIN + TAB_GAP)
+        };
+        // The separate strip shrinks to its tabs, so it measures its span, not itself.
+        let outer = if separate { self.tab_widths.strip_area.1 } else { ui.frame(container).size.x };
+        if outer <= 1.0 || !ui.is_visible(container) {
+            return;
+        }
+        let widths = &mut self.tab_widths;
+        let pinned = widths.pills.iter().filter(|(_, pinned)| *pinned).count();
+        let flexible = widths.pills.len() - pinned;
+        let available = outer - 2.0 * inner_padding - reserved - pinned as f32 * (widths.pinned + TAB_GAP);
+        let target = equal_tab_width(available, flexible, TAB_GAP, widths.preferred, widths.min);
+        widths.width.target = target;
+        if !widths.ready || widths.reduce_motion {
+            widths.width.snap(target);
+            widths.ready = true;
+        } else {
+            widths.width.step(dt);
+        }
+        let width = widths.width.value.max(0.0);
+        if separate {
+            // As wide as its tabs (and their gaps), centred in its span.
+            let count = widths.pills.len();
+            let gaps = count.saturating_sub(1) as f32 * TAB_GAP;
+            let tabs = flexible as f32 * width + pinned as f32 * widths.pinned + gaps;
+            let (left, span) = widths.strip_area;
+            let strip_width = (tabs + 2.0 * inner_padding).min(span);
+            let placed = (left + (span - strip_width) / 2.0, strip_width);
+            if (placed.0 - widths.strip_applied.0).abs() > 0.05
+                || (placed.1 - widths.strip_applied.1).abs() > 0.05
+            {
+                widths.strip_applied = placed;
+                let mut style = ui.style(self.tab_strip);
+                style.inset.left = length(placed.0);
+                style.size.width = length(placed.1);
+                ui.set_style(self.tab_strip, style);
+            }
+        }
+        if (width - widths.applied).abs() < 0.05 {
+            return;
+        }
+        widths.applied = width;
+        for &(pill, pinned) in &widths.pills {
+            if pinned {
+                continue;
+            }
+            let mut style = ui.style(pill);
+            style.size.width = length(width);
+            style.min_size.width = length(TAB_HARD_MIN.min(width));
+            ui.set_style(pill, style);
+        }
+    }
+
+    /// The separate tab bar's hairlines: between two tabs, except next to the open tab and
+    /// the one under the pointer (their highlight separates them already).
+    fn update_separators(&mut self, ui: &mut Ui, hovered: Option<NodeId>) {
+        let widths = &mut self.tab_widths;
+        if widths.separator_hover == Some(hovered) {
+            return;
+        }
+        widths.separator_hover = Some(hovered);
+        // The hovered tab (or its close button).
+        let hovered_pill = hovered.and_then(|n| {
+            widths.separators.iter().position(|&(pill, _, _)| pill == n || ui.parent(n) == Some(pill))
+        });
+        let separators = &widths.separators;
+        let lit =
+            |i: usize| separators.get(i).is_some_and(|&(_, _, active)| active) || hovered_pill == Some(i);
+        for (i, &(_, separator, _)) in separators.iter().enumerate() {
+            if let Some(separator) = separator {
+                ui.set_visible(separator, i > 0 && !lit(i) && !lit(i - 1));
+            }
+        }
+    }
+
+    /// The tab item at `node` or one of its parents (a click on a tab's close or reload button
+    /// is a click on the tab), if any.
+    pub fn tab_at(&self, ui: &Ui, node: NodeId) -> Option<TabItem> {
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if let Some(item) = self.tab_item(n) {
+                return Some(item);
+            }
+            at = ui.parent(n);
+        }
+        None
+    }
+
+    /// The plane a tab item lies in (its context menu flows out of it there).
+    pub fn tab_plane(&self, item: &TabItem) -> NodeId {
+        match item.surface {
+            Surface::Sidebar => self.sidebar,
+            Surface::Bar if self.tab_bar == TabBarStyle::Separate => self.tab_strip,
+            Surface::Bar => self.bar,
+        }
+    }
+
+    /// The separate tab bar's row (a plane of its own).
+    pub fn tab_strip_node(&self) -> NodeId {
+        self.tab_strip
+    }
+
+    // ---- bookmarks bar ----
+
+    fn layout_bookmarks_bar(&mut self, ui: &mut Ui, config: &Config, left: f32, window_width: f32) {
+        let l = &config.layout;
+        let m = l.margin;
+        let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 };
+        let bar = self.bookmarks.bar;
+        let mut style = ui.style(bar);
+        // Left and width follow the items (see `fit_bookmarks`).
+        style.inset.top = length(m + l.bar_height + strip + TAB_STRIP_GAP);
+        style.inset.bottom = auto();
+        style.inset.right = auto();
+        ui.set_style(bar, style);
+        let area = (left, (window_width - left - m).max(0.0));
+        if area != self.bookmarks.area {
+            self.bookmarks.area = area;
+            self.bookmarks.applied = (-1.0, -1.0);
+            self.bookmarks.fit = usize::MAX;
+        }
+        ui.set_visible(bar, self.bookmarks.shown && !self.page_fullscreen);
+    }
+
+    /// The height the bookmarks bar takes from the page (with its gap), 0 while hidden.
+    fn bookmarks_room(&self) -> f32 {
+        if self.bookmarks.shown && !self.page_fullscreen { BOOKMARKS_BAR_HEIGHT + TAB_STRIP_GAP } else { 0.0 }
+    }
+
+    /// Shows or hides the bookmarks bar. Returns whether that changed (the page then needs a
+    /// new size: it never lies under the bar).
+    pub fn set_bookmarks_bar_shown(&mut self, ui: &mut Ui, shown: bool) -> bool {
+        if self.bookmarks.shown == shown {
+            return false;
+        }
+        self.bookmarks.shown = shown;
+        ui.set_visible(self.bookmarks.bar, shown && !self.page_fullscreen);
+        true
+    }
+
+    /// The bookmarks bar's plane (its menus lie in it).
+    pub fn bookmarks_bar_node(&self) -> NodeId {
+        self.bookmarks.bar
+    }
+
+    /// Fills the bookmarks bar with `items` (url, title); rebuilt only when they (or their
+    /// favicons) changed.
+    pub fn set_bookmarks(&mut self, ui: &mut Ui, items: &[(String, String)], favicons: &Favicons) {
+        let signature: Vec<(String, String, bool)> = items
+            .iter()
+            .map(|(url, title)| (url.clone(), title.clone(), favicons.get(url).is_some()))
+            .collect();
+        if signature == self.bookmarks.signature {
+            return;
+        }
+        self.bookmarks.signature = signature;
+        for node in std::mem::take(&mut self.bookmarks.items) {
+            ui.remove(node);
+        }
+        for (i, (url, title)) in items.iter().enumerate() {
+            let item = ui.add(
+                self.bookmarks.list,
+                Widget::container().with_action(ChromeAction::OpenBookmark(i).id()).with_radius(CAPSULE),
+                Style {
+                    flex_shrink: 0.0,
+                    max_size: Size { width: length(BOOKMARK_MAX_WIDTH), height: auto() },
+                    size: Size { width: auto(), height: length(BOOKMARK_ITEM_HEIGHT) },
+                    padding: padding(8.0, 10.0, 0.0, 0.0),
+                    ..row(6.0)
+                },
+            );
+            favicon_node(ui, item, url, BOOKMARK_FAVICON, favicons);
+            let text = if title.trim().is_empty() { display_host(url) } else { title.clone() };
+            ui.add_label(item, &text, TextStyle::Footnote, shrinking_label());
+            self.bookmarks.items.push(item);
+        }
+        ui.set_visible(self.bookmarks.hint, items.is_empty());
+        ui.set_visible(self.bookmarks.more, false);
+        self.bookmarks.widths = None;
+        self.bookmarks.fit = items.len();
+    }
+
+    /// Hides the bookmarks that don't fit (they are listed in the chevron's menu). Measures
+    /// the items once after they were laid out.
+    fn fit_bookmarks(&mut self, ui: &mut Ui) {
+        let b = &mut self.bookmarks;
+        if !b.shown || !ui.is_visible(b.bar) {
+            return;
+        }
+        // The bar spans the whole width.
+        let (left, span) = b.area;
+        b.place(ui, left, span, span);
+        if b.items.is_empty() {
+            return;
+        }
+        if b.widths.is_none() {
+            let widths: Vec<f32> = b.items.iter().map(|&n| ui.frame(n).size.x).collect();
+            if widths.iter().any(|&w| w <= 0.0) {
+                // Not laid out yet.
+                return;
+            }
+            b.widths = Some(widths);
+            b.fit = usize::MAX;
+        }
+        let Some(widths) = b.widths.clone() else { return };
+        let available = span - 2.0 * BOOKMARKS_BAR_PADDING;
+        let fit = bookmarks_that_fit(&widths, BOOKMARK_GAP, available, BOOKMARK_ITEM_HEIGHT);
+        if fit == b.fit {
+            return;
+        }
+        b.fit = fit;
+        for (i, &node) in b.items.iter().enumerate() {
+            ui.set_visible(node, i < fit);
+        }
+        ui.set_visible(b.more, fit < b.items.len());
+    }
+
+    /// The bookmarks (indices) that don't fit into the bar.
+    pub fn bookmarks_overflow(&self) -> std::ops::Range<usize> {
+        self.bookmarks.fit.min(self.bookmarks.items.len())..self.bookmarks.items.len()
+    }
+
+    /// The bookmarks bar's chevron (logical px), where the overflow menu flows out of.
+    pub fn bookmarks_more_frame(&self, ui: &Ui) -> Frame {
+        ui.frame(self.bookmarks.more)
+    }
+
+    /// Bookmark `i` of the bar (logical px).
+    pub fn bookmark_frame(&self, ui: &Ui, i: usize) -> Option<Frame> {
+        self.bookmarks.items.get(i).map(|&n| ui.frame(n))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tabs_share_the_width_equally() {
+        // Few tabs: each at the preferred width (left-aligned, not stretched).
+        assert_eq!(equal_tab_width(1000.0, 2, 4.0, 220.0, 72.0), 220.0);
+        // Many: they shrink equally to fill the row …
+        let w = equal_tab_width(1000.0, 8, 4.0, 220.0, 72.0);
+        assert!((w * 8.0 + 7.0 * 4.0 - 1000.0).abs() < 0.01, "{w}");
+        // … down to the minimum.
+        assert_eq!(equal_tab_width(1000.0, 40, 4.0, 220.0, 72.0), 72.0);
+        assert_eq!(equal_tab_width(1000.0, 0, 4.0, 220.0, 72.0), 220.0);
+    }
+
+    #[test]
+    fn bookmarks_overflow_behind_the_chevron() {
+        let widths = [100.0, 100.0, 100.0];
+        assert_eq!(bookmarks_that_fit(&widths, 2.0, 304.0, 26.0), 3);
+        // One doesn't fit: room for the chevron is kept.
+        assert_eq!(bookmarks_that_fit(&widths, 2.0, 300.0, 26.0), 2);
+        assert_eq!(bookmarks_that_fit(&widths, 2.0, 150.0, 26.0), 1);
+        assert_eq!(bookmarks_that_fit(&widths, 2.0, 50.0, 26.0), 0);
+        assert_eq!(bookmarks_that_fit(&[], 2.0, 50.0, 26.0), 0);
+    }
+
+    #[test]
+    fn bookmark_actions_round_trip() {
+        for action in
+            [ChromeAction::OpenBookmark(0), ChromeAction::OpenBookmark(42), ChromeAction::BookmarksOverflow]
+        {
+            assert_eq!(ChromeAction::from_id(action.id()), Some(action));
+        }
+    }
 }

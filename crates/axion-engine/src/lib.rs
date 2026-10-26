@@ -9,11 +9,15 @@
 pub mod cef;
 pub mod download;
 mod input;
+pub mod internal;
 mod policy;
+mod transfer;
 
 pub use download::{ClearData, DownloadAction, DownloadInfo, DownloadOptions, DownloadState};
 pub use input::{CursorKind, InputEvent, Modifiers, MouseButton};
+pub use internal::{INTERNAL_SCHEME, InternalPages, InternalRequest, InternalResponse};
 pub use policy::{NavigationRequest, RequestPolicy, RequestVerdict, ResourceKind, ResourceRequest};
+pub use transfer::{DropData, FindRequest, PasteData, PastedFile};
 
 use glam::Vec2;
 
@@ -36,6 +40,32 @@ impl ViewSize {
         let p = (self.logical * self.scale).round();
         (p.x.max(1.0) as u32, p.y.max(1.0) as u32)
     }
+}
+
+/// One `<link rel="icon">` (or apple-touch-icon) of a page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IconLink {
+    pub url: String,
+    /// The link's `media` attribute (empty: all), e.g. `(prefers-color-scheme: dark)`.
+    pub media: String,
+    /// The link's `sizes` attribute (empty if none).
+    pub sizes: String,
+}
+
+/// A `<meta name="theme-color">` of a page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThemeColor {
+    /// sRGB, 0–255.
+    pub rgb: [u8; 3],
+    /// The tag's `media` attribute (empty: all).
+    pub media: String,
+}
+
+/// What a page's `<head>` says about its icons and colour.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PageMeta {
+    pub icons: Vec<IconLink>,
+    pub theme_colors: Vec<ThemeColor>,
 }
 
 /// Where a page asked a new view to go.
@@ -72,6 +102,19 @@ pub enum EngineEvent {
     FaviconUrlsChanged {
         view: ViewId,
         urls: Vec<String>,
+    },
+    /// The page's icon links (with their `media` queries) and theme colours, reported when the
+    /// document is parsed and whenever they change (also after a colour scheme switch).
+    PageMetaChanged {
+        view: ViewId,
+        meta: PageMeta,
+    },
+    /// A message from one of Axion's own pages (`axion://<host>/`) through its privileged
+    /// channel (see [`internal`]); never from web content.
+    InternalMessage {
+        view: ViewId,
+        host: String,
+        message: String,
     },
     /// A favicon requested with [`Engine::fetch_favicon`] arrived (RGBA, straight alpha).
     /// A favicon requested with [`Engine::fetch_favicon`] couldn't be loaded or decoded.
@@ -126,6 +169,15 @@ pub enum EngineEvent {
     /// The sites (hosts) that store cookies, with their counts — the answer to
     /// [`Engine::request_site_data`].
     SiteData(Vec<(String, usize)>),
+    /// Find in page (see [`Engine::find`]) counted matches: `active` is the 1-based number of
+    /// the selected one (0: none). Arrives several times while a long page is searched;
+    /// `final_update` marks the last one for the search.
+    FindResult {
+        view: ViewId,
+        active: u32,
+        count: u32,
+        final_update: bool,
+    },
     /// The view is gone (after [`Engine::close_view`], or the engine had to drop it).
     Closed {
         view: ViewId,
@@ -166,9 +218,12 @@ pub trait Engine {
     fn resize(&mut self, view: ViewId, size: ViewSize);
     /// Hidden views stop rendering and get throttled (background tabs).
     fn set_hidden(&mut self, view: ViewId, hidden: bool);
-    /// JavaScript run in every frame of every view as it starts loading (`None`: nothing).
-    /// It can talk back with console messages starting with [`PAGE_MESSAGE_PREFIX`].
+    /// JavaScript run in every frame of every view as it starts loading (`None`: nothing);
+    /// not in Axion's own pages. It can talk back with console messages starting with
+    /// [`PAGE_MESSAGE_PREFIX`].
     fn set_page_script(&mut self, script: Option<String>);
+    /// Installs what serves Axion's own `axion://` pages (see [`internal`]).
+    fn set_internal_pages(&mut self, pages: Option<std::sync::Arc<dyn InternalPages>>);
     /// Runs JavaScript in the view's top frame; with `user_gesture` as if the user had just
     /// clicked (needed for fullscreen and unmuted playback).
     fn run_script(&mut self, view: ViewId, script: &str, user_gesture: bool);
@@ -195,7 +250,33 @@ pub trait Engine {
     /// costs nothing until [`Engine::restore`].
     fn create_discarded_view(&mut self, url: &str, size: ViewSize, private: bool) -> ViewId;
     fn set_focus(&mut self, view: ViewId, focused: bool);
+    /// Mouse and keyboard input. While the page drags something of its own (text, a link, an
+    /// image) the engine runs the drag itself: mouse moves, leaving and the release drive it.
     fn send_input(&mut self, view: ViewId, event: &InputEvent);
+
+    /// Finds text in the page, highlighting every match and scrolling to the selected one.
+    /// Results come as [`EngineEvent::FindResult`]s. A new `text` starts a new search; the
+    /// same text with `next` moves to the following (or previous) match.
+    fn find(&mut self, view: ViewId, request: &FindRequest);
+    /// Ends find in page and removes the highlights; the selected match stays selected.
+    fn stop_finding(&mut self, view: ViewId);
+
+    /// Something from outside (files from the file manager) is dragged onto the view at `pos`
+    /// (view coordinates, logical px). Follow with [`Engine::drag_over`] while it moves, and
+    /// [`Engine::drag_leave`] or [`Engine::drag_drop`].
+    fn drag_enter(&mut self, view: ViewId, data: &DropData, pos: Vec2, modifiers: Modifiers);
+    fn drag_over(&mut self, view: ViewId, pos: Vec2, modifiers: Modifiers);
+    fn drag_leave(&mut self, view: ViewId);
+    fn drag_drop(&mut self, view: ViewId, pos: Vec2, modifiers: Modifiers);
+
+    /// Whether pages reach the desktop clipboard by themselves (Ctrl+V and Ctrl+C work
+    /// inside the engine). When they don't, the browser reads the clipboard and hands it over
+    /// with [`Engine::paste`].
+    fn has_system_clipboard(&self) -> bool;
+    /// Pastes into the view's focused element as if from the clipboard: the page gets a
+    /// `paste` event with the data (text, HTML, image files); if it doesn't handle it, the
+    /// text (or an image in rich text) is inserted.
+    fn paste(&mut self, view: ViewId, data: &PasteData);
 
     /// Downloads and decodes a favicon through the view's network stack (cache, cookies,
     /// blocking rules apply). Arrives as [`EngineEvent::FaviconReady`].

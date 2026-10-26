@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
-    ACCENT_SWATCHES, Action as KeyAction, ClearRange, Color, Config, Keymap, RemoveDownloads, ShieldLevel,
-    TabBarStyle, ThemeMode,
+    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, Keymap, RemoveDownloads,
+    ShieldLevel, TabBarStyle, ThemeMode,
 };
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
@@ -113,6 +113,12 @@ impl Category {
 /// A setting edited with a toggle or slider; sliders map 0–1 onto the setting's range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Setting {
+    HomeClock,
+    HomeGreeting,
+    HomeSearch,
+    HomeTopSites,
+    HomeStats,
+    HomeBackground,
     TintFromPage,
     AdaptToPage,
     TextScale,
@@ -136,8 +142,8 @@ enum Setting {
     MemoryBudget,
     KeepMediaAwake,
     RestoreSession,
-    HideBarOnScroll,
     OpenInBackground,
+    HomeButton,
     OwnFullscreenControls,
     HideControlsAfter,
     HardwareDecoding,
@@ -157,6 +163,12 @@ enum Setting {
 impl Setting {
     fn label(self) -> &'static str {
         match self {
+            Setting::HomeClock => "Clock",
+            Setting::HomeGreeting => "Greeting",
+            Setting::HomeSearch => "Search field",
+            Setting::HomeTopSites => "Top sites",
+            Setting::HomeStats => "Shields statistics",
+            Setting::HomeBackground => "Background image",
             Setting::TintFromPage => "Colour in tab bar",
             Setting::AdaptToPage => "Light or dark chrome to match the page",
             Setting::TextScale => "Text size",
@@ -180,8 +192,8 @@ impl Setting {
             Setting::MemoryBudget => "Memory budget",
             Setting::KeepMediaAwake => "Keep tabs playing audio awake",
             Setting::RestoreSession => "Reopen last session's tabs at start",
-            Setting::HideBarOnScroll => "Hide tab bar when scrolling",
             Setting::OpenInBackground => "Open new tabs in background",
+            Setting::HomeButton => "Show home button",
             Setting::OwnFullscreenControls => "Axion's player in fullscreen",
             Setting::HideControlsAfter => "Hide controls while playing after",
             Setting::HardwareDecoding => "Hardware video decoding (after restart)",
@@ -202,7 +214,14 @@ impl Setting {
     fn is_toggle(self) -> bool {
         matches!(
             self,
-            Setting::TintFromPage
+            Setting::HomeClock
+                | Setting::HomeButton
+                | Setting::HomeGreeting
+                | Setting::HomeSearch
+                | Setting::HomeTopSites
+                | Setting::HomeStats
+                | Setting::HomeBackground
+                | Setting::TintFromPage
                 | Setting::AdaptToPage
                 | Setting::ReduceTransparency
                 | Setting::ReduceMotion
@@ -215,7 +234,6 @@ impl Setting {
                 | Setting::LimitMemory
                 | Setting::KeepMediaAwake
                 | Setting::RestoreSession
-                | Setting::HideBarOnScroll
                 | Setting::OpenInBackground
                 | Setting::OwnFullscreenControls
                 | Setting::HardwareDecoding
@@ -295,6 +313,12 @@ impl Setting {
     fn get(self, c: &Config) -> f32 {
         let defaults = Config::default();
         let raw = match self {
+            Setting::HomeClock => return c.home.show_clock as u8 as f32,
+            Setting::HomeGreeting => return c.home.show_greeting as u8 as f32,
+            Setting::HomeSearch => return c.home.show_search as u8 as f32,
+            Setting::HomeTopSites => return c.home.show_top_sites as u8 as f32,
+            Setting::HomeStats => return c.home.show_stats as u8 as f32,
+            Setting::HomeBackground => return c.home.show_background_image as u8 as f32,
             Setting::TintFromPage => return c.appearance.tint_from_page as u8 as f32,
             Setting::AdaptToPage => return c.appearance.adapt_to_page as u8 as f32,
             Setting::ReduceTransparency => return c.glass.reduce_transparency as u8 as f32,
@@ -308,8 +332,8 @@ impl Setting {
             Setting::LimitMemory => return c.tabs.limit_memory as u8 as f32,
             Setting::KeepMediaAwake => return c.tabs.keep_media_awake as u8 as f32,
             Setting::RestoreSession => return c.tabs.restore_session as u8 as f32,
-            Setting::HideBarOnScroll => return c.layout.hide_bar_on_scroll as u8 as f32,
             Setting::OpenInBackground => return c.tabs.open_links_in_background as u8 as f32,
+            Setting::HomeButton => return c.layout.home_button as u8 as f32,
             Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
             Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
@@ -345,6 +369,12 @@ impl Setting {
         let on = value > 0.5;
         let defaults = Config::default();
         match self {
+            Setting::HomeClock => c.home.show_clock = on,
+            Setting::HomeGreeting => c.home.show_greeting = on,
+            Setting::HomeSearch => c.home.show_search = on,
+            Setting::HomeTopSites => c.home.show_top_sites = on,
+            Setting::HomeStats => c.home.show_stats = on,
+            Setting::HomeBackground => c.home.show_background_image = on,
             Setting::TintFromPage => c.appearance.tint_from_page = on,
             Setting::AdaptToPage => c.appearance.adapt_to_page = on,
             Setting::ReduceTransparency => c.glass.reduce_transparency = on,
@@ -358,8 +388,8 @@ impl Setting {
             Setting::LimitMemory => c.tabs.limit_memory = on,
             Setting::KeepMediaAwake => c.tabs.keep_media_awake = on,
             Setting::RestoreSession => c.tabs.restore_session = on,
-            Setting::HideBarOnScroll => c.layout.hide_bar_on_scroll = on,
             Setting::OpenInBackground => c.tabs.open_links_in_background = on,
+            Setting::HomeButton => c.layout.home_button = on,
             Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
             Setting::DesktopIntegration => c.media.desktop_integration = on,
@@ -421,6 +451,7 @@ pub enum SettingsAction {
     ShieldLevel(ShieldLevel),
     UpdateFilterLists,
     TabBar(TabBarStyle),
+    BookmarksBar(BookmarksBar),
     CloseAfter(u32),
     AddTrustedSite,
     /// Index into `media.trusted_player_sites`.
@@ -434,6 +465,7 @@ pub enum SettingsAction {
     RemoveSiteData(usize),
     OpenPasswords,
     ImportPasswords,
+    RestorePasswords,
     ExportPasswords,
 }
 
@@ -463,6 +495,9 @@ const DESTRUCTIVE: Color = Color::rgb(0xD0362B);
 
 const CLOSE_AFTER: [(&str, u32); 4] =
     [("Manually", 0), ("After a Day", 1), ("After a Week", 7), ("After a Month", 30)];
+
+const BOOKMARKS_BAR: [(&str, BookmarksBar); 3] =
+    [("Always", BookmarksBar::Always), ("On Home Page", BookmarksBar::Home), ("Never", BookmarksBar::Never)];
 
 const SHIELD_LEVELS: [(&str, ShieldLevel); 3] =
     [("Off", ShieldLevel::Off), ("Standard", ShieldLevel::Standard), ("Aggressive", ShieldLevel::Aggressive)];
@@ -495,10 +530,14 @@ impl SettingsAction {
                     SettingsAction::CloseAfter(days) => {
                         72 + CLOSE_AFTER.iter().position(|(_, d)| *d == days).unwrap_or(0) as u32
                     }
+                    SettingsAction::BookmarksBar(mode) => {
+                        76 + BOOKMARKS_BAR.iter().position(|(_, m)| *m == mode).unwrap_or(0) as u32
+                    }
                     SettingsAction::AddTrustedSite => 80,
                     SettingsAction::OpenPasswords => 85,
                     SettingsAction::ImportPasswords => 86,
                     SettingsAction::ExportPasswords => 87,
+                    SettingsAction::RestorePasswords => 88,
                     SettingsAction::RemoveTrustedSite(i) => TRUSTED_SITE_BASE + i as u32,
                     SettingsAction::ChooseDownloadFolder => 90,
                     SettingsAction::RemoveDownloads(r) => {
@@ -538,10 +577,12 @@ impl SettingsAction {
             70 => SettingsAction::TabBar(TabBarStyle::Separate),
             71 => SettingsAction::TabBar(TabBarStyle::Compact),
             72..=75 => SettingsAction::CloseAfter(CLOSE_AFTER[(n - 72) as usize].1),
+            76..=78 => SettingsAction::BookmarksBar(BOOKMARKS_BAR[(n - 76) as usize].1),
             80 => SettingsAction::AddTrustedSite,
             85 => SettingsAction::OpenPasswords,
             86 => SettingsAction::ImportPasswords,
             87 => SettingsAction::ExportPasswords,
+            88 => SettingsAction::RestorePasswords,
             90 => SettingsAction::ChooseDownloadFolder,
             91..=93 => SettingsAction::RemoveDownloads(REMOVE_DOWNLOADS[(n - 91) as usize].1),
             94..=97 => SettingsAction::ClearRange(CLEAR_RANGES[(n - 94) as usize].1),
@@ -583,8 +624,18 @@ pub enum Outcome {
     /// Remove one site's cookies and data, or every site's (`None`).
     RemoveSiteData(Option<String>),
     OpenPasswords,
+    /// Import a CSV file from another browser or manager.
     ImportPasswords(PathBuf),
-    ExportPasswords(PathBuf),
+    /// Restore an Axion export made with `password` (on this or another device).
+    RestorePasswords {
+        path: PathBuf,
+        password: Zeroizing<String>,
+    },
+    /// Write a portable export; `password` must be the account password.
+    ExportPasswords {
+        path: PathBuf,
+        password: Zeroizing<String>,
+    },
 }
 
 pub struct SettingsSheet {
@@ -616,8 +667,10 @@ pub struct SettingsSheet {
     confirm_delete: bool,
     /// The page must be rebuilt after a change (a toggle that shows more rows).
     rebuild: bool,
-    /// The import/export file field (Passwords page) and the last import/export result.
+    /// The import/export file and password fields (Passwords page) and the last
+    /// import/export result.
     passwords_file: Option<NodeId>,
+    passwords_secret: Option<NodeId>,
     passwords_status: Option<String>,
     /// The browser's memory use, shown on the Tabs page.
     memory_used: Option<u64>,
@@ -797,6 +850,7 @@ impl SettingsSheet {
             confirm_delete: false,
             rebuild: false,
             passwords_file: None,
+            passwords_secret: None,
             passwords_status: None,
             memory_used: None,
             group: None,
@@ -990,6 +1044,7 @@ impl SettingsSheet {
         self.password_fields = None;
         self.account_name = None;
         self.passwords_file = None;
+        self.passwords_secret = None;
         if !self.query.is_empty() {
             self.show_results(ui, config);
             return;
@@ -1038,6 +1093,19 @@ impl SettingsSheet {
                     .map(|(i, (name, _))| (*name, SettingsAction::SearchEngine(i).id()))
                     .collect();
                 segmented(ui, row_node, &options, current);
+                self.control(ui, config, Setting::HomeButton);
+                self.section(ui, "Start page");
+                for setting in [
+                    Setting::HomeClock,
+                    Setting::HomeGreeting,
+                    Setting::HomeSearch,
+                    Setting::HomeTopSites,
+                    Setting::HomeStats,
+                    Setting::HomeBackground,
+                ] {
+                    self.control(ui, config, setting);
+                }
+                self.note(ui, "Choose the background image with the gear on the start page.");
             }
             Category::Appearance => {
                 let row_node = self.row(ui, "Appearance");
@@ -1100,7 +1168,7 @@ impl SettingsSheet {
             }
             Category::Tabs => {
                 self.tab_bar_choice(ui, config);
-                for setting in [Setting::TintFromPage, Setting::HideBarOnScroll, Setting::OpenInBackground] {
+                for setting in [Setting::TintFromPage, Setting::OpenInBackground] {
                     self.control(ui, config, setting);
                 }
                 let row_node = self.row(ui, "Close tabs");
@@ -1111,6 +1179,13 @@ impl SettingsSheet {
                 let current = CLOSE_AFTER.iter().position(|(_, d)| *d == config.tabs.close_after_days);
                 segmented(ui, row_node, &options, current);
                 self.note(ui, "Axion can close tabs you haven't looked at for a while.");
+                let row_node = self.row(ui, "Bookmarks bar");
+                let options: Vec<(&str, ActionId)> = BOOKMARKS_BAR
+                    .iter()
+                    .map(|(name, mode)| (*name, SettingsAction::BookmarksBar(*mode).id()))
+                    .collect();
+                let current = BOOKMARKS_BAR.iter().position(|(_, m)| *m == config.layout.bookmarks_bar);
+                segmented(ui, row_node, &options, current);
                 self.section(ui, "Memory");
                 for setting in [
                     Setting::FreezeAfter,
@@ -1256,7 +1331,10 @@ impl SettingsSheet {
                 }
                 self.section(ui, "Security");
                 self.control(ui, config, Setting::ClearClipboardAfter);
-                self.note(ui, "Everything is encrypted with your master password, which Axion never stores.");
+                self.note(
+                    ui,
+                    "Encrypted with your account password and a key that never leaves this device.",
+                );
                 self.section(ui, "Import and export");
                 let row_node = self.row(ui, "File");
                 let field_box = ui.add(
@@ -1277,12 +1355,15 @@ impl SettingsSheet {
                     Style { size: Size { width: length(260.0), height: length(22.0) }, ..Default::default() },
                 );
                 self.passwords_file = Some(field);
+                let row_node = self.row(ui, "Password");
+                self.passwords_secret =
+                    Some(text_field(ui, row_node, "For exports and restoring", 260.0, true));
                 let row_node = self.row(ui, "");
                 pill_button(ui, row_node, "Import CSV", SettingsAction::ImportPasswords, false);
+                pill_button(ui, row_node, "Restore Axion Export", SettingsAction::RestorePasswords, false);
                 pill_button(ui, row_node, "Export Encrypted Copy", SettingsAction::ExportPasswords, false);
                 let note = self.passwords_status.clone().unwrap_or_else(|| {
-                    "Imports CSV files from Chrome, Firefox or Bitwarden. Exports an encrypted copy."
-                        .to_owned()
+                    "Imports CSV from Chrome, Firefox or Bitwarden. Exports restore on any device.".to_owned()
                 });
                 self.note(ui, &note);
             }
@@ -1831,6 +1912,10 @@ impl SettingsSheet {
                 config.tabs.close_after_days = days;
                 Outcome::Changed
             }
+            SettingsAction::BookmarksBar(mode) => {
+                config.layout.bookmarks_bar = mode;
+                Outcome::Changed
+            }
             SettingsAction::AddTrustedSite => {
                 let text = self.trusted_site.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned();
                 if config.media.add_trusted_site(&text) { Outcome::Changed } else { Outcome::Nothing }
@@ -1865,19 +1950,31 @@ impl SettingsSheet {
                 return Outcome::SetAccountPassword { current, new };
             }
             SettingsAction::OpenPasswords => return Outcome::OpenPasswords,
-            SettingsAction::ImportPasswords | SettingsAction::ExportPasswords => {
+            SettingsAction::ImportPasswords
+            | SettingsAction::RestorePasswords
+            | SettingsAction::ExportPasswords => {
                 let text =
                     self.passwords_file.and_then(|f| ui.field_text(f)).unwrap_or_default().trim().to_owned();
-                if text.is_empty() {
-                    self.passwords_status = Some("Enter the file's path first.".to_owned());
+                let password = Zeroizing::new(
+                    self.passwords_secret.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned(),
+                );
+                let problem = if text.is_empty() {
+                    Some("Enter the file's path first.")
+                } else if action != SettingsAction::ImportPasswords && password.is_empty() {
+                    Some("Enter the password first.")
+                } else {
+                    None
+                };
+                if let Some(problem) = problem {
+                    self.passwords_status = Some(problem.to_owned());
                     self.show(ui, config, keymap);
                     return Outcome::Nothing;
                 }
                 let path = expand_home(&text);
-                return if action == SettingsAction::ImportPasswords {
-                    Outcome::ImportPasswords(path)
-                } else {
-                    Outcome::ExportPasswords(path)
+                return match action {
+                    SettingsAction::ImportPasswords => Outcome::ImportPasswords(path),
+                    SettingsAction::RestorePasswords => Outcome::RestorePasswords { path, password },
+                    _ => Outcome::ExportPasswords { path, password },
                 };
             }
             SettingsAction::ClearHistory => {
@@ -2207,6 +2304,7 @@ mod tests {
             SettingsAction::RemoveSiteData(99),
             SettingsAction::Category(Category::Passwords),
             SettingsAction::ExportPasswords,
+            SettingsAction::RestorePasswords,
             SettingsAction::Category(Category::Account),
             SettingsAction::Category(Category::General),
             SettingsAction::AccountColor(5),

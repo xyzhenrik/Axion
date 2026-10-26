@@ -22,10 +22,14 @@ use winit::window::{Fullscreen, Window};
 
 use crate::accounts::{AddAccountSheet, Relaunch, SheetAction};
 use crate::chrome::{Chrome, ChromeAction, MoveKey, NowPlaying, PanelItem, Section, Surface, TabItem};
+use crate::context_menu::ContextMenus;
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
 use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
 use crate::favicons::{FETCH_SIZE, Favicons};
+use crate::filedrop::{DropOutcome, FileDrop};
+use crate::find::{FindAction, FindBar};
+use crate::home::{HomeAction, HomePage, REFRESH_SCRIPT, is_home_url};
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
 use crate::lockscreen::LockScreen;
@@ -36,8 +40,11 @@ use crate::menu::{
 use crate::morph::Origin;
 use crate::mpris::{Mpris, MprisCommand, Track};
 use crate::overview::{Overview, OverviewAction};
+use crate::page_color::{PageTint, lightness};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
-use crate::pip::{PipOutcome, PipWindow};
+use crate::pip::{PipControl, PipOutcome, PipWindow};
+use crate::platform::clipboard::ClipboardReader;
+use crate::platform::pointer::PointerProbe;
 use crate::player::{
     Context as PlayerContext, Control as PlayerControl, Mode as PlayerMode, Outcome as PlayerOutcome,
     PlayerOverlay,
@@ -51,6 +58,8 @@ use crate::tabdrag::{TabDrag, Target};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
 use crate::url::display_host;
 use crate::url::resolve_input;
+
+mod context;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
 /// How long before a `--capture --overview` screenshot the overview opens.
@@ -107,14 +116,16 @@ struct SiteClick {
 const SITE_CLICK_RETRY: Duration = Duration::from_millis(1200);
 const SITE_CLICK_TRIES: u32 = 3;
 const DAY_SECONDS: i64 = 24 * 60 * 60;
-/// Scrolling more than this (CSS px) between two reports hides or shows the bars …
-const SCROLL_THRESHOLD: f32 = 10.0;
-/// … and near the top of the page they always show.
-const SCROLL_SHOW_NEAR_TOP: f32 = 40.0;
+
+/// While the page's frame is smaller than its rectangle, the column this far (logical px)
+/// from the frame's right edge fills the rest: just left of a classic scrollbar.
+const EDGE_SAMPLE_INSET: f32 = 20.0;
 
 /// Time between the steps of a capture's `--open=a,b`.
 const OPEN_STEP_INTERVAL: Duration = Duration::from_millis(2500);
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
+/// How many of the saved session's tabs are pinned (they come first), in the profile's meta.
+const SESSION_PINNED_KEY: &str = "session_pinned_tabs";
 /// History rows shown in the sidebar panel.
 const PANEL_HISTORY_LIMIT: usize = 300;
 /// The History panel's clear button, and what it says while asking to confirm.
@@ -126,13 +137,8 @@ const ZOOM_BASE: f64 = 1.2;
 const LINE_SCROLL: f32 = 100.0;
 /// Pages' frame rate when the display's refresh rate is unknown.
 const FALLBACK_FRAME_RATE: u32 = 60;
-/// Height (logical px) of the page's top strip whose lightness picks the chrome appearance.
-const PROBE_HEIGHT: f32 = 48.0;
-/// The chrome turns dark below this page lightness, and light again above `LIGHT_ABOVE`.
-const DARK_BELOW: f32 = 0.4;
-/// Fraction of the way the window tint moves towards the page colour per frame.
-const TINT_EASE: f32 = 0.2;
-const LIGHT_ABOVE: f32 = 0.6;
+/// The chrome turns dark on pages whose colour is darker than this.
+const DARK_BELOW: f32 = 0.5;
 /// PCI vendor id of NVIDIA, the one driver where zero-copy frame import is verified.
 const NVIDIA_VENDOR_ID: u32 = 0x10DE;
 
@@ -178,18 +184,24 @@ pub struct Browser {
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
     downloads_popover: DownloadsPopover,
+    find: FindBar,
+    /// Files dragged over the window from the desktop.
+    file_drop: FileDrop,
+    /// Asks the X server where the pointer is during such a drag (made on first use).
+    pointer_probe: Option<PointerProbe>,
+    /// Test aid: where a simulated file drag is (window, logical px), instead of the pointer.
+    file_drag_at: Option<Vec2>,
+    /// Clipboard reads for pastes into pages (where the engine can't read it itself).
+    clipboard_reader: ClipboardReader,
     player: PlayerOverlay,
     /// The active page's last reported scroll position (CSS px).
-    last_scroll_y: f32,
     /// Frames saved so far by the `AXION_CAPTURE_FRAMES` debug aid.
     capture_frame: u32,
     /// Those frames, kept in memory until the sequence is complete (saving each one at once
     /// would stall the frame loop and change the timing being looked at).
     captured_frames: Vec<image::RgbaImage>,
-    /// The Picture in Picture window (kept once opened, hidden while unused).
+    /// Picture in Picture (made with the first one; its window only exists while PiP is on).
     pip: Option<PipWindow>,
-    /// PiP to start once the window exists (windows are made in `sync_windows`).
-    pip_request: Option<(ViewId, axion_media::Player)>,
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     site_click: Option<SiteClick>,
@@ -241,6 +253,12 @@ pub struct Browser {
     /// The plane the sidebar is drawn before (its place while nothing is locked).
     sidebar_before: Option<axion_ui::taffy::NodeId>,
     tab_drag: TabDrag,
+    /// Right-click menus of tabs and bookmarks, and the tab (view, private) one was opened for.
+    context_menus: ContextMenus,
+    context_tab: Option<(ViewId, bool)>,
+    /// The bookmarks bar's bookmarks (id, url, title), reloaded when `bookmarks_changed`.
+    bar_bookmarks: Vec<(i64, String, String)>,
+    bookmarks_changed: bool,
     /// What the overview lists while private tabs are locked: nothing.
     no_tabs: Tabs,
     config: Config,
@@ -263,14 +281,22 @@ pub struct Browser {
     tabs_changed: bool,
     layout_size: Vec2,
     capture: Option<(PathBuf, Instant)>,
-    /// The page's top-edge colour, used as the window background (`appearance.tint_from_page`).
-    page_tint: Option<[f32; 4]>,
+    /// The window colour around the page (`appearance.tint_from_page`), springing between
+    /// the pages' colours.
+    window_tint: Option<[f32; 4]>,
+    last_tint_step: Instant,
+    /// Each page's own colour (theme colour or measured once per load).
+    page_colors: PageTint,
+    /// The start page (`axion://home/`).
+    home: HomePage,
     /// When to open the overview for a `--capture --overview` screenshot.
     overview_at: Option<Instant>,
     address_at: Option<(Instant, String)>,
     open_at: Option<(Instant, String)>,
     /// Where the next Settings or Passwords sheet comes out of (taken when it opens).
     sheet_origin: Option<Origin>,
+    /// Search engine icons being fetched for the start page (once per run).
+    engine_icons: Option<std::sync::mpsc::Receiver<crate::engine_icons::EngineIcon>>,
     /// The page menu row clicked last (where a sheet it opens comes out of).
     menu_click_frame: Option<Rect>,
     /// Capture aid "sweep:X1:Y1:X2:Y2:N": the pointer moves from one point to the other in N
@@ -398,16 +424,34 @@ impl Browser {
         let account_menu = Menu::build(&mut ui, chrome.sidebar_node(), ACCOUNT_MENU_BASE, Placement::Above);
         let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
+        let find = FindBar::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
         let settings = SettingsSheet::build(&mut ui);
-        let passwords = Passwords::build(&mut ui, chrome.bar_node(), &vault_path, &account_name);
+        // The vault's second key factor: this device's key (TPM-sealed or a private file in
+        // the user's data directory, never in the profile).
+        let device_key: std::sync::Arc<dyn axion_vault::DeviceKey> =
+            match axion_vault::SystemDeviceKey::system() {
+                Ok(key) => std::sync::Arc::new(key),
+                Err(e) => {
+                    tracing::error!("no device key: {e}");
+                    std::sync::Arc::new(axion_vault::device::NoDeviceKey)
+                }
+            };
+        let passwords = Passwords::build(&mut ui, chrome.bar_node(), &vault_path, device_key, &account_name);
         let lock = PrivateLock::new();
-        let favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
+        let mut favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
+        favicons.set_dark(dark);
+        let home = HomePage::new(&profile, favicons.dir().map(Into::into));
+        engine.set_internal_pages(Some(home.service()));
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
         let add_account = AddAccountSheet::build(&mut ui);
         // The dragged tab's lens above the chrome, and the lock screen's alert above all.
         let tab_drag = TabDrag::build(&mut ui);
+        let context_menus = ContextMenus::build(
+            &mut ui,
+            &[chrome.bar_node(), chrome.tab_strip_node(), chrome.sidebar_node(), chrome.bookmarks_bar_node()],
+        );
         let (_, alert_plane) = lock_screen.planes();
         let root = ui.root();
         let mut planes = ui.children(root);
@@ -434,12 +478,15 @@ impl Browser {
             shields,
             shields_popover,
             downloads_popover,
+            find,
+            file_drop: FileDrop::default(),
+            pointer_probe: None,
+            file_drag_at: None,
+            clipboard_reader: ClipboardReader::default(),
             player,
-            last_scroll_y: 0.0,
             capture_frame: 0,
             captured_frames: Vec::new(),
             pip: None,
-            pip_request: None,
             instance,
             adapter: adapter.clone(),
             site_click: None,
@@ -463,7 +510,10 @@ impl Browser {
             downloads,
             overview_query: String::new(),
             last_frame: Instant::now(),
-            page_tint: None,
+            window_tint: None,
+            last_tint_step: Instant::now(),
+            page_colors: PageTint::new(dark),
+            home,
             tabs: Tabs::default(),
             parked: Tabs::default(),
             private_mode: false,
@@ -479,6 +529,10 @@ impl Browser {
             pending_move: None,
             sidebar_before,
             tab_drag,
+            context_menus,
+            context_tab: None,
+            bar_bookmarks: Vec::new(),
+            bookmarks_changed: true,
             no_tabs: Tabs::default(),
             config,
             keymap,
@@ -502,6 +556,7 @@ impl Browser {
             slide_page_size: None,
             slide_view_size: None,
             sheet_origin: None,
+            engine_icons: None,
             menu_click_frame: None,
             open_at: options.open.clone().filter(|_| options.capture.is_some()).map(|what| {
                 (
@@ -656,12 +711,12 @@ impl Browser {
     }
 
     fn on_active_changed(&mut self, previous: Option<ViewId>) {
-        self.last_scroll_y = 0.0;
+        // Find on Page belongs to the page it was opened on.
+        self.close_find();
         self.passwords.hide_prompt(None, false);
         if let Some(tab) = self.tabs.active_mut() {
             tab.last_viewed = unix_now();
         }
-        self.set_bars_collapsed(false);
         if let Some(view) = previous {
             self.engine.set_focus(view, false);
             self.engine.set_hidden(view, true);
@@ -669,6 +724,12 @@ impl Browser {
         }
         if let Some(tab) = self.tabs.active() {
             let view = tab.view;
+            let delay = self.page_color_delay();
+            self.page_colors.shown(view, tab.loading, delay);
+            if is_home_url(&tab.url) {
+                // Fresh Shields numbers and top sites.
+                self.engine.run_script(view, REFRESH_SCRIPT, false);
+            }
             self.wake(view);
             self.engine.set_hidden(view, false);
             self.engine.resize(view, self.view_size());
@@ -748,10 +809,7 @@ impl Browser {
                     self.engine.set_zoom_level(view, zoom);
                 }
             }
-            Action::ToggleFullscreen => {
-                let fullscreen = self.window.fullscreen().is_none().then_some(Fullscreen::Borderless(None));
-                self.window.set_fullscreen(fullscreen);
-            }
+            Action::ToggleFullscreen => self.set_presentation(!self.chrome.presentation()),
             Action::TabOverview => {
                 if self.overview.is_open() {
                     self.close_overview(self.tabs.active_index());
@@ -781,8 +839,19 @@ impl Browser {
                     self.handle_ui_events(events);
                 }
             }
-            Action::Find => {
-                tracing::info!("{action} arrives in a later phase");
+            Action::Find => self.open_find(),
+            Action::FindNext | Action::FindPrevious => {
+                if self.find.is_open() {
+                    self.find.step(&mut self.engine, action == Action::FindNext);
+                } else {
+                    self.open_find();
+                }
+            }
+            Action::Paste | Action::PastePlainText => {
+                if let Some(view) = view {
+                    let max = u64::from(self.config.clipboard.max_paste_mb) * 1024 * 1024;
+                    self.clipboard_reader.read(view, action == Action::PastePlainText, max);
+                }
             }
             Action::Quit => {}
             media => {
@@ -1133,11 +1202,7 @@ impl Browser {
                 }
                 self.update_now_playing();
             }
-            axion_media::Message::Scroll { y } => {
-                if Some(view) == self.active_view() {
-                    self.page_scrolled(y);
-                }
-            }
+            axion_media::Message::Probe(state) => tracing::info!(%state, "media probe"),
             axion_media::Message::DoubleClick { id } => {
                 let fullscreen = self.player.mode() != PlayerMode::Fullscreen;
                 let command = axion_media::Command::new(&id, axion_media::Action::Fullscreen(fullscreen));
@@ -1307,10 +1372,9 @@ impl Browser {
             let leave = axion_media::Command::new(&player.id, axion_media::Action::Fullscreen(false));
             self.media_command(view, &leave);
         }
-        match &mut self.pip {
-            Some(pip) => pip.show(view, player),
-            None => self.pip_request = Some((view, player)),
-        }
+        // Its window opens from the event loop (`sync_windows`).
+        let (device, queue, config) = (&self.device, &self.queue, &self.config);
+        self.pip.get_or_insert_with(|| PipWindow::new(device, queue, config)).show(view, player);
     }
 
     fn pip_view(&self) -> Option<ViewId> {
@@ -1319,35 +1383,31 @@ impl Browser {
 
     /// Opens windows that need the event loop (the PiP window).
     pub fn sync_windows(&mut self, event_loop: &ActiveEventLoop) {
-        let Some((view, player)) = self.pip_request.take() else { return };
-        if self.pip.is_none() {
-            match PipWindow::new(
-                event_loop,
-                &self.instance,
-                &self.adapter,
-                &self.device,
-                &self.queue,
-                &self.config,
-            ) {
-                Ok(pip) => self.pip = Some(pip),
-                Err(e) => {
-                    tracing::error!("Picture in Picture failed: {e:#}");
-                    return;
-                }
+        let Some(pip) = self.pip.as_mut().filter(|p| p.needs_window()) else { return };
+        if let Err(e) = pip.open(event_loop, &self.instance, &self.adapter) {
+            tracing::error!("Picture in Picture failed: {e:#}");
+            if let Some(view) = pip.view {
+                self.end_pip(view, None, false);
             }
-        }
-        if let Some(pip) = &mut self.pip {
-            pip.show(view, player);
         }
     }
 
     pub fn is_pip_window(&self, id: winit::window::WindowId) -> bool {
-        self.pip.as_ref().is_some_and(|p| p.id() == id)
+        self.pip.as_ref().and_then(PipWindow::id) == Some(id)
+    }
+
+    pub fn is_main_window(&self, id: winit::window::WindowId) -> bool {
+        self.window.id() == id
     }
 
     pub fn pip_window_event(&mut self, event: WindowEvent) {
         let Some(pip) = &mut self.pip else { return };
-        match pip.window_event(event, &self.config) {
+        let outcome = pip.window_event(event, &self.config);
+        self.pip_outcome(outcome);
+    }
+
+    fn pip_outcome(&mut self, outcome: Option<PipOutcome>) {
+        match outcome {
             Some(PipOutcome::Command(view, command)) => self.media_command(view, &command),
             Some(PipOutcome::Close(view, id)) => self.end_pip(view, Some(&id), false),
             Some(PipOutcome::BackToTab(view)) => {
@@ -1413,7 +1473,9 @@ impl Browser {
             let uv = if !shown {
                 letterbox(tex, player.aspect())
             } else {
-                let r = Rect::new(player.x * dpr, player.y * dpr, player.w * dpr, player.h * dpr);
+                // The video itself, not its element's black bars around it.
+                let (x, y, w, h) = player.picture_rect();
+                let r = Rect::new(x * dpr, y * dpr, w * dpr, h * dpr);
                 let min = (r.origin / tex).clamp(Vec2::ZERO, Vec2::ONE);
                 let max = ((r.origin + r.size) / tex).clamp(Vec2::ZERO, Vec2::ONE);
                 Rect { origin: min, size: (max - min).max(Vec2::splat(0.001)) }
@@ -1424,34 +1486,19 @@ impl Browser {
         if let Some(pip) = &mut self.pip {
             pip.takeover = !shown;
             pip.player = Some(player);
-            pip.render(picture);
+            pip.render(picture, &self.config);
         }
     }
 
-    /// Hides the bars while the page scrolls down and brings them back when it scrolls up
-    /// (Safari's "hide tab bar when scrolling").
-    fn page_scrolled(&mut self, y: f32) {
-        let dy = y - self.last_scroll_y;
-        self.last_scroll_y = y;
-        if !self.config.layout.hide_bar_on_scroll || self.overview.is_open() {
+    /// Whole-page fullscreen (F11): the window goes fullscreen and Axion's chrome gives way
+    /// to the page; the page's own element fullscreen (video) is separate and keeps working.
+    fn set_presentation(&mut self, on: bool) {
+        if !self.chrome.set_presentation(on, &self.config) {
             return;
         }
-        let collapse = if y <= SCROLL_SHOW_NEAR_TOP || dy < -SCROLL_THRESHOLD {
-            false
-        } else if dy > SCROLL_THRESHOLD {
-            true
-        } else {
-            return;
-        };
-        self.set_bars_collapsed(collapse);
-    }
-
-    fn set_bars_collapsed(&mut self, collapse: bool) {
-        if self.chrome.set_collapsed(collapse, &self.config) {
-            let host = self.tabs.active().map(|t| display_host(&t.url)).unwrap_or_default();
-            self.chrome.set_mini_host(&mut self.ui, &host);
-            self.update_layout();
-        }
+        let window = on || self.chrome.page_fullscreen();
+        self.window.set_fullscreen(window.then_some(Fullscreen::Borderless(None)));
+        self.update_layout();
     }
 
     fn update_player(&mut self, dt: f32) {
@@ -1478,6 +1525,12 @@ impl Browser {
     /// they are shown. Returns false if there was nothing to restore.
     fn restore_session(&mut self) -> bool {
         let Some((saved, active)) = self.store.as_ref().and_then(|s| s.session().ok()) else { return false };
+        let pinned: usize = self
+            .store
+            .as_ref()
+            .and_then(|s| s.meta(SESSION_PINNED_KEY).ok().flatten())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
         if saved.is_empty() {
             return false;
         }
@@ -1491,6 +1544,7 @@ impl Browser {
             let (url, title) = (&saved_tab.url, &saved_tab.title);
             if max_age > 0
                 && i != active
+                && i >= pinned
                 && saved_tab.last_viewed > 0
                 && now - saved_tab.last_viewed > max_age
             {
@@ -1513,6 +1567,7 @@ impl Browser {
             };
             let mut tab = Tab::new(view, url);
             tab.title.clone_from(title);
+            tab.pinned = i < pinned;
             if saved_tab.last_viewed > 0 {
                 tab.last_viewed = saved_tab.last_viewed;
             }
@@ -1548,8 +1603,11 @@ impl Browser {
             })
             .collect();
         let active = normal.active_index();
+        let pinned = normal.pinned_count().to_string();
         if let Some(store) = &mut self.store
-            && let Err(e) = store.save_session(&tabs, active)
+            && let Err(e) = store
+                .save_session(&tabs, active)
+                .and_then(|()| store.set_meta(SESSION_PINNED_KEY, Some(&pinned)))
         {
             tracing::warn!("saving the session failed: {e}");
         }
@@ -1642,7 +1700,7 @@ impl Browser {
             .all()
             .iter()
             .enumerate()
-            .filter(|(i, t)| *i != active && t.last_viewed < cutoff && !t.playing_media)
+            .filter(|(i, t)| *i != active && t.last_viewed < cutoff && !t.playing_media && !t.pinned)
             .map(|(i, _)| i)
             .collect();
         for i in stale.into_iter().rev() {
@@ -1747,7 +1805,7 @@ impl Browser {
             Err(axion_vault::VaultError::WrongPassword) => self.lock_screen.wrong_password(&mut self.ui),
             Err(e) => {
                 tracing::error!("unlocking the account failed: {e}");
-                self.lock_screen.wrong_password(&mut self.ui);
+                self.lock_screen.show_error(&mut self.ui, &crate::passwords::describe(&e));
             }
         }
     }
@@ -1949,6 +2007,7 @@ impl Browser {
                 MenuItem::new(Icon::Bookmark, "Add Bookmark", MenuAction::AddBookmark)
             },
             MenuItem::new(Icon::Share, "Copy Link", MenuAction::CopyLink),
+            MenuItem::new(Icon::Search, "Find on Page", MenuAction::FindOnPage),
             MenuItem::new(Icon::ZoomIn, "Zoom", MenuAction::Zoom).with_detail(zoom.clone()).with_submenu(
                 vec![
                     MenuItem::controls(vec![
@@ -1968,6 +2027,105 @@ impl Browser {
         self.menu.open(&mut self.ui, &self.config, anchor, window, items);
     }
 
+    // ---- find on page ----
+
+    /// Opens the find bar out of the address field with the field focused, or focuses it
+    /// again (selecting the text) if it is open.
+    fn open_find(&mut self) {
+        let Some(view) = self.active_view().filter(|_| !self.is_locked()) else { return };
+        if self.overview.is_open() {
+            return;
+        }
+        self.menu.close(&mut self.ui, &self.config);
+        let anchor = self.chrome.address_frame(&self.ui);
+        let width = self.logical_size().x;
+        self.find.open(&mut self.ui, &self.config, anchor, width, view);
+        let events = self.ui.focus(self.find.field());
+        self.handle_ui_events(events);
+    }
+
+    fn close_find(&mut self) {
+        if !self.find.is_open() {
+            return;
+        }
+        self.find.close(&mut self.ui, &self.config, &mut self.engine);
+        if self.ui.focused() == Some(self.find.field()) {
+            let events = self.ui.blur();
+            self.handle_ui_events(events);
+        }
+        // Typing goes back to the page.
+        if self.ui.focused().is_none()
+            && let Some(view) = self.active_view()
+        {
+            self.engine.set_focus(view, true);
+        }
+    }
+
+    fn find_action(&mut self, action: FindAction) {
+        match action {
+            FindAction::Previous | FindAction::Next => {
+                self.find.step(&mut self.engine, action == FindAction::Next);
+            }
+            FindAction::ToggleMatchCase => {
+                self.find.toggle_match_case(&mut self.ui, &mut self.config);
+                self.config_dirty_since.get_or_insert_with(Instant::now);
+            }
+            FindAction::Close => return self.close_find(),
+        }
+        // The buttons take the focus away from the field; typing goes on there.
+        self.refocus_find_field();
+    }
+
+    /// Puts the focus back into the find field, the caret at the end.
+    fn refocus_find_field(&mut self) {
+        let field = self.find.field();
+        if self.ui.focused() == Some(field) {
+            return;
+        }
+        let text = self.ui.field_text(field).unwrap_or_default().to_owned();
+        let events = self.ui.focus(field);
+        self.handle_ui_events(events);
+        let end = text.len();
+        self.ui.set_field_text_selecting(field, &text, end..end);
+    }
+
+    // ---- files dragged in ----
+
+    /// Moves a file drag from the desktop along with the pointer (every frame while one is
+    /// over the window) and finishes its drop.
+    fn update_file_drop(&mut self) {
+        if !self.file_drop.is_active() {
+            return;
+        }
+        if self.pointer_probe.is_none() && self.file_drag_at.is_none() {
+            self.pointer_probe = PointerProbe::connect(&self.window);
+        }
+        let pointer = self
+            .file_drag_at
+            .or_else(|| self.pointer_probe.as_ref().and_then(|p| p.position(&self.window)))
+            .or(self.pointer);
+        let page = self.page_rect();
+        let target = pointer
+            .filter(|&p| page.contains(p) && !self.ui.covers(p) && !self.is_locked())
+            .and_then(|p| Some((self.active_view()?, p - page.origin)));
+        let modifiers = input::engine_modifiers(self.modifiers);
+        let outcome = self.file_drop.update(&mut self.engine, target, modifiers);
+        if !self.file_drop.is_active() {
+            self.file_drag_at = None;
+        }
+        if let Some(DropOutcome::OpenTabs(files)) = outcome
+            && !self.is_locked()
+        {
+            // Dropped on the bar or the sidebar: each file opens in a tab of its own.
+            for (i, path) in files.iter().enumerate() {
+                let url = format!("file://{}", path.display());
+                if let Err(e) = self.open_tab(&url, i == 0) {
+                    tracing::error!("opening a dropped file failed: {e:#}");
+                }
+            }
+        }
+    }
+
     fn menu_action(&mut self, action: MenuAction) {
         match action {
             MenuAction::SwitchAccount(i) => {
@@ -1979,6 +2137,8 @@ impl Browser {
             MenuAction::AddAccount => return self.open_add_account(),
             MenuAction::AccountSettings => return self.open_account_settings(),
             MenuAction::LockAccount => return self.lock_account(),
+            MenuAction::Tab(command) => return self.tab_command(command),
+            MenuAction::Bookmark(command) => return self.bookmark_command(command),
             _ => {}
         }
         let Some(tab) = self.tabs.active() else { return };
@@ -1990,6 +2150,7 @@ impl Browser {
                 {
                     tracing::error!("adding a bookmark failed: {e}");
                 }
+                self.bookmarks_changed = true;
             }
             MenuAction::RemoveBookmark => {
                 if let Some(store) = &self.store
@@ -1998,6 +2159,7 @@ impl Browser {
                 {
                     tracing::error!("removing a bookmark failed: {e}");
                 }
+                self.bookmarks_changed = true;
             }
             MenuAction::CopyLink => {
                 if let Some(clipboard) = &mut self.clipboard {
@@ -2018,6 +2180,10 @@ impl Browser {
             }
             MenuAction::Zoom => {}
             MenuAction::HardReload => self.run(Action::HardReload),
+            MenuAction::FindOnPage => {
+                self.menu.close(&mut self.ui, &self.config);
+                self.run(Action::Find);
+            }
             MenuAction::Settings => {
                 // Out of the menu's Settings row (the menu's glass lies in the bar's plane).
                 // The menu is gone by the time Settings closes, so it drains into the address
@@ -2030,7 +2196,9 @@ impl Browser {
             MenuAction::SwitchAccount(_)
             | MenuAction::AddAccount
             | MenuAction::AccountSettings
-            | MenuAction::LockAccount => {}
+            | MenuAction::LockAccount
+            | MenuAction::Tab(_)
+            | MenuAction::Bookmark(_) => {}
         }
     }
 
@@ -2051,6 +2219,7 @@ impl Browser {
     /// `AXION_CAPTURE_FRAMES` it shows them on their way out).
     fn close_popups(&mut self) {
         self.menu.close(&mut self.ui, &self.config);
+        self.context_menus.close(&mut self.ui, &self.config);
         self.account_menu.close(&mut self.ui, &self.config);
         self.shields_popover.close(&mut self.ui, &self.config);
         self.downloads_popover.close(&mut self.ui, &self.config);
@@ -2196,14 +2365,53 @@ impl Browser {
         self.engine.set_page_script(Some(page_script(&self.config)));
     }
 
+    /// Fetches the icons of the search engines the start page offers that aren't cached yet,
+    /// so its engine menu shows them without the user having visited each engine.
+    fn fetch_engine_icons(&mut self) {
+        if self.engine_icons.is_some() {
+            return;
+        }
+        let Some(dir) = self.favicons.dir().map(std::path::Path::to_path_buf) else { return };
+        let hosts: Vec<String> = crate::settings::SEARCH_ENGINES
+            .iter()
+            .filter_map(|(_, url)| url.strip_prefix("https://")?.split('/').next())
+            .filter(|host| {
+                ![false, true].iter().any(|&dark| crate::favicons::cache_file(&dir, host, dark).exists())
+            })
+            .map(str::to_owned)
+            .collect();
+        if !hosts.is_empty() {
+            self.engine_icons = Some(crate::engine_icons::fetch(hosts));
+        }
+    }
+
+    /// Search engine icons that arrived: cached like any site's, shown on the start page.
+    fn take_engine_icons(&mut self) {
+        let Some(rx) = &self.engine_icons else { return };
+        let icons: Vec<_> = rx.try_iter().collect();
+        for icon in &icons {
+            self.favicons.insert(&icon.site, &icon.url, icon.width, icon.height, &icon.rgba, true);
+        }
+        if !icons.is_empty() {
+            self.home.icons_changed();
+        }
+    }
+
     fn edit_address(&mut self) {
+        // Already editing: the click places the caret or selects inside the field (it must not
+        // start over and select everything again).
+        if self.ui.focused() == Some(self.chrome.address_field) {
+            return;
+        }
         if let Some(view) = self.active_view() {
             self.engine.set_focus(view, false);
         }
         // Editing starts from the shown tab's address: the field keeps its text while focused,
         // so a tab opened just now (new tab) would otherwise show the previous tab's.
         if let Some(url) = self.tabs.active().map(|t| t.url.clone()) {
-            self.ui.set_field_text(self.chrome.address_field, &url);
+            // On the start page the field starts empty, ready for typing.
+            let text = if is_home_url(&url) { "" } else { url.as_str() };
+            self.ui.set_field_text(self.chrome.address_field, text);
         }
         let events = self.chrome.set_editing(&mut self.ui, true);
         self.handle_ui_events(events);
@@ -2244,6 +2452,18 @@ impl Browser {
                         self.close_overview(i);
                     }
                 }
+                UiEvent::Clicked { action, .. } if FindBar::action(action).is_some() => {
+                    if let Some(action) = FindBar::action(action) {
+                        self.find_action(action);
+                    }
+                }
+                UiEvent::Submitted { node, .. } if node == self.find.field() => {
+                    // Enter: the next match; Shift+Enter: the previous one. The field keeps
+                    // the focus.
+                    self.find.step(&mut self.engine, !self.modifiers.shift);
+                    self.refocus_find_field();
+                }
+                UiEvent::Cancelled { node } if node == self.find.field() => self.close_find(),
                 UiEvent::Cancelled { node } if node == self.settings.search_field() => {
                     // Escape clears the settings search (and leaves the field).
                     self.ui.set_field_text(node, "");
@@ -2339,6 +2559,14 @@ impl Browser {
                         self.menu_action(click.action);
                     }
                 }
+                UiEvent::Clicked { action, .. } if self.context_menus.owns(action) => {
+                    if let Some(click) = self.context_menus.click(&mut self.ui, &self.config, action) {
+                        if !click.keep_open {
+                            self.context_menus.close(&mut self.ui, &self.config);
+                        }
+                        self.menu_action(click.action);
+                    }
+                }
                 UiEvent::Clicked { action, node } if self.menu.owns(action) => {
                     self.menu_click_frame = Some(self.ui.frame(node));
                     if let Some(MenuClick { action, keep_open }) =
@@ -2394,6 +2622,10 @@ impl Browser {
                     Some(ChromeAction::ToggleSidebar) => self.run(Action::ToggleSidebar),
                     Some(ChromeAction::Back) => self.run(Action::Back),
                     Some(ChromeAction::Forward) => self.run(Action::Forward),
+                    Some(ChromeAction::Home) => {
+                        let home = self.config.general.homepage.clone();
+                        self.navigate_to(home);
+                    }
                     Some(ChromeAction::ReloadOrStop) => {
                         if let Some(tab) = self.tabs.active() {
                             let (view, loading) = (tab.view, tab.loading);
@@ -2478,7 +2710,6 @@ impl Browser {
                             self.tabs_changed = true;
                         }
                     }
-                    Some(ChromeAction::ExpandBars) => self.set_bars_collapsed(false),
                     Some(ChromeAction::NowPlaying) => {
                         if let Some(view) = self.now_playing {
                             self.show_view(view);
@@ -2493,6 +2724,10 @@ impl Browser {
                         self.select_tab(i);
                     }
                     Some(ChromeAction::CloseTab(i)) => self.close_tab(i),
+                    Some(ChromeAction::OpenBookmark(i)) => {
+                        self.bookmark_command(crate::context_menu::BookmarkCommand::Open(i))
+                    }
+                    Some(ChromeAction::BookmarksOverflow) => self.toggle_bookmarks_overflow(),
                     None => {}
                 },
                 UiEvent::Submitted { node, text } if node == self.chrome.address_field => {
@@ -2545,6 +2780,18 @@ impl Browser {
                 self.apply_theme();
             }
         }
+        while let Some((view, data)) = self.clipboard_reader.poll() {
+            // Only into the page that is still shown (and not locked away meanwhile).
+            if Some(view) == self.active_view() && !self.is_locked() {
+                tracing::debug!(
+                    text = data.text.is_some(),
+                    files = data.files.len(),
+                    "pasting into the page"
+                );
+                self.engine.paste(view, &data);
+            }
+        }
+        self.update_file_drop();
         let mut downloads_changed = false;
         let events = self.engine.pump();
         let started = Instant::now();
@@ -2594,6 +2841,24 @@ impl Browser {
                         tracing::debug!("fetching icon {icon}");
                         self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
                     }
+                    if loading
+                        && self.find.view() == Some(view)
+                        && find_tab(&self.tabs, &self.parked, view).is_some_and(|t| !t.loading)
+                    {
+                        // Another page: Find on Page closes, as in Safari.
+                        self.close_find();
+                    }
+                    if let Some(tab) = find_tab(&self.tabs, &self.parked, view) {
+                        if loading && !tab.loading {
+                            self.page_colors.page_started(view);
+                        } else if !loading && tab.loading {
+                            let delay = self.page_color_delay();
+                            self.page_colors.page_loaded(view, delay);
+                            if is_home_url(&tab.url) && !tab.private {
+                                self.fetch_engine_icons();
+                            }
+                        }
+                    }
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
                         if loading && !tab.loading {
                             // A new page: its count starts over.
@@ -2627,12 +2892,21 @@ impl Browser {
                 EngineEvent::FullscreenRequested { view, fullscreen } => {
                     if Some(view) == self.active_view() {
                         self.chrome.set_page_fullscreen(fullscreen);
-                        self.window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
+                        // In F11 fullscreen the window stays fullscreen after the video.
+                        let window = fullscreen || self.chrome.presentation();
+                        self.window.set_fullscreen(window.then_some(Fullscreen::Borderless(None)));
                         self.update_layout();
                     }
                 }
                 EngineEvent::NewViewRequested { opener, url, kind, user_gesture, opener_frame } => {
                     let opener_url = find_tab(&self.tabs, &self.parked, opener).map(|t| t.url.clone());
+                    // Axion's own pages open only from the browser or from each other.
+                    if url.starts_with("axion:")
+                        && !opener_url.as_deref().is_some_and(|u| u.starts_with("axion:"))
+                    {
+                        tracing::warn!(%url, "refused a page's new tab with an axion:// page");
+                        continue;
+                    }
                     if !self.shields.allow_popup(
                         opener_url.as_deref().unwrap_or_default(),
                         opener_frame.as_deref(),
@@ -2652,27 +2926,43 @@ impl Browser {
                 }
                 EngineEvent::FaviconUrlsChanged { view, urls } => {
                     if let Some(page) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone())
-                        && let Some(icon) = self.favicons.icon_links(&page, &urls)
+                        && let Some(icon) = self.favicons.icon_urls(&page, &urls)
                     {
                         tracing::debug!("fetching icon {icon}");
                         self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
                     }
+                }
+                EngineEvent::PageMetaChanged { view, meta } => {
+                    let delay = self.page_color_delay();
+                    self.page_colors.theme_colors(view, &meta.theme_colors, delay);
+                    if let Some(page) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone())
+                        && let Some(icon) = self.favicons.icon_links(&page, &meta.icons)
+                    {
+                        tracing::debug!("fetching icon {icon}");
+                        self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                    }
+                }
+                EngineEvent::InternalMessage { view, host, message } => {
+                    self.internal_message(view, &host, &message);
                 }
                 EngineEvent::FaviconFailed { view, url } => {
                     tracing::debug!("no usable icon at {url}");
                     if let Some(page) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone())
-                        && let Some(icon) = self.favicons.failed(&page)
+                        && let Some(icon) = self.favicons.failed(&page, &url)
                     {
                         tracing::debug!("fetching icon {icon}");
                         self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
                     }
                 }
-                EngineEvent::FaviconReady { view, width, height, rgba, .. } => {
+                EngineEvent::FaviconReady { view, url, width, height, rgba } => {
                     if let Some((page, private)) =
                         find_tab(&self.tabs, &self.parked, view).map(|t| (t.url.clone(), t.private))
                     {
                         // Private tabs leave no icon on disk.
-                        self.favicons.insert(&page, width, height, &rgba, !private);
+                        self.favicons.insert(&page, &url, width, height, &rgba, !private);
+                        if !private {
+                            self.home.icons_changed();
+                        }
                         self.tabs_changed = true;
                         if self.overview.is_open() {
                             self.rebuild_overview();
@@ -2683,7 +2973,10 @@ impl Browser {
                 EngineEvent::RequestBlocked { view, url } | EngineEvent::NavigationBlocked { view, url } => {
                     self.count_blocked(view, url);
                 }
-                EngineEvent::Closed { .. } => {}
+                EngineEvent::FindResult { view, active, count, final_update } => {
+                    self.find.set_result(&mut self.ui, &mut self.engine, view, (active, count, final_update));
+                }
+                EngineEvent::Closed { view } => self.page_colors.closed(view),
                 EngineEvent::DownloadUpdated(info) => {
                     self.downloads.update(info, self.store.as_ref(), &self.config, unix_now());
                     downloads_changed = true;
@@ -2695,6 +2988,7 @@ impl Browser {
             }
         }
         self.downloads_pump(downloads_changed);
+        self.update_home();
         if count > 0 {
             let took = started.elapsed();
             let stats = &mut self.frame_stats;
@@ -2749,7 +3043,7 @@ impl Browser {
                     }
                     Err(e) => {
                         tracing::error!("setting the account password failed: {e}");
-                        e.to_string()
+                        crate::passwords::describe(&e)
                     }
                 };
                 self.settings.set_account_status(Some(status));
@@ -2791,8 +3085,21 @@ impl Browser {
                 self.settings.set_passwords_status(status);
                 self.settings.show(&mut self.ui, &self.config, &self.keymap);
             }
-            Outcome::ExportPasswords(path) => {
-                let status = self.passwords.export(&path);
+            Outcome::ExportPasswords { path, password } => {
+                let status = self.passwords.export(&path, &password);
+                self.settings.set_passwords_status(status);
+                self.settings.show(&mut self.ui, &self.config, &self.keymap);
+            }
+            Outcome::RestorePasswords { path, password } => {
+                let (status, now_has_password) =
+                    self.passwords.restore(&mut self.ui, &self.config, &path, &password);
+                if now_has_password {
+                    // The export's password became the account password, entered just now.
+                    self.lock.unlock();
+                    self.account_unlocked = true;
+                    self.settings.set_account(self.account_info());
+                    self.update_lock();
+                }
                 self.settings.set_passwords_status(status);
                 self.settings.show(&mut self.ui, &self.config, &self.keymap);
             }
@@ -2922,34 +3229,109 @@ impl Browser {
         }
     }
 
-    /// Follows the page's top edge: tints the window around the page with its colour (like
-    /// Safari) and flips the chrome light/dark to stay legible (with hysteresis).
-    fn adapt_appearance(&mut self, page: &wgpu::TextureView, texture: &wgpu::Texture) {
+    /// How long after loading a page's colour is measured.
+    fn page_color_delay(&self) -> Duration {
+        Duration::from_secs_f32(self.config.appearance.page_color_delay_ms.max(0.0) / 1000.0)
+    }
+
+    /// Tints the window around the page with the page's colour (like Safari) and flips the
+    /// chrome light/dark to stay legible on it. The colour is one per page (see `page_color`),
+    /// measured on the frame once after loading, so scrolling never changes it.
+    fn adapt_appearance(&mut self, page: Option<&wgpu::TextureView>, dt: f32) {
+        if let Some(cells) = self.compositor.take_palette() {
+            self.page_colors.measured(&cells);
+        }
         let appearance = &self.config.appearance;
         let adapt = appearance.adapt_to_page && appearance.theme == ThemeMode::Auto;
-        if !appearance.tint_from_page && !adapt {
-            self.page_tint = None;
-            return;
+        let view = self.active_view().filter(|_| !self.is_locked());
+        if let (Some(view), Some(page)) = (view, page)
+            && (appearance.tint_from_page || adapt)
+            && self.page_colors.wants_measure(view)
+            && self.compositor.sample_palette(page)
+        {
+            self.page_colors.measuring(view);
         }
-        let edge = (PROBE_HEIGHT * self.scale() / texture.height() as f32).min(1.0);
-        let Some(color) = self.compositor.probe_color(page, Rect::new(0.0, 0.0, 1.0, edge)) else { return };
-        if self.config.appearance.tint_from_page {
-            // Ease towards the new colour so navigations don't flash.
-            let target = [color[0], color[1], color[2], 1.0];
-            let current = self.page_tint.unwrap_or(target);
-            self.page_tint = Some(std::array::from_fn(|i| current[i] + (target[i] - current[i]) * TINT_EASE));
-        } else {
-            self.page_tint = None;
-        }
-        if !adapt {
-            return;
-        }
-        // Rec. 709 luma of the sRGB-encoded colour: what the eye judges as light or dark.
-        let lightness = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
-        let dark = if self.dark { lightness < LIGHT_ABOVE } else { lightness < DARK_BELOW };
+        let color = view.and_then(|v| self.page_colors.color(v));
+        let spring = crate::drip::spring(&self.config, self.config.motion.smooth);
+        let tint = color.filter(|_| self.config.appearance.tint_from_page);
+        self.window_tint = self.page_colors.step(tint, spring, dt);
+        let Some(color) = color.filter(|_| adapt) else { return };
+        let dark = lightness(color) < DARK_BELOW;
         if dark != self.dark {
             self.dark = dark;
             self.ui.set_theme(Theme::new(&self.config, dark || self.private_mode));
+        }
+    }
+
+    // ---- the start page ----
+
+    /// Keeps the start page's data current; open start pages pull it again when it changed.
+    fn update_home(&mut self) {
+        if self.home.poll_chooser(&mut self.config) {
+            self.config_dirty_since.get_or_insert(Instant::now());
+        }
+        let name = self.account().map(|a| a.name.clone()).unwrap_or_default();
+        let dark = is_dark(&self.config, &self.window, self.desktop_theme.dark());
+        if self.home.update(&self.config, self.store.as_ref(), self.shields.total(), &name, dark) {
+            self.refresh_home_pages();
+        }
+    }
+
+    fn refresh_home_pages(&mut self) {
+        let views: Vec<ViewId> = self
+            .tabs
+            .all()
+            .iter()
+            .chain(self.parked.all())
+            .filter(|t| is_home_url(&t.url))
+            .map(|t| t.view)
+            .collect();
+        for view in views {
+            if !self.engine.is_discarded(view) {
+                self.engine.run_script(view, REFRESH_SCRIPT, false);
+            }
+        }
+    }
+
+    /// A message from one of Axion's own pages (the engine made sure it came from one).
+    fn internal_message(&mut self, view: ViewId, host: &str, message: &str) {
+        let Some(tab) = find_tab(&self.tabs, &self.parked, view) else { return };
+        if host != "home" || !is_home_url(&tab.url) {
+            tracing::debug!(host, "message from an axion:// page that isn't shown");
+            return;
+        }
+        let private = tab.private;
+        // Private start pages may search, nothing else: no settings, no history.
+        let mut scratch = self.config.clone();
+        let (config, store) =
+            if private { (&mut scratch, None) } else { (&mut self.config, self.store.as_ref()) };
+        let action = self.home.handle(message, config, store);
+        match action {
+            HomeAction::Nothing => {}
+            HomeAction::Go(text) => {
+                if let Some(url) = resolve_input(&text, &self.config.general.search_url)
+                    && let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view)
+                {
+                    tab.url.clone_from(&url);
+                    self.engine.navigate(view, &url);
+                    self.engine.set_focus(view, true);
+                    self.tabs_changed = true;
+                }
+            }
+            HomeAction::ConfigChanged if !private => {
+                self.config_dirty_since.get_or_insert(Instant::now());
+                self.refresh_settings();
+            }
+            HomeAction::Refresh if !private => self.update_home(),
+            HomeAction::OpenSettings if !private => {
+                self.settings.set_category(Category::General);
+                if self.settings.is_open() {
+                    self.refresh_settings();
+                } else {
+                    self.run(Action::OpenSettings);
+                }
+            }
+            HomeAction::ConfigChanged | HomeAction::Refresh | HomeAction::OpenSettings => {}
         }
     }
 
@@ -2960,6 +3342,28 @@ impl Browser {
         self.dark = is_dark(&self.config, &self.window, self.desktop_theme.dark());
         // Pages follow the chosen scheme live (not the page-adaptive chrome flip below).
         self.engine.set_color_scheme(self.dark);
+        let delay = self.page_color_delay();
+        self.page_colors.set_dark(self.dark, self.active_view(), delay);
+        if self.favicons.set_dark(self.dark) {
+            // Sites with their own icon for the scheme show it at once.
+            let pages: Vec<(ViewId, String)> = self
+                .tabs
+                .all()
+                .iter()
+                .chain(self.parked.all())
+                .filter(|t| !self.engine.is_discarded(t.view))
+                .map(|t| (t.view, t.url.clone()))
+                .collect();
+            for (view, page) in pages {
+                if let Some(icon) = self.favicons.resolve(&page) {
+                    self.engine.fetch_favicon(view, &icon, FETCH_SIZE);
+                }
+            }
+            self.tabs_changed = true;
+            if self.overview.is_open() {
+                self.rebuild_overview();
+            }
+        }
         self.update_lock();
         // Private browsing is always dark, like Safari's.
         self.ui.set_theme(Theme::new(&self.config, self.dark || self.private_mode));
@@ -3040,6 +3444,9 @@ impl Browser {
                 }
             }
             WindowEvent::RedrawRequested => self.redraw()?,
+            WindowEvent::HoveredFile(path) => self.file_drop.hovered(path),
+            WindowEvent::HoveredFileCancelled => self.file_drop.cancelled(),
+            WindowEvent::DroppedFile(path) => self.file_drop.dropped(path),
             _ => {}
         }
         Ok(true)
@@ -3123,6 +3530,18 @@ impl Browser {
         }
         if pressed && self.account_menu.is_open() && !self.account_menu.contains(&self.ui, p) {
             self.account_menu.close(&mut self.ui, &self.config);
+            return;
+        }
+        if pressed && self.context_menus.is_open() && !self.context_menus.contains(&self.ui, p) {
+            self.context_menus.close(&mut self.ui, &self.config);
+            // A right click elsewhere opens that one's menu instead.
+            if button != winit::event::MouseButton::Right {
+                return;
+            }
+        }
+        // Right and middle clicks on tabs and bookmarks (never a tab drag: that is the left
+        // button's).
+        if pressed && button != winit::event::MouseButton::Left && self.secondary_click(button, p) {
             return;
         }
         if pressed
@@ -3235,6 +3654,10 @@ impl Browser {
             self.pending_move = None;
             return false;
         }
+        if pressed && self.context_menus.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.context_menus.close(&mut self.ui, &self.config);
+            return false;
+        }
         if pressed && self.menu.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.menu.close(&mut self.ui, &self.config);
             return false;
@@ -3260,6 +3683,15 @@ impl Browser {
             return false;
         }
         if pressed
+            && self.chrome.presentation()
+            && !self.chrome.page_fullscreen()
+            && self.ui.focused().is_none()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            self.set_presentation(false);
+            return false;
+        }
+        if pressed
             && self.chrome.page_fullscreen()
             && self.player.mode() != PlayerMode::Fullscreen
             && input::key(event) == Some(Key::Named("Escape".into()))
@@ -3274,6 +3706,10 @@ impl Browser {
             && let Some(action) = self.keymap.action_for(&chord)
             // Media keys (Space, arrows…) are ours only while a video is fullscreen.
             && (!action.is_media() || self.player.mode() == PlayerMode::Fullscreen && self.ui.focused().is_none())
+            // Pasting into the page is ours only where its engine can't reach the clipboard;
+            // fields of the chrome paste by themselves.
+            && (!matches!(action, Action::Paste | Action::PastePlainText)
+                || self.ui.focused().is_none() && !self.engine.has_system_clipboard())
         {
             if action == Action::Quit {
                 return true;
@@ -3287,6 +3723,15 @@ impl Browser {
             if pressed && input::key(event) == Some(Key::Named("Escape".into())) {
                 self.close_overview(self.tabs.active_index());
             }
+            return false;
+        }
+
+        if pressed
+            && self.ui.focused() == Some(self.find.field())
+            && let Some(Key::Named(name)) = input::key(event)
+            && (name == "Up" || name == "Down")
+        {
+            self.find.step(&mut self.engine, name == "Down");
             return false;
         }
 
@@ -3353,6 +3798,7 @@ impl Browser {
         if self.logical_size() != self.layout_size {
             self.update_layout();
         }
+        let tabs_changed = self.tabs_changed;
         if std::mem::take(&mut self.tabs_changed) {
             self.update_now_playing();
             self.session_dirty = true;
@@ -3371,6 +3817,7 @@ impl Browser {
                 if title.is_empty() { "Axion".to_owned() } else { format!("Axion - {title}") }.as_str(),
             );
         }
+        self.sync_bookmarks_bar(tabs_changed);
         let now = Instant::now();
         if self.overview_at.is_some_and(|at| now >= at) {
             self.overview_at = None;
@@ -3482,6 +3929,36 @@ impl Browser {
                         self.mouse_button(ElementState::Released, winit::event::MouseButton::Left);
                     }
                 }
+                // Capture aids: a right ("rtap:X:Y") or middle ("mtap:X:Y") click; pinning tab N
+                // ("pin-tab:N") and bookmarking all tabs, as their context menu rows do.
+                tap if tap.starts_with("rtap:") || tap.starts_with("mtap:") => {
+                    let n: Vec<f32> = tap.split(':').skip(1).filter_map(|v| v.parse().ok()).collect();
+                    let button = if tap.starts_with('r') {
+                        winit::event::MouseButton::Right
+                    } else {
+                        winit::event::MouseButton::Middle
+                    };
+                    if let [x, y] = n[..] {
+                        self.pointer_moved(Vec2::new(x, y));
+                        self.mouse_button(ElementState::Pressed, button);
+                        self.mouse_button(ElementState::Released, button);
+                    }
+                }
+                pin if pin.starts_with("pin-tab:") => {
+                    if let Some(view) = pin["pin-tab:".len()..]
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|i| self.tabs.all().get(i))
+                        .map(|t| t.view)
+                    {
+                        self.context_tab = Some((view, self.private_mode));
+                        self.tab_command(crate::context_menu::TabCommand::Pin);
+                    }
+                }
+                "bookmark-all" => {
+                    self.context_tab = self.active_view().map(|v| (v, self.private_mode));
+                    self.tab_command(crate::context_menu::TabCommand::BookmarkAll);
+                }
                 // Capture aid: click a sidebar or toolbar control by its action ("chrome:N").
                 chrome if chrome.starts_with("chrome:") => {
                     if let Ok(id) = chrome["chrome:".len()..].parse::<u32>() {
@@ -3490,6 +3967,22 @@ impl Browser {
                             action: axion_ui::ActionId(id),
                             node,
                         }]);
+                    }
+                }
+                // Capture aid: the window manager closes the PiP window (Alt+F4, its close button).
+                "pip-close" => self.pip_window_event(WindowEvent::CloseRequested),
+                // Capture aids: the PiP window's × and "back to the tab" buttons.
+                "pip-x" | "pip-back" => {
+                    let control = if what == "pip-x" { PipControl::Close } else { PipControl::BackToTab };
+                    let outcome = self.pip.as_mut().and_then(|p| p.click(control, &self.config));
+                    self.pip_outcome(outcome);
+                }
+                // Capture aid: resize the PiP window to "pip-size:W:H" (logical px), like the
+                // user dragging its edge.
+                size if size.starts_with("pip-size:") => {
+                    let n: Vec<f64> = size.split(':').skip(1).filter_map(|v| v.parse().ok()).collect();
+                    if let (&[w, h], Some(pip)) = (&n[..], &mut self.pip) {
+                        pip.request_size(winit::dpi::LogicalSize::new(w, h), &self.config);
                     }
                 }
                 // Capture aid: start Picture in Picture for the page's main video.
@@ -3504,6 +3997,8 @@ impl Browser {
                 // Capture aid: open the player's speed menu.
                 // Capture aid: scroll the page down by 600 px.
                 "toggle-sidebar" => self.run(Action::ToggleSidebar),
+                // Capture aid: F11, whole-page fullscreen (again to leave it).
+                "presentation" => self.run(Action::ToggleFullscreen),
                 // Capture aid: move the pointer to window position "hover:X:Y" (logical px).
                 hover if hover.starts_with("hover:") => {
                     let mut parts = hover.split(':').skip(1).filter_map(|n| n.parse::<f32>().ok());
@@ -3520,11 +4015,60 @@ impl Browser {
                 wheel if wheel.starts_with("wheel:") => {
                     self.wheel_frames = wheel["wheel:".len()..].parse().unwrap_or(0);
                 }
-                "scroll-page" => {
-                    if let Some(view) = self.active_view() {
-                        self.engine.run_script(view, "window.scrollBy(0, 600);", false);
+                // Test aids: Find on Page for "find:TEXT" (typed like the keyboard does), its
+                // next / previous match, the case toggle and closing it.
+                find if find.starts_with("find:") => {
+                    self.open_find();
+                    let (_, events) = self.ui.handle(UiInput::Text(find["find:".len()..].to_owned()));
+                    self.handle_ui_events(events);
+                }
+                "find-next" => self.find_action(FindAction::Next),
+                "find-previous" => self.find_action(FindAction::Previous),
+                "find-case" => self.find_action(FindAction::ToggleMatchCase),
+                "find-close" => self.find_action(FindAction::Close),
+                // Test aids: a file from the desktop dragged to window position
+                // "drag-file:PATH:X:Y" (logical px; it stays there until the next step), then
+                // dropped ("drop-file") or taken away ("drag-cancel").
+                drag if drag.starts_with("drag-file:") => {
+                    let mut parts = drag["drag-file:".len()..].rsplitn(3, ':');
+                    let (y, x, path) = (parts.next(), parts.next(), parts.next());
+                    if let (Some(Ok(y)), Some(Ok(x)), Some(path)) =
+                        (y.map(str::parse::<f32>), x.map(str::parse::<f32>), path)
+                    {
+                        self.file_drag_at = Some(Vec2::new(x, y));
+                        self.file_drop.hovered(PathBuf::from(path));
                     }
                 }
+                "drop-file" => {
+                    if let Some(path) = self.file_drop.files().first().cloned() {
+                        self.file_drop.dropped(path);
+                    }
+                }
+                "drag-cancel" => self.file_drop.cancelled(),
+                // Test aid: a file dragged in and dropped at once at "drag-drop-file:PATH:X:Y".
+                drag if drag.starts_with("drag-drop-file:") => {
+                    let mut parts = drag["drag-drop-file:".len()..].rsplitn(3, ':');
+                    let (y, x, path) = (parts.next(), parts.next(), parts.next());
+                    if let (Some(Ok(y)), Some(Ok(x)), Some(path)) =
+                        (y.map(str::parse::<f32>), x.map(str::parse::<f32>), path)
+                    {
+                        self.file_drag_at = Some(Vec2::new(x, y));
+                        self.file_drop.hovered(PathBuf::from(path));
+                        self.file_drop.dropped(PathBuf::from(path));
+                    }
+                }
+                // Test aids: Ctrl+<letter> on the page as the keyboard sends it ("ctrl:v"), and
+                // the paste Axion makes itself where the engine has no clipboard ("paste").
+                ctrl if ctrl.starts_with("ctrl:") => {
+                    if let (Some(view), Some(letter)) =
+                        (self.active_view(), ctrl["ctrl:".len()..].chars().next())
+                    {
+                        for key in input::ctrl_keys(letter) {
+                            self.engine.send_input(view, &key);
+                        }
+                    }
+                }
+                "paste" => self.run(Action::Paste),
                 "settings-scroll" => self.settings.scroll_by(&mut self.ui, -400.0),
                 "player-speed" => {
                     let _ = self.player.click(&mut self.ui, PlayerControl::Speed, &self.config);
@@ -3681,10 +4225,9 @@ impl Browser {
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
         self.ui.animate(dt);
-        let centre_x = self.page_rect().center().x;
         let before_slide = self.page_rect().size;
         let was_sliding = self.chrome.is_sliding();
-        self.chrome.animate_all(&mut self.ui, dt, centre_x);
+        self.chrome.animate_all(&mut self.ui, dt);
         if was_sliding {
             // The page's rectangle and the toolbar follow the sidebar frame by frame, but the
             // page itself is resized at most once while it slides: to the larger of its size
@@ -3714,9 +4257,14 @@ impl Browser {
         self.account_menu.track_hover(&mut self.ui, &self.config);
         self.menu.animate(&mut self.ui, dt);
         self.account_menu.animate(&mut self.ui, dt);
+        self.context_menus.animate(&mut self.ui, &self.config, dt);
         self.add_account.animate(&mut self.ui, dt);
         self.shields_popover.animate(&mut self.ui, dt);
         self.downloads_popover.animate(&mut self.ui, dt);
+        let width = self.logical_size().x;
+        let address = self.chrome.address_frame(&self.ui);
+        self.find.follow(&mut self.ui, address, width);
+        self.find.animate(&mut self.ui, dt, &mut self.engine);
         self.lock_screen.animate(&mut self.ui, dt);
         self.settings.animate(&mut self.ui, dt);
         let address = self.chrome.address_frame(&self.ui);
@@ -3737,6 +4285,7 @@ impl Browser {
             });
         }
         self.settings.poll_search(&mut self.ui, &self.config, &self.keymap);
+        self.take_engine_icons();
         // Keeps the sidebar's scroll in range when its content got shorter (tabs closed).
         self.chrome.scroll_sections(&mut self.ui, 0.0);
         self.update_suggestions();
@@ -3770,9 +4319,9 @@ impl Browser {
         let page_view = frame.as_ref().map(|f| f.texture.create_view(&Default::default()));
         let s = self.scale();
         let page = self.page_rect();
-        if let (Some(view), Some(frame)) = (&page_view, &frame) {
-            self.adapt_appearance(view, &frame.texture);
-        }
+        let tint_dt = self.last_tint_step.elapsed().as_secs_f32();
+        self.last_tint_step = Instant::now();
+        self.adapt_appearance(page_view.as_ref(), tint_dt);
         let page_px = Rect { origin: page.origin * s, size: page.size * s };
 
         let theme = self.ui.theme();
@@ -3786,24 +4335,29 @@ impl Browser {
             let tex = Vec2::new(frame.texture.width() as f32, frame.texture.height() as f32);
             tracing::trace!(serial = frame.serial, ?tex, page = ?page_px.size, "page frame composited");
             let shown = page_px.size.min(tex);
-            let radius =
-                if self.chrome.page_fullscreen() { 0.0 } else { self.config.layout.page_corner_radius * s };
+            let radius = self.chrome.page_corner_radius(&self.config) * s;
             let texel = Vec2::ONE / tex.max(Vec2::ONE);
-            if shown.x < page_px.size.x || shown.y < page_px.size.y {
-                // The rectangle grew faster than Chromium's frames (the first frame of a new size
-                // takes a moment): the frame's right (or bottom) edge is stretched over the
-                // whole rectangle beneath it, so the uncovered part never shows the background.
+            // The rectangle grew faster than Chromium's frames (the first frame of a new size
+            // takes a moment; F11 grows it in both directions): the frame's right column and
+            // bottom row are stretched over the uncovered part, so it never shows the
+            // background. Both lie under the page, the column across the whole rectangle.
+            if shown.x < page_px.size.x {
                 let mut edge = ImageDraw::new(view, page_px);
-                edge.uv = if shown.x < page_px.size.x {
-                    Rect {
-                        origin: Vec2::new(1.0 - texel.x, 0.0),
-                        size: Vec2::new(texel.x, page_px.size.y * texel.y),
-                    }
-                } else {
-                    Rect {
-                        origin: Vec2::new(0.0, 1.0 - texel.y),
-                        size: Vec2::new(page_px.size.x * texel.x, texel.y),
-                    }
+                // Left of the page's scrollbar, whose track would paint a grey band.
+                let column = (1.0 - EDGE_SAMPLE_INSET * s * texel.x).max(0.0);
+                edge.uv =
+                    Rect { origin: Vec2::new(column, 0.0), size: Vec2::new(texel.x, shown.y * texel.y) };
+                edge.radius = radius;
+                layers.push(Layer::Image(edge));
+            }
+            if shown.y < page_px.size.y {
+                let mut edge = ImageDraw::new(
+                    view,
+                    Rect { origin: page_px.origin, size: Vec2::new(shown.x, page_px.size.y) },
+                );
+                edge.uv = Rect {
+                    origin: Vec2::new(0.0, 1.0 - texel.y),
+                    size: Vec2::new(shown.x * texel.x, texel.y),
                 };
                 edge.radius = radius;
                 layers.push(Layer::Image(edge));
@@ -3830,7 +4384,7 @@ impl Browser {
             tracing::trace!(?kinds, "layers");
         }
         let clear = self
-            .page_tint
+            .window_tint
             .filter(|_| !self.overview.is_open() && !self.is_locked())
             .unwrap_or(theme.color(Paint::Ground));
         let scene = Scene { clear, layers };
@@ -3924,7 +4478,7 @@ impl Browser {
         }
         let anchor = self.chrome.address_frame(&self.ui);
         let (store, search_url) = (self.store.as_ref(), self.config.general.search_url.clone());
-        self.suggestions.update(&mut self.ui, &self.config, &text, anchor, || {
+        self.suggestions.update(&mut self.ui, &self.config, &text, anchor, &self.favicons, || {
             suggest(&text, store, &search_url, unix_now())
         });
         self.suggestions.reposition(&mut self.ui, anchor);
@@ -4061,6 +4615,8 @@ fn chrome_allowed_while_locked(action: ChromeAction) -> bool {
             | ChromeAction::DownloadsButton
             | ChromeAction::SelectTab(_)
             | ChromeAction::CloseTab(_)
+            | ChromeAction::OpenBookmark(_)
+            | ChromeAction::BookmarksOverflow
     )
 }
 
@@ -4138,6 +4694,9 @@ fn is_dark(config: &Config, window: &Window, desktop_dark: Option<bool>) -> bool
 
 #[cfg(test)]
 mod tests {
+    use crate::context_menu::CONTEXT_MENU_BASE;
+    use crate::menu::{ACCOUNT_MENU_BASE, MAX_ITEMS, PAGE_MENU_BASE};
+
     use super::*;
     use axion_ui::ActionId;
 
@@ -4156,6 +4715,8 @@ mod tests {
                 LockScreen::is_lock_action(id),
                 SettingsAction::from_id(id).is_some(),
                 PlayerControl::from_id(id).is_some(),
+                (CONTEXT_MENU_BASE..CONTEXT_MENU_BASE + 4 * MAX_ITEMS as u32).contains(&id.0),
+                (PAGE_MENU_BASE..ACCOUNT_MENU_BASE + MAX_ITEMS as u32).contains(&id.0),
             ];
             assert!(
                 claims.iter().filter(|&&c| c).count() <= 1,

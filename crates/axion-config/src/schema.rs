@@ -9,6 +9,7 @@ use crate::Color;
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub general: General,
+    pub home: Home,
     pub appearance: Appearance,
     pub glass: Glass,
     pub colors: Colors,
@@ -22,20 +23,100 @@ pub struct Config {
     pub downloads: Downloads,
     pub data: Data,
     pub passwords: Passwords,
+    pub find: Find,
+    pub clipboard: Clipboard,
 }
+
+/// Axion's own start page, served at this address.
+pub const START_PAGE_URL: &str = "axion://home/";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct General {
-    /// Page opened in new windows and tabs.
+    /// Page opened in new windows and tabs (`axion://home/`: Axion's start page).
     pub homepage: String,
     /// Search URL; `{}` is replaced by the URL-encoded query.
     pub search_url: String,
 }
 
+/// The homepage Axion used before it had its own start page; configs that still carry it (or
+/// none at all) get the start page.
+const OLD_DEFAULT_HOMEPAGE: &str = "https://duckduckgo.com/";
+
+impl General {
+    /// An empty homepage or the old default becomes Axion's start page.
+    pub fn upgrade_homepage(&mut self) {
+        if self.homepage.trim().is_empty() || self.homepage == OLD_DEFAULT_HOMEPAGE {
+            self.homepage = START_PAGE_URL.into();
+        }
+    }
+}
+
 impl Default for General {
     fn default() -> Self {
-        Self { homepage: "https://duckduckgo.com/".into(), search_url: "https://duckduckgo.com/?q={}".into() }
+        Self { homepage: START_PAGE_URL.into(), search_url: "https://duckduckgo.com/?q={}".into() }
+    }
+}
+
+/// 12- or 24-hour clock on the start page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClockFormat {
+    /// From the locale (`LC_TIME` / `LANG`).
+    #[default]
+    Auto,
+    #[serde(rename = "12h")]
+    H12,
+    #[serde(rename = "24h")]
+    H24,
+}
+
+/// The start page (`axion://home/`): which widgets it shows. Toggled from the gear on the page
+/// itself or in Settings › General.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Home {
+    pub show_clock: bool,
+    pub clock_format: ClockFormat,
+    /// "Good morning, <account name>" under the clock.
+    pub show_greeting: bool,
+    pub show_search: bool,
+    /// Most visited sites (and pinned ones) as tiles.
+    pub show_top_sites: bool,
+    /// Tiles per row, rows per page, and pages (with dots to switch) at most.
+    pub top_sites_columns: u32,
+    pub top_sites_rows: u32,
+    pub top_sites_pages: u32,
+    /// Trackers & ads blocked, bandwidth and time saved.
+    pub show_stats: bool,
+    /// Show the background image chosen on the page (kept in the profile); otherwise the
+    /// background is plain white or black with the theme.
+    pub show_background_image: bool,
+    /// Darkens the background image for legibility (0–1).
+    pub background_dim: f32,
+    /// Blurs the background image (CSS px).
+    pub background_blur: f32,
+    /// An open start page refreshes its Shields numbers at most this often.
+    pub stats_refresh_seconds: f32,
+}
+
+impl Default for Home {
+    fn default() -> Self {
+        Self {
+            show_clock: true,
+            clock_format: ClockFormat::Auto,
+            show_greeting: true,
+            show_search: true,
+            show_top_sites: true,
+            top_sites_columns: 6,
+            top_sites_rows: 2,
+            top_sites_pages: 3,
+            show_stats: true,
+            show_background_image: false,
+            background_dim: 0.2,
+            background_blur: 0.0,
+            stats_refresh_seconds: 2.0,
+        }
     }
 }
 
@@ -63,8 +144,12 @@ pub struct Appearance {
     pub text_scale: f32,
     /// Switch the chrome between light and dark to stay legible over the page behind it.
     pub adapt_to_page: bool,
-    /// Give the window around the page the page's own background colour (like Safari).
+    /// Give the window around the page the page's own background colour (like Safari): its
+    /// `theme-color`, else the colour most of the page shows, measured once per page.
     pub tint_from_page: bool,
+    /// The page's colour is measured this long after it finished loading (ms), so late
+    /// styles and images are in.
+    pub page_color_delay_ms: f32,
 }
 
 impl Default for Appearance {
@@ -77,6 +162,7 @@ impl Default for Appearance {
             text_scale: 1.0,
             adapt_to_page: true,
             tint_from_page: true,
+            page_color_delay_ms: 350.0,
         }
     }
 }
@@ -311,16 +397,37 @@ pub struct Layout {
     pub wide_from: f32,
     /// Below this window width, tabs collapse into a single compact capsule.
     pub narrow_below: f32,
-    /// Width of an inactive tab pill.
+    /// Preferred width of a tab in the separate tab bar and of the other tabs' segments in the
+    /// compact one; all tabs share it, and they shrink equally when they don't fit.
     pub tab_width: f32,
+    /// Tabs shrink no further than this (logical px); beyond it they overflow.
+    pub tab_min_width: f32,
+    /// Width of a pinned tab (favicon only).
+    pub pinned_tab_width: f32,
+    /// When the bookmarks bar under the toolbar is shown.
+    pub bookmarks_bar: BookmarksBar,
     /// Corner radius of the web page area.
     pub page_corner_radius: f32,
     /// Gap between the page and the window's edges (and a floating sidebar's side).
     pub page_margin: f32,
     /// Tabs in their own row under the address bar, or in one compact row with it.
     pub tab_bar: TabBarStyle,
-    /// Scrolling down collapses the bars into a small pill with the site's name.
-    pub hide_bar_on_scroll: bool,
+    /// A home button (opens `general.homepage`) next to back and forward.
+    pub home_button: bool,
+    /// Removed (the bars no longer hide while scrolling); still accepted in old files.
+    #[serde(skip_serializing)]
+    hide_bar_on_scroll: Option<bool>,
+}
+
+/// When the bookmarks bar is shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BookmarksBar {
+    #[default]
+    Always,
+    /// Only on the home page (new tabs).
+    Home,
+    Never,
 }
 
 /// Safari's two tab bar layouts.
@@ -344,11 +451,15 @@ impl Default for Layout {
             sidebar_visible: true,
             wide_from: 1280.0,
             narrow_below: 800.0,
-            tab_width: 150.0,
+            tab_width: 260.0,
+            tab_min_width: 72.0,
+            pinned_tab_width: 44.0,
+            bookmarks_bar: BookmarksBar::Always,
             page_corner_radius: 10.0,
             page_margin: 8.0,
             tab_bar: TabBarStyle::Compact,
-            hide_bar_on_scroll: true,
+            home_button: true,
+            hide_bar_on_scroll: None,
         }
     }
 }
@@ -476,6 +587,29 @@ impl Default for Passwords {
             generator_length: 20,
             generator_symbols: true,
         }
+    }
+}
+
+/// Find on Page.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Find {
+    /// Match upper and lower case exactly (the find bar's "Aa" toggle).
+    pub match_case: bool,
+}
+
+/// Pasting into pages.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Clipboard {
+    /// Larger images and files on the clipboard are left out of a paste (MB). Only used where
+    /// Axion hands the clipboard to pages itself (Wayland).
+    pub max_paste_mb: u32,
+}
+
+impl Default for Clipboard {
+    fn default() -> Self {
+        Self { max_paste_mb: 64 }
     }
 }
 
@@ -608,6 +742,12 @@ pub struct Media {
     pub hardware_decoding: bool,
     /// Show what plays in the desktop's media controls and take the media keys (MPRIS).
     pub desktop_integration: bool,
+    /// The Picture in Picture window keeps the video's aspect when it is resized (so the
+    /// video fills it without black bars).
+    pub pip_keep_aspect: bool,
+    /// How long after the last resize step of the PiP window it snaps to the video's aspect
+    /// (window managers resize in many small steps).
+    pub pip_aspect_settle_seconds: f32,
 }
 
 impl Media {
@@ -658,6 +798,8 @@ impl Default for Media {
             playback_speeds: vec![1.0, 1.25, 1.5, 2.0, 0.5, 0.75],
             hardware_decoding: true,
             desktop_integration: true,
+            pip_keep_aspect: true,
+            pip_aspect_settle_seconds: 0.3,
         }
     }
 }
@@ -677,6 +819,13 @@ mod tests {
     fn empty_file_is_default() {
         let c: Config = toml::from_str("").unwrap();
         assert_eq!(c, Config::default());
+    }
+
+    #[test]
+    fn removed_layout_keys_still_load() {
+        let c: Config = toml::from_str("[layout]\nhide_bar_on_scroll = true").unwrap();
+        assert_eq!(c.layout.tab_bar, TabBarStyle::Compact);
+        assert!(!toml::to_string(&c).unwrap().contains("hide_bar_on_scroll"));
     }
 
     #[test]

@@ -20,7 +20,10 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   open; zoom transition from tab to card; swipe card away to close; search field.
 - **Responsive**: layout switches between *wide* (sidebar docked), *regular* (sidebar
   overlay) and *narrow* (bottom-ish compact bar) by window width.
-- **Start page**: favourites grid, frequently visited, Shields stats; customizable background.
+- **Start page** (`axion://home/`, default homepage and new tab page): clock + greeting,
+  search field with engine picker, top sites (most visited, pinned/edited/removed, pages with
+  dots), Shields stats (blocked, ≈ bandwidth and time saved), background image (dim/blur),
+  each toggled from a glass gear panel on the page; private tabs get a dark private variant.
 
 ### 2.2 Liquid Glass
 - SDF-based shapes (rounded rects, capsules, circles) with lens-profile refraction.
@@ -161,6 +164,15 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [x] Tab drag and drop: sidebar lists, compact tab capsule and separate tab bar, spring
   physics (lens follows the pointer, rows slide aside), between normal and private tabs
   (`tabs.drag_threshold`).
+- [x] Tab bar widths: all tabs equally wide (`layout.tab_width`, shrinking equally to
+  `layout.tab_min_width`, then overflowing), springing to new widths; hairline separators in
+  the separate tab bar (hidden beside the open and the hovered tab).
+- [x] Tab context menu (right click on tab bar, compact segments, sidebar rows; glass menu
+  flowing out of the tab, shortcuts from the keymap); pinned tabs (first, favicon only,
+  `layout.pinned_tab_width`, kept in the session via the `session_pinned_tabs` meta key).
+- [x] Bookmarks bar (`layout.bookmarks_bar` = always/home/never; overflow chevron menu,
+  middle click opens in the background, right click: Open in New Tab / Delete). Top-level
+  bookmarks only until bookmark folders exist.
 - [x] Local accounts (`axion-accounts`): separate profiles, account button + menu in the
   sidebar, Add Account sheet, Settings › Account (name, colour, password, delete), switching
   by relaunching, migration of the pre-accounts profile.
@@ -248,9 +260,20 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [ ] **H.264/AAC**: the prebuilt CEF has no proprietary codecs (ffmpeg is inside
       libcef.so). `tools/build-cef.sh` builds CEF 156.0.14 with them (hours, ~100 GB);
       then point `CEF_PATH` at the result. Needed for most hosters (aniworld's VOE is x264).
-- [x] Picture in Picture as its own borderless OS window: drag anywhere on screen, always on
-      top (X11 window level; KDE Wayland via a KWin script — untested on Wayland so far).
-      The video keeps playing from its hidden tab (takeover, still rendering).
+      Checked 2026-10-26 (probe-media, which now also reports codec support): on aniworld every
+      hoster serves H.264/AAC — VOE loads its `_h.mp4` and JW Player fails with 224003
+      (unsupported format), `MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"')`
+      and AAC are false, `canPlayType` is ""; Filemoon/Doodstream are x264/AAC too. Shields,
+      popups, cookies and the bridge are not the cause (VOE's stream URL loads; its ad tab is
+      blocked as intended). Vidmoly additionally shows "AdBlock detected" because its bait
+      scripts (IAB `adblockDetector.js`, `adsbygoogle.js`) are blocked outright: needs
+      adblock-rust redirect resources / scriptlets (open, see Phase 3).
+- [x] Picture in Picture as its own OS window (user decision): a plain window of the window
+      manager without a title bar, only the video in it (letterboxed in black, no corners,
+      margins or transparency of ours); dragging the video moves it, its edges resize it
+      (`drag_resize_window`), glass controls on hover. Always on top (X11 window level; KDE
+      Wayland via a KWin script — untested on Wayland so far). The video keeps playing from
+      its hidden tab (takeover, still rendering).
 - [x] Playback priority: playing tabs are never frozen/unloaded (bridge state); VA-API
       on by default (`chrome://gpu`: Video Decode hardware accelerated); fullscreen controls
       disappear entirely while hidden, so no glass is drawn over playing video.
@@ -266,6 +289,14 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 
 ### Phase 7 — v0.1 polish
 - [ ] Downloads, find-in-page, zoom, context menus, permissions prompts (all glass).
+- [x] Find on Page: glass bar dripping out of the address field (Ctrl+F, page menu), search as
+      you type, "3 of 17", Enter / Shift+Enter / Ctrl+G, case toggle; closes on tab switch and
+      new page. Files dragged in from the desktop (X11/XWayland) and in-page drag and drop.
+      Pasting images and copied files: on Wayland Axion reads the clipboard (data-control) and
+      hands it to the page as a `paste` event, since off-screen Chromium has no focused surface.
+      *Open:* native Wayland file drops (winit 0.30 has no Wayland drag and drop; winit 0.31
+      or our own `wl_data_device`); copying *from* pages on native Wayland doesn't reach the
+      desktop clipboard yet (same cause); the find bar can cover the selected match.
 - [ ] Packaging: AUR / Flatpak / AppImage.
 - [ ] Crash handling, logging, first-run onboarding.
 
@@ -276,8 +307,7 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
 - [x] Locked private browsing view + unlock alert card.
 - [x] Tab overview top bar [Private | N Tabs], +, search, blue done; light backdrop.
 - [x] Grouped settings (cards, sections, notes), scrolling with clipping; Safari's tab options:
-      separate/compact tab bar, colour in tab bar, hide bars on scroll (pill with the host),
-      open new tabs in background, close tabs after a day/week/month.
+      separate/compact tab bar, colour in tab bar, open new tabs in background, close tabs after a day/week/month.
 - [ ] Page menu items (translate, find on page, reader, request mobile site), address dropdown
       sections ("Google suggestions", "Bookmarks, History and Tabs").
 
@@ -344,6 +374,37 @@ Windows/macOS, touchscreen-first mode.
   password is dropped. Switching relaunches Axion (`--account=ID`, same size/position) after
   Chromium shut down, since CEF allows one root cache path per process. Deleted accounts'
   directories are removed at the next start.
+- **Device-bound vault** (done): the vault key is HKDF-SHA256 over Argon2id(password) and a
+  per-device secret, so a copied vault or profile opens nowhere else (`OtherDevice`, distinct
+  from a wrong password). The secret is sealed by the TPM 2.0 (`/dev/tpmrm0`, ECC P-256 SRK +
+  sealed object, blob in `~/.local/share/axion/device.tpm`), else a 0600 `device.key` there.
+  Password-only vaults upgrade on their next unlock (one transaction). Settings › Passwords
+  exports a portable copy encrypted with the password alone and restores such exports (into
+  the unlocked vault, or as the vault of an account without password). A key file made
+  without TPM access moves into the TPM at the first start where it is usable (same secret,
+  `device.tpm` verified by unsealing before `device.key` is zeroed and removed; retried each
+  start on failure).
+- 2026-10-25: The bars no longer hide while scrolling (the "mini pill" was removed; old
+  `layout.hide_bar_on_scroll` keys are accepted and ignored). **F11** (`toggle_fullscreen`)
+  is whole-page fullscreen instead: the window goes fullscreen, bars slide up and fade, the
+  sidebar slides away and the page card grows to the whole screen (springs); Esc or F11
+  leaves. The page's own element fullscreen (video) stays separate. `Chrome::is_fullscreen`
+  tells transient UI (find bar…) that nothing else may cover the page.
+
+- 2026-10-26: **Axion's own pages** are served by the browser through a CEF custom scheme
+  (`axion://`, standard + secure + display-isolated + fetch-enabled, not CORS-enabled), behind
+  the engine's `InternalPages` trait. Page → browser: `POST /api/message`, accepted only from
+  a view's main frame showing that `axion://` origin (checked in the scheme handler on the IO
+  thread) → `EngineEvent::InternalMessage`. Browser → page: the page pulls `/api/…` (same
+  check); the browser only nudges it with a data-free script. Web pages can't link to, frame,
+  navigate to or fetch `axion://` (verified with a test page).
+- 2026-10-26: The window tint / chrome light-dark comes from **one colour per page** (its
+  `theme-color` for the scheme, else the dominant colour of a 32×32 GPU grid of the frame,
+  evened to a calm light/dark tone), recomputed on load, theme-colour change or scheme switch
+  and animated on a spring — never from scrolling (`appearance.page_color_delay_ms`).
+- 2026-10-26: Favicons are cached **per colour scheme** (`<host>.png`, `<host>.dark.png`, with
+  the source URL in `.url`); the engine reports icon links with their `media` queries
+  (`EngineEvent::PageMetaChanged`), and a scheme switch re-resolves open pages' icons.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

@@ -11,6 +11,7 @@ name = "axion"
 path = "src/main.rs"
 
 [dependencies]
+ureq = "3"
 anyhow.workspace = true
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 axion-accounts.workspace = true
@@ -23,18 +24,31 @@ axion-shields.workspace = true
 axion-tabs.workspace = true
 axion-store.workspace = true
 axion-ui.workspace = true
-axion-vault.workspace = true
+axion-vault = { workspace = true }
 directories = "6"
 glam.workspace = true
 image.workspace = true
 jiff = "0.2"
 pollster.workspace = true
+serde_json = "1"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 zbus = "5"
 zeroize = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Both already come with winit and arboard: the clipboard for pastes into pages (Wayland
+# data-control) and the pointer during file drags (X11).
+wl-clipboard-rs = "0.9"
+x11rb = { version = "0.13", default-features = false }
+
+[features]
+# The vault's device key is sealed with the TPM (needs libtss2-esys to build); without it the
+# device key lives in a file.
+default = ["tpm"]
+tpm = ["axion-vault/tpm"]
 
 [lints]
 workspace = true

@@ -15,7 +15,15 @@ use glam::Vec2;
 
 use super::dmabuf::{self, ImportCache};
 use super::network::{Network, build_request_handler};
-use crate::{CursorKind, EngineEvent, NewViewKind, PAGE_MESSAGE_PREFIX, ViewId};
+use crate::{
+    CursorKind, EngineEvent, INTERNAL_SCHEME, IconLink, NewViewKind, PAGE_MESSAGE_PREFIX, PageMeta,
+    ThemeColor, ViewId,
+};
+
+/// Console messages of the page meta script ([`PAGE_META_SCRIPT`]) start with this.
+const PAGE_META_PREFIX: &str = "\u{1}axion-meta:";
+/// Reports icon links and theme colours of every top-level document.
+const PAGE_META_SCRIPT: &str = include_str!("page_meta.js");
 
 /// Events from all views, tagged with the CEF browser they came from so events from a browser
 /// that was replaced (see the software fallback) can be dropped.
@@ -100,6 +108,7 @@ pub(super) struct ViewContext {
     pub frames: Rc<ViewFrames>,
     pub shared: Rc<Shared>,
     pub net: Arc<Network>,
+    pub drag: Rc<super::drag::ViewDrag>,
 }
 
 impl ViewContext {
@@ -412,6 +421,24 @@ wrap_render_handler! {
             self.ctx.upload(pixels, width as u32, height as u32);
             self.ctx.shared.stats.paint(started.elapsed());
         }
+
+        fn start_dragging(
+            &self,
+            browser: Option<&mut Browser>,
+            drag_data: Option<&mut DragData>,
+            allowed_ops: DragOperationsMask,
+            x: ::std::os::raw::c_int,
+            y: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            let (Some(host), Some(data)) = (browser.and_then(|b| b.host()), drag_data) else { return 0 };
+            self.ctx.drag.start(&host, data, allowed_ops, x, y).into()
+        }
+
+        fn update_drag_cursor(&self, browser: Option<&mut Browser>, operation: DragOperationsMask) {
+            let host = browser.as_ref().and_then(|b| b.host());
+            let cursor = self.ctx.drag.set_operation(host.as_ref(), operation);
+            self.ctx.emit(browser, EngineEvent::CursorChanged { view: self.ctx.view, cursor });
+        }
     }
 }
 
@@ -430,6 +457,11 @@ wrap_display_handler! {
             _line: ::std::os::raw::c_int,
         ) -> ::std::os::raw::c_int {
             let message = message.map(|m| m.to_string()).unwrap_or_default();
+            if let Some(meta) = message.strip_prefix(PAGE_META_PREFIX) {
+                let meta = parse_page_meta(meta);
+                self.ctx.emit(browser, EngineEvent::PageMetaChanged { view: self.ctx.view, meta });
+                return 1;
+            }
             if !message.starts_with(PAGE_MESSAGE_PREFIX) {
                 return 0;
             }
@@ -487,6 +519,13 @@ wrap_load_handler! {
         fn on_load_start(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, _transition_type: TransitionType) {
             let Some(frame) = frame else { return };
             let url = CefString::from(&frame.url()).to_string();
+            if frame.is_main() == 1 {
+                frame.execute_java_script(Some(&PAGE_META_SCRIPT.into()), Some(&url.as_str().into()), 0);
+            }
+            // Axion's own pages get none of the scripts meant for web pages.
+            if is_internal(&url) {
+                return;
+            }
             let page_script = self.ctx.shared.page_script.borrow().clone();
             if let Some(script) = page_script {
                 frame.execute_java_script(Some(&script.as_str().into()), Some(&url.as_str().into()), 0);
@@ -556,7 +595,35 @@ wrap_life_span_handler! {
         }
 
         fn on_before_close(&self, browser: Option<&mut Browser>) {
+            if let Some(browser) = browser.as_ref() {
+                self.ctx.net.set_browser(browser.identifier(), None);
+            }
             self.ctx.emit(browser, EngineEvent::Closed { view: self.ctx.view });
+        }
+    }
+}
+
+wrap_find_handler! {
+    pub(super) struct FindHandlerBuilder {
+        ctx: ViewContext,
+    }
+
+    impl FindHandler {
+        fn on_find_result(
+            &self,
+            browser: Option<&mut Browser>,
+            _identifier: ::std::os::raw::c_int,
+            count: ::std::os::raw::c_int,
+            _selection_rect: Option<&Rect>,
+            active_match_ordinal: ::std::os::raw::c_int,
+            final_update: ::std::os::raw::c_int,
+        ) {
+            self.ctx.emit(browser, EngineEvent::FindResult {
+                view: self.ctx.view,
+                active: active_match_ordinal.max(0) as u32,
+                count: count.max(0) as u32,
+                final_update: final_update != 0,
+            });
         }
     }
 }
@@ -624,6 +691,42 @@ wrap_download_image_callback! {
     }
 }
 
+fn is_internal(url: &str) -> bool {
+    url.strip_prefix(INTERNAL_SCHEME).is_some_and(|rest| rest.starts_with(':'))
+}
+
+/// Parses the page meta script's report (see `page_meta.js`).
+fn parse_page_meta(text: &str) -> PageMeta {
+    let mut meta = PageMeta::default();
+    for line in text.lines() {
+        let mut fields = line.split('\t');
+        match fields.next() {
+            Some("i") => {
+                let url = fields.next().unwrap_or_default().to_owned();
+                if url.is_empty() {
+                    continue;
+                }
+                let media = fields.next().unwrap_or_default().to_owned();
+                let sizes = fields.next().unwrap_or_default().to_owned();
+                meta.icons.push(IconLink { url, media, sizes });
+            }
+            Some("c") => {
+                let channels: Vec<u8> = fields
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|c| c.trim().parse().ok())
+                    .collect();
+                let Ok(rgb) = <[u8; 3]>::try_from(channels) else { continue };
+                let media = fields.next().unwrap_or_default().to_owned();
+                meta.theme_colors.push(ThemeColor { rgb, media });
+            }
+            _ => {}
+        }
+    }
+    meta
+}
+
 /// The strings of a list CEF lends to a callback. (The `cef` crate's `clone().into_iter()`
 /// of a borrowed list yields nothing, so the list is read in place.)
 fn string_list(list: &mut CefStringList) -> Vec<String> {
@@ -660,6 +763,7 @@ wrap_client! {
         life_span: LifeSpanHandler,
         request: RequestHandler,
         download: DownloadHandler,
+        find: FindHandler,
     }
 
     impl Client {
@@ -686,6 +790,10 @@ wrap_client! {
         fn download_handler(&self) -> Option<DownloadHandler> {
             Some(self.download.clone())
         }
+
+        fn find_handler(&self) -> Option<FindHandler> {
+            Some(self.find.clone())
+        }
     }
 }
 
@@ -697,6 +805,7 @@ pub(super) fn build_client(ctx: &ViewContext) -> Client {
         LifeSpanHandlerBuilder::new(ctx.clone()),
         build_request_handler(&ctx.net, ctx.view),
         super::download::build_download_handler(&ctx.shared.downloads),
+        FindHandlerBuilder::new(ctx.clone()),
     )
 }
 
@@ -788,4 +897,25 @@ fn is_drawn(buffer: &wgpu::Buffer, width: u32) -> bool {
         let row = &data[i * row_bytes..][..4 * width as usize];
         row.as_chunks::<4>().0.iter().all(|pixel| pixel[3] != 0)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_page_meta() {
+        let meta = parse_page_meta(
+            "i\thttps://a.example/l.svg\t(prefers-color-scheme: light)\t\n\
+             i\thttps://a.example/d.svg\t(prefers-color-scheme: dark)\tany\n\
+             c\t13,17,23\t\nc\tbad\t\nx\ty",
+        );
+        assert_eq!(meta.icons.len(), 2);
+        assert_eq!(meta.icons[1].media, "(prefers-color-scheme: dark)");
+        assert_eq!(meta.icons[1].sizes, "any");
+        assert_eq!(meta.theme_colors, vec![ThemeColor { rgb: [13, 17, 23], media: String::new() }]);
+        assert!(
+            is_internal("axion://home/") && !is_internal("axionx://home") && !is_internal("https://axion")
+        );
+    }
 }

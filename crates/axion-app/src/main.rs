@@ -7,19 +7,25 @@
 //! Environment: `AXION_GPU=low` uses the integrated GPU, `AXION_OSR=software` disables GPU
 //! frame sharing, `AXION_NO_SANDBOX=1` disables Chromium's sandbox, `AXION_CONFIG_DIR` and
 //! `AXION_PROFILE_DIR` move the bases of settings and browsing data (each account has its own
-//! directory in them, see `axion-accounts`), `AXION_MONITOR=HDMI-A-1` opens the window on that
-//! monitor (X11/XWayland only).
+//! directory in them, see `axion-accounts`), `AXION_DEVICE_KEY_DIR` moves the password vault's
+//! device key (default `~/.local/share/axion`), `AXION_MONITOR=HDMI-A-1` opens the window on
+//! that monitor (X11/XWayland only).
 
 mod accounts;
 mod browser;
 mod chrome;
+mod context_menu;
 mod desktop;
 mod downloads;
 mod downloads_popover;
 mod drip;
+mod engine_icons;
 mod favicons;
+mod filedrop;
+mod find;
 mod gpu;
 mod history;
+mod home;
 mod input;
 mod lifecycle;
 mod lockscreen;
@@ -27,8 +33,10 @@ mod menu;
 mod morph;
 mod mpris;
 mod overview;
+mod page_color;
 mod passwords;
 mod pip;
+mod platform;
 mod player;
 mod popover;
 mod private;
@@ -136,6 +144,11 @@ impl ApplicationHandler for App {
         let Some(browser) = &mut self.browser else { return };
         if browser.is_pip_window(id) {
             browser.pip_window_event(event);
+            return;
+        }
+        // Late events of a closed PiP window: never the browser window's (its CloseRequested
+        // would quit).
+        if !browser.is_main_window(id) {
             return;
         }
         match browser.window_event(event) {
