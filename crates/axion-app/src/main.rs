@@ -46,6 +46,7 @@ mod shields_popover;
 mod suggestions;
 mod tabdrag;
 mod tabs;
+mod toast;
 mod url;
 
 use std::time::Duration;

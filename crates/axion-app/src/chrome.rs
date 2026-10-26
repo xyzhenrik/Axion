@@ -299,6 +299,7 @@ const ROW_HEIGHT: f32 = 42.0;
 /// than its minimum, so the address stays readable with many tabs.
 const ACTIVE_SEGMENT_GROW: f32 = 1.5;
 const ACTIVE_SEGMENT_MIN: f32 = 300.0;
+const PANEL_SEARCH_HEIGHT: f32 = 36.0;
 const PANEL_ROW_HEIGHT: f32 = 52.0;
 /// Extra distance the sidebar slides past the window edge, so its shadow leaves too.
 const SLIDE_OVERSHOOT: f32 = 24.0;
@@ -361,6 +362,11 @@ pub struct Chrome {
     panel_clear: NodeId,
     panel_clear_label: NodeId,
     panel_viewport: NodeId,
+    /// The search row above the list (bookmarks, history, reading list) and its field.
+    panel_search: NodeId,
+    panel_search_field: NodeId,
+    /// Shown when the list is empty ("Nothing here yet", or that nothing matched the search).
+    panel_empty: String,
     panel_scroll: f32,
     panel_list: NodeId,
     tab_group_label: NodeId,
@@ -397,6 +403,7 @@ pub struct Chrome {
     reload_icon: NodeId,
     page_menu: NodeId,
     shield: NodeId,
+    share: NodeId,
     shield_glyph: NodeId,
     address_favicon: NodeId,
     audio_button: NodeId,
@@ -825,6 +832,32 @@ impl Chrome {
         if let Some(w) = ui.widget_mut(panel_clear_label) {
             w.set_paint(Paint::Accent);
         }
+        // Filters the list as you type (bookmarks, history, reading list).
+        let panel_search = ui.add(
+            panel,
+            Widget::container().with_background(Background::Fill(Paint::Label, 0.07)).with_radius(CAPSULE),
+            Style {
+                size: Size { width: auto(), height: length(PANEL_SEARCH_HEIGHT) },
+                flex_shrink: 0.0,
+                padding: padding(12.0, 12.0, 0.0, 0.0),
+                margin: Rect { left: length(0.0), right: length(0.0), top: length(2.0), bottom: length(6.0) },
+                ..row(8.0)
+            },
+        );
+        ui.add(panel_search, Widget::icon(Icon::Search, 15.0).with_paint(Paint::Secondary), Style::default());
+        let panel_search_field = ui.add_text_field(
+            panel_search,
+            "Search",
+            TextStyle::Body,
+            Style {
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                min_size: Size { width: length(0.0), height: auto() },
+                size: Size { width: auto(), height: length(22.0) },
+                ..Default::default()
+            },
+        );
+        ui.set_visible(panel_search, false);
         // Long lists (history) scroll inside a clipped viewport.
         let panel_viewport = ui.add(
             panel,
@@ -1168,6 +1201,9 @@ impl Chrome {
             panel_clear,
             panel_clear_label,
             panel_viewport,
+            panel_search,
+            panel_search_field,
+            panel_empty: "Nothing here yet".into(),
             panel_scroll: 0.0,
             panel_list,
             tab_group_label,
@@ -1195,6 +1231,7 @@ impl Chrome {
             reload_icon,
             page_menu,
             shield,
+            share: share_button,
             shield_glyph,
             address_favicon,
             audio_button,
@@ -1334,7 +1371,7 @@ impl Chrome {
         if items.is_empty() {
             let empty = ui.add_label(
                 self.panel_list,
-                "Nothing here yet",
+                &self.panel_empty.clone(),
                 TextStyle::Body,
                 Style { padding: padding(12.0, 12.0, 12.0, 12.0), ..Default::default() },
             );
@@ -1454,6 +1491,23 @@ impl Chrome {
         let mut style = ui.style(self.download_fill);
         style.size.width = percent(progress.unwrap_or(0.0).clamp(0.0, 1.0));
         ui.set_style(self.download_fill, style);
+    }
+
+    /// Shows or hides the panel's search row. Hiding it also empties the field.
+    pub fn set_panel_searchable(&mut self, ui: &mut Ui, searchable: bool) {
+        ui.set_visible(self.panel_search, searchable);
+        if !searchable {
+            ui.set_field_text(self.panel_search_field, "");
+        }
+    }
+
+    pub fn panel_search_field(&self) -> NodeId {
+        self.panel_search_field
+    }
+
+    /// What the panel says when it lists nothing (before `show_panel`).
+    pub fn set_panel_empty_text(&mut self, text: String) {
+        self.panel_empty = text;
     }
 
     pub fn set_panel_clear_label(&self, ui: &mut Ui, text: &str) {
@@ -1860,6 +1914,11 @@ impl Chrome {
     /// The toolbar's download button (logical px), for anchoring the downloads popover.
     pub fn downloads_frame(&self, ui: &Ui) -> Frame {
         ui.frame(self.downloads)
+    }
+
+    /// The toolbar's share button (logical px), where toasts for it appear.
+    pub fn share_frame(&self, ui: &Ui) -> Frame {
+        ui.frame(self.share)
     }
 
     pub fn shield_frame(&self, ui: &Ui) -> Frame {

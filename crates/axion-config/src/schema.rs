@@ -25,6 +25,7 @@ pub struct Config {
     pub passwords: Passwords,
     pub find: Find,
     pub clipboard: Clipboard,
+    pub toast: Toast,
 }
 
 /// Axion's own start page, served at this address.
@@ -679,6 +680,20 @@ impl Default for Passwords {
 pub struct Find {
     /// Match upper and lower case exactly (the find bar's "Aa" toggle).
     pub match_case: bool,
+}
+
+/// Short glass notifications ("Link copied").
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Toast {
+    /// How long a toast stays before it springs away (seconds).
+    pub duration_seconds: f32,
+}
+
+impl Default for Toast {
+    fn default() -> Self {
+        Self { duration_seconds: 2.0 }
+    }
 }
 
 /// Pasting into pages.

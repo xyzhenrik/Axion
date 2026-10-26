@@ -56,6 +56,7 @@ use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
 use crate::suggestions::{SuggestionList, suggest};
 use crate::tabdrag::{TabDrag, Target};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
+use crate::toast::Toast;
 use crate::url::display_host;
 use crate::url::resolve_input;
 
@@ -128,6 +129,8 @@ const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 const SESSION_PINNED_KEY: &str = "session_pinned_tabs";
 /// History rows shown in the sidebar panel.
 const PANEL_HISTORY_LIMIT: usize = 300;
+/// Most bookmarks a sidebar search lists.
+const PANEL_SEARCH_LIMIT: usize = 1000;
 /// The History panel's clear button, and what it says while asking to confirm.
 const CLEAR_HISTORY: &str = "Clear History…";
 const CLEAR_HISTORY_CONFIRM: &str = "Click Again to Clear";
@@ -191,6 +194,9 @@ pub struct Browser {
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
     downloads_popover: DownloadsPopover,
+    toast: Toast,
+    /// What the sidebar panel's search field held when the list was last built.
+    panel_query: String,
     find: FindBar,
     /// Files dragged over the window from the desktop.
     file_drop: FileDrop,
@@ -440,6 +446,7 @@ impl Browser {
         let account_menu = Menu::build(&mut ui, chrome.sidebar_node(), ACCOUNT_MENU_BASE, Placement::Above);
         let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
+        let toast = Toast::build(&mut ui, chrome.bar_node());
         let find = FindBar::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
         let settings = SettingsSheet::build(&mut ui);
@@ -496,6 +503,8 @@ impl Browser {
             shields,
             shields_popover,
             downloads_popover,
+            toast,
+            panel_query: String::new(),
             find,
             file_drop: FileDrop::default(),
             pointer_probe: None,
@@ -2007,15 +2016,38 @@ impl Browser {
     }
 
     fn show_panel(&mut self, panel: Panel) {
+        // A freshly opened list starts unfiltered.
+        self.ui.set_field_text(self.chrome.panel_search_field(), "");
         self.show_panel_with(panel, false);
+    }
+
+    /// Re-filters the open sidebar list when its search field changed. Call every frame.
+    fn poll_panel_search(&mut self) {
+        let Some((panel, _)) = self.panel else { return };
+        if panel == Panel::Downloads {
+            return;
+        }
+        let text = self.ui.field_text(self.chrome.panel_search_field()).unwrap_or_default();
+        if text.trim() != self.panel_query {
+            self.show_panel_with(panel, false);
+        }
     }
 
     /// Shows a sidebar panel; `keep_scroll` after a change in it (an entry deleted).
     fn show_panel_with(&mut self, panel: Panel, keep_scroll: bool) {
         let Some(store) = &self.store else { return };
+        let query = if panel == Panel::Downloads {
+            String::new()
+        } else {
+            self.ui.field_text(self.chrome.panel_search_field()).unwrap_or_default().trim().to_owned()
+        };
+        let bookmarks = if query.is_empty() {
+            store.bookmarks()
+        } else {
+            store.search_bookmarks(&query, PANEL_SEARCH_LIMIT)
+        };
         let items: Vec<PanelItem> = match panel {
-            Panel::Bookmarks => store
-                .bookmarks()
+            Panel::Bookmarks => bookmarks
                 .unwrap_or_default()
                 .into_iter()
                 .map(|b| PanelItem {
@@ -2027,10 +2059,18 @@ impl Browser {
                     ..PanelItem::default()
                 })
                 .collect(),
-            Panel::History => crate::history::panel_items(
-                store.recent_history(PANEL_HISTORY_LIMIT).unwrap_or_default(),
-                unix_now(),
-            ),
+            Panel::History => {
+                let now = unix_now();
+                let mut entries = if query.is_empty() {
+                    store.recent_history(PANEL_HISTORY_LIMIT)
+                } else {
+                    store.search_history(&query, PANEL_HISTORY_LIMIT, now)
+                }
+                .unwrap_or_default();
+                // The list is grouped by day, newest first (search ranks by relevance).
+                entries.sort_by_key(|e| std::cmp::Reverse(e.last_visit));
+                crate::history::panel_items(entries, now)
+            }
             // Reading list entries arrive with Phase 6.
             Panel::ReadingList => Vec::new(),
             Panel::Downloads => {
@@ -2045,11 +2085,18 @@ impl Browser {
         };
         self.panel_urls = items.iter().map(|i| i.url.clone()).collect();
         let clear = match panel {
-            Panel::History => (!items.is_empty()).then_some(CLEAR_HISTORY),
+            Panel::History => (!items.is_empty() && query.is_empty()).then_some(CLEAR_HISTORY),
             Panel::Downloads => self.downloads.has_finished().then_some("Clear List"),
             _ => None,
         };
         self.panel = Some((panel, false));
+        self.panel_query = query.clone();
+        self.chrome.set_panel_searchable(&mut self.ui, panel != Panel::Downloads);
+        self.chrome.set_panel_empty_text(if query.is_empty() {
+            "Nothing here yet".into()
+        } else {
+            format!("No results for “{query}”")
+        });
         self.chrome.show_panel(&mut self.ui, title, &items, &self.favicons, clear, keep_scroll);
     }
 
@@ -2258,11 +2305,7 @@ impl Browser {
                 }
                 self.bookmarks_changed = true;
             }
-            MenuAction::CopyLink => {
-                if let Some(clipboard) = &mut self.clipboard {
-                    let _ = clipboard.set_text(url);
-                }
-            }
+            MenuAction::CopyLink => self.copy_link(),
             MenuAction::ZoomIn | MenuAction::ZoomOut | MenuAction::ZoomReset => {
                 self.run(match action {
                     MenuAction::ZoomIn => Action::ZoomIn,
@@ -2599,6 +2642,18 @@ impl Browser {
                     self.refocus_find_field();
                 }
                 UiEvent::Cancelled { node } if node == self.find.field() => self.close_find(),
+                UiEvent::Cancelled { node } if node == self.chrome.panel_search_field() => {
+                    // Escape clears the list's search.
+                    self.ui.set_field_text(node, "");
+                }
+                UiEvent::Submitted { node, .. } if node == self.chrome.panel_search_field() => {
+                    // Enter opens the first match.
+                    if self.panel.is_some_and(|(p, _)| p != Panel::Downloads)
+                        && let Some(url) = self.panel_urls.first().cloned()
+                    {
+                        self.navigate_to(url);
+                    }
+                }
                 UiEvent::Cancelled { node } if node == self.settings.search_field() => {
                     // Escape clears the settings search (and leaves the field).
                     self.ui.set_field_text(node, "");
@@ -2776,11 +2831,7 @@ impl Browser {
                     Some(ChromeAction::Shield) => self.toggle_shields_popover(),
                     Some(ChromeAction::Share) => {
                         // Until the share sheet exists: copy the address.
-                        let url = self.tabs.active().map(|t| t.url.clone());
-                        if let (Some(url), Some(clipboard)) = (url, &mut self.clipboard) {
-                            let _ = clipboard.set_text(url);
-                            tracing::info!("address copied");
-                        }
+                        self.copy_link();
                     }
                     // In private browsing, the normal tabs' row switches back to them.
                     Some(ChromeAction::ToggleTabsSection) if self.private_mode => self.toggle_private_mode(),
@@ -2811,6 +2862,8 @@ impl Browser {
                     Some(ChromeAction::ClosePanel) => {
                         self.panel_urls.clear();
                         self.panel = None;
+                        self.panel_query.clear();
+                        self.chrome.set_panel_searchable(&mut self.ui, false);
                         self.chrome.close_panel(&mut self.ui);
                     }
                     Some(ChromeAction::ClearPanel) => self.clear_panel(),
@@ -3310,6 +3363,27 @@ impl Browser {
             }
             self.refresh_settings();
         }
+    }
+
+    /// Copies the active page's address and says so in a toast out of the share button.
+    fn copy_link(&mut self) {
+        let url = self.tabs.active().map(|t| t.url.clone());
+        let (Some(url), Some(clipboard)) = (url, &mut self.clipboard) else { return };
+        if clipboard.set_text(url).is_ok() {
+            tracing::info!("address copied");
+            self.show_toast(Icon::Check, "Link copied");
+        }
+    }
+
+    /// A short glass notification out of the share button (the address field when the
+    /// button is hidden, e.g. in a narrow window), over the page or the Home page alike.
+    fn show_toast(&mut self, icon: Icon, text: &str) {
+        let mut anchor = self.chrome.share_frame(&self.ui);
+        if anchor.size.x <= 0.0 {
+            anchor = self.chrome.address_frame(&self.ui);
+        }
+        let width = self.logical_size().x;
+        self.toast.show(&mut self.ui, &self.config, anchor, width, icon, text);
     }
 
     fn toggle_downloads_popover(&mut self) {
@@ -4040,6 +4114,13 @@ impl Browser {
                 "history" => self.show_panel(Panel::History),
                 "downloads" => self.show_panel(Panel::Downloads),
                 "downloads-popover" => self.toggle_downloads_popover(),
+                // Test aids: the Share button's toast, and the sidebar list's search text
+                // ("panel-search:TEXT", after "history" / "bookmarks").
+                "share" => self.copy_link(),
+                query if query.starts_with("panel-search:") => {
+                    let field = self.chrome.panel_search_field();
+                    self.ui.set_field_text(field, &query["panel-search:".len()..]);
+                }
                 // Capture aid: "Clear Browsing Data" with the configured choices.
                 "clear-data" => self.settings_outcome(Outcome::ClearBrowsingData),
                 "data-settings" => {
@@ -4565,6 +4646,8 @@ impl Browser {
             });
         }
         self.settings.poll_search(&mut self.ui, &self.config, &self.keymap);
+        self.poll_panel_search();
+        self.toast.animate(&mut self.ui, &self.config, dt);
         self.take_engine_icons();
         self.sync_password_icons();
         // Keeps the sidebar's scroll in range when its content got shorter (tabs closed).
