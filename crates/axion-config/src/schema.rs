@@ -982,6 +982,10 @@ pub struct Ui {
     pub onboarding_max_height: f32,
     /// How strongly the window behind the introduction is veiled with the theme's ground colour (0-1); the steps sit directly on it, with no panel of their own.
     pub onboarding_dim: f32,
+    /// A frame that would look exactly like the one on screen is not composited and presented
+    /// again: while nothing moves the GPU rests (the window still checks for changes once per
+    /// display refresh). Off: every frame is drawn.
+    pub skip_unchanged_frames: bool,
 }
 
 impl Default for Ui {
@@ -994,6 +998,7 @@ impl Default for Ui {
             onboarding_max_width: 880.0,
             onboarding_max_height: 640.0,
             onboarding_dim: 0.84,
+            skip_unchanged_frames: true,
         }
     }
 }

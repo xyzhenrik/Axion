@@ -435,6 +435,21 @@ pub struct Browser {
     /// `--bench-resize`: the scripted run; `AXION_RESIZE_LOG=1`: frame timings of each real
     /// resize (logged once it has been still for `RESIZE_LOG_QUIET`), and the counters both use.
     resize_bench: Option<ResizeBench>,
+    /// What the window shows (see `ui.skip_unchanged_frames`): the presented scene's
+    /// fingerprint and its textures (held so no new view takes their identity), when the next
+    /// frame is due after a skipped one (no present waited for the display), the display's
+    /// frame interval, and the frames skipped so far.
+    shown_fingerprint: Option<u64>,
+    shown_textures: Vec<wgpu::TextureView>,
+    /// The shown page frame's texture and a view of it, kept while the texture is the same.
+    page_view: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The shown scene's layer fingerprints (trace logging only).
+    shown_layers: Vec<u64>,
+    idle_redraw_at: Option<Instant>,
+    frame_interval: Duration,
+    frames_skipped: u64,
+    /// The engine's page frame count at the last pump.
+    pumped_page_frames: u64,
     /// The window's newest size, applied by the next frame (see `apply_window_size`).
     pending_window_size: Option<winit::dpi::PhysicalSize<u32>>,
     /// The shown view's resizes, one at a time, and the background tabs' once the window is
@@ -767,6 +782,14 @@ impl Browser {
             slide_seen_width: None,
             page_lag: None,
             resize_bench: options.bench_resize.then(|| ResizeBench::new(options.capture_after)),
+            shown_fingerprint: None,
+            shown_textures: Vec::new(),
+            shown_layers: Vec::new(),
+            page_view: None,
+            idle_redraw_at: None,
+            frame_interval: Duration::from_secs_f64(1.0 / f64::from(FALLBACK_FRAME_RATE)),
+            frames_skipped: 0,
+            pumped_page_frames: 0,
             pending_window_size: None,
             page_pacer: ResizePacer::default(),
             paced_view: None,
@@ -799,6 +822,7 @@ impl Browser {
             }),
         };
         browser.show_account();
+        browser.frame_interval = display_frame_interval(&browser.window);
         browser.update_layout();
         browser.start_onboarding(&options, accounts_file, config_file);
         browser.playlist_start();
@@ -3540,6 +3564,12 @@ impl Browser {
     pub fn pump(&mut self) {
         let started = Instant::now();
         self.pump_engine();
+        let page_frames = self.engine.counters().page_frames;
+        if page_frames != self.pumped_page_frames {
+            // A page frame came: shown at once, not one refresh after a skipped frame.
+            self.pumped_page_frames = page_frames;
+            self.idle_redraw_at = None;
+        }
         let took = started.elapsed();
         let recorders = [
             self.resize_bench.as_mut().and_then(|b| b.recorder.as_mut()),
@@ -3557,6 +3587,7 @@ impl Browser {
             view_resizes: engine.view_resizes,
             frame_textures: engine.frame_textures,
             check_buffers: engine.check_buffers,
+            skipped_frames: self.frames_skipped,
             page_frames: engine.page_frames,
             ..self.resize_counters
         }
@@ -3620,6 +3651,10 @@ impl Browser {
         let events = self.engine.pump();
         let started = Instant::now();
         let count = events.len() as u32;
+        if count > 0 {
+            // Something happened in a page: the next frame runs at once.
+            self.idle_redraw_at = None;
+        }
         for event in events {
             match &event {
                 // Autofill messages may hold a submitted password: never log their content.
@@ -4616,6 +4651,10 @@ impl Browser {
 
     /// Returns `false` when the window should close.
     pub fn window_event(&mut self, event: WindowEvent) -> Result<bool> {
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            // Input: the next frame runs at once.
+            self.idle_redraw_at = None;
+        }
         match event {
             WindowEvent::CloseRequested => return Ok(false),
             WindowEvent::Resized(size) => {
@@ -6019,24 +6058,18 @@ impl Browser {
         }
         self.snapshot_background_tabs();
 
-        let started = Instant::now();
-        let acquired = self.surface.get_current_texture();
-        self.frame_times.acquire = ms_since(started);
-        let surface = match acquired {
-            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.surface_config);
-                return Ok(());
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
-            wgpu::CurrentSurfaceTexture::Validation => bail!("surface validation error"),
-        };
-        let output = surface.texture.create_view(&Default::default());
-
         // Locked private pages aren't drawn at all (the lock screen covers their place).
         let frame = self.display_view().filter(|_| !self.is_locked()).and_then(|v| self.engine.frame(v));
         self.probe_page_frame(frame.as_ref());
-        let page_view = frame.as_ref().map(|f| f.texture.create_view(&Default::default()));
+        // The same view while the frame texture stays: an unchanged scene keeps its fingerprint.
+        let page_view = frame.as_ref().map(|f| match &self.page_view {
+            Some((texture, view)) if *texture == f.texture => view.clone(),
+            _ => {
+                let view = f.texture.create_view(&Default::default());
+                self.page_view = Some((f.texture.clone(), view.clone()));
+                view
+            }
+        });
         let slide_frame = frame.as_ref().and_then(|f| self.slide_page_frame(&f.texture));
         let slide_view = slide_frame.as_ref().map(|t| t.create_view(&Default::default()));
         let fade = self.slide_fade.as_ref().filter(|_| frame.is_some()).map(|(t, a)| (t.clone(), a.value));
@@ -6163,14 +6196,63 @@ impl Browser {
             .unwrap_or(theme.color(Paint::Ground));
         let scene = Scene { clear, layers };
         let size = (self.surface_config.width, self.surface_config.height);
+        // A frame that would look like the one on screen isn't drawn again (see
+        // `ui.skip_unchanged_frames`): the scene's fingerprint, the window's size and every
+        // page frame so far (pages' textures change content without changing identity).
+        let fingerprint = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::hash::DefaultHasher::new();
+            scene.fingerprint().hash(&mut h);
+            size.hash(&mut h);
+            self.engine.counters().page_frames.hash(&mut h);
+            h.finish()
+        };
+        let capture_due = self.capture.as_ref().is_some_and(|(_, at)| Instant::now() >= *at);
+        if self.config.ui.skip_unchanged_frames && self.shown_fingerprint == Some(fingerprint) && !capture_due
+        {
+            drop(scene);
+            self.frames_skipped += 1;
+            self.idle_redraw_at = Some(now + self.frame_interval);
+            return Ok(());
+        }
+        self.idle_redraw_at = None;
+        if tracing::enabled!(tracing::Level::TRACE) {
+            // Debug aid: which layers changed since the frame shown (why it was drawn).
+            let layers = scene.layer_fingerprints();
+            let changed: Vec<usize> = (0..layers.len().max(self.shown_layers.len()))
+                .filter(|&i| layers.get(i) != self.shown_layers.get(i))
+                .collect();
+            tracing::trace!(?changed, count = layers.len(), "frame drawn: layers changed");
+            self.shown_layers = layers;
+        }
+        let started = Instant::now();
+        let acquired = self.surface.get_current_texture();
+        self.frame_times.acquire = ms_since(started);
+        let surface = match acquired {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.surface_config);
+                self.shown_fingerprint = None;
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                self.shown_fingerprint = None;
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Validation => bail!("surface validation error"),
+        };
+        let output = surface.texture.create_view(&Default::default());
         let started = Instant::now();
         self.compositor.render(&scene, &mut self.ui.fonts(), &output, size);
         self.frame_times.render = ms_since(started);
+        // Kept until the next comparison: no new texture view can take one of these identities.
+        self.shown_textures = scene.textures();
         drop(scene);
         let started = Instant::now();
         self.window.pre_present_notify();
         self.queue.present(surface);
         self.frame_times.present = ms_since(started);
+        self.shown_fingerprint = Some(fingerprint);
         self.probe_presented();
 
         if let Some((path, at)) = &self.capture
@@ -6302,6 +6384,13 @@ impl Browser {
     /// Pages render at the refresh rate of the window's monitor (or the configured rate).
     fn sync_frame_rate(&mut self) {
         self.engine.set_frame_rate(page_frame_rate(&self.config, &self.window));
+        self.frame_interval = display_frame_interval(&self.window);
+    }
+
+    /// When the next frame should run, if not at once: after a frame that was skipped (nothing
+    /// changed, nothing presented, so nothing waited for the display), one display refresh later.
+    pub fn redraw_at(&self) -> Option<Instant> {
+        self.idle_redraw_at
     }
 
     /// While the sidebar slides: the frame to show for the page, drawn from the page
@@ -6433,6 +6522,8 @@ impl Browser {
             if let Some(probe) = &mut self.probe {
                 probe.tracker.sent(now);
             }
+            // Like a key event: the next frame runs at once.
+            self.idle_redraw_at = None;
             return;
         }
         let total = probe.spec.text.chars().count();
@@ -6708,6 +6799,15 @@ fn push_slide_page<'a>(
 
 /// Frames per second pages render at: `tabs.max_frame_rate`, or the window's monitor's
 /// refresh rate.
+/// One refresh of the window's monitor.
+fn display_frame_interval(window: &Window) -> Duration {
+    let hz = window
+        .current_monitor()
+        .and_then(|m| m.refresh_rate_millihertz())
+        .map_or(FALLBACK_FRAME_RATE as f64, |mhz| f64::from(mhz) / 1000.0);
+    Duration::from_secs_f64(1.0 / hz.max(1.0))
+}
+
 fn page_frame_rate(config: &Config, window: &Window) -> u32 {
     if config.tabs.max_frame_rate > 0 {
         return config.tabs.max_frame_rate;

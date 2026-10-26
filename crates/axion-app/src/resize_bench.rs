@@ -82,11 +82,14 @@ pub struct ResizeCounters {
     pub check_buffers: u64,
     /// Page frames that arrived.
     pub page_frames: u64,
+    /// Window frames not composited because they would have looked like the one shown.
+    pub skipped_frames: u64,
 }
 
 impl ResizeCounters {
     fn since(&self, start: &ResizeCounters) -> ResizeCounters {
         ResizeCounters {
+            skipped_frames: self.skipped_frames - start.skipped_frames,
             events: self.events - start.events,
             configures: self.configures - start.configures,
             layouts: self.layouts - start.layouts,
@@ -229,6 +232,8 @@ impl Recorder {
             view_resizes = c.view_resizes,
             frame_textures = c.frame_textures,
             check_buffers = c.check_buffers,
+            presented_fps =
+                format!("{:.1}", (self.m.frames.len() as u64).saturating_sub(c.skipped_frames) as f32 / secs),
             page_fps = format!("{:.1}", c.page_frames as f32 / secs),
             cpu_main_pct = format!("{main_cpu:.0}"),
             cpu_chromium_pct = format!("{child_cpu:.0}"),
