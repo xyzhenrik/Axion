@@ -843,6 +843,41 @@ Windows/macOS, touchscreen-first mode.
     renders a browser-like chrome (sidebar rows, toolbar, popover) over a page at 2560x1440. RTX 3070 Ti
     1.80 ms liquid (6 glass passes) -> 0.23 ms flat; Radeon 610M (`AXION_GPU=low`) 29.3 ms liquid
     (34 fps) -> 1.6 ms flat.
+- 2026-10-26 — **Performance: window-resize lag and idle cost** (user report: "after one resize it
+  lags to death"). Measured with `--bench-resize` (scripted: idle 3 s, scroll 3 s, sweep
+  1000x700 -> 1600x1000 -> back in 240 steps of 16 ms, a burst of 60 resizes at once, then idle and
+  scroll again at a new size; per-phase frame-time percentiles, main-thread breakdown, resize
+  counters, CPU of Axion and its Chromium processes, RSS). Test setup: XWayland window on HDMI-A-1,
+  `AXION_WINDOW_X11=1` keeps Chromium on Wayland so NVIDIA GPU frame sharing is used as in the
+  user's session. `AXION_RESIZE_LOG=1` logs the same summary for each real (interactive) resize.
+  Root causes and fixes (before -> after, RTX 3070 Ti, 9800X3D):
+  - Spare page-frame textures and check buffers kept the old size after a resize, so every later
+    GPU page frame allocated a new texture forever (180 per 3 s at 60 page fps -> 0). Spares of
+    another size are dropped now.
+  - Every `Resized` event reconfigured the swapchain, laid the UI out and resized every tab's
+    Chromium view: a burst of 60 events froze one frame for 450-810 ms (6 tabs: 360 `was_resized`).
+    Now the newest size is applied once per frame (burst max frame 33 ms, 1 configure, 1 resize),
+    the shown page gets one size at a time (`layout.window_resize_wait`, 0.1 s), background tabs
+    follow once the window is still (`layout.background_resize_delay`, 0.3 s; the overview resizes
+    them at once), and the engine skips resizes to a view's current size (sweep: 1580 -> 190).
+  - The letterbox check after a resize treated black page edges as bars: dark pages (the dark
+    start page) dropped every frame while resizing (0 -> 29 page frames/s during the sweep).
+  - `Ui::set_style` with an unchanged style dirtied the layout; chrome code does that every frame,
+    so every frame re-laid out the tree and re-measured text: 1.6 ms (1000x700) - 4.5 ms (1900x1040)
+    per frame at rest -> 0.
+  - Frames that would look like the shown one are not composited/presented
+    (`ui.skip_unchanged_frames`, default on): the scene is fingerprinted (layers, laid-out glyphs,
+    texture identities held alive, window size, engine page-frame count); the next tick runs one
+    display refresh later; input, page events and page frames draw at once. Idle start page:
+    60 -> 1 presented frames/s, main-thread CPU 15-17% -> 1-2%, GPU idle; chrome typing latency
+    17 ms -> 2-17 ms (typing probe). Pages that animate still present every page frame.
+  - Compositor unchanged: playground `--bench` 0.65 ms (NVIDIA) / 7.7 ms (Radeon 610M) per 1440p
+    frame; `flat_bench` 2.0/0.18 ms (NVIDIA), 29.3/1.55 ms (Radeon) liquid/flat.
+  - Not measured: interactive resize on native Wayland (KWin) and the app on the Radeon under
+    XWayland (its Vulkan surface is invalid there; the GPU benches above cover it offscreen).
+    Startup: ~0.87 s to the first presented frame (adapter 0.22 s, CEF 0.32 s), not changed.
+  - Open: idle ticks still run the CPU update once per display refresh (~0.1 ms); the overview
+    recreates thumbnail views each frame, so it never skips; its first frame takes ~30 ms.
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)

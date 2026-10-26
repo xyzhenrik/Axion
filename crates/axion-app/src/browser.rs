@@ -448,6 +448,7 @@ pub struct Browser {
     idle_redraw_at: Option<Instant>,
     frame_interval: Duration,
     frames_skipped: u64,
+    frames_presented: u64,
     /// The engine's page frame count at the last pump.
     pumped_page_frames: u64,
     /// The window's newest size, applied by the next frame (see `apply_window_size`).
@@ -789,6 +790,7 @@ impl Browser {
             idle_redraw_at: None,
             frame_interval: Duration::from_secs_f64(1.0 / f64::from(FALLBACK_FRAME_RATE)),
             frames_skipped: 0,
+            frames_presented: 0,
             pumped_page_frames: 0,
             pending_window_size: None,
             page_pacer: ResizePacer::default(),
@@ -6252,6 +6254,10 @@ impl Browser {
         self.window.pre_present_notify();
         self.queue.present(surface);
         self.frame_times.present = ms_since(started);
+        if self.shown_fingerprint.is_none() && self.frames_presented == 0 {
+            tracing::info!("first frame presented");
+        }
+        self.frames_presented += 1;
         self.shown_fingerprint = Some(fingerprint);
         self.probe_presented();
 
