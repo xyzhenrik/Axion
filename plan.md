@@ -113,6 +113,56 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
     (frame pacing locked to video cadence while in fullscreen).
 - Keybinds: Space, ←/→, ↑/↓, F, M, C, `<`/`>` — remappable like everything else.
 
+### 2.7b Axion Playlist (videos for later, optionally offline)
+- **Adding.** Pages with a video get a Playlist button in the address field (quick action,
+  `playlist.quick_action`; tooltip with its shortcut): it drips out a popover with the page's
+  videos (usually one) — *Add*, and *Add and Download* when the video is a plain file; a video
+  already saved shows *Open Playlist* / *Remove* instead. A glass button in the fullscreen
+  player (third circle, top left) adds exactly the video that plays (a check once saved), the
+  page menu has *Add to Playlist* / *Show Playlist*, and the keymap has `playlist_add`
+  (Ctrl+Shift+D, next to Ctrl+D) and `open_playlist` (Ctrl+Shift+P). Private tabs never add
+  (button hidden, the shortcut says so).
+- **What is saved** (table `playlist` in the account's `axion.sqlite`, so per account): title
+  (media-session title, else the tab title), page address, the media file's address when it is
+  a plain file (`currentSrc` from the bridge, never `blob:`), thumbnail file in
+  `<profile>/playlist/thumbs`, duration, added time, position, watched flag, download state /
+  path / size / note, list name (`playlist.list_name`, default "Play Later") and an order.
+  The same file (or, for streams, the same page) is never added twice; the downloaded copy
+  counts as the same item.
+- **Thumbnails.** The page's own picture first (video `poster`, media-session artwork,
+  `og:image`; fetched through the engine's network stack so Shields and cookies apply), else a
+  frame of the video taken from the tab's rendered picture (CPU read-back of the video's
+  rectangle), for downloaded files a frame once they play. Rows without any show the site's
+  icon on a neutral glass tile.
+- **Downloads** go through the engine's download machinery (`Engine::start_download`, folder
+  `playlist.directory` or "Axion Playlist" in the download folder, no save dialog) and the
+  Downloads list; Shields' request policy is asked first (blocked = failed with a note).
+  Plain files (mp4/webm/audio…) download with progress in the row; **HLS / DASH / `blob:`
+  streams are "streaming only"** with a stated reason (row, popover, menu) — never a silent
+  failure. Removing an item deletes its downloaded file (`playlist.delete_files_on_remove`,
+  never a file that was the user's own `file://` video); "Remove Download" keeps the item.
+- **The page** (native Axion UI, not an `axion://` page; `playlist_page.rs`): it fills the
+  window to the right of the sidebar, the toolbar/address/tab row are hidden (the locked-private
+  layout, only the sidebar button stays) and the sidebar remains fully usable. A second column
+  lists the videos: round play-all, list name with a menu chevron, "N items 17h 17min", *Edit*
+  (select, remove, download, move up/down), rows with a rounded thumbnail (download / watched
+  badges), up to three title lines, length and state, a "…" menu (Play, Download / Remove
+  Download / Streaming only, Show in Folder, Open Page, Remove) and the playing row highlighted.
+  The right side is the player: PiP, an expanding glass search field (filters live) and ×
+  (Esc closes) on top, the video area (black, rounded), title, progress with elapsed/remaining,
+  shuffle / previous / play / next / repeat (off, all, one), speed menu, sleep timer menu
+  (`playlist.sleep_timer_minutes`, end of video) and fullscreen.
+- **Playing in the page.** Items play in a view of their own, drawn into the video area:
+  *downloaded files natively* (the media document in takeover, so the picture is just the
+  video), *page items* as the whole page in that area with mouse and wheel forwarded (consent
+  walls, site players) and the controls driving the bridge. It resumes at the saved position
+  (a little before: `playlist.resume_rewind_seconds`), saves it every
+  `playlist.position_save_seconds` and marks the video watched at `playlist.watched_fraction`;
+  tabs showing a saved video (page or downloaded file) save their position too. Fullscreen and
+  PiP hand the video over to a tab (Axion's fullscreen player / PiP window belong to tabs), at
+  the same position.
+- Settings › Media › Playlist: button on/off, auto-download, delete files on remove, folder.
+
 ### 2.8 Customization
 - Settings UI (glass sheet) + `~/.config/axion/config.toml`, live-reloaded.
 - Themes: accent colour, light/dark/auto, glass parameters, density, corner radius.
@@ -301,6 +351,21 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. �
       *Open:* captions rendered by sites (not text tracks) are hidden by the fullscreen
       takeover (trusting the site in Settings › Media keeps them).
 
+### Phase 5c — Axion Playlist
+- [x] Store table, `[playlist]` config, `playlist_add` / `open_playlist` actions, sidebar
+  *Playlist* row, page menu entries, Settings › Media › Playlist.
+- [x] Bridge reports `src` / `poster` / the page's `og:image`; Add button + popover, fullscreen
+  player button, thumbnails (poster, preview image, frame grab).
+- [x] Downloads of plain files through the engine (`Engine::start_download`) with progress,
+  streams marked "streaming only".
+- [x] The page: list (rows, "…" menu, edit mode, search) + embedded player (progress, shuffle,
+  repeat, speed, sleep timer), saved positions and watched state.
+- [ ] HLS/DASH download (needs a segment fetcher + remux, or ffmpeg), several named lists
+  (the list menu is there, with the one list), drag to reorder (edit mode has move up/down),
+  playing in the page's player with Axion's own fullscreen *inside* the page (now: hand-over to
+  a tab), Picture in Picture straight from the page's view, page keyboard navigation (↑/↓ over
+  rows), a Playlist button in the PiP window, importing/exporting lists.
+
 ### Phase 6 — Bookmarks & history
 - [ ] SQLite schema + migrations, sidebar views, search, import.
 
@@ -460,6 +525,26 @@ Windows/macOS, touchscreen-first mode.
   things on `Ctrl`. New bound actions: `pin_tab`, `bookmark_page`, `show_bookmarks`,
   `show_history`, `open_passwords`. Explicit `keymap.toml` chords win over other actions'
   new defaults, so old files never collide.
+
+- 2026-10-26: **Axion Playlist** (user request; reference screenshot of an iPad playlist
+  rebuilt in Axion's glass style). Decisions where the request was silent:
+  - The page is a plane over the page card (everything else of the chrome except the sidebar
+    button hides, reusing the locked-private layout); any tab switch, navigation or tab-related
+    shortcut closes it first (`keeps_playlist` lists what leaves it open).
+  - One list, "Play Later" (`playlist.list_name`); the table has a `list` column and the header
+    a menu, so several lists are a UI task only.
+  - Playback lives in a view of its own (not a tab, no history/session), because Axion's
+    fullscreen and PiP players are bound to tabs; they pop the video out into a tab.
+  - Thumbnails come from the page's own pictures first; frame grabs read the engine's frame
+    textures back on the CPU (a few ms, only when adding or the first seconds of a downloaded
+    file) instead of asking the page to draw a canvas (cross-origin videos would taint it).
+  - Downloads use CEF's `StartDownload` with a one-shot target folder per address
+    (`DownloadInfo::original_url` matches them) and are also listed in Downloads; they never
+    auto-open. Shields is asked explicitly before (the browser-initiated download bypasses the
+    resource hooks).
+  - HLS/DASH/blob are streaming-only for now (no silent failure: reason shown); the bridge
+    stays injected in the page view like in tabs.
+  - Keys: `playlist_add` Ctrl+Shift+D, `open_playlist` Ctrl+Shift+P (both free).
 
 ## 8. Open questions
 - App name final? ("Axion" for now.)
