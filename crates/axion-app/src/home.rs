@@ -10,20 +10,29 @@
 //! When the data changes, open start pages are asked to pull again with a script that carries
 //! no data ([`REFRESH_SCRIPT`]).
 //!
-//! Private tabs get a private variant: no top sites, history or Shields numbers.
+//! Private tabs get a private variant: no top sites, history, Shields numbers or background.
+//!
+//! Background images live in the account's backgrounds directory (see [`backgrounds`]); the
+//! page only ever learns their generated file names, and `/api/background` and `/api/thumb`
+//! serve nothing but listed files from that directory.
+
+mod backgrounds;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
-use axion_config::{ClockFormat, Config, Home, START_PAGE_URL};
+use axion_config::{ClockFormat, Color, Config, Home, START_PAGE_URL};
 use axion_engine::internal::split_internal_url;
 use axion_engine::{InternalPages, InternalRequest, InternalResponse};
 use axion_store::{Store, site_host};
 use serde_json::{Value, json};
 
+pub use backgrounds::{Arrived, Image, Textures};
+use backgrounds::{LEGACY_FILE, Library, Thumbnails, valid_name};
+
 use crate::downloads::{Choose, choose_portal, spawn};
-use crate::settings::SEARCH_ENGINES;
+use crate::settings::{BACKGROUND_SLOTS, BackgroundCard, SEARCH_ENGINES};
 use crate::url::{is_address, resolve_input};
 
 /// The start page's address.
@@ -53,19 +62,18 @@ pub const BYTES_PER_BLOCKED_REQUEST: u64 = 50 * 1024;
 /// … and cost about this much time to load (Brave uses 50 ms as well).
 pub const SECONDS_PER_BLOCKED_REQUEST: f64 = 0.05;
 
-/// The background image in the account's profile (`<profile>/home/background`).
-const BACKGROUND_FILE: &str = "background";
-/// Larger images are refused as backgrounds.
-const MAX_BACKGROUND_BYTES: u64 = 40 * 1024 * 1024;
-
 /// What the network thread serves, kept ready by [`HomePage::update`].
 #[derive(Default)]
 struct Served {
     /// `/api/state` for normal and private tabs.
     state: String,
     private_state: String,
-    /// The background image and its MIME type, while one is set.
+    /// The selected background image and its MIME type, while one is set.
     background: Option<(PathBuf, String)>,
+    /// Every background (file name, MIME type) and their thumbnails' directory.
+    backgrounds: Vec<(String, String)>,
+    backgrounds_dir: PathBuf,
+    thumbs_dir: PathBuf,
     favicons: Option<PathBuf>,
     dark: bool,
 }
@@ -91,6 +99,18 @@ impl InternalPages for HomeService {
             "/api/background" if !request.private => {
                 let (path, mime) = served.background.as_ref()?;
                 InternalResponse::ok(mime, std::fs::read(path).ok()?)
+            }
+            // A background's thumbnail by its file name (only listed ones), or the image
+            // itself while it has none.
+            "/api/thumb" if !request.private => {
+                let name = query_value(request.query, "name").filter(|n| valid_name(n))?;
+                let (_, mime) = served.backgrounds.iter().find(|(n, _)| *n == name)?;
+                match std::fs::read(served.thumbs_dir.join(format!("{name}.png"))) {
+                    Ok(bytes) => InternalResponse::ok("image/png", bytes),
+                    Err(_) => {
+                        InternalResponse::ok(mime, std::fs::read(served.backgrounds_dir.join(&name)).ok()?)
+                    }
+                }
             }
             "/api/favicon" => {
                 let host = query_value(request.query, "host")?;
@@ -148,7 +168,7 @@ pub enum HomeAction {
     Go(String),
     /// Settings changed (already applied to the config): save them, update the UI.
     ConfigChanged,
-    /// Top sites or the background changed: open start pages should refresh.
+    /// Top sites or the backgrounds changed: open start pages should refresh.
     Refresh,
     /// Open Settings › General.
     OpenSettings,
@@ -161,6 +181,7 @@ struct Inputs {
     search_url: String,
     name: String,
     dark: bool,
+    accent: Color,
 }
 
 /// The start page's side in the browser (main thread).
@@ -171,11 +192,14 @@ pub struct HomePage {
     inputs: Option<Inputs>,
     /// The Shields total last shown, and when.
     blocked_shown: Option<(u64, Instant)>,
-    /// Bumped when the background image changes (the page's URL for it changes with it).
-    background_version: u64,
+    /// The background images, and their thumbnails for Settings.
+    library: Library,
+    thumbs: Thumbnails,
+    /// Bumped when backgrounds are added or removed.
+    generation: u64,
     /// A background picked in the desktop's file chooser, waiting to be taken.
     chosen: Arc<Mutex<Option<PathBuf>>>,
-    /// The top sites or the background changed: rebuild at the next update.
+    /// The top sites or the backgrounds changed: rebuild at the next update.
     stale: bool,
     /// Bumped when site icons arrive (the page's icon URLs change with it).
     icons_version: u64,
@@ -185,12 +209,19 @@ impl HomePage {
     pub fn new(profile: &Path, favicons: Option<PathBuf>) -> Self {
         let service = Arc::new(HomeService::default());
         service.0.write().unwrap_or_else(PoisonError::into_inner).favicons = favicons;
+        let dir = profile.join("home");
+        let library = Library::new(&dir);
+        let mut thumbs = Thumbnails::start();
+        // Thumbnails are made in the background, so the start page's picker has them soon.
+        thumbs.request(&library);
         Self {
             service,
-            dir: profile.join("home"),
+            dir,
             inputs: None,
             blocked_shown: None,
-            background_version: 1,
+            library,
+            thumbs,
+            generation: 1,
             chosen: Arc::default(),
             stale: true,
             icons_version: 1,
@@ -207,8 +238,111 @@ impl HomePage {
         self.service.clone()
     }
 
-    fn background_path(&self) -> PathBuf {
-        self.dir.join(BACKGROUND_FILE)
+    /// Moves the single background image of older versions into the backgrounds directory,
+    /// selected if it was shown. Returns whether the config changed.
+    pub fn migrate(&mut self, config: &mut Config) -> bool {
+        let Some(name) = self.library.migrate(&self.dir.join(LEGACY_FILE)) else { return false };
+        let _ = std::fs::remove_file(self.dir.join("background.tmp"));
+        self.backgrounds_changed();
+        if config.home.background.is_empty() && config.home.legacy_background_shown() {
+            config.home.background = name;
+        }
+        true
+    }
+
+    /// Lets Settings show the thumbnails as textures.
+    pub fn set_gpu(&mut self, textures: Textures) {
+        self.thumbs.set_gpu(textures);
+        self.thumbs.request(&self.library);
+    }
+
+    fn backgrounds_changed(&mut self) {
+        self.generation += 1;
+        self.stale = true;
+        self.thumbs.request(&self.library);
+    }
+
+    /// Bumped whenever backgrounds are added or removed.
+    pub fn backgrounds_generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The selected background, if it (still) exists.
+    fn selected<'a>(&self, config: &'a Config) -> Option<&'a str> {
+        let name = config.home.background.as_str();
+        self.library.contains(name).then_some(name)
+    }
+
+    /// The backgrounds as Settings shows them.
+    pub fn background_cards(&self) -> Vec<BackgroundCard> {
+        self.library
+            .names()
+            .take(BACKGROUND_SLOTS)
+            .map(|name| {
+                let thumb = self.thumbs.get(name);
+                BackgroundCard { name: name.to_owned(), loading: thumb.is_none(), image: thumb.flatten() }
+            })
+            .collect()
+    }
+
+    /// Settings' preview of the selected background: blurred like the page would be (for a
+    /// page `page_width` logical px wide), or its plain thumbnail until that is made.
+    pub fn background_preview(&mut self, config: &Config, page_width: f32) -> Option<(String, Image)> {
+        let name = self.selected(config)?.to_owned();
+        let plain = self.thumbs.get(&name).flatten();
+        if let Some((_, (width, _))) = &plain {
+            let sigma = config.home.background_blur * *width as f32 / page_width.max(1.0);
+            self.thumbs.request_preview(&self.library, &name, sigma);
+        }
+        let image = self.thumbs.preview(&name).or(plain)?;
+        Some((name, image))
+    }
+
+    /// Takes the thumbnails made meanwhile (call every frame).
+    pub fn poll_thumbnails(&mut self) -> Arrived {
+        self.thumbs.poll(&self.library)
+    }
+
+    /// Copies `path` into the backgrounds and selects it. Returns whether the config changed.
+    pub fn add_background(&mut self, path: &Path, config: &mut Config) -> bool {
+        let max = (config.home.max_backgrounds as usize).min(BACKGROUND_SLOTS);
+        let Some(name) = self.library.add(path, max) else { return false };
+        self.backgrounds_changed();
+        config.home.background = name;
+        true
+    }
+
+    /// Deletes a background (and selects none if it was selected). Returns whether the
+    /// config changed.
+    pub fn remove_background(&mut self, name: &str, config: &mut Config) -> bool {
+        if !valid_name(name) || !self.library.remove(name) {
+            return false;
+        }
+        self.backgrounds_changed();
+        if config.home.background == name {
+            config.home.background.clear();
+            return true;
+        }
+        false
+    }
+
+    /// Selects a background by name (empty: none). Returns whether the config changed.
+    pub fn select_background(&mut self, name: &str, config: &mut Config) -> bool {
+        if !name.is_empty() && !self.library.contains(name) || config.home.background == name {
+            return false;
+        }
+        config.home.background = name.to_owned();
+        true
+    }
+
+    /// Opens the desktop's file chooser for a new background (taken by [`Self::poll_chooser`]).
+    pub fn choose_background(&self) {
+        let chosen = Arc::clone(&self.chosen);
+        spawn("choose-background", move || match choose_portal("Background Image", Choose::Image) {
+            Ok(Some(path)) => *chosen.lock().unwrap_or_else(PoisonError::into_inner) = Some(path),
+            Ok(None) => {}
+            Err(e) => tracing::warn!("file chooser unavailable: {e}"),
+        });
     }
 
     /// Rebuilds what the page shows when its inputs changed (the Shields numbers at most every
@@ -226,6 +360,7 @@ impl HomePage {
             search_url: config.general.search_url.clone(),
             name: account_name.to_owned(),
             dark,
+            accent: config.appearance.accent,
         };
         let interval = Duration::from_secs_f32(config.home.stats_refresh_seconds.max(0.0));
         let stats_due =
@@ -238,7 +373,9 @@ impl HomePage {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
-        let background = self.background_file();
+        let selected = self.selected(config);
+        let names: Vec<&str> = self.library.names().collect();
+        let backgrounds = Backgrounds { selected, names: &names };
         let state = state_json(
             self.icons_version,
             config,
@@ -246,53 +383,28 @@ impl HomePage {
             blocked_total,
             account_name,
             false,
-            background.is_some(),
-            self.background_version,
+            &backgrounds,
             now,
         );
         let private_state =
-            state_json(self.icons_version, config, None, 0, account_name, true, false, 0, now);
+            state_json(self.icons_version, config, None, 0, account_name, true, &Backgrounds::PRIVATE, now);
+        let background = selected.and_then(|name| self.library.file(name));
         let mut served = self.service.0.write().unwrap_or_else(PoisonError::into_inner);
         served.state = state.to_string();
         served.private_state = private_state.to_string();
         served.background = background;
+        served.backgrounds = self.library.entries().to_vec();
+        served.backgrounds_dir = self.library.dir().to_path_buf();
+        served.thumbs_dir = self.library.thumbs_dir();
         served.dark = dark;
         self.inputs = Some(inputs);
         true
     }
 
-    /// The background image file and its MIME type, if one is set.
-    fn background_file(&self) -> Option<(PathBuf, String)> {
-        let path = self.background_path();
-        let mime = image_mime(&path)?;
-        Some((path, mime))
-    }
-
     /// Takes a background picked in the file chooser. Returns whether the config changed.
     pub fn poll_chooser(&mut self, config: &mut Config) -> bool {
         let chosen = self.chosen.lock().unwrap_or_else(PoisonError::into_inner).take();
-        chosen.is_some_and(|path| self.set_background(&path, config))
-    }
-
-    /// Copies `path` into the profile as the background image and shows it.
-    fn set_background(&mut self, path: &Path, config: &mut Config) -> bool {
-        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        if size == 0 || size > MAX_BACKGROUND_BYTES || image_mime(path).is_none() {
-            tracing::warn!(path = %path.display(), "not a usable background image");
-            return false;
-        }
-        if let Err(e) = std::fs::create_dir_all(&self.dir).and_then(|()| {
-            let tmp = self.dir.join("background.tmp");
-            std::fs::copy(path, &tmp)?;
-            std::fs::rename(&tmp, self.background_path())
-        }) {
-            tracing::warn!("saving the background image failed: {e}");
-            return false;
-        }
-        self.background_version += 1;
-        self.stale = true;
-        config.home.show_background_image = true;
-        true
+        chosen.is_some_and(|path| self.add_background(&path, config))
     }
 
     /// Acts on a message the start page posted (see `home.js`).
@@ -327,7 +439,6 @@ impl HomePage {
                     "search" => home.show_search = on,
                     "topSites" => home.show_top_sites = on,
                     "stats" => home.show_stats = on,
-                    "background" => home.show_background_image = on,
                     _ => return HomeAction::Nothing,
                 }
             }
@@ -347,35 +458,17 @@ impl HomePage {
                 }
             }
             "chooseBackground" => {
-                let chosen = Arc::clone(&self.chosen);
-                spawn("choose-background", move || match choose_portal("Background Image", Choose::Image) {
-                    Ok(Some(path)) => *chosen.lock().unwrap_or_else(PoisonError::into_inner) = Some(path),
-                    Ok(None) => {}
-                    Err(e) => tracing::warn!("file chooser unavailable: {e}"),
-                });
+                self.choose_background();
                 return HomeAction::Nothing;
             }
-            "backgroundPath" => {
-                let path = text("path");
-                let path = match path.strip_prefix("~/") {
-                    Some(rest) => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(rest),
-                    None => PathBuf::from(path),
+            "backgroundPath" | "selectBackground" | "removeBackground" => {
+                let changed = match kind.as_str() {
+                    "backgroundPath" => self.add_background(&expand_home(&text("path")), config),
+                    "selectBackground" => self.select_background(&text("name"), config),
+                    _ => self.remove_background(&text("name"), config),
                 };
-                return if self.set_background(&path, config) {
-                    HomeAction::ConfigChanged
-                } else {
-                    HomeAction::Refresh
-                };
-            }
-            "clearBackground" => {
-                if let Err(e) = std::fs::remove_file(self.background_path())
-                    && e.kind() != std::io::ErrorKind::NotFound
-                {
-                    tracing::warn!("removing the background image failed: {e}");
-                }
-                home.show_background_image = false;
-                self.background_version += 1;
-                self.stale = true;
+                // Unchanged: the page shows the truth again (e.g. after an unusable path).
+                return if changed { HomeAction::ConfigChanged } else { HomeAction::Refresh };
             }
             "removeSite" | "unpinSite" | "pinSite" | "editSite" | "restoreSites" => {
                 let Some(store) = store else { return HomeAction::Nothing };
@@ -394,6 +487,31 @@ impl HomePage {
         }
         HomeAction::ConfigChanged
     }
+}
+
+/// "~/x" → the home directory's "x".
+pub fn expand_home(path: &str) -> PathBuf {
+    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(path),
+    }
+}
+
+/// The backgrounds `/api/state` lists.
+struct Backgrounds<'a> {
+    /// The selected one, if any (and it exists).
+    selected: Option<&'a str>,
+    names: &'a [&'a str],
+}
+
+impl Backgrounds<'_> {
+    /// Private start pages show none and list none.
+    const PRIVATE: Backgrounds<'static> = Backgrounds { selected: None, names: &[] };
+}
+
+/// `#RRGGBB` for CSS (the accent is opaque).
+fn css_color(c: Color) -> String {
+    format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b)
 }
 
 /// Pins, edits, removes or restores top sites.
@@ -500,8 +618,7 @@ fn state_json(
     blocked: u64,
     name: &str,
     private: bool,
-    has_background: bool,
-    background_version: u64,
+    backgrounds: &Backgrounds<'_>,
     now: i64,
 ) -> Value {
     let home = &config.home;
@@ -530,6 +647,7 @@ fn state_json(
     json!({
         "private": private,
         "icons": icons_version,
+        "accent": css_color(config.appearance.accent),
         "clock": { "show": home.show_clock, "h24": h24, "format": match home.clock_format {
             ClockFormat::Auto => "auto", ClockFormat::H12 => "12h", ClockFormat::H24 => "24h" } },
         "greeting": { "show": home.show_greeting && !private, "name": first_name },
@@ -553,25 +671,14 @@ fn state_json(
             "seconds": blocked as f64 * SECONDS_PER_BLOCKED_REQUEST,
         },
         "background": {
-            "show": home.show_background_image && has_background && !private,
-            "enabled": home.show_background_image,
-            "has": has_background,
-            "version": background_version,
+            "show": backgrounds.selected.is_some() && !private,
+            "selected": backgrounds.selected.unwrap_or_default(),
+            "list": backgrounds.names,
+            "canAdd": backgrounds.names.len() < (home.max_backgrounds as usize).min(BACKGROUND_SLOTS),
             "dim": home.background_dim,
             "blur": home.background_blur,
         },
     })
-}
-
-/// The MIME type of an image file, by its first bytes (`None`: not an image Chromium shows).
-fn image_mime(path: &Path) -> Option<String> {
-    use std::io::Read;
-    let mut head = [0u8; 32];
-    let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut head)).ok()?;
-    let format = image::guess_format(&head[..n]).ok()?;
-    use image::ImageFormat as F;
-    matches!(format, F::Png | F::Jpeg | F::Gif | F::WebP | F::Avif | F::Bmp)
-        .then(|| format.to_mime_type().to_owned())
 }
 
 #[cfg(test)]
@@ -663,12 +770,20 @@ mod tests {
     fn private_state_has_no_history() {
         let store = Store::in_memory().unwrap();
         store.record_visit("https://often.example/", "Often", 100).unwrap();
-        let config = Config::default();
-        let state = state_json(1, &config, Some(&store), 7, "Ada Lovelace", true, true, 1, 100);
+        let mut config = Config::default();
+        config.appearance.accent = Color::rgb(0xE2457A);
+        let names = ["bg-1.png"];
+        let backgrounds = Backgrounds { selected: Some("bg-1.png"), names: &names };
+        let state = state_json(1, &config, Some(&store), 7, "Ada Lovelace", true, &Backgrounds::PRIVATE, 100);
         assert_eq!(state["topSites"]["sites"].as_array().map(Vec::len), Some(0));
         assert_eq!(state["stats"]["show"], false);
         assert_eq!(state["background"]["show"], false);
-        let state = state_json(1, &config, Some(&store), 7, "Ada Lovelace", false, false, 1, 100);
+        assert_eq!(state["background"]["list"].as_array().map(Vec::len), Some(0));
+        let state = state_json(1, &config, Some(&store), 7, "Ada Lovelace", false, &backgrounds, 100);
+        assert_eq!(state["accent"], "#E2457A");
+        assert_eq!(state["background"]["show"], true);
+        assert_eq!(state["background"]["selected"], "bg-1.png");
+        assert_eq!(state["background"]["list"][0], "bg-1.png");
         assert_eq!(state["topSites"]["sites"][0]["host"], "often.example");
         assert_eq!(state["stats"]["bytes"], 7 * BYTES_PER_BLOCKED_REQUEST);
         assert_eq!(state["greeting"]["name"], "Ada");
@@ -687,5 +802,60 @@ mod tests {
         assert_eq!(service.serve(&request("/")).map(|r| r.mime), Some("text/html".into()));
         assert!(service.serve(&request("/nope")).is_none());
         assert!(service.serve(&InternalRequest { host: "other", ..request("/") }).is_none());
+    }
+
+    #[test]
+    fn backgrounds_from_the_page() {
+        let tmp = std::env::temp_dir().join(format!("axion-home-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("home")).unwrap();
+        let picture = |path: &Path| {
+            let image = image::RgbaImage::from_pixel(32, 20, image::Rgba([10, 120, 200, 255]));
+            image.save_with_format(path, image::ImageFormat::Png).unwrap();
+        };
+        // An old single background, shown: migrated and selected.
+        picture(&tmp.join("home").join(LEGACY_FILE));
+        std::fs::write(tmp.join("config.toml"), "[home]\nshow_background_image = true\n").unwrap();
+        let mut config = axion_config::load_config(&axion_config::ConfigPaths::in_dir(tmp.clone())).unwrap();
+        let mut page = HomePage::new(&tmp, None);
+        assert!(page.migrate(&mut config));
+        let migrated = config.home.background.clone();
+        assert!(migrated.starts_with("bg-") && migrated.ends_with(".png"), "{migrated}");
+        assert!(!page.migrate(&mut config));
+
+        let outside = tmp.join("outside.png");
+        picture(&outside);
+        let mut send = |v: Value| page.handle(&v.to_string(), &mut config, None);
+        let path = outside.display().to_string();
+        assert_eq!(send(json!({"type": "backgroundPath", "path": path})), HomeAction::ConfigChanged);
+        assert_eq!(send(json!({"type": "backgroundPath", "path": "/nonexistent.png"})), HomeAction::Refresh);
+        assert_eq!(send(json!({"type": "selectBackground", "name": "../outside.png"})), HomeAction::Refresh);
+        assert_eq!(send(json!({"type": "removeBackground", "name": "../outside.png"})), HomeAction::Refresh);
+        assert!(outside.exists());
+        assert_eq!(send(json!({"type": "selectBackground", "name": migrated})), HomeAction::ConfigChanged);
+        assert_eq!(send(json!({"type": "selectBackground", "name": ""})), HomeAction::ConfigChanged);
+        assert_eq!(send(json!({"type": "selectBackground", "name": migrated})), HomeAction::ConfigChanged);
+        assert_eq!(send(json!({"type": "removeBackground", "name": migrated})), HomeAction::ConfigChanged);
+        assert!(config.home.background.is_empty());
+        assert_eq!(page.library.entries().len(), 1);
+
+        // The service serves only listed files, by name.
+        page.update(&config, None, 0, "", false);
+        let added = page.library.entries()[0].0.clone();
+        let service = Arc::clone(&page.service);
+        let query = format!("name={added}");
+        let request = |path: &'static str, query: &str| {
+            service
+                .serve(&InternalRequest { host: HOST, path, query, private: false, from_own_page: true })
+                .map(|r| r.mime)
+        };
+        assert_eq!(request("/api/thumb", &query), Some("image/png".into()));
+        assert_eq!(request("/api/thumb", "name=..%2Foutside.png"), None);
+        assert_eq!(request("/api/thumb", "name=.thumbs"), None);
+        assert_eq!(request("/api/background", ""), None, "none selected");
+        config.home.background = added;
+        page.update(&config, None, 0, "", false);
+        assert_eq!(request("/api/background", ""), Some("image/png".into()));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

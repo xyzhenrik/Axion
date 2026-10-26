@@ -13,6 +13,7 @@ use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, 
 use glam::Vec2;
 use zeroize::Zeroizing;
 
+use crate::home::Image;
 use crate::morph::{Origin, SheetMorph};
 use crate::passwords::MIN_MASTER_LENGTH;
 
@@ -44,6 +45,26 @@ pub const SEARCH_ENGINES: [(&str, &str); 5] = [
 
 /// Accent colours from the design system.
 const ACCENTS: [Color; 6] = ACCENT_SWATCHES;
+
+/// The start page's backgrounds Settings can list (each has a select and a remove action).
+pub const BACKGROUND_SLOTS: usize = 30;
+/// A background card in the picker (16:10, like a window) and its selection ring.
+const BACKGROUND_CARD: Vec2 = Vec2::new(112.0, 70.0);
+const BACKGROUND_CARD_RADIUS: f32 = 11.0;
+const BACKGROUND_RING: f32 = 3.0;
+/// The large preview of the selected background above the cards.
+pub const BACKGROUND_PREVIEW: Vec2 = Vec2::new(336.0, 210.0);
+const BACKGROUND_PREVIEW_RADIUS: f32 = 16.0;
+
+/// A background as the picker shows it.
+#[derive(Clone)]
+pub struct BackgroundCard {
+    /// Its file name in the backgrounds directory.
+    pub name: String,
+    /// Its thumbnail (none while it is made, or for formats without one).
+    pub image: Option<Image>,
+    pub loading: bool,
+}
 /// The avatar on the Account page.
 const AVATAR_SIZE: f32 = 52.0;
 
@@ -118,7 +139,8 @@ enum Setting {
     HomeSearch,
     HomeTopSites,
     HomeStats,
-    HomeBackground,
+    HomeDim,
+    HomeBlur,
     TintFromPage,
     AdaptToPage,
     TextScale,
@@ -168,7 +190,8 @@ impl Setting {
             Setting::HomeSearch => "Search field",
             Setting::HomeTopSites => "Top sites",
             Setting::HomeStats => "Shields statistics",
-            Setting::HomeBackground => "Background image",
+            Setting::HomeDim => "Dim background image",
+            Setting::HomeBlur => "Blur background image",
             Setting::TintFromPage => "Colour in tab bar",
             Setting::AdaptToPage => "Light or dark chrome to match the page",
             Setting::TextScale => "Text size",
@@ -220,7 +243,6 @@ impl Setting {
                 | Setting::HomeSearch
                 | Setting::HomeTopSites
                 | Setting::HomeStats
-                | Setting::HomeBackground
                 | Setting::TintFromPage
                 | Setting::AdaptToPage
                 | Setting::ReduceTransparency
@@ -253,6 +275,8 @@ impl Setting {
     /// Slider range (min, max).
     fn range(self) -> (f32, f32) {
         match self {
+            Setting::HomeDim => (0.0, 0.8),
+            Setting::HomeBlur => (0.0, 30.0),
             Setting::TextScale => (0.85, 1.3),
             Setting::PageCorner => (0.0, 24.0),
             Setting::Refraction => (0.0, 1.0),
@@ -280,6 +304,11 @@ impl Setting {
         };
         let defaults = Config::default();
         match self {
+            Setting::HomeDim => percent(c.home.background_dim),
+            Setting::HomeBlur => match c.home.background_blur {
+                b if b <= 0.0 => "Off".to_owned(),
+                b => format!("{b:.0} px"),
+            },
             Setting::TextScale => percent(c.appearance.text_scale),
             Setting::PageCorner => format!("{:.0} px", c.layout.page_corner_radius),
             Setting::Refraction => percent(c.glass.light.refraction),
@@ -318,7 +347,8 @@ impl Setting {
             Setting::HomeSearch => return c.home.show_search as u8 as f32,
             Setting::HomeTopSites => return c.home.show_top_sites as u8 as f32,
             Setting::HomeStats => return c.home.show_stats as u8 as f32,
-            Setting::HomeBackground => return c.home.show_background_image as u8 as f32,
+            Setting::HomeDim => c.home.background_dim,
+            Setting::HomeBlur => c.home.background_blur,
             Setting::TintFromPage => return c.appearance.tint_from_page as u8 as f32,
             Setting::AdaptToPage => return c.appearance.adapt_to_page as u8 as f32,
             Setting::ReduceTransparency => return c.glass.reduce_transparency as u8 as f32,
@@ -374,7 +404,8 @@ impl Setting {
             Setting::HomeSearch => c.home.show_search = on,
             Setting::HomeTopSites => c.home.show_top_sites = on,
             Setting::HomeStats => c.home.show_stats = on,
-            Setting::HomeBackground => c.home.show_background_image = on,
+            Setting::HomeDim => c.home.background_dim = (v * 20.0).round() / 20.0,
+            Setting::HomeBlur => c.home.background_blur = v.round(),
             Setting::TintFromPage => c.appearance.tint_from_page = on,
             Setting::AdaptToPage => c.appearance.adapt_to_page = on,
             Setting::ReduceTransparency => c.glass.reduce_transparency = on,
@@ -467,7 +498,21 @@ pub enum SettingsAction {
     ImportPasswords,
     RestorePasswords,
     ExportPasswords,
+    /// The start page's background: none, one of the listed ones (index), or remove one.
+    NoBackground,
+    Background(usize),
+    RemoveBackground(usize),
+    /// Add a background with the desktop's file chooser, or from the path field.
+    ChooseBackground,
+    AddBackgroundPath,
 }
+
+/// The background picker's actions (after the categories' ids).
+const NO_BACKGROUND: u32 = 920;
+const CHOOSE_BACKGROUND: u32 = 921;
+const ADD_BACKGROUND_PATH: u32 = 922;
+const BACKGROUND_BASE: u32 = 930;
+const REMOVE_BACKGROUND_BASE: u32 = BACKGROUND_BASE + BACKGROUND_SLOTS as u32;
 
 /// Remove buttons of the trusted player sites (one id per row, up to `CATEGORY_BASE`).
 const TRUSTED_SITE_BASE: u32 = 200;
@@ -549,6 +594,11 @@ impl SettingsAction {
                     SettingsAction::ClearBrowsingData => 98,
                     SettingsAction::RemoveAllSiteData => 99,
                     SettingsAction::RemoveSiteData(i) => SITE_DATA_BASE + i as u32,
+                    SettingsAction::NoBackground => NO_BACKGROUND,
+                    SettingsAction::ChooseBackground => CHOOSE_BACKGROUND,
+                    SettingsAction::AddBackgroundPath => ADD_BACKGROUND_PATH,
+                    SettingsAction::Background(i) => BACKGROUND_BASE + i as u32,
+                    SettingsAction::RemoveBackground(i) => REMOVE_BACKGROUND_BASE + i as u32,
                 },
         )
     }
@@ -594,6 +644,15 @@ impl SettingsAction {
             n if (TRUSTED_SITE_BASE..CATEGORY_BASE).contains(&n) => {
                 SettingsAction::RemoveTrustedSite((n - TRUSTED_SITE_BASE) as usize)
             }
+            NO_BACKGROUND => SettingsAction::NoBackground,
+            CHOOSE_BACKGROUND => SettingsAction::ChooseBackground,
+            ADD_BACKGROUND_PATH => SettingsAction::AddBackgroundPath,
+            n if (BACKGROUND_BASE..REMOVE_BACKGROUND_BASE).contains(&n) => {
+                SettingsAction::Background((n - BACKGROUND_BASE) as usize)
+            }
+            n if (REMOVE_BACKGROUND_BASE..REMOVE_BACKGROUND_BASE + BACKGROUND_SLOTS as u32).contains(&n) => {
+                SettingsAction::RemoveBackground((n - REMOVE_BACKGROUND_BASE) as usize)
+            }
             _ => return None,
         })
     }
@@ -636,6 +695,12 @@ pub enum Outcome {
         path: PathBuf,
         password: Zeroizing<String>,
     },
+    /// Pick a new start page background with the desktop's file chooser.
+    ChooseBackground,
+    /// Copy this image in as a start page background (and select it).
+    AddBackground(PathBuf),
+    /// Delete the start page background with this file name.
+    RemoveBackground(String),
 }
 
 pub struct SettingsSheet {
@@ -685,6 +750,13 @@ pub struct SettingsSheet {
     /// The search field above the categories, and what it held when the page was built.
     search: NodeId,
     query: String,
+    /// The start page's backgrounds, the selected one's preview (its name and picture), the
+    /// preview's picture and dimming nodes, the path field, and the last adding problem.
+    backgrounds: Vec<BackgroundCard>,
+    background_preview: Option<(String, Image)>,
+    preview_node: Option<NodeId>,
+    background_path: Option<NodeId>,
+    background_status: Option<String>,
 }
 
 fn row(gap: f32) -> Style {
@@ -862,7 +934,35 @@ impl SettingsSheet {
             open: false,
             search,
             query: String::new(),
+            backgrounds: Vec::new(),
+            background_preview: None,
+            preview_node: None,
+            background_path: None,
+            background_status: None,
         }
+    }
+
+    /// The start page's backgrounds, listed on the General page.
+    pub fn set_backgrounds(&mut self, cards: Vec<BackgroundCard>) {
+        self.backgrounds = cards;
+    }
+
+    /// The selected background's preview (blurred like the page), shown at once.
+    pub fn set_background_preview(&mut self, ui: &mut Ui, preview: Option<(String, Image)>) {
+        self.background_preview = preview;
+        if let (Some(node), Some((_, image))) = (self.preview_node, &self.background_preview) {
+            ui.set_image(node, Some(image.clone()));
+            ui.set_image_crop(node, Some(cover_crop(image.1, BACKGROUND_PREVIEW)));
+        }
+    }
+
+    /// Shows why the last background could not be added (or nothing).
+    pub fn set_background_status(&mut self, status: Option<String>) {
+        self.background_status = status;
+    }
+
+    pub fn background_path_field(&self) -> Option<NodeId> {
+        self.background_path
     }
 
     pub fn is_open(&self) -> bool {
@@ -1045,6 +1145,8 @@ impl SettingsSheet {
         self.account_name = None;
         self.passwords_file = None;
         self.passwords_secret = None;
+        self.preview_node = None;
+        self.background_path = None;
         if !self.query.is_empty() {
             self.show_results(ui, config);
             return;
@@ -1101,11 +1203,25 @@ impl SettingsSheet {
                     Setting::HomeSearch,
                     Setting::HomeTopSites,
                     Setting::HomeStats,
-                    Setting::HomeBackground,
                 ] {
                     self.control(ui, config, setting);
                 }
-                self.note(ui, "Choose the background image with the gear on the start page.");
+                self.section(ui, "Start page background");
+                self.background_picker(ui, config);
+                if self.backgrounds.iter().any(|c| c.name == config.home.background) {
+                    self.control_labeled(ui, config, Setting::HomeDim, "Dim");
+                    self.control_labeled(ui, config, Setting::HomeBlur, "Blur");
+                }
+                let row_node = self.row(ui, "Add from file");
+                self.background_path = Some(text_field(ui, row_node, "~/Pictures/sea.jpg", 220.0, false));
+                pill_button(ui, row_node, "Add", SettingsAction::AddBackgroundPath, false);
+                let note = match &self.background_status {
+                    Some(status) => status.clone(),
+                    None => "Added images are copied into your profile. The gear on the start page \
+                             picks them too."
+                        .to_owned(),
+                };
+                self.note(ui, &note);
             }
             Category::Appearance => {
                 let row_node = self.row(ui, "Appearance");
@@ -1556,6 +1672,183 @@ impl SettingsSheet {
         self.row_with_height(ui, label, ROW_HEIGHT)
     }
 
+    /// The start page's backgrounds: a large preview of the selected one (dimmed and blurred
+    /// like the page), then a card per background, "None" and "Add…".
+    fn background_picker(&mut self, ui: &mut Ui, config: &Config) {
+        let parent = self.group_for_row(ui);
+        let selected = self.backgrounds.iter().position(|c| c.name == config.home.background);
+        let stage = ui.add(
+            parent,
+            Widget::container(),
+            Style {
+                justify_content: JustifyContent::CENTER,
+                padding: padding(0.0, 16.0),
+                flex_shrink: 0.0,
+                ..row(0.0)
+            },
+        );
+        let preview_style = Style {
+            size: Size { width: length(BACKGROUND_PREVIEW.x), height: length(BACKGROUND_PREVIEW.y) },
+            flex_shrink: 0.0,
+            justify_content: JustifyContent::CENTER,
+            align_items: AlignItems::CENTER,
+            ..Default::default()
+        };
+        let image = selected.and_then(|i| {
+            let card = &self.backgrounds[i];
+            match &self.background_preview {
+                Some((name, image)) if *name == card.name => Some(image.clone()),
+                _ => card.image.clone(),
+            }
+        });
+        let shadow = axion_ui::Shadow { offset_y: 2.0, blur: 10.0, opacity: 0.18 };
+        // The page's ground (black under a picture), the picture, and a clock like the page's
+        // to judge legibility. The picture's opacity over black is the dimming: images draw
+        // above fills, so a dark fill can't lie on top of it.
+        let ground = if selected.is_some() { Paint::Fixed(Color::rgb(0x000000)) } else { Paint::Ground };
+        let preview = ui.add(
+            stage,
+            Widget::container()
+                .with_background(Background::Fill(ground, 1.0))
+                .with_radius(BACKGROUND_PREVIEW_RADIUS)
+                .with_shadow(shadow),
+            preview_style,
+        );
+        if let Some(image) = image {
+            let node = ui.add(
+                preview,
+                Widget::image().with_radius(BACKGROUND_PREVIEW_RADIUS),
+                Style {
+                    position: Position::Absolute,
+                    inset: Rect { left: length(0.0), right: auto(), top: length(0.0), bottom: auto() },
+                    size: Size { width: length(BACKGROUND_PREVIEW.x), height: length(BACKGROUND_PREVIEW.y) },
+                    ..Default::default()
+                },
+            );
+            ui.set_image_crop(node, Some(cover_crop(image.1, BACKGROUND_PREVIEW)));
+            ui.set_image(node, Some(image));
+            ui.set_opacity(node, 1.0 - config.home.background_dim);
+            self.preview_node = Some(node);
+        }
+        let clock = ui.add_label(preview, "9:41", TextStyle::LargeTitle, Style::default());
+        if let Some(w) = ui.widget_mut(clock) {
+            w.set_paint(if selected.is_some() { Paint::Fixed(Color::rgb(0xFFFFFF)) } else { Paint::Label });
+        }
+
+        let grid = ui.add(
+            parent,
+            Widget::container(),
+            Style {
+                flex_direction: FlexDirection::Row,
+                flex_wrap: FlexWrap::Wrap,
+                justify_content: JustifyContent::CENTER,
+                gap: Size { width: length(10.0), height: length(10.0) },
+                padding: Rect {
+                    left: length(0.0),
+                    right: length(0.0),
+                    top: length(0.0),
+                    bottom: length(16.0),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+        );
+        let card_style = Style {
+            size: Size { width: length(BACKGROUND_CARD.x), height: length(BACKGROUND_CARD.y) },
+            flex_shrink: 0.0,
+            justify_content: JustifyContent::CENTER,
+            align_items: AlignItems::CENTER,
+            flex_direction: FlexDirection::Column,
+            gap: Size { width: length(0.0), height: length(2.0) },
+            ..Default::default()
+        };
+        // "None": the plain white or black page.
+        let ring = background_ring(ui, grid, SettingsAction::NoBackground, selected.is_none());
+        let none = ui.add(
+            ring,
+            Widget::container()
+                .with_background(Background::Fill(Paint::Ground, 1.0))
+                .with_radius(BACKGROUND_CARD_RADIUS),
+            card_style.clone(),
+        );
+        let label = ui.add_label(none, "None", TextStyle::Footnote, Style::default());
+        if let Some(w) = ui.widget_mut(label) {
+            w.set_paint(Paint::Secondary);
+        }
+        for (i, card) in self.backgrounds.iter().enumerate().take(BACKGROUND_SLOTS) {
+            let ring = background_ring(ui, grid, SettingsAction::Background(i), selected == Some(i));
+            match &card.image {
+                Some(image) => {
+                    let node =
+                        ui.add(ring, Widget::image().with_radius(BACKGROUND_CARD_RADIUS), card_style.clone());
+                    ui.set_image_crop(node, Some(cover_crop(image.1, BACKGROUND_CARD)));
+                    ui.set_image(node, Some(image.clone()));
+                }
+                None => {
+                    // Still being made, or a format without a thumbnail here (the page shows it).
+                    let node = ui.add(
+                        ring,
+                        Widget::container()
+                            .with_background(Background::Fill(Paint::Label, 0.07))
+                            .with_radius(BACKGROUND_CARD_RADIUS),
+                        card_style.clone(),
+                    );
+                    if !card.loading {
+                        ui.add(
+                            node,
+                            Widget::icon(Icon::File, 18.0).with_paint(Paint::Secondary),
+                            Style::default(),
+                        );
+                        let ext = card.name.rsplit('.').next().unwrap_or_default().to_uppercase();
+                        let label = ui.add_label(node, &ext, TextStyle::Caption, Style::default());
+                        if let Some(w) = ui.widget_mut(label) {
+                            w.set_paint(Paint::Secondary);
+                        }
+                    }
+                }
+            }
+            // Glass, so it lies above the thumbnail (images draw above fills).
+            let side = 22.0;
+            let remove = ui.add(
+                ring,
+                Widget::container()
+                    .with_action(SettingsAction::RemoveBackground(i).id())
+                    .with_radius(CAPSULE)
+                    .with_background(Background::Glass(GlassLevel::Thin)),
+                Style {
+                    position: Position::Absolute,
+                    inset: Rect {
+                        left: length(BACKGROUND_RING + BACKGROUND_CARD.x - side - 5.0),
+                        right: auto(),
+                        top: length(BACKGROUND_RING + 5.0),
+                        bottom: auto(),
+                    },
+                    size: Size { width: length(side), height: length(side) },
+                    justify_content: JustifyContent::CENTER,
+                    align_items: AlignItems::CENTER,
+                    ..Default::default()
+                },
+            );
+            ui.add(remove, Widget::icon(Icon::Close, 11.0).with_paint(Paint::Label), Style::default());
+        }
+        let limit = (config.home.max_backgrounds as usize).min(BACKGROUND_SLOTS);
+        if self.backgrounds.len() < limit {
+            let ring = background_ring(ui, grid, SettingsAction::ChooseBackground, false);
+            let add = ui.add(
+                ring,
+                Widget::container()
+                    .with_background(Background::Fill(Paint::Accent, 0.10))
+                    .with_radius(BACKGROUND_CARD_RADIUS),
+                card_style,
+            );
+            ui.add(add, Widget::icon(Icon::Plus, 18.0).with_paint(Paint::Accent), Style::default());
+            let label = ui.add_label(add, "Add…", TextStyle::Footnote, Style::default());
+            if let Some(w) = ui.widget_mut(label) {
+                w.set_paint(Paint::Accent);
+            }
+        }
+    }
+
     /// The settings matching the search, grouped by page: toggles and sliders work right
     /// here, everything else has a button that opens its page.
     fn show_results(&mut self, ui: &mut Ui, config: &Config) {
@@ -1797,6 +2090,12 @@ impl SettingsSheet {
                 setting.set(config, value);
                 // The Privacy page shows the password fields while the lock has no password.
                 self.rebuild |= setting == Setting::LockPrivateTabs;
+                // The preview dims live; its blur follows once it is made (see the browser).
+                if setting == Setting::HomeDim
+                    && let Some(node) = self.preview_node
+                {
+                    ui.set_opacity(node, 1.0 - config.home.background_dim);
+                }
                 // Live while dragging.
                 for &(_, label) in self.values.iter().filter(|(s, _)| *s == setting) {
                     ui.set_text(label, &setting.display(config));
@@ -1834,6 +2133,32 @@ impl SettingsSheet {
                 }
             }
             SettingsAction::ChooseDownloadFolder => return Outcome::ChooseDownloadFolder,
+            SettingsAction::NoBackground => {
+                config.home.background.clear();
+                Outcome::Changed
+            }
+            SettingsAction::Background(i) => match self.backgrounds.get(i) {
+                Some(card) => {
+                    config.home.background.clone_from(&card.name);
+                    Outcome::Changed
+                }
+                None => Outcome::Nothing,
+            },
+            SettingsAction::RemoveBackground(i) => match self.backgrounds.get(i) {
+                Some(card) => return Outcome::RemoveBackground(card.name.clone()),
+                None => Outcome::Nothing,
+            },
+            SettingsAction::ChooseBackground => return Outcome::ChooseBackground,
+            SettingsAction::AddBackgroundPath => {
+                let text =
+                    self.background_path.and_then(|f| ui.field_text(f)).unwrap_or_default().trim().to_owned();
+                if text.is_empty() {
+                    self.background_status = Some("Enter the image's path first.".to_owned());
+                    Outcome::Nothing
+                } else {
+                    return Outcome::AddBackground(expand_home(&text));
+                }
+            }
             SettingsAction::RemoveDownloads(r) => {
                 config.downloads.remove_list_items = r;
                 Outcome::Changed
@@ -1992,12 +2317,31 @@ impl SettingsSheet {
     }
 }
 
-/// "~/x" → the home directory's "x".
-fn expand_home(path: &str) -> PathBuf {
-    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
-        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
-        _ => PathBuf::from(path),
-    }
+use crate::home::expand_home;
+
+/// The part of a texture of `size` px that covers a frame of `frame` (centred, like CSS's
+/// `background-size: cover`), in 0–1 coordinates.
+fn cover_crop(size: (u32, u32), frame: Vec2) -> Frame {
+    let (w, h) = (size.0.max(1) as f32, size.1.max(1) as f32);
+    let scale = (frame.x / w).max(frame.y / h);
+    let visible = Vec2::new((frame.x / scale / w).min(1.0), (frame.y / scale / h).min(1.0));
+    Frame { origin: (Vec2::ONE - visible) / 2.0, size: visible }
+}
+
+/// A background card's clickable frame, ringed in the accent colour while `selected`.
+fn background_ring(ui: &mut Ui, parent: NodeId, action: SettingsAction, selected: bool) -> NodeId {
+    ui.add(
+        parent,
+        Widget::container()
+            .with_action(action.id())
+            .with_radius(BACKGROUND_CARD_RADIUS + BACKGROUND_RING)
+            .with_background(if selected {
+                Background::Fill(Paint::Accent, 1.0)
+            } else {
+                Background::Fill(Paint::Hairline, 1.0)
+            }),
+        Style { padding: padding(BACKGROUND_RING, BACKGROUND_RING), flex_shrink: 0.0, ..Default::default() },
+    )
 }
 
 /// A small capsule button (accent tint, or red for destructive ones).
@@ -2312,9 +2656,26 @@ mod tests {
             SettingsAction::DeleteAccount,
             SettingsAction::SetPassword,
             SettingsAction::RemoveTrustedSite(600),
+            SettingsAction::NoBackground,
+            SettingsAction::ChooseBackground,
+            SettingsAction::AddBackgroundPath,
+            SettingsAction::Background(0),
+            SettingsAction::Background(BACKGROUND_SLOTS - 1),
+            SettingsAction::RemoveBackground(0),
+            SettingsAction::RemoveBackground(BACKGROUND_SLOTS - 1),
         ] {
             assert_eq!(SettingsAction::from_id(action.id()), Some(action));
         }
+        // Clear of the other overlays' ids (the lock screen starts at 9000).
+        assert!(SettingsAction::RemoveBackground(BACKGROUND_SLOTS - 1).id().0 < 9000);
+        assert_eq!(
+            SettingsAction::from_id(ActionId(ACTION_BASE + REMOVE_BACKGROUND_BASE + BACKGROUND_SLOTS as u32)),
+            None
+        );
+        let crop = cover_crop((200, 100), Vec2::new(100.0, 100.0));
+        assert!(
+            (crop.size.x - 0.5).abs() < 1e-4 && (crop.origin.x - 0.25).abs() < 1e-4 && crop.size.y == 1.0
+        );
         assert_eq!(humanize("focus_address_bar"), "Focus address bar");
     }
 }

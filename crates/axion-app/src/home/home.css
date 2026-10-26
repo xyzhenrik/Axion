@@ -1,5 +1,6 @@
 /* Axion's start page. Colours follow Axion's design tokens ("Foundations"); light and dark
-   follow the browser's theme live through prefers-color-scheme. */
+   follow the browser's theme live through prefers-color-scheme. The accent is Axion's own
+   (`appearance.accent`, set live by home.js); every control derives its colour from it. */
 :root {
   color-scheme: light dark;
   --ground: #ffffff;
@@ -18,8 +19,16 @@
   --text-shadow: none;
   --radius-card: 20px;
   --radius-control: 14px;
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+  accent-color: var(--accent);
+  caret-color: var(--accent);
   font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
+
+::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); }
+:focus { outline: 0; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 @media (prefers-color-scheme: dark) {
   :root {
@@ -126,11 +135,16 @@ body.has-image .glass.thick { background: rgba(28, 28, 40, 0.62); --label: #fff;
   top: 18px;
   right: 18px;
   z-index: 5;
-  color: var(--secondary);
-  transition: transform 0.25s cubic-bezier(.3, 1.4, .5, 1), color 0.2s;
+  color: var(--accent);
+  transition: transform 0.25s cubic-bezier(.3, 1.4, .5, 1), background 0.2s;
 }
-#gear:hover { color: var(--label); transform: scale(1.06); }
-#gear[aria-expanded="true"] { color: var(--accent); transform: rotate(40deg); }
+#gear:hover { transform: scale(1.06); }
+#gear[aria-expanded="true"] {
+  transform: rotate(40deg);
+  background: color-mix(in srgb, var(--accent) 22%, var(--glass));
+}
+body.has-image #gear { color: #fff; }
+body.has-image #gear[aria-expanded="true"] { background: color-mix(in srgb, var(--accent) 70%, transparent); }
 
 #panel {
   position: fixed;
@@ -168,7 +182,96 @@ body.has-image .glass.thick { background: rgba(28, 28, 40, 0.62); --label: #fff;
   background: var(--field);
   font-size: 13px;
 }
-.row input[type="range"] { width: 150px; accent-color: var(--accent); }
+.row.path input:focus { box-shadow: var(--focus-ring); }
+
+/* The background mini picker: small rounded thumbnails, the selected one ringed. */
+.bg-picker { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0 8px 14px; }
+.bg-item { position: relative; }
+.bg-swatch {
+  width: 58px;
+  height: 38px;
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--tile);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  transition: transform 0.25s cubic-bezier(.3, 1.5, .5, 1), outline-color 0.2s;
+  outline: 2.5px solid transparent;
+  outline-offset: 2px;
+}
+.bg-swatch:hover { transform: scale(1.05); }
+.bg-swatch[aria-checked="true"], .bg-swatch[aria-checked="true"]:focus-visible { outline-color: var(--accent); }
+.bg-swatch img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bg-swatch.none { background: var(--ground); }
+.bg-swatch.none .none-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid #8e939e;
+  position: relative;
+}
+.bg-swatch.none .none-mark::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  bottom: -2px;
+  width: 1.5px;
+  background: #8e939e;
+  transform: translateX(-50%) rotate(45deg);
+}
+.bg-swatch.add { color: var(--accent); background: var(--accent-soft); box-shadow: none; }
+.bg-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--glass-thick);
+  color: var(--label);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22), inset 0 0 0 0.5px var(--glass-edge);
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 0.18s, transform 0.25s cubic-bezier(.3, 1.6, .5, 1);
+}
+.bg-item:hover .bg-remove, .bg-item:focus-within .bg-remove { opacity: 1; transform: none; }
+.bg-remove:hover { background: #d0362b; color: #fff; }
+/* Sliders: an accent-filled track (`--p`, set by home.js) and a white knob, like Axion's own. */
+.row input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 150px;
+  height: 22px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--accent) 0 var(--p, 0%), var(--field) var(--p, 0%) 100%);
+  box-shadow: inset 0 0 0 0.5px var(--glass-edge);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -9px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(0, 0, 0, 0.08);
+  transition: transform 0.2s cubic-bezier(.3, 1.5, .5, 1);
+}
+input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.15); }
+input[type="range"]:focus-visible { outline: 0; }
+input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: var(--focus-ring), 0 1px 4px rgba(0, 0, 0, 0.25); }
 .link { color: var(--accent); font-weight: 600; font-size: 14px; }
 #more-settings { margin-top: 10px; padding: 6px 0; }
 
@@ -211,13 +314,14 @@ body.has-image .glass.thick { background: rgba(28, 28, 40, 0.62); --label: #fff;
   transition: left 0.32s cubic-bezier(.3, 1.5, .5, 1), width 0.2s;
 }
 .switch:active::after { width: 32px; }
-.switch:checked { background: #34c759; }
+.switch:checked { background: var(--accent); }
+.switch:focus-visible { outline: 0; box-shadow: var(--focus-ring); }
 .switch:checked::after { left: 14px; }
 .switch:checked:active::after { left: 10px; }
 
 .segments { display: flex; background: var(--field); border-radius: 9px; padding: 2px; }
 .segments button { height: 26px; padding: 0 10px; border-radius: 7px; font-size: 12px; font-weight: 600; color: var(--secondary); }
-.segments button[aria-checked="true"] { background: var(--glass-thick); color: var(--label); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); }
+.segments button[aria-checked="true"] { background: var(--glass-thick); color: var(--accent); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); }
 
 main {
   min-height: 100vh;
@@ -279,7 +383,8 @@ main {
   pointer-events: none;
 }
 .search { isolation: isolate; }
-.search:focus-within { box-shadow: inset 0 1px 0 var(--glass-rim), 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent), var(--glass-shadow); }
+.search:focus-within { box-shadow: inset 0 1px 0 var(--glass-rim), var(--focus-ring), var(--glass-shadow); }
+#query:focus-visible { outline: 0; }
 .engine {
   height: 40px;
   padding: 0 8px 0 6px;
@@ -341,6 +446,7 @@ main {
   text-align: left;
 }
 .menu button:hover, .menu button:focus-visible { background: var(--field); outline: 0; }
+.menu button[aria-checked="true"] { color: var(--accent); }
 .menu .mark { width: 20px; height: 20px; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--tile); font-size: 11px; font-weight: 800; }
 .menu .check { margin-left: auto; color: var(--accent); font-weight: 700; }
 
@@ -377,6 +483,8 @@ main {
   transition: transform 0.3s cubic-bezier(.3, 1.5, .5, 1);
 }
 .tile:hover .face, .tile:focus-visible .face { transform: scale(1.06); }
+.tile:focus-visible { outline: 0; }
+.tile:focus-visible .face { box-shadow: var(--focus-ring), var(--glass-shadow); }
 .tile:active .face { transform: scale(0.97); }
 .tile .icon {
   width: 40px;
@@ -428,7 +536,7 @@ main {
 
 .dots { display: flex; gap: 8px; height: 10px; }
 .dots button { width: 8px; height: 8px; border-radius: 50%; background: var(--secondary); opacity: 0.3; transition: opacity 0.2s, width 0.3s; }
-.dots button[aria-selected="true"] { opacity: 0.9; width: 20px; border-radius: 4px; }
+.dots button[aria-selected="true"] { opacity: 1; width: 20px; border-radius: 4px; background: var(--accent); }
 
 .stats {
   width: min(600px, 100%);
@@ -465,7 +573,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.18); }
 dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 12px; font-weight: 600; color: var(--secondary); }
 .field input { height: 38px; border-radius: 12px; border: 0; outline: 0; padding: 0 12px; background: var(--field); font-size: 15px; color: var(--label); }
-.field input:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
+.field input:focus { box-shadow: var(--focus-ring); }
 
 @media (max-width: 640px) {
   .stats { grid-template-columns: 1fr 1fr; }
