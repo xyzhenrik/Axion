@@ -540,6 +540,15 @@ Windows/macOS, touchscreen-first mode.
   Translator instructions and glossary: `crates/axion-i18n/locales/GLOSSARY.md`. Known gaps:
   library `thiserror` messages shown verbatim (vault/accounts), weekday/month names in history
   headings, PiP window title (matched by a KWin script).
+- 2026-10-26: **Window icon on Wayland / `axion://` favicon.** winit 0.30 ignores window icons on
+  Wayland (compositors take the icon from the `app_id` `axion` via `axion.desktop` + hicolor), so
+  dev/release runs showed the generic icon. `tools/install-desktop.sh [--bin PATH] [--uninstall]`
+  installs the entry (Exec= rewritten to the binary) and icons per user. `xdg-toplevel-icon-v1`
+  (KWin 6.8 has it) is **not feasible** without forking winit: it needs the `xdg_toplevel` object,
+  which winit/sctk own and never expose. PiP uses app_id `axion` too (winit's `with_name` sets the
+  app id from `general`; `instance` is X11 only), so it needs no entry of its own. All `axion://`
+  pages show the app icon (64 px PNG) as site icon (`Favicons::get`; no cache files, no fetching);
+  the start page also serves it as `axion://home/icon.png` (`<link rel=icon>`).
 - 2026-10-26: **App icon (updated).** Default is now the **user's own generated glass-compass icon**
   (glass squircle tile with a blue compass; made by the user with an image generator and chosen by
   them as Axion's icon: the artwork and its use are their choice and responsibility). Original kept

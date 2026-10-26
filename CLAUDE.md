@@ -146,6 +146,7 @@ AXION_OSR=software|gpu ...   # force page frame sharing off/on (default: on for 
 AXION_CONFIG_DIR / AXION_PROFILE_DIR   # use throwaway settings/profile bases (do this for test runs)
 AXION_DEVICE_KEY_DIR                   # throwaway vault device key (default ~/.local/share/axion; set it too)
 cargo test -p axion-vault -- --ignored real_tpm --nocapture   # seal/unseal with the real TPM (needs tss group)
+tools/install-desktop.sh [--bin PATH] [--uninstall]   # per-user axion.desktop + icons: needed for the window icon on Wayland
 axion --account=ID           # open that account (else the last one used; ids in accounts.toml)
 AXION_MONITOR=HDMI-A-1 ...   # open on that monitor (X11/XWayland only: run with `env -u WAYLAND_DISPLAY`)
 AXION_CHROMIUM_SWITCHES=autoplay-policy=no-user-gesture-required ...   # extra Chromium switches (comma-separated)
