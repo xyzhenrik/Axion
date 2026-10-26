@@ -458,8 +458,10 @@ dependencies = [
 name = "axion-engine"
 version = "0.0.1"
 dependencies = [
+ "ash",
  "cef",
  "glam",
+ "libc",
  "thiserror 2.0.21",
  "tracing",
  "wgpu",

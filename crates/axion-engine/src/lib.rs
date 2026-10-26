@@ -206,9 +206,20 @@ pub trait Engine {
     fn set_request_policy(&mut self, policy: Option<std::sync::Arc<dyn RequestPolicy>>);
 
     /// Asks the view to produce a frame now (call once per compositor frame for visible views).
+    /// Engines that render on their own timer (see [`Engine::set_frame_rate`]) ignore it.
     fn request_frame(&mut self, view: ViewId);
+    /// The most frames per second views render (the display's refresh rate, usually); applies
+    /// to existing views too.
+    fn set_frame_rate(&mut self, fps: u32);
     fn frame(&self, view: ViewId) -> Option<Frame>;
 
     /// Runs the engine's pending work and returns what happened since the last call.
     fn pump(&mut self) -> Vec<EngineEvent>;
+
+    /// When the engine wants [`Engine::pump`] called next, so the embedder's event loop can
+    /// sleep until then (`None`: it must be pumped continuously). An engine that gets work
+    /// sooner wakes the event loop itself (e.g. through a waker it was created with).
+    fn next_pump(&self) -> Option<std::time::Instant> {
+        None
+    }
 }

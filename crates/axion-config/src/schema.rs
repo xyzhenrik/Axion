@@ -558,6 +558,8 @@ pub struct Tabs {
     /// A press on a tab turns into dragging it (to reorder, or to move it between normal and
     /// private tabs) once the pointer moved this far (logical px); shorter moves are clicks.
     pub drag_threshold: f32,
+    /// Pages draw at most this many frames per second; 0 follows the display's refresh rate.
+    pub max_frame_rate: u32,
 }
 
 impl Default for Tabs {
@@ -573,6 +575,7 @@ impl Default for Tabs {
             close_after_days: 0,
             check_interval_seconds: 5.0,
             drag_threshold: 6.0,
+            max_frame_rate: 0,
         }
     }
 }

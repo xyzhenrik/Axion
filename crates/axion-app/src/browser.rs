@@ -66,6 +66,10 @@ struct FrameStats {
     worst: Duration,
     since: Option<Instant>,
     first_serial: Option<u64>,
+    /// Time spent applying engine events (`Browser::pump`, without Chromium's own work).
+    events: u32,
+    events_total: Duration,
+    events_worst: Duration,
 }
 
 impl FrameStats {
@@ -81,6 +85,9 @@ impl FrameStats {
                 avg_ms = self.total.as_secs_f32() * 1000.0 / self.count.max(1) as f32,
                 worst_ms = self.worst.as_secs_f32() * 1000.0,
                 page_fps = page_serial.saturating_sub(first) as f32 / since.elapsed().as_secs_f32(),
+                events_per_s = self.events as f32 / since.elapsed().as_secs_f32(),
+                events_ms_per_s = self.events_total.as_secs_f32() * 1000.0 / since.elapsed().as_secs_f32(),
+                events_worst_ms = self.events_worst.as_secs_f32() * 1000.0,
                 "frames"
             );
             *self = Self::default();
@@ -117,8 +124,8 @@ const CLEAR_HISTORY_CONFIRM: &str = "Click Again to Clear";
 const ZOOM_BASE: f64 = 1.2;
 /// Pixels per wheel notch.
 const LINE_SCROLL: f32 = 100.0;
-/// Upper bound for the page's frame rate.
-const MAX_FRAME_RATE: u32 = 120;
+/// Pages' frame rate when the display's refresh rate is unknown.
+const FALLBACK_FRAME_RATE: u32 = 60;
 /// Height (logical px) of the page's top strip whose lightness picks the chrome appearance.
 const PROBE_HEIGHT: f32 = 48.0;
 /// The chrome turns dark below this page lightness, and light again above `LIGHT_ABOVE`.
@@ -151,6 +158,8 @@ pub struct Options {
     pub maximized: bool,
     /// The account to open (`--account=ID`); the last one used otherwise.
     pub account: Option<String>,
+    /// Wakes the event loop when the engine has work.
+    pub waker: Option<axion_engine::cef::Waker>,
 }
 
 pub struct Browser {
@@ -267,6 +276,9 @@ pub struct Browser {
     /// Capture aid "sweep:X1:Y1:X2:Y2:N": the pointer moves from one point to the other in N
     /// steps, one per frame (start, end, steps, steps done).
     sweep: Option<(Vec2, Vec2, u32, u32)>,
+    /// Capture aid "wheel:N": the page gets a wheel event at its centre every frame for N
+    /// frames, down then back up (frames left), to measure scrolling (input → page frame).
+    wheel_frames: u32,
     /// While the sidebar slides: the page's size before the slide began, and the size the
     /// shown view was given for it (see `redraw_frame`).
     slide_page_size: Option<Vec2>,
@@ -359,8 +371,9 @@ impl Browser {
                     axion_engine::cef::render_node_for(info.vendor, info.device)
                 },
                 no_sandbox: std::env::var_os("AXION_NO_SANDBOX").is_some(),
-                max_frame_rate: MAX_FRAME_RATE,
+                max_frame_rate: page_frame_rate(&config, &window),
                 hardware_video_decoding: config.media.hardware_decoding,
+                waker: options.waker.clone(),
             },
         )?;
         engine.set_request_policy(Some(shields.policy()));
@@ -485,6 +498,7 @@ impl Browser {
             layout_size: Vec2::ZERO,
             capture: options.capture.clone().map(|path| (path, Instant::now() + options.capture_after)),
             sweep: None,
+            wheel_frames: 0,
             slide_page_size: None,
             slide_view_size: None,
             sheet_origin: None,
@@ -2519,6 +2533,10 @@ impl Browser {
 
     /// Runs the engine and applies what happened. Call often (every loop iteration).
     pub fn pump(&mut self) {
+        self.pump_engine();
+    }
+
+    fn pump_engine(&mut self) {
         // The desktop switched light/dark (winit doesn't report it on most Linux desktops).
         let desktop_dark = self.desktop_theme.dark();
         if desktop_dark != self.desktop_dark {
@@ -2528,7 +2546,10 @@ impl Browser {
             }
         }
         let mut downloads_changed = false;
-        for event in self.engine.pump() {
+        let events = self.engine.pump();
+        let started = Instant::now();
+        let count = events.len() as u32;
+        for event in events {
             match &event {
                 // Autofill messages may hold a submitted password: never log their content.
                 EngineEvent::PageMessage { view, message } if axion_vault::autofill::is_message(message) => {
@@ -2674,6 +2695,13 @@ impl Browser {
             }
         }
         self.downloads_pump(downloads_changed);
+        if count > 0 {
+            let took = started.elapsed();
+            let stats = &mut self.frame_stats;
+            stats.events += count;
+            stats.events_total += took;
+            stats.events_worst = stats.events_worst.max(took);
+        }
         let outcome = self.passwords.tick(&mut self.ui, &self.config, &mut self.clipboard);
         self.passwords_outcome(outcome);
         self.reload_config_if_changed();
@@ -2869,7 +2897,9 @@ impl Browser {
         self.save_config_if_due();
         let Some(watcher) = &self.watcher else { return };
         let changed = watcher.poll();
-        let own_write = self.last_saved_config.is_some()
+        // Only read the file when it changed: this runs on every loop iteration.
+        let own_write = changed.config
+            && self.last_saved_config.is_some()
             && std::fs::read_to_string(&self.paths.config).ok() == self.last_saved_config;
         if changed.config && !own_write && self.config_dirty_since.is_none() {
             match axion_config::load_config(&self.paths) {
@@ -2880,6 +2910,7 @@ impl Browser {
                     self.apply_shields_config();
                     self.apply_theme();
                     self.update_layout();
+                    self.sync_frame_rate();
                     self.tabs_changed = true;
                 }
                 Err(e) => tracing::error!("{e}; keeping the previous settings"),
@@ -2946,9 +2977,15 @@ impl Browser {
                     self.surface_config.height = size.height;
                     self.surface.configure(&self.device, &self.surface_config);
                     self.update_layout();
+                    self.sync_frame_rate();
                 }
             }
-            WindowEvent::ScaleFactorChanged { .. } => self.update_layout(),
+            WindowEvent::ScaleFactorChanged { .. } => {
+                self.update_layout();
+                self.sync_frame_rate();
+            }
+            // Maybe onto another monitor, with another refresh rate.
+            WindowEvent::Moved(_) => self.sync_frame_rate(),
             WindowEvent::ThemeChanged(_) => {
                 if self.config.appearance.theme == ThemeMode::Auto {
                     self.apply_theme();
@@ -3480,6 +3517,9 @@ impl Browser {
                         self.sweep = Some((Vec2::new(x1, y1), Vec2::new(x2, y2), steps.max(1.0) as u32, 0));
                     }
                 }
+                wheel if wheel.starts_with("wheel:") => {
+                    self.wheel_frames = wheel["wheel:".len()..].parse().unwrap_or(0);
+                }
                 "scroll-page" => {
                     if let Some(view) = self.active_view() {
                         self.engine.run_script(view, "window.scrollBy(0, 600);", false);
@@ -3619,6 +3659,17 @@ impl Browser {
         if let Some((_, text)) = self.address_at.take_if(|(at, _)| now >= *at) {
             self.edit_address();
             self.ui.set_field_text(self.chrome.address_field, &text);
+        }
+        if self.wheel_frames > 0
+            && let Some(view) = self.active_view()
+        {
+            self.wheel_frames -= 1;
+            // Every other second the other way, so long runs don't stop at the page's end.
+            let down = (self.wheel_frames / 120).is_multiple_of(2);
+            let delta = Vec2::new(0.0, if down { -LINE_SCROLL } else { LINE_SCROLL });
+            let pos = self.page_rect().size / 2.0;
+            let modifiers = input::engine_modifiers(self.modifiers);
+            self.engine.send_input(view, &InputEvent::Wheel { pos, delta, modifiers });
         }
         if let Some((from, to, steps, done)) = self.sweep.take() {
             let t = done as f32 / steps as f32;
@@ -3906,6 +3957,16 @@ impl Browser {
         }
     }
 
+    /// Pages render at the refresh rate of the window's monitor (or the configured rate).
+    fn sync_frame_rate(&mut self) {
+        self.engine.set_frame_rate(page_frame_rate(&self.config, &self.window));
+    }
+
+    /// When the event loop should wake up next at the latest (the engine's next pump).
+    pub fn next_wakeup(&self) -> Option<Instant> {
+        self.engine.next_pump()
+    }
+
     pub fn request_redraw(&self) {
         self.window.request_redraw();
     }
@@ -4053,6 +4114,18 @@ fn zoom_label(zoom: f64) -> String {
 
 fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Frames per second pages render at: `tabs.max_frame_rate`, or the window's monitor's
+/// refresh rate.
+fn page_frame_rate(config: &Config, window: &Window) -> u32 {
+    if config.tabs.max_frame_rate > 0 {
+        return config.tabs.max_frame_rate;
+    }
+    window
+        .current_monitor()
+        .and_then(|m| m.refresh_rate_millihertz())
+        .map_or(FALLBACK_FRAME_RATE, |mhz| mhz.div_ceil(1000))
 }
 
 fn is_dark(config: &Config, window: &Window, desktop_dark: Option<bool>) -> bool {

@@ -2,8 +2,10 @@
 //! `do_message_loop_work`, so plain `Rc`/`RefCell` state is enough.
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use cef::rc::Rc as _;
@@ -11,6 +13,7 @@ use cef::sys::{cef_cursor_type_t, cef_window_open_disposition_t};
 use cef::*;
 use glam::Vec2;
 
+use super::dmabuf::{self, ImportCache};
 use super::network::{Network, build_request_handler};
 use crate::{CursorKind, EngineEvent, NewViewKind, PAGE_MESSAGE_PREFIX, ViewId};
 
@@ -22,6 +25,7 @@ pub(super) struct Shared {
     /// Run in every document as it starts loading (see `Engine::set_page_script`).
     pub page_script: RefCell<Option<String>>,
     pub downloads: Rc<super::download::Downloads>,
+    pub stats: super::stats::Stats,
 }
 
 #[derive(Default)]
@@ -30,14 +34,57 @@ pub(super) struct ViewFrames {
     pub serial: Cell<u64>,
     pub imported_any: Cell<bool>,
     pub import_failures: Cell<u32>,
+    /// Chromium's shared buffers, imported once each.
+    imports: RefCell<ImportCache>,
+    /// GPU frames whose copy is submitted but not yet known to be drawn, oldest first.
+    pending: RefCell<VecDeque<PendingFrame>>,
+    /// Frame textures and read-back buffers to use again.
+    spare_textures: RefCell<Vec<wgpu::Texture>>,
+    spare_checks: RefCell<Vec<wgpu::Buffer>>,
+    /// A frame never got drawn: Chromium should paint again (taken by the engine).
+    pub wants_repaint: Cell<bool>,
 }
 
-/// How often a shared GPU frame that isn't drawn yet is copied again (see
-/// `ViewContext::import_gpu_frame`) …
-const FRAME_RETRY_INTERVAL: Duration = Duration::from_micros(500);
-/// … and for how long before it is given up (the previous frame stays and Chromium is asked
-/// to paint again).
+impl ViewFrames {
+    /// Lets go of everything that refers to Chromium's buffers (the view's page closed).
+    pub fn release_shared(&self) {
+        self.imports.borrow_mut().clear();
+        self.pending.borrow_mut().clear();
+        self.spare_textures.borrow_mut().clear();
+        self.spare_checks.borrow_mut().clear();
+    }
+
+    pub fn has_pending(&self) -> bool {
+        !self.pending.borrow().is_empty()
+    }
+}
+
+/// A shared GPU frame on its way: copied into `texture`, with a few rows read back into `check`
+/// to see whether Chromium had finished drawing it.
+struct PendingFrame {
+    /// The imported shared buffer, and the part of it that holds the page.
+    source: wgpu::Texture,
+    region: (wgpu::Origin3d, wgpu::Extent3d),
+    texture: wgpu::Texture,
+    check: wgpu::Buffer,
+    /// `MAP_*` below, set by the read-back.
+    mapped: Arc<AtomicU8>,
+    /// When Chromium handed the frame over.
+    since: Instant,
+}
+
+const MAP_WAITING: u8 = 0;
+const MAP_DONE: u8 = 1;
+const MAP_FAILED: u8 = 2;
+
+/// For how long a shared GPU frame that isn't drawn yet is copied again (see
+/// `ViewContext::resolve_frames`) before it is given up (the previous frame stays and Chromium
+/// is asked to paint again).
 const FRAME_READY_TIMEOUT: Duration = Duration::from_millis(25);
+/// Usage of the textures frames are copied into (read back for the drawn check and snapshots).
+const FRAME_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
+    .union(wgpu::TextureUsages::COPY_DST)
+    .union(wgpu::TextureUsages::COPY_SRC);
 
 pub(super) struct ViewGeometry {
     pub logical: Cell<Vec2>,
@@ -62,61 +109,192 @@ impl ViewContext {
     }
 
     fn store(&self, texture: wgpu::Texture) {
-        self.frames.texture.replace(Some(texture));
+        if let Some(old) = self.frames.texture.replace(Some(texture)) {
+            self.recycle_texture(old);
+        }
         self.frames.serial.set(self.frames.serial.get() + 1);
     }
 
-    /// Copies a frame Chromium shares as a dma-buf into a texture of our own. Returns `false`
-    /// if no drawn frame could be taken (Chromium should then paint again).
+    fn recycle_texture(&self, texture: wgpu::Texture) {
+        let mut spare = self.frames.spare_textures.borrow_mut();
+        // Two cover a frame on its way while another is checked; more would only hold memory.
+        if spare.len() < 2 && texture.usage() == FRAME_USAGE {
+            spare.push(texture);
+        }
+    }
+
+    /// Takes a frame Chromium shares as a dma-buf: submits copying it into a texture of our own,
+    /// without waiting for the GPU (waiting held up Chromium, whose UI thread is ours, and halved
+    /// the page's frame rate). The copy becomes the view's frame once it is known to be drawn
+    /// (`resolve_frames`).
     ///
     /// Chromium calls `on_accelerated_paint` once the frame's drawing is *submitted* on its GPU,
     /// not once it has finished, and NVIDIA's driver attaches no fence to the dma-buf that we
     /// could wait for. Copied at once, a buffer can still be empty (the first use of a pooled
-    /// buffer, e.g. after every resize) or partly drawn, and the page flashed blank. The buffer
-    /// can't be copied later instead: it goes back to Chromium's pool when the callback returns
-    /// (copied on the next pump, even more frames came out empty). So the copy is checked, and
-    /// taken again shortly until it is drawn. Chromium draws pages over an opaque background,
+    /// buffer, e.g. after every resize) or partly drawn, and the page flashed blank. So a few
+    /// rows of the copy are read back, and a frame that isn't drawn is copied again from the
+    /// (still imported) buffer shortly after. Chromium draws pages over an opaque background,
     /// so a drawn frame has no fully transparent pixels.
-    fn import_gpu_frame(&self, info: &AcceleratedPaintInfo) -> bool {
-        use cef::osr_texture_import::SharedTextureHandle;
-
+    fn submit_gpu_frame(&self, info: &AcceleratedPaintInfo) {
         let frames = &self.frames;
-        let started = Instant::now();
-        let mut attempts = 0u32;
+        // SAFETY: we are inside CEF's `on_accelerated_paint` for this frame (the caller), and
+        // the wgpu device was created with VULKAN_EXTERNAL_MEMORY_DMA_BUF. If CEF renders on
+        // another GPU the import fails cleanly and the engine falls back to software paint.
+        let imported = unsafe { frames.imports.borrow_mut().texture(&self.device, info) };
+        let source = match imported {
+            Ok(texture) => texture,
+            Err(error) => {
+                if frames.import_failures.get() == 0 {
+                    tracing::warn!(view = ?self.view, %error, "importing a GPU frame from Chromium failed");
+                }
+                frames.import_failures.set(frames.import_failures.get() + 1);
+                return;
+            }
+        };
+        frames.imported_any.set(true);
+        let region = content_region(&source, &info.extra.content_rect);
+        let texture = self.frame_texture(region.1, source.format());
+        let check = self.check_buffer(region.1.width);
+        let frame = PendingFrame {
+            source,
+            region,
+            texture,
+            check,
+            mapped: Arc::new(AtomicU8::new(MAP_WAITING)),
+            since: Instant::now(),
+        };
+        if let Some(frame) = self.submit_copy(frame) {
+            frames.pending.borrow_mut().push_back(frame);
+        }
+    }
+
+    /// Submits copying the frame and reading back its check rows; `None` if the commands
+    /// couldn't be recorded (not Vulkan).
+    fn submit_copy(&self, frame: PendingFrame) -> Option<PendingFrame> {
+        let commands =
+            dmabuf::copy_commands(&self.device, &frame.source, frame.region, &frame.texture, |encoder| {
+                record_drawn_check(encoder, &frame.texture, &frame.check);
+            })?;
+        frame.mapped.store(MAP_WAITING, Ordering::Release);
+        self.queue.submit(commands);
+        let mapped = frame.mapped.clone();
+        frame.check.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+            mapped.store(if result.is_ok() { MAP_DONE } else { MAP_FAILED }, Ordering::Release);
+        });
+        Some(frame)
+    }
+
+    /// Takes the GPU frames whose copy has finished: a drawn one becomes the view's frame; the
+    /// newest one, if it isn't drawn yet, is copied again, or given up after
+    /// `FRAME_READY_TIMEOUT`. Never waits for the GPU.
+    pub fn resolve_frames(&self) {
+        let frames = &self.frames;
+        if !frames.has_pending() {
+            return;
+        }
+        let _ = self.device.poll(wgpu::PollType::Poll);
         loop {
-            attempts += 1;
-            // SAFETY: we are inside CEF's `on_accelerated_paint` for this frame (the caller), and
-            // the wgpu device was created with VULKAN_EXTERNAL_MEMORY_DMA_BUF. If CEF renders on
-            // another GPU the import fails cleanly and the engine falls back to software paint.
-            let imported =
-                unsafe { SharedTextureHandle::new(info).import_texture(&self.device, &self.queue) };
-            let texture = match imported {
-                // Already a copy of our own (made and waited for by the import).
-                Ok(texture) => crop_to_content(&self.device, &self.queue, texture, &info.extra.content_rect),
-                Err(error) => {
-                    if frames.import_failures.get() == 0 {
-                        tracing::warn!(view = ?self.view, %error, "importing a GPU frame from Chromium failed");
-                    }
-                    frames.import_failures.set(frames.import_failures.get() + 1);
-                    return true;
+            let frame = {
+                let mut pending = frames.pending.borrow_mut();
+                // The GPU finishes them in order: if the oldest isn't done, none is.
+                match pending.front() {
+                    Some(f) if f.mapped.load(Ordering::Acquire) != MAP_WAITING => pending.pop_front(),
+                    _ => None,
                 }
             };
-            frames.imported_any.set(true);
-            match is_drawn(&self.device, &self.queue, &texture) {
-                // Can't tell (read-back failed): show it as before.
-                None | Some(true) => {
-                    if attempts > 1 {
-                        tracing::debug!(view = ?self.view, attempts, waited = ?started.elapsed(), "GPU frame was drawn late");
-                    }
-                    self.store(texture);
-                    return true;
-                }
-                Some(false) if started.elapsed() >= FRAME_READY_TIMEOUT => {
-                    tracing::debug!(view = ?self.view, attempts, "GPU frame never got drawn; keeping the previous one");
-                    return false;
-                }
-                Some(false) => std::thread::sleep(FRAME_RETRY_INTERVAL),
+            let Some(frame) = frame else { return };
+            let newest = !frames.has_pending();
+            // Can't tell (read-back failed): show it as before.
+            let drawn = frame.mapped.load(Ordering::Acquire) == MAP_FAILED
+                || is_drawn(&frame.check, frame.texture.width());
+            frame.check.unmap();
+            if drawn {
+                tracing::trace!(view = ?self.view, after = ?frame.since.elapsed(), "GPU frame taken");
+                self.recycle_check(frame.check);
+                self.store(frame.texture);
+                continue;
             }
+            self.shared.stats.late();
+            if !newest {
+                // A newer frame is on its way already.
+                self.recycle_check(frame.check);
+                self.recycle_texture(frame.texture);
+                continue;
+            }
+            if frame.since.elapsed() >= FRAME_READY_TIMEOUT {
+                tracing::debug!(view = ?self.view, "GPU frame never got drawn; keeping the previous one");
+                self.shared.stats.dropped();
+                frames.wants_repaint.set(true);
+                self.recycle_check(frame.check);
+                self.recycle_texture(frame.texture);
+                return;
+            }
+            // Copy it again: by now Chromium has most likely finished drawing it.
+            if let Some(frame) = self.submit_copy(frame) {
+                frames.pending.borrow_mut().push_back(frame);
+            }
+            return;
+        }
+    }
+
+    /// Whether a shared frame shows the page scaled to fit the buffer instead of at its real
+    /// size. Around a resize Chromium can capture the page at one size into a buffer of the
+    /// other (letterboxed: bars along one side); drawn, the page shrank or grew for a frame.
+    /// A buffer of the old size with the page at its new size inside it is fine (it is
+    /// cropped, see `content_region`).
+    fn is_scaled(&self, e: &AcceleratedPaintInfoCommon) -> bool {
+        let content = (e.content_rect.width, e.content_rect.height);
+        if e.has_source_size != 0 && (e.source_size.width, e.source_size.height) != content {
+            return true;
+        }
+        let coded = (e.coded_size.width, e.coded_size.height);
+        let letterboxed = content != coded && (content.0 == coded.0 || content.1 == coded.1);
+        if !letterboxed {
+            return false;
+        }
+        // The page's size in pixels, as Chromium lays it out (see `view_rect`).
+        let scale = self.geometry.scale.get();
+        let logical = self.geometry.logical.get();
+        let expected = |l: f32| ((l.round().max(1.0) * scale).round()) as i32;
+        let near = |a: i32, b: i32| (a - b).abs() <= 1;
+        !(near(content.0, expected(logical.x)) && near(content.1, expected(logical.y)))
+    }
+
+    fn frame_texture(&self, size: wgpu::Extent3d, format: wgpu::TextureFormat) -> wgpu::Texture {
+        let mut spare = self.frames.spare_textures.borrow_mut();
+        if let Some(i) = spare.iter().position(|t| t.size() == size && t.format() == format) {
+            return spare.swap_remove(i);
+        }
+        self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("page frame"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: FRAME_USAGE,
+            view_formats: &[],
+        })
+    }
+
+    fn check_buffer(&self, width: u32) -> wgpu::Buffer {
+        let size = check_buffer_size(width);
+        let mut spare = self.frames.spare_checks.borrow_mut();
+        if let Some(i) = spare.iter().position(|b| b.size() == size) {
+            return spare.swap_remove(i);
+        }
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame drawn check"),
+            size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn recycle_check(&self, buffer: wgpu::Buffer) {
+        let mut spare = self.frames.spare_checks.borrow_mut();
+        if spare.len() < 3 {
+            spare.push(buffer);
         }
     }
 
@@ -130,6 +308,7 @@ impl ViewContext {
             .filter(|t| {
                 t.width() == width
                     && t.height() == height
+                    && t.format() == wgpu::TextureFormat::Bgra8Unorm
                     && t.usage().contains(wgpu::TextureUsages::COPY_DST)
             })
             .cloned();
@@ -201,13 +380,16 @@ wrap_render_handler! {
             // Around a resize Chromium can capture the page at one size into a buffer of the
             // other, scaled to fit: skip those (the page would shrink or grow for a frame) and
             // wait for one at its real size.
-            let scaled = e.has_source_size != 0
-                && (e.source_size.width, e.source_size.height) != (e.content_rect.width, e.content_rect.height);
-            if (scaled || !self.ctx.import_gpu_frame(info))
-                && let Some(host) = browser.and_then(|b| b.host())
-            {
-                host.invalidate(PaintElementType::default());
+            let started = Instant::now();
+            if self.ctx.is_scaled(e) {
+                self.ctx.shared.stats.dropped();
+                if let Some(host) = browser.and_then(|b| b.host()) {
+                    host.invalidate(PaintElementType::default());
+                }
+            } else {
+                self.ctx.submit_gpu_frame(info);
             }
+            self.ctx.shared.stats.paint(started.elapsed());
         }
 
         fn on_paint(
@@ -226,7 +408,9 @@ wrap_render_handler! {
             // SAFETY: CEF guarantees `buffer` holds width * height BGRA pixels for the duration
             // of this callback; we copy out of it before returning.
             let pixels = unsafe { std::slice::from_raw_parts(buffer, len) };
+            let started = Instant::now();
             self.ctx.upload(pixels, width as u32, height as u32);
+            self.ctx.shared.stats.paint(started.elapsed());
         }
     }
 }
@@ -539,72 +723,42 @@ fn cursor_kind(cursor: CursorType) -> CursorKind {
 /// The part of a shared frame that holds the page. Right after a resize Chromium can still
 /// deliver a buffer of the old size with the page at its new size letterboxed inside it (black
 /// bars around `content_rect`); drawn whole, the page jumped sideways next to a black band.
-fn crop_to_content(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    frame: wgpu::Texture,
-    content: &Rect,
-) -> wgpu::Texture {
+fn content_region(frame: &wgpu::Texture, content: &Rect) -> (wgpu::Origin3d, wgpu::Extent3d) {
     let (width, height) = (frame.width(), frame.height());
+    let whole = (wgpu::Origin3d::ZERO, wgpu::Extent3d { width, height, depth_or_array_layers: 1 });
     let (Ok(x), Ok(y), Ok(w), Ok(h)) = (
         u32::try_from(content.x),
         u32::try_from(content.y),
         u32::try_from(content.width),
         u32::try_from(content.height),
     ) else {
-        return frame;
+        return whole;
     };
-    let full = x == 0 && y == 0 && w == width && h == height;
     let inside = w > 0 && h > 0 && x.saturating_add(w) <= width && y.saturating_add(h) <= height;
-    if full || !inside {
-        return frame;
+    if !inside {
+        return whole;
     }
-    let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
-    let cropped = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("cef frame content"),
-        size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: frame.format(),
-        usage: frame.usage(),
-        view_formats: &[],
-    });
-    let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("cef frame crop") });
-    encoder.copy_texture_to_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &frame,
-            mip_level: 0,
-            origin: wgpu::Origin3d { x, y, z: 0 },
-            aspect: wgpu::TextureAspect::All,
-        },
-        cropped.as_image_copy(),
-        size,
-    );
-    queue.submit([encoder.finish()]);
-    cropped
+    (wgpu::Origin3d { x, y, z: 0 }, wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 })
 }
 
 /// Rows of a GPU frame read back to check that it is drawn.
 const DRAWN_CHECK_ROWS: u32 = 8;
 
-/// Whether a frame copied from Chromium is drawn: none of the pixels in a few rows across it
-/// is fully transparent. `None` if it couldn't be read back.
-fn is_drawn(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Option<bool> {
+fn check_row_bytes(width: u32) -> u32 {
+    (4 * width).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+}
+
+fn check_buffer_size(width: u32) -> u64 {
+    u64::from(check_row_bytes(width) * DRAWN_CHECK_ROWS)
+}
+
+/// Records copying a few rows spread across `texture` into `buffer` (see `is_drawn`).
+fn record_drawn_check(encoder: &mut wgpu::CommandEncoder, texture: &wgpu::Texture, buffer: &wgpu::Buffer) {
     let (width, height) = (texture.width(), texture.height());
-    let rows = DRAWN_CHECK_ROWS.min(height);
-    let row_bytes = (4 * width).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("frame drawn check"),
-        size: u64::from(row_bytes * rows),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&Default::default());
-    for i in 0..rows {
-        // Evenly spread, away from the edges.
-        let y = height * (2 * i + 1) / (2 * rows);
+    let row_bytes = check_row_bytes(width);
+    for i in 0..DRAWN_CHECK_ROWS {
+        // Evenly spread, away from the edges (the same row more than once on tiny frames).
+        let y = height * (2 * i + 1) / (2 * DRAWN_CHECK_ROWS);
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture,
@@ -613,7 +767,7 @@ fn is_drawn(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture)
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
+                buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: u64::from(i * row_bytes),
                     bytes_per_row: Some(row_bytes),
@@ -623,13 +777,15 @@ fn is_drawn(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture)
             wgpu::Extent3d { width, height: 1, depth_or_array_layers: 1 },
         );
     }
-    let submission = queue.submit([encoder.finish()]);
-    buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None }).ok()?;
-    let data = buffer.slice(..).get_mapped_range().ok()?;
-    let drawn = (0..rows as usize).all(|i| {
-        let row = &data[i * row_bytes as usize..][..4 * width as usize];
+}
+
+/// Whether a frame copied from Chromium is drawn, from its rows read back into the mapped
+/// `buffer`: none of their pixels is fully transparent.
+fn is_drawn(buffer: &wgpu::Buffer, width: u32) -> bool {
+    let row_bytes = check_row_bytes(width) as usize;
+    let Ok(data) = buffer.slice(..).get_mapped_range() else { return true };
+    (0..DRAWN_CHECK_ROWS as usize).all(|i| {
+        let row = &data[i * row_bytes..][..4 * width as usize];
         row.as_chunks::<4>().0.iter().all(|pixel| pixel[3] != 0)
-    });
-    Some(drawn)
+    })
 }

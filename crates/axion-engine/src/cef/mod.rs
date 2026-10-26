@@ -5,10 +5,13 @@
 //! [`required_features`] and build a [`CefEngine`] on the main thread.
 
 mod client;
+mod dmabuf;
 mod download;
 mod gpu;
 mod input;
 mod network;
+mod schedule;
+mod stats;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -19,11 +22,13 @@ use std::time::{Duration, Instant};
 use cef::*;
 
 pub use gpu::render_node_for;
+pub use schedule::Waker;
 
 use crate::{Engine, EngineError, EngineEvent, Frame, InputEvent, RequestPolicy, ViewId, ViewSize};
 use client::{FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, build_client, favicon_callback};
 use input::InputState;
 use network::Network;
+use schedule::{BrowserProcessHandlerBuilder, PumpSchedule};
 
 /// How long [`CefEngine::shutdown`] waits for views to close before giving up.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
@@ -37,6 +42,8 @@ struct ProcessFlags {
     no_sandbox: bool,
     render_node: Option<PathBuf>,
     hardware_video_decoding: bool,
+    /// The browser process's message pump schedule (`None` in helper processes).
+    schedule: Option<Arc<PumpSchedule>>,
 }
 
 wrap_app! {
@@ -45,6 +52,11 @@ wrap_app! {
     }
 
     impl App {
+        fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
+            let schedule = self.flags.schedule.clone()?;
+            Some(BrowserProcessHandlerBuilder::new(schedule))
+        }
+
         fn on_before_command_line_processing(
             &self,
             process_type: Option<&CefStringUtf16>,
@@ -106,6 +118,7 @@ pub fn run_subprocess_if_needed() -> Option<i32> {
         no_sandbox: false,
         render_node: None,
         hardware_video_decoding: false,
+        schedule: None,
     });
     Some(execute_process(Some(args.as_main_args()), Some(&mut app), std::ptr::null_mut()))
 }
@@ -125,10 +138,12 @@ pub struct CefOptions {
     /// Pin Chromium's GPU process to this DRM render node (see [`render_node_for`]).
     pub render_node: Option<PathBuf>,
     pub no_sandbox: bool,
-    /// Upper bound for frames per second per view.
+    /// Frames per second views render at most (see `Engine::set_frame_rate`).
     pub max_frame_rate: u32,
     /// Decode video on the GPU (VA-API).
     pub hardware_video_decoding: bool,
+    /// Wakes the embedder's event loop when Chromium has work (see [`Engine::next_pump`]).
+    pub waker: Option<Waker>,
 }
 
 struct ViewState {
@@ -155,6 +170,7 @@ pub struct CefEngine {
     net: Arc<Network>,
     /// Pages' colour scheme (`None` until the browser sets one: Chromium's default).
     dark: Option<bool>,
+    schedule: Arc<PumpSchedule>,
     shut_down: bool,
 }
 
@@ -162,10 +178,13 @@ impl CefEngine {
     /// Initializes CEF. Must be called on the main thread, once per process.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, options: CefOptions) -> Result<Self, EngineError> {
         let args = args::Args::new();
+        let schedule = Arc::new(PumpSchedule::default());
+        schedule.set_waker(options.waker.clone());
         let mut app = AppBuilder::new(ProcessFlags {
             no_sandbox: options.no_sandbox,
             render_node: options.render_node.clone(),
             hardware_video_decoding: options.hardware_video_decoding,
+            schedule: Some(schedule.clone()),
         });
         let profile = options.profile_dir.to_string_lossy().into_owned();
         let settings = Settings {
@@ -193,6 +212,7 @@ impl CefEngine {
             private_context: None,
             net: Arc::default(),
             dark: None,
+            schedule,
             shut_down: false,
         })
     }
@@ -226,8 +246,12 @@ impl CefEngine {
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
             shared_texture_enabled: self.accelerated as _,
-            // Frames are requested by our render loop, in step with presentation.
-            external_begin_frame_enabled: 1,
+            // Chromium paces frames itself, at `windowless_frame_rate`. With begin frames sent
+            // from our render loop instead, its compositor drew each one at once, so a page's
+            // frame showed only on the next begin frame and the page's own frame rate (its
+            // main thread: scripts, `requestAnimationFrame`) halved as soon as a frame took
+            // more than a moment to make.
+            external_begin_frame_enabled: 0,
             ..Default::default()
         };
         let settings = BrowserSettings {
@@ -248,6 +272,18 @@ impl CefEngine {
         .ok_or_else(|| EngineError::CreateView(format!("Chromium refused to open {url}")))?;
         let id = browser.identifier();
         Ok((browser, id))
+    }
+
+    /// Takes the view's GPU frames whose copy has finished (see `ViewContext::resolve_frames`);
+    /// asks Chromium to paint again if one never got drawn.
+    fn resolve_frames(&self, state: &ViewState) {
+        state.ctx.resolve_frames();
+        if state.ctx.frames.wants_repaint.take()
+            && !state.closing
+            && let Some(host) = state.browser.as_ref().and_then(|b| b.host())
+        {
+            host.invalidate(PaintElementType::default());
+        }
     }
 
     fn host(&self, view: ViewId) -> Option<BrowserHost> {
@@ -282,6 +318,7 @@ impl CefEngine {
             let url = state.url.clone();
             let private = state.private;
             ctx.frames.import_failures.set(0);
+            ctx.frames.release_shared();
             match self.create_browser(&ctx, &url, private) {
                 Ok((browser, browser_id)) => {
                     if let (Some(dark), Some(host)) = (self.dark, browser.host()) {
@@ -374,6 +411,7 @@ impl Engine for CefEngine {
             }
             Some(browser) if !state.closing => {
                 state.closing = true;
+                state.ctx.frames.release_shared();
                 if let Some(host) = browser.host() {
                     host.close_browser(1);
                 }
@@ -500,6 +538,7 @@ impl Engine for CefEngine {
         let frames = &state.ctx.frames;
         let snapshot = frames.texture.borrow().as_ref().map(|t| keep_frame(&self.device, &self.queue, t));
         frames.texture.replace(snapshot);
+        frames.release_shared();
         // Events of the closed page (its `Closed` included) no longer match and are dropped.
         state.browser_id = NO_BROWSER;
         if let Some(host) = browser.host() {
@@ -597,6 +636,7 @@ impl Engine for CefEngine {
 
     fn send_input(&mut self, view: ViewId, event: &InputEvent) {
         if let Some(host) = self.host(view) {
+            self.shared.stats.input_sent();
             self.input.send(&host, event);
         }
     }
@@ -616,21 +656,46 @@ impl Engine for CefEngine {
         *self.net.policy.write().unwrap_or_else(PoisonError::into_inner) = policy;
     }
 
-    fn request_frame(&mut self, view: ViewId) {
-        if let Some(host) = self.host(view) {
-            host.send_external_begin_frame();
+    fn request_frame(&mut self, _view: ViewId) {
+        // Chromium renders on its own timer (see `create_browser`).
+    }
+
+    fn set_frame_rate(&mut self, fps: u32) {
+        let fps = fps.max(1);
+        if fps == self.max_frame_rate {
+            return;
+        }
+        tracing::debug!(fps, "page frame rate");
+        self.max_frame_rate = fps;
+        for state in self.views.values().filter(|v| !v.closing) {
+            if let Some(host) = state.browser.as_ref().and_then(|b| b.host()) {
+                host.set_windowless_frame_rate(fps as _);
+            }
         }
     }
 
     fn frame(&self, view: ViewId) -> Option<Frame> {
-        let frames = &self.views.get(&view)?.ctx.frames;
+        let state = self.views.get(&view)?;
+        // Frames whose copy has finished since the last pump show now.
+        self.resolve_frames(state);
+        let frames = &state.ctx.frames;
         let texture = frames.texture.borrow().clone()?;
         Some(Frame { texture, serial: frames.serial.get() })
     }
 
+    fn next_pump(&self) -> Option<Instant> {
+        Some(self.schedule.next())
+    }
+
     fn pump(&mut self) -> Vec<EngineEvent> {
+        let started = Instant::now();
+        self.schedule.pumping();
         do_message_loop_work();
+        self.shared.stats.pump(started.elapsed());
         self.fall_back_to_software_if_needed();
+        for state in self.views.values() {
+            self.resolve_frames(state);
+        }
 
         let mut raw = std::mem::take(&mut *self.shared.events.borrow_mut());
         raw.extend(self.net.take_events());

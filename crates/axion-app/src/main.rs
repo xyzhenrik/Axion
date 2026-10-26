@@ -67,7 +67,7 @@ fn main() -> Result<()> {
         .init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let options = Options {
+    let mut options = Options {
         urls: args.iter().filter(|a| !a.starts_with("--")).cloned().collect(),
         overview: args.iter().any(|a| a == "--overview"),
         address: args.iter().find_map(|a| a.strip_prefix("--address=")).map(str::to_owned),
@@ -88,11 +88,17 @@ fn main() -> Result<()> {
         }),
         maximized: args.iter().any(|a| a == "--maximized"),
         account: args.iter().find_map(|a| a.strip_prefix("--account=")).map(str::to_owned),
+        waker: None,
     };
 
     let event_loop = EventLoop::new()?;
-    // CEF's message loop is pumped from ours, so keep polling.
-    event_loop.set_control_flow(ControlFlow::Poll);
+    // Chromium's message loop is pumped from ours: the engine wakes it when it has work, and
+    // says when it wants to run next (see `App::about_to_wait`).
+    let proxy = event_loop.create_proxy();
+    options.waker = Some(axion_engine::cef::Waker::new(move || {
+        // Fails only once the event loop is gone.
+        let _ = proxy.send_event(());
+    }));
     let mut app = App { options: Some(options), browser: None, error: None };
     event_loop.run_app(&mut app)?;
     let relaunch = app.browser.as_mut().and_then(Browser::take_relaunch);
@@ -150,6 +156,12 @@ impl ApplicationHandler for App {
             }
             browser.sync_windows(event_loop);
             browser.pump();
+            // Sleep until the next frame (requested below; the compositor's frame callback
+            // wakes us), input, or Chromium's next work, whichever comes first.
+            event_loop.set_control_flow(match browser.next_wakeup() {
+                Some(at) => ControlFlow::WaitUntil(at),
+                None => ControlFlow::Poll,
+            });
             browser.request_redraw();
         }
     }

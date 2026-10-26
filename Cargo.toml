@@ -9,6 +9,8 @@ rust-version = "1.90"
 publish = false
 
 [workspace.dependencies]
+ash = "0.38"
+libc = "0.2"
 axion-compositor = { path = "crates/axion-compositor" }
 axion-accounts = { path = "crates/axion-accounts" }
 axion-config = { path = "crates/axion-config" }
