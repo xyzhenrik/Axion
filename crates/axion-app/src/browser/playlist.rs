@@ -11,6 +11,8 @@ use axion_store::{PlaylistItem, dl};
 
 use super::*;
 use crate::media_view;
+use axion_i18n::{tr, tr_fmt, tr_mark};
+
 use crate::menu::MenuItem;
 use crate::playlist::{
     self, Added, Candidate, Command, DownloadPlan, Failure, Pending, Playback, Repeat, Resolving, Sleep,
@@ -143,16 +145,16 @@ fn item_detail(item: &PlaylistItem, progress: Option<Option<f32>>) -> String {
     }
     match (item.dl_state.as_str(), progress) {
         (dl::DOWNLOADING | dl::QUEUED, Some(Some(p))) => {
-            parts.push(format!("Downloading {:.0} %", p * 100.0))
+            parts.push(tr_fmt!("Downloading {percent} %", percent = format!("{:.0}", p * 100.0)))
         }
-        (dl::DOWNLOADING | dl::QUEUED, _) => parts.push("Downloading".to_owned()),
+        (dl::DOWNLOADING | dl::QUEUED, _) => parts.push(tr("Downloading").to_owned()),
         (dl::DONE, _) => parts.push(downloads::human_size(item.dl_size)),
-        (dl::FAILED, _) => parts.push("Download failed".to_owned()),
-        (dl::STREAMING, _) => parts.push(playlist::STATE_NOT_DOWNLOADED.to_owned()),
+        (dl::FAILED, _) => parts.push(tr("Download failed").to_owned()),
+        (dl::STREAMING, _) => parts.push(tr(playlist::STATE_NOT_DOWNLOADED).to_owned()),
         _ => {}
     }
     if item.watched {
-        parts.push("Watched".to_owned());
+        parts.push(tr("Watched").to_owned());
     }
     if parts.is_empty() {
         parts.push(display_host(&item.page_url));
@@ -270,7 +272,7 @@ impl Browser {
                 let length = playlist::duration_label(c.duration);
                 let host = display_host(&c.page_url);
                 let note = match &c.source {
-                    Source::Streaming(why) => Some((*why).to_owned()),
+                    Source::Streaming(why) => Some(tr(why).to_owned()),
                     _ => None,
                 };
                 VideoInfo {
@@ -319,7 +321,7 @@ impl Browser {
                 {
                     self.playlist_ui.popover.close(&mut self.ui, &self.config);
                     self.remove_playlist_items(&[id]);
-                    self.show_toast(Icon::Trash, "Removed from Playlist");
+                    self.show_toast(Icon::Trash, tr("Removed from Playlist"));
                 }
             }
             AddAction::OpenPlaylist => {
@@ -333,12 +335,12 @@ impl Browser {
     pub(super) fn playlist_add_action(&mut self) {
         let Some(tab) = self.tabs.active() else { return };
         if tab.private {
-            self.show_toast(Icon::Lock, "Private tabs can’t add to the Playlist");
+            self.show_toast(Icon::Lock, tr("Private tabs can’t add to the Playlist"));
             return;
         }
         let Some(view) = self.active_view() else { return };
         match self.playlist_ui.candidates.len() {
-            0 => self.show_toast(Icon::Playlist, "No video on this page"),
+            0 => self.show_toast(Icon::Playlist, tr("No video on this page")),
             1 => {
                 let c = self.playlist_ui.candidates[0].clone();
                 self.add_to_playlist(view, c, false);
@@ -374,7 +376,7 @@ impl Browser {
         match playlist::add(store, &self.config, &c, unix_now()) {
             Added::New(id) => {
                 self.playlist.reload(self.store.as_ref(), &self.config);
-                self.show_toast(Icon::PlaylistAdd, "Added to Playlist");
+                self.show_toast(Icon::PlaylistAdd, tr("Added to Playlist"));
                 self.start_thumbnail(id, view, &c);
                 if download || self.config.playlist.auto_download {
                     self.playlist_download(id, true);
@@ -387,16 +389,16 @@ impl Browser {
                 {
                     self.set_item_source(id, source);
                 }
-                self.show_toast(Icon::Playlist, "Already in your Playlist");
+                self.show_toast(Icon::Playlist, tr("Already in your Playlist"));
                 if download {
                     self.playlist_download(id, true);
                 }
             }
             Added::Full => {
-                let text = format!("Playlist is full ({} videos)", self.config.playlist.max_items);
+                let text = tr_fmt!("Playlist is full ({count} videos)", count = self.config.playlist.max_items);
                 self.show_toast(Icon::Playlist, &text);
             }
-            Added::Failed => self.show_toast(Icon::Playlist, "Couldn’t save to the Playlist"),
+            Added::Failed => self.show_toast(Icon::Playlist, tr("Couldn’t save to the Playlist")),
         }
         self.playlist_ui.button = None;
     }
@@ -596,13 +598,13 @@ impl Browser {
         match playlist::plan_download(&item) {
             DownloadPlan::Done => {
                 if announce {
-                    self.show_toast(Icon::Download, "Already downloaded");
+                    self.show_toast(Icon::Download, tr("Already downloaded"));
                 }
             }
             DownloadPlan::Unavailable(note) => {
                 self.set_item_download(id, dl::STREAMING, "", 0, &note);
                 if announce {
-                    self.show_toast(Icon::Playlist, playlist::DOWNLOAD_UNAVAILABLE_TOAST);
+                    self.show_toast(Icon::Playlist, tr(playlist::DOWNLOAD_UNAVAILABLE_TOAST));
                 }
             }
             DownloadPlan::Start(url) => {
@@ -613,9 +615,9 @@ impl Browser {
                     kind: ResourceKind::Media,
                 });
                 if verdict != axion_engine::RequestVerdict::Allow {
-                    self.set_item_download(id, dl::FAILED, "", 0, "Shields blocked this download.");
+                    self.set_item_download(id, dl::FAILED, "", 0, tr_mark("Shields blocked this download."));
                     if announce {
-                        self.show_toast(Icon::Shield, "Shields blocked this download");
+                        self.show_toast(Icon::Shield, tr("Shields blocked this download"));
                     }
                     return;
                 }
@@ -638,7 +640,7 @@ impl Browser {
                 self.set_item_download(id, dl::QUEUED, "", 0, "");
                 self.engine.start_download(view, &url, directory);
                 if announce {
-                    self.show_toast(Icon::Download, "Downloading…");
+                    self.show_toast(Icon::Download, tr("Downloading…"));
                 }
             }
         }
@@ -917,7 +919,7 @@ impl Browser {
         let current = self.playlist_current_item().and_then(|id| self.playlist.item(id)).cloned();
         let site = current.as_ref().map(|i| display_host(&i.page_url)).unwrap_or_default();
         let (note, open_page) = if self.playlist.resolving.is_some() {
-            (Some("Finding video…".to_owned()), false)
+            (Some(tr("Finding video…").to_owned()), false)
         } else if let Some(f) = &self.playlist.failure {
             (Some(f.message.clone()), true)
         } else {
@@ -995,7 +997,7 @@ impl Browser {
                 (p.time, p.duration.max(item.duration), p.is_playing())
             });
         let note = if picture.is_none() || (player.is_none() && opened.elapsed() < Duration::from_secs(1)) {
-            Some("Loading…")
+            Some(tr("Loading…"))
         } else {
             None
         };
@@ -1248,7 +1250,7 @@ impl Browser {
                 let fresh = false;
                 self.playlist_open_source(&item, source, fresh);
             }
-            Target::Unplayable(why) => self.playlist_fail(id, why),
+            Target::Unplayable(why) => self.playlist_fail(id, playlist::unsupported_text(why)),
             Target::Find => self.playlist_resolve_start(&item),
         }
     }
@@ -1331,7 +1333,7 @@ impl Browser {
             }
             Err(e) => {
                 tracing::error!("opening a video failed: {e:#}");
-                self.playlist_fail(item.id, "Couldn’t open this video.");
+                self.playlist_fail(item.id, tr("Couldn’t open this video."));
             }
         }
     }
@@ -1355,7 +1357,7 @@ impl Browser {
     /// the network to show where the video comes from. The player area says so meanwhile.
     fn playlist_resolve_start(&mut self, item: &PlaylistItem) {
         if !item.page_url.starts_with("http") {
-            self.playlist_fail(item.id, "This video has no address to play from.");
+            self.playlist_fail(item.id, tr("This video has no address to play from."));
             return;
         }
         let size = ViewSize { logical: Vec2::new(1280.0, 720.0), scale: self.scale() };
@@ -1375,7 +1377,7 @@ impl Browser {
             }
             Err(e) => {
                 tracing::error!("opening {} to find its video failed: {e:#}", item.page_url);
-                self.playlist_fail(item.id, "Couldn’t open this video’s page.");
+                self.playlist_fail(item.id, tr("Couldn’t open this video’s page."));
             }
         }
     }
@@ -1423,11 +1425,11 @@ impl Browser {
         if let Some((since, why)) = r.unsupported
             && since.elapsed().as_secs_f32() >= cfg.resolve_settle_seconds
         {
-            self.playlist_fail(id, why);
+            self.playlist_fail(id, playlist::unsupported_text(why));
             return;
         }
         if started.elapsed().as_secs_f32() >= cfg.resolve_timeout_seconds {
-            self.playlist_fail(id, "Couldn’t find a video on this page.");
+            self.playlist_fail(id, tr("Couldn’t find a video on this page."));
             return;
         }
         // Site players often load their video only after a click.
@@ -1589,7 +1591,7 @@ impl Browser {
                 let items = playlist::SORTS
                     .iter()
                     .map(|&(sort, name, icon)| {
-                        let mut item = MenuItem::new(icon, name, MenuAction::Playlist(Command::Sort(sort)));
+                        let mut item = MenuItem::new(icon, tr(name), MenuAction::Playlist(Command::Sort(sort)));
                         item.checked = self.config.playlist.sort == sort;
                         item
                     })
@@ -1665,7 +1667,7 @@ impl Browser {
                 let anchor = self.playlist_ui.page.frame_of(&self.ui, PageAction::Sleep);
                 let sleep = self.playlist.sleep;
                 let mut items =
-                    vec![MenuItem::new(Icon::Moon, "Off", MenuAction::Playlist(Command::SleepOff))];
+                    vec![MenuItem::new(Icon::Moon, tr("Off"), MenuAction::Playlist(Command::SleepOff))];
                 items[0].checked = sleep == Sleep::Off;
                 for (i, minutes) in self.config.playlist.sleep_timer_minutes.iter().enumerate() {
                     items.push(MenuItem::new(
@@ -1675,7 +1677,7 @@ impl Browser {
                     ));
                 }
                 let mut end =
-                    MenuItem::new(Icon::Media, "End of video", MenuAction::Playlist(Command::SleepEnd));
+                    MenuItem::new(Icon::Media, tr("End of video"), MenuAction::Playlist(Command::SleepEnd));
                 end.checked = sleep == Sleep::EndOfVideo;
                 items.push(end);
                 let window = self.logical_size();
@@ -1754,42 +1756,42 @@ impl Browser {
     fn open_row_menu(&mut self, id: i64, index: usize, row: Rect) {
         let Some(item) = self.playlist.item(id) else { return };
         let item = item.clone();
-        let mut items = vec![MenuItem::new(Icon::Play, "Play", MenuAction::Playlist(Command::Play(id)))];
+        let mut items = vec![MenuItem::new(Icon::Play, tr("Play"), MenuAction::Playlist(Command::Play(id)))];
         let file = downloaded_file(&item);
         match playlist::plan_download(&item) {
             _ if file.is_some() => {
                 items.push(MenuItem::new(
                     Icon::Trash,
-                    "Remove Download",
+                    tr("Remove Download"),
                     MenuAction::Playlist(Command::RemoveDownload(id)),
                 ));
                 items.push(MenuItem::new(
                     Icon::Folder,
-                    "Show in Folder",
+                    tr("Show in Folder"),
                     MenuAction::Playlist(Command::Reveal(id)),
                 ));
             }
             DownloadPlan::Start(_) => {
                 items.push(MenuItem::new(
                     Icon::Download,
-                    playlist::DOWNLOAD_ACTION,
+                    tr(playlist::DOWNLOAD_ACTION),
                     MenuAction::Playlist(Command::Download(id)),
                 ));
             }
             _ => {
                 let mut stream = MenuItem::new(
                     Icon::Download,
-                    playlist::DOWNLOAD_ACTION,
+                    tr(playlist::DOWNLOAD_ACTION),
                     MenuAction::Playlist(Command::Download(id)),
                 );
-                stream.detail = Some(playlist::DOWNLOAD_UNAVAILABLE_DETAIL.to_owned());
+                stream.detail = Some(tr(playlist::DOWNLOAD_UNAVAILABLE_DETAIL).to_owned());
                 items.push(stream);
             }
         }
         items.push(
-            MenuItem::new(Icon::Globe, "Open Page", MenuAction::Playlist(Command::OpenPage(id))).separated(),
+            MenuItem::new(Icon::Globe, tr("Open Page"), MenuAction::Playlist(Command::OpenPage(id))).separated(),
         );
-        items.push(MenuItem::new(Icon::Close, "Remove", MenuAction::Playlist(Command::Remove(id))));
+        items.push(MenuItem::new(Icon::Close, tr("Remove"), MenuAction::Playlist(Command::Remove(id))));
         let window = self.logical_size();
         let at = self.playlist_ui.page.row_menu_at(&self.ui, index);
         self.playlist_ui.page.open_menu(&mut self.ui, &self.config, row, window, items, at);
