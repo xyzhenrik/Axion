@@ -48,6 +48,7 @@ mod overview;
 mod page_color;
 mod page_menu;
 mod passwords;
+mod perf_log;
 mod pip;
 mod platform;
 mod player;

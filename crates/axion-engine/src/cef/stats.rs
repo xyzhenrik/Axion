@@ -63,6 +63,16 @@ pub struct Counters {
     pub check_buffers: u64,
     /// Page frames that became a view's frame.
     pub page_frames: u64,
+    /// Paint callbacks from Chromium (GPU and software), before any is dropped or held.
+    pub paints: u64,
+    /// GPU frame copies submitted (first copies and copies again of frames not drawn yet).
+    pub gpu_copies: u64,
+    /// GPU frames held back to settle that a newer frame replaced before their copy.
+    pub settle_replaced: u64,
+    /// GPU frames copied again because they weren't drawn yet.
+    pub late: u64,
+    /// Frames given up on (never drawn, scaled or letterboxed).
+    pub dropped: u64,
 }
 
 impl Stats {
@@ -77,6 +87,7 @@ impl Stats {
     }
 
     pub fn paint(&self, took: Duration) {
+        self.count(|c| c.paints += 1);
         self.window.borrow_mut().paint.add(took);
         if let Some(sent) = self.pending_input.take() {
             self.window.borrow_mut().input.add(sent.elapsed());
@@ -84,10 +95,12 @@ impl Stats {
     }
 
     pub fn late(&self) {
+        self.count(|c| c.late += 1);
         self.window.borrow_mut().late += 1;
     }
 
     pub fn dropped(&self) {
+        self.count(|c| c.dropped += 1);
         self.window.borrow_mut().dropped += 1;
     }
 

@@ -52,7 +52,20 @@ pub struct FrameTimes {
 }
 
 impl FrameTimes {
-    fn add(&mut self, o: &FrameTimes) {
+    /// Each stage's worst time so far, with `o`'s.
+    pub fn max(&mut self, o: &FrameTimes) {
+        self.total = self.total.max(o.total);
+        self.resize_events = self.resize_events.max(o.resize_events);
+        self.configure = self.configure.max(o.configure);
+        self.layout = self.layout.max(o.layout);
+        self.ui_layout = self.ui_layout.max(o.ui_layout);
+        self.acquire = self.acquire.max(o.acquire);
+        self.paint = self.paint.max(o.paint);
+        self.render = self.render.max(o.render);
+        self.present = self.present.max(o.present);
+    }
+
+    pub fn add(&mut self, o: &FrameTimes) {
         self.total += o.total;
         self.resize_events += o.resize_events;
         self.configure += o.configure;
@@ -338,7 +351,7 @@ fn sweep_size(step: u32) -> Vec2 {
 }
 
 /// CPU seconds used so far by this process and by all its descendants (Chromium's processes).
-fn cpu_seconds() -> Option<(f64, f64)> {
+pub fn cpu_seconds() -> Option<(f64, f64)> {
     let me = std::process::id();
     let ticks = 100.0; // USER_HZ on Linux.
     let stat = |pid: u32| -> Option<(u32, f64)> {
@@ -375,7 +388,7 @@ fn cpu_seconds() -> Option<(f64, f64)> {
 }
 
 /// Resident memory of this process (MB).
-fn rss_mb() -> Option<u64> {
+pub fn rss_mb() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
     let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;

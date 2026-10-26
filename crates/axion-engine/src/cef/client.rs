@@ -86,6 +86,16 @@ impl ViewFrames {
         self.scheduled.borrow().due()
     }
 
+    /// Bytes of the frame textures this view holds (its frame, spares and copies on their
+    /// way), and how many of Chromium's buffers are imported (diagnostics).
+    pub fn memory(&self) -> (u64, usize) {
+        let bytes = |t: &wgpu::Texture| u64::from(t.width()) * u64::from(t.height()) * 4;
+        let mut total = self.texture.borrow().as_ref().map_or(0, bytes);
+        total += self.spare_textures.borrow().iter().map(bytes).sum::<u64>();
+        total += self.pending.borrow().iter().map(|f| bytes(&f.texture)).sum::<u64>();
+        (total, self.imports.borrow().len())
+    }
+
     pub fn has_pending(&self) -> bool {
         !self.pending.borrow().is_empty()
     }
@@ -226,6 +236,9 @@ impl ViewContext {
         if !settle.is_zero() {
             // A newer frame replaces one that hasn't been copied yet: it shows the page later.
             let now = Instant::now();
+            if frames.scheduled.borrow().due().is_some() {
+                self.shared.stats.count(|c| c.settle_replaced += 1);
+            }
             if let Some((source, region)) = frames.scheduled.borrow_mut().offer((source, region), now, settle)
             {
                 self.copy_gpu_frame(source, region);
@@ -268,6 +281,7 @@ impl ViewContext {
                 record_drawn_check(encoder, &frame.texture, &frame.check);
             })?;
         frame.mapped.store(MAP_WAITING, Ordering::Release);
+        self.shared.stats.count(|c| c.gpu_copies += 1);
         self.queue.submit(commands);
         let mapped = frame.mapped.clone();
         frame.check.slice(..).map_async(wgpu::MapMode::Read, move |result| {

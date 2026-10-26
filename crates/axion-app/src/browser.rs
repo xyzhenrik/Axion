@@ -53,6 +53,7 @@ use crate::onboarding::Onboarding;
 use crate::overview::{Overview, OverviewAction};
 use crate::page_color::{PageTint, TintParams, lightness};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
+use crate::perf_log::{FrameOutcome, PerfLog};
 use crate::pip::{PipControl, PipOutcome, PipWindow};
 use crate::platform::clipboard::ClipboardReader;
 use crate::platform::pointer::PointerProbe;
@@ -469,6 +470,10 @@ pub struct Browser {
     resize_log_enabled: bool,
     resize_counters: ResizeCounters,
     frame_times: FrameTimes,
+    /// `AXION_PERF_LOG=1`: a line per second about frames, pages, GPU and CPU (see `perf_log`).
+    perf_log: Option<PerfLog>,
+    /// The swapchain's present mode as configured, for the perf log.
+    present_mode: String,
 }
 
 impl Browser {
@@ -537,6 +542,19 @@ impl Browser {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &surface_config);
+        // `AutoVsync` is what wgpu turns into FifoRelaxed where the surface has it, else Fifo.
+        let present_mode = match surface_config.present_mode {
+            wgpu::PresentMode::AutoVsync if caps.present_modes.contains(&wgpu::PresentMode::FifoRelaxed) => {
+                "FifoRelaxed".to_owned()
+            }
+            wgpu::PresentMode::AutoVsync => "Fifo".to_owned(),
+            mode => format!("{mode:?}"),
+        };
+        let mut perf_log = PerfLog::from_env();
+        if let Some(log) = &mut perf_log {
+            log.enable_gpu_timer(&device, &queue);
+            tracing::info!(modes = ?caps.present_modes, chosen = %present_mode, "perf log on: present modes");
+        }
 
         let info = adapter.get_info();
         let can_import = adapter.features().contains(axion_engine::cef::required_features());
@@ -836,6 +854,8 @@ impl Browser {
             resize_log_enabled: std::env::var_os("AXION_RESIZE_LOG").is_some(),
             resize_counters: ResizeCounters::default(),
             frame_times: FrameTimes::default(),
+            perf_log,
+            present_mode,
             sheet_origin: None,
             engine_icons: None,
             password_icons: None,
@@ -3610,12 +3630,45 @@ impl Browser {
             self.idle_redraw_at = None;
         }
         let took = started.elapsed();
+        if let Some(log) = &mut self.perf_log {
+            log.wakeup(took);
+        }
+        if self.perf_log.as_ref().is_some_and(PerfLog::due) {
+            let snapshot = self.perf_snapshot();
+            if let Some(log) = &mut self.perf_log {
+                log.log(&snapshot);
+            }
+        }
         let recorders = [
             self.resize_bench.as_mut().and_then(|b| b.recorder.as_mut()),
             self.resize_log.as_mut().map(|(r, _)| r),
         ];
         for recorder in recorders.into_iter().flatten() {
             recorder.wakeup(took);
+        }
+    }
+
+    /// What the perf log reports about the window and pages (`AXION_PERF_LOG`).
+    fn perf_snapshot(&self) -> crate::perf_log::Snapshot {
+        let monitor = self.window.current_monitor();
+        crate::perf_log::Snapshot {
+            surface: (self.surface_config.width, self.surface_config.height),
+            scale: self.window.scale_factor(),
+            present_mode: self.present_mode.clone(),
+            monitor: monitor.as_ref().and_then(|m| m.name()),
+            refresh_mhz: monitor.as_ref().and_then(|m| m.refresh_rate_millihertz()),
+            page_rate: self.engine.frame_rate(),
+            window_fullscreen: self.window.fullscreen().is_some(),
+            presentation: self.chrome.presentation(),
+            page_fullscreen: self.chrome.page_fullscreen(),
+            page_frame: self
+                .display_view()
+                .and_then(|v| self.engine.frame(v))
+                .map(|f| (f.texture.width(), f.texture.height())),
+            gpu_frames: self.engine.is_accelerated(),
+            engine: self.engine.counters(),
+            memory: self.engine.frame_memory(),
+            skip_unchanged: self.config.ui.skip_unchanged_frames,
         }
     }
 
@@ -5317,7 +5370,20 @@ impl Browser {
 
     fn redraw(&mut self) -> Result<()> {
         let started = Instant::now();
+        let (presented, skipped) = (self.frames_presented, self.frames_skipped);
         let result = self.redraw_frame();
+        if let Some(log) = &mut self.perf_log {
+            let mut times = self.frame_times;
+            times.total = ms_since(started);
+            let outcome = if self.frames_presented != presented {
+                FrameOutcome::Presented
+            } else if self.frames_skipped != skipped {
+                FrameOutcome::Skipped
+            } else {
+                FrameOutcome::NoImage
+            };
+            log.frame(times, outcome);
+        }
         let serial = self.active_view().and_then(|v| self.engine.frame(v)).map_or(0, |f| f.serial);
         self.frame_stats.record(started.elapsed(), serial);
         // Resize events are applied inside the frame (`apply_window_size`).
@@ -5713,6 +5779,20 @@ impl Browser {
                         .zip(self.active_view().and_then(|v| self.primary_player(v)).cloned());
                     if let Some((view, player)) = target {
                         self.start_pip(view, player);
+                    }
+                }
+                // Capture aid: the page's main video goes fullscreen (as its own fullscreen
+                // button would; Axion's player takes over), again to leave it.
+                "video-fullscreen" => {
+                    let target = self
+                        .active_view()
+                        .zip(self.active_view().and_then(|v| self.primary_player(v)).cloned());
+                    if let Some((view, player)) = target {
+                        let on = !self.chrome.page_fullscreen();
+                        self.media_command(
+                            view,
+                            &axion_media::Command::new(&player.id, axion_media::Action::Fullscreen(on)),
+                        );
                     }
                 }
                 // Capture aid: open the player's speed menu.
@@ -6394,7 +6474,13 @@ impl Browser {
         };
         let output = surface.texture.create_view(&Default::default());
         let started = Instant::now();
+        if let Some(log) = &mut self.perf_log {
+            log.gpu_begin(&self.device, &self.queue);
+        }
         self.compositor.render(&scene, &mut self.ui.fonts(), &output, size);
+        if let Some(log) = &mut self.perf_log {
+            log.gpu_end(&self.device, &self.queue);
+        }
         self.frame_times.render = ms_since(started);
         // Kept until the next comparison: no new texture view can take one of these identities.
         self.shown_textures = scene.textures();
@@ -6749,7 +6835,10 @@ impl Browser {
         }
     }
 
-    pub fn request_redraw(&self) {
+    pub fn request_redraw(&mut self) {
+        if let Some(log) = &mut self.perf_log {
+            log.redraw_requested();
+        }
         self.window.request_redraw();
     }
 }
