@@ -1097,6 +1097,28 @@ pub struct Playlist {
     /// How many media responses (manifests, video files) a page's network traffic is
     /// remembered by, for capturing the source behind `blob:` players.
     pub sniff_limit: u32,
+    /// Opening the Playlist page starts the topmost video (unless one is playing already).
+    pub autoplay_on_open: bool,
+    /// "Continue watching": the most recently played unfinished video stays on top of the
+    /// list, whatever the sort says.
+    pub continue_on_top: bool,
+    /// When a video ends, the next one in the list starts.
+    pub autoadvance: bool,
+    /// How the list is ordered (below the continue-watching item).
+    pub sort: PlaylistSort,
+}
+
+/// How the Playlist page orders its videos. More modes can be added later.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaylistSort {
+    /// Latest added first.
+    #[default]
+    Newest,
+    /// Oldest added first.
+    Oldest,
+    /// The order the user arranged with move up / down in Edit mode.
+    Manual,
 }
 
 impl Default for Playlist {
@@ -1123,6 +1145,10 @@ impl Default for Playlist {
             resolve_settle_seconds: 6.0,
             resolve_click_seconds: 2.0,
             sniff_limit: 40,
+            autoplay_on_open: true,
+            continue_on_top: true,
+            autoadvance: true,
+            sort: PlaylistSort::Newest,
         }
     }
 }
@@ -1184,6 +1210,22 @@ mod tests {
         let c: Config = toml::from_str("[playlist]\nauto_download = true").unwrap();
         assert!(c.playlist.auto_download);
         assert_eq!(c.playlist.max_items, p.max_items);
+    }
+
+    #[test]
+    fn playlist_sort_and_continue_keys_round_trip() {
+        let p = Playlist::default();
+        assert!(p.autoplay_on_open && p.continue_on_top && p.autoadvance);
+        assert_eq!(p.sort, PlaylistSort::Newest);
+        let mut c = Config::default();
+        c.playlist.sort = PlaylistSort::Oldest;
+        let text = toml::to_string(&c).unwrap();
+        assert!(text.contains("sort = \"oldest\""));
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.playlist.sort, PlaylistSort::Oldest);
+        let c: Config = toml::from_str("[playlist]\nsort = \"manual\"\ncontinue_on_top = false").unwrap();
+        assert_eq!(c.playlist.sort, PlaylistSort::Manual);
+        assert!(!c.playlist.continue_on_top);
     }
 
     #[test]

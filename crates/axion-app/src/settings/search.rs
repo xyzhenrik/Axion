@@ -260,6 +260,22 @@ pub const INDEX: &[Entry] = &[
     ),
     page(
         C::Media,
+        "Playlist sort",
+        &[
+            "playlist",
+            "sort",
+            "order",
+            "newest",
+            "oldest",
+            "sortieren",
+            "reihenfolge",
+            "neueste",
+            "älteste",
+            "wiedergabeliste",
+        ],
+    ),
+    page(
+        C::Media,
         "Playlist downloads",
         &["playlist", "folder", "directory", "ordner", "wiedergabeliste", "speicherort", "download location"],
     ),

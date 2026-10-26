@@ -177,6 +177,21 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
   player area. Fullscreen opens Axion's fullscreen player directly on the media view (no tab),
   and Picture in Picture plays it in the PiP window; both are generalised to "a view with media
   state" (tab or Playlist playback), at the same position.
+- **Opening, order and resume** (decisions 2026-10-26). Opening the page starts the topmost video
+  (`playlist.autoplay_on_open`, default on) unless something plays already (kept, e.g. from PiP);
+  an empty list says "No Videos". The order is one rule: the list is sorted by `playlist.sort`
+  (enum `newest` default / `oldest` by added time / `manual` = the Edit move up/down order; the
+  page's sort button next to *Edit* and Settings › Media › Playlist › Sort set it, saved in the
+  config); then, with `playlist.continue_on_top` (default on), the most recently played
+  *unfinished* item (`played_at` column, set when playback starts) is lifted to the top. Finished
+  items (watched fraction reached, or watched and reset) are never lifted and keep their sorted
+  place. Autoplay-on-open therefore resumes the item you were watching, also after a restart.
+  Moving an item by hand turns the current display order into the manual order and switches to
+  `manual`. Positions are stored per item (`position`, `watched`) and written on: every
+  `position_save_seconds` while playing, pause, switching item, end, closing the page, closing a
+  tab, and quit / window close (`Browser::drop`, synchronous SQLite write; pending settings are
+  flushed too). Resume starts `resume_rewind_seconds` earlier; finished videos start from 0.
+  When a video ends the next one starts (`playlist.autoadvance`, default on; repeat-one wins).
 - Settings › Media › Playlist: button on/off, auto-download, delete files on remove, list name
   (renaming moves the items), folder. While the page is open the sidebar's selection highlight
   sits on the *Playlist* row; its menus grow out of their buttons (`Placement::Over` / `OverCentered`).

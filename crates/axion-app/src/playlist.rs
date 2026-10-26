@@ -10,7 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use axion_config::{Config, Playlist as PlaylistConfig};
+use axion_compositor::Icon;
+use axion_config::{Config, Playlist as PlaylistConfig, PlaylistSort};
 use axion_engine::{DownloadInfo, DownloadState, ViewId};
 use axion_media::{Capture, Kind, PageMedia, Player, Sniffed, format_time};
 use axion_store::{NewPlaylistItem, PlaylistItem, Store, dl};
@@ -320,10 +321,49 @@ pub fn progress(time: f64, duration: f64, cfg: &PlaylistConfig) -> (f64, bool) {
     (if finished { 0.0 } else { time.max(0.0) }, watched)
 }
 
+/// The sort choices: mode, menu label, icon. The menu and Settings list them in this order.
+pub const SORTS: [(PlaylistSort, &str, Icon); 3] = [
+    (PlaylistSort::Newest, "Newest First", Icon::ChevronDown),
+    (PlaylistSort::Oldest, "Oldest First", Icon::ChevronUp),
+    (PlaylistSort::Manual, "Custom Order", Icon::Menu),
+];
+
+/// Whether an item counts as finished: watched up to `watched_fraction`, or watched and
+/// reset to the start. Finished videos start over, and are not "continue watching".
+pub fn is_finished(item: &PlaylistItem, cfg: &PlaylistConfig) -> bool {
+    let fraction = if item.duration > 0.0 { item.position / item.duration } else { 0.0 };
+    fraction >= f64::from(cfg.watched_fraction)
+        || (item.watched && item.position < f64::from(cfg.min_resume_seconds))
+}
+
+/// The list in the order the page shows it: `cfg.sort` for everything, except that with
+/// `continue_on_top` the most recently played unfinished item (the one to continue watching)
+/// goes first. Ties keep the stored order (`items` arrives in the store's manual order).
+pub fn order_items(mut items: Vec<PlaylistItem>, cfg: &PlaylistConfig) -> Vec<PlaylistItem> {
+    match cfg.sort {
+        PlaylistSort::Newest => items.sort_by(|a, b| b.added_at.cmp(&a.added_at).then(b.id.cmp(&a.id))),
+        PlaylistSort::Oldest => items.sort_by(|a, b| a.added_at.cmp(&b.added_at).then(a.id.cmp(&b.id))),
+        PlaylistSort::Manual => {}
+    }
+    if cfg.continue_on_top {
+        let top = items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.played_at > 0 && !is_finished(i, cfg))
+            .max_by_key(|(_, i)| i.played_at)
+            .map(|(n, _)| n);
+        if let Some(n) = top {
+            let item = items.remove(n);
+            items.insert(0, item);
+        }
+    }
+    items
+}
+
 /// Where playing an item starts: where it stopped (a little before), unless that is not
-/// worth resuming.
+/// worth resuming or the video was finished.
 pub fn resume_position(item: &PlaylistItem, cfg: &PlaylistConfig) -> f64 {
-    if item.position < f64::from(cfg.min_resume_seconds) {
+    if item.position < f64::from(cfg.min_resume_seconds) || is_finished(item, cfg) {
         return 0.0;
     }
     (item.position - f64::from(cfg.resume_rewind_seconds)).max(0.0)
@@ -530,6 +570,8 @@ pub enum Command {
     Add,
     /// Open the Playlist page (the page menu).
     Show,
+    /// Order the list this way (the sort menu).
+    Sort(PlaylistSort),
 }
 
 /// The video of the Playlist page: its view (not a tab) and what the bridge reports.
@@ -555,6 +597,8 @@ pub struct Playback {
     /// When the position was last saved.
     pub saved_at: Instant,
     pub ended_handled: bool,
+    /// The player was playing at the last look (a change to paused saves the position).
+    pub was_playing: bool,
 }
 
 impl Playback {
@@ -670,7 +714,7 @@ impl Playlist {
         let Some(store) = store else { return };
         match store.playlist_items(&config.playlist.list_name) {
             Ok(items) => {
-                self.items = items;
+                self.items = order_items(items, &config.playlist);
                 self.dirty = true;
             }
             Err(e) => tracing::error!("reading the Playlist failed: {e}"),
@@ -786,6 +830,7 @@ mod tests {
             dl_size: 0,
             dl_note: String::new(),
             source: String::new(),
+            played_at: 0,
         }
     }
 
@@ -941,6 +986,60 @@ mod tests {
         assert_eq!(resume_position(&i, &cfg), 0.0);
         i.position = 60.0;
         assert_eq!(resume_position(&i, &cfg), 58.0);
+        // Past the watched fraction counts as finished: start over.
+        i.position = 95.0 * 6.0;
+        assert_eq!(resume_position(&i, &cfg), 0.0);
+    }
+
+    fn played(id: i64, added: i64, played_at: i64, position: f64, watched: bool) -> PlaylistItem {
+        let mut i = item(id, None, "https://x/");
+        i.added_at = added;
+        i.played_at = played_at;
+        i.position = position;
+        i.watched = watched;
+        i
+    }
+
+    fn ids(items: &[PlaylistItem]) -> Vec<i64> {
+        items.iter().map(|i| i.id).collect()
+    }
+
+    #[test]
+    fn sorting_newest_oldest_and_manual() {
+        let mut cfg = PlaylistConfig { continue_on_top: false, ..Default::default() };
+        // Stored (manual) order: 3, 1, 2.
+        let items =
+            vec![played(3, 30, 0, 0.0, false), played(1, 10, 0, 0.0, false), played(2, 20, 0, 0.0, false)];
+        assert_eq!(ids(&order_items(items.clone(), &cfg)), [3, 2, 1]);
+        cfg.sort = PlaylistSort::Oldest;
+        assert_eq!(ids(&order_items(items.clone(), &cfg)), [1, 2, 3]);
+        cfg.sort = PlaylistSort::Manual;
+        assert_eq!(ids(&order_items(items, &cfg)), [3, 1, 2]);
+    }
+
+    #[test]
+    fn continue_watching_goes_on_top() {
+        let mut cfg = PlaylistConfig::default();
+        let items = vec![
+            played(4, 40, 0, 0.0, false),
+            played(3, 30, 500, 0.0, true), // finished, played last: not continued
+            played(2, 20, 300, 120.0, false), // in progress
+            played(1, 10, 100, 60.0, false), // in progress, played earlier
+        ];
+        // The most recently played unfinished item is first; the rest follow the sort.
+        assert_eq!(ids(&order_items(items.clone(), &cfg)), [2, 4, 3, 1]);
+        cfg.sort = PlaylistSort::Oldest;
+        assert_eq!(ids(&order_items(items.clone(), &cfg)), [2, 1, 3, 4]);
+        // Off: only the sort.
+        cfg.continue_on_top = false;
+        assert_eq!(ids(&order_items(items.clone(), &cfg)), [1, 2, 3, 4]);
+        // Nothing unfinished: nothing is pinned.
+        cfg.continue_on_top = true;
+        let done = vec![played(2, 20, 300, 0.0, true), played(1, 10, 100, 0.0, true)];
+        assert_eq!(ids(&order_items(done, &cfg)), [1, 2]);
+        // A video watched to the fraction (not reset yet) counts as finished too.
+        assert!(is_finished(&played(1, 1, 5, 560.0, false), &cfg));
+        assert!(!is_finished(&played(1, 1, 5, 300.0, false), &cfg));
     }
 
     #[test]

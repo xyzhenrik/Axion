@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
-    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, Keymap, RemoveDownloads,
-    ShieldLevel, TabBarStyle, ThemeMode,
+    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, Keymap, PlaylistSort,
+    RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode,
 };
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
@@ -508,6 +508,7 @@ pub enum SettingsAction {
     UpdateFilterLists,
     TabBar(TabBarStyle),
     BookmarksBar(BookmarksBar),
+    PlaylistSort(PlaylistSort),
     CloseAfter(u32),
     AddTrustedSite,
     /// Index into `media.trusted_player_sites`.
@@ -606,6 +607,9 @@ impl SettingsAction {
                     SettingsAction::BookmarksBar(mode) => {
                         76 + BOOKMARKS_BAR.iter().position(|(_, m)| *m == mode).unwrap_or(0) as u32
                     }
+                    SettingsAction::PlaylistSort(sort) => {
+                        81 + crate::playlist::SORTS.iter().position(|(s, ..)| *s == sort).unwrap_or(0) as u32
+                    }
                     SettingsAction::AddTrustedSite => 80,
                     SettingsAction::OpenPasswords => 85,
                     SettingsAction::ImportPasswords => 86,
@@ -659,6 +663,7 @@ impl SettingsAction {
             72..=75 => SettingsAction::CloseAfter(CLOSE_AFTER[(n - 72) as usize].1),
             76..=78 => SettingsAction::BookmarksBar(BOOKMARKS_BAR[(n - 76) as usize].1),
             80 => SettingsAction::AddTrustedSite,
+            81..=83 => SettingsAction::PlaylistSort(crate::playlist::SORTS[(n - 81) as usize].0),
             85 => SettingsAction::OpenPasswords,
             86 => SettingsAction::ImportPasswords,
             87 => SettingsAction::ExportPasswords,
@@ -1416,6 +1421,13 @@ impl SettingsSheet {
                 } else {
                     crate::downloads::display_path(std::path::Path::new(config.playlist.directory.trim()))
                 };
+                let row_node = self.row(ui, "Playlist sort");
+                let options: Vec<(&str, ActionId)> = crate::playlist::SORTS
+                    .iter()
+                    .map(|(sort, name, _)| (*name, SettingsAction::PlaylistSort(*sort).id()))
+                    .collect();
+                let current = crate::playlist::SORTS.iter().position(|(s, ..)| *s == config.playlist.sort);
+                segmented(ui, row_node, &options, current);
                 let row_node = self.row(ui, "Playlist downloads");
                 let label = ui.add_label(row_node, &folder, TextStyle::Callout, Style::default());
                 if let Some(w) = ui.widget_mut(label) {
@@ -2379,6 +2391,10 @@ impl SettingsSheet {
             }
             SettingsAction::BookmarksBar(mode) => {
                 config.layout.bookmarks_bar = mode;
+                Outcome::Changed
+            }
+            SettingsAction::PlaylistSort(sort) => {
+                config.playlist.sort = sort;
                 Outcome::Changed
             }
             SettingsAction::AddTrustedSite => {

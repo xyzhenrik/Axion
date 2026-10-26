@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use axion_config::PlaylistSort;
 use axion_engine::{DownloadInfo, MediaViewOptions, ResourceKind, ResourceRequest};
 use axion_media::{Action as MediaAction, Capture, Command as MediaCommand, MediaSource, PageMedia, Sniffed};
 use axion_store::{PlaylistItem, dl};
@@ -782,6 +783,14 @@ impl Browser {
         self.chrome.set_editing(&mut self.ui, false);
         self.playlist.dirty = true;
         self.playlist_ui.button = None;
+        // The topmost video starts, unless one plays already (kept, e.g. from Picture in
+        // Picture). An empty list shows "No Videos".
+        if self.config.playlist.autoplay_on_open
+            && self.playlist.playback.is_none()
+            && let Some(first) = self.playlist.items.first().map(|i| i.id)
+        {
+            self.playlist_play(first);
+        }
     }
 
     pub(super) fn close_playlist(&mut self) {
@@ -1022,11 +1031,15 @@ impl Browser {
         // The saved position, now and then.
         let interval = Duration::from_secs_f32(self.config.playlist.position_save_seconds.max(0.5));
         let due = self.playlist.playback.as_ref().is_some_and(|p| p.saved_at.elapsed() >= interval);
-        if due && player.is_playing() || player.ended {
+        let paused = self.playlist.playback.as_ref().is_some_and(|p| p.was_playing) && !player.is_playing();
+        if due && player.is_playing() || player.ended || paused {
             self.save_item_progress(item.id, player);
             if let Some(pb) = &mut self.playlist.playback {
                 pb.saved_at = now;
             }
+        }
+        if let Some(pb) = &mut self.playlist.playback {
+            pb.was_playing = player.is_playing();
         }
         if player.duration > 0.0 && (item.duration - player.duration).abs() > 1.0 {
             if let Some(store) = &self.store {
@@ -1069,11 +1082,15 @@ impl Browser {
         let (item, player) = (pb.item, pb.player().cloned());
         let Some(player) = player else { return };
         let interval = Duration::from_secs_f32(self.config.playlist.position_save_seconds.max(0.5));
-        if pb.saved_at.elapsed() >= interval && player.is_playing() || player.ended {
+        let paused = pb.was_playing && !player.is_playing();
+        if pb.saved_at.elapsed() >= interval && player.is_playing() || player.ended || paused {
             self.save_item_progress(item, &player);
             if let Some(pb) = &mut self.playlist.playback {
                 pb.saved_at = Instant::now();
             }
+        }
+        if let Some(pb) = &mut self.playlist.playback {
+            pb.was_playing = player.is_playing();
         }
         if player.ended {
             self.stop_playlist_playback(false);
@@ -1092,6 +1109,7 @@ impl Browser {
     /// Saves where `player` is in item `id`.
     fn save_item_progress(&mut self, id: i64, player: &axion_media::Player) {
         let (position, watched) = playlist::progress(player.time, player.duration, &self.config.playlist);
+        tracing::debug!(item = id, media_time = player.time, position, watched, "Playlist position saved");
         let watched = watched || self.playlist.item(id).is_some_and(|i| i.watched);
         if let Some(store) = &self.store
             && let Err(e) = store.set_playlist_progress(id, position, watched)
@@ -1114,6 +1132,7 @@ impl Browser {
             return;
         }
         pb.started = true;
+        tracing::info!(item = pb.item, seek = ?pb.seek, autoplay = pb.autoplay, "Playlist playback started");
         let (local, autoplay, seek) = (pb.local, pb.autoplay, pb.seek.take());
         let rate = self.playlist.rate;
         let id = player.id.clone();
@@ -1139,6 +1158,9 @@ impl Browser {
     fn playlist_ended(&mut self, id: i64) {
         if self.playlist.sleep == Sleep::EndOfVideo {
             self.playlist.sleep = Sleep::Off;
+            return;
+        }
+        if !self.config.playlist.autoadvance && self.playlist.repeat != Repeat::One {
             return;
         }
         let shown = self.playlist_ui.shown.clone();
@@ -1287,7 +1309,18 @@ impl Browser {
                     started: false,
                     saved_at: Instant::now(),
                     ended_handled: false,
+                    was_playing: false,
                 });
+                // This is the video to continue watching next time.
+                if let Some(store) = &self.store
+                    && let Err(e) = store.mark_playlist_played(item.id, unix_now())
+                {
+                    tracing::warn!("remembering the last played video failed: {e}");
+                }
+                if let Some(i) = self.playlist.items.iter_mut().find(|i| i.id == item.id) {
+                    i.played_at = unix_now();
+                }
+                tracing::info!(item = item.id, resume = ?self.playlist.playback.as_ref().and_then(|p| p.seek), "Playlist playback opened");
                 self.playlist.dirty = true;
             }
             Err(e) => {
@@ -1545,6 +1578,20 @@ impl Browser {
                 self.playlist.selected.clear();
                 self.playlist.dirty = true;
             }
+            PageAction::Sort => {
+                let anchor = self.playlist_ui.page.frame_of(&self.ui, PageAction::Sort);
+                let items = playlist::SORTS
+                    .iter()
+                    .map(|&(sort, name, icon)| {
+                        let mut item = MenuItem::new(icon, name, MenuAction::Playlist(Command::Sort(sort)));
+                        item.checked = self.config.playlist.sort == sort;
+                        item
+                    })
+                    .collect();
+                let window = self.logical_size();
+                let at = self.playlist_ui.page.menu_at(&self.ui, PageAction::Sort);
+                self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items, at);
+            }
             PageAction::Search => {
                 let open = !self.playlist_ui.page.search_open();
                 let events = self.playlist_ui.page.set_search(&mut self.ui, open);
@@ -1667,8 +1714,16 @@ impl Browser {
             PageAction::RowUp(i) | PageAction::RowDown(i) => {
                 if let (Some(&id), Some(store)) = (ids.get(i), self.store.as_mut()) {
                     let up = matches!(action, PageAction::RowUp(_));
-                    if let Err(e) = store.move_playlist_item(id, up) {
+                    // Arranging by hand: what is shown now becomes the manual order.
+                    let shown: Vec<i64> = self.playlist.items.iter().map(|i| i.id).collect();
+                    if let Err(e) =
+                        store.set_playlist_order(&shown).and_then(|()| store.move_playlist_item(id, up))
+                    {
                         tracing::warn!("moving a Playlist item failed: {e}");
+                    }
+                    if self.config.playlist.sort != PlaylistSort::Manual {
+                        self.config.playlist.sort = PlaylistSort::Manual;
+                        self.config_dirty_since.get_or_insert(Instant::now());
                     }
                     self.playlist.reload(self.store.as_ref(), &self.config);
                 }
@@ -1762,6 +1817,11 @@ impl Browser {
             }
             Command::Add => self.playlist_add_action(),
             Command::Show => self.open_playlist(),
+            Command::Sort(sort) => {
+                self.config.playlist.sort = sort;
+                self.config_dirty_since.get_or_insert(Instant::now());
+                self.playlist.reload(self.store.as_ref(), &self.config);
+            }
         }
     }
 
@@ -1824,6 +1884,19 @@ impl Browser {
                 view,
                 playlist::Tracked { item: item.id, saved_at: Instant::now(), last_time: player.time },
             );
+        }
+    }
+
+    /// Quitting (or the window closing): every position being tracked is written now.
+    pub(super) fn playlist_flush_all(&mut self) {
+        let playing = self.playlist.playback.as_ref().and_then(|p| Some((p.item, p.player()?.clone())));
+        if let Some((item, player)) = playing {
+            self.save_item_progress(item, &player);
+            tracing::info!(item, time = player.time, "Playlist position saved on quit");
+        }
+        let views: Vec<ViewId> = self.playlist.tracked.keys().copied().collect();
+        for view in views {
+            self.playlist_flush_tab(view);
         }
     }
 

@@ -37,6 +37,7 @@ pub enum PageAction {
     Close,
     PlayAll,
     Edit,
+    Sort,
     Search,
     PictureInPicture,
     Fullscreen,
@@ -60,10 +61,11 @@ pub enum PageAction {
     RowDown(usize),
 }
 
-const SIMPLE: [PageAction; 17] = [
+const SIMPLE: [PageAction; 18] = [
     PageAction::Close,
     PageAction::PlayAll,
     PageAction::Edit,
+    PageAction::Sort,
     PageAction::Search,
     PageAction::PictureInPicture,
     PageAction::Fullscreen,
@@ -311,6 +313,7 @@ pub struct PlaylistPage {
     header_name: NodeId,
     header_count: NodeId,
     edit_label: NodeId,
+    sort_button: NodeId,
     edit_bar: NodeId,
     delete_label: NodeId,
     viewport: NodeId,
@@ -407,6 +410,21 @@ impl PlaylistPage {
         );
         let header_name = ui.add_label(titles, "", TextStyle::Title2, shrinking());
         let header_count = dim_label(ui, titles, "", TextStyle::Footnote);
+        let sort_button = ui.add(
+            header,
+            Widget::container()
+                .with_action(PageAction::Sort.id())
+                .with_radius(CAPSULE)
+                .with_background(Background::Fill(Paint::Label, 0.08))
+                .with_tooltip("Sort", None),
+            Style {
+                size: square(34.0),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                ..row(0.0)
+            },
+        );
+        ui.add(sort_button, Widget::icon(Icon::Sort, 18.0).with_paint(Paint::Accent), Style::default());
         let edit = ui.add(
             header,
             Widget::container().with_action(PageAction::Edit.id()).with_radius(CAPSULE),
@@ -692,6 +710,7 @@ impl PlaylistPage {
             header_name,
             header_count,
             edit_label,
+            sort_button,
             edit_bar,
             delete_label,
             viewport,
@@ -1098,6 +1117,7 @@ impl PlaylistPage {
         let node = match action {
             PageAction::Speed => ui.parent(self.speed_label),
             PageAction::Sleep => ui.parent(self.sleep_icon),
+            PageAction::Sort => Some(self.sort_button),
             _ => None,
         };
         node.map_or_else(|| self.rect, |n| ui.frame(n))
@@ -1176,6 +1196,8 @@ impl PlaylistPage {
                 nodes.extend(parent(self.speed_label));
                 (Placement::Over, nodes)
             }
+            // The sort button, which the menu grows out of.
+            PageAction::Sort => (Placement::Over, vec![self.sort_button]),
             _ => (Placement::BelowStart, Vec::new()),
         }
     }

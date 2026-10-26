@@ -85,6 +85,8 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX playlist_by_list ON playlist(list, sort);",
     // 9: the media source captured for a Playlist item (JSON; empty until captured)
     "ALTER TABLE playlist ADD COLUMN source TEXT NOT NULL DEFAULT '';",
+    // 10: when an item was last played (unix seconds, 0 = never), for "continue watching"
+    "ALTER TABLE playlist ADD COLUMN played_at INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// Download states of a playlist item (`PlaylistItem::dl_state`).
@@ -125,6 +127,8 @@ pub struct PlaylistItem {
     pub dl_note: String,
     /// The captured media source as JSON (see `axion_media::MediaSource`); empty until captured.
     pub source: String,
+    /// Unix seconds when playback of it last started, 0 if never.
+    pub played_at: i64,
 }
 
 /// A video about to be added to the Playlist.
@@ -145,7 +149,7 @@ pub struct NewPlaylistItem {
 }
 
 const PLAYLIST_COLUMNS: &str = "id, list, sort, title, page_url, media_url, thumbnail, duration, added_at, \
-     position, watched, dl_state, dl_path, dl_size, dl_note, source";
+     position, watched, dl_state, dl_path, dl_size, dl_note, source, played_at";
 
 fn playlist_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<PlaylistItem> {
     Ok(PlaylistItem {
@@ -165,6 +169,7 @@ fn playlist_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<PlaylistItem> {
         dl_size: r.get(13)?,
         dl_note: r.get(14)?,
         source: r.get(15)?,
+        played_at: r.get(16)?,
     })
 }
 
@@ -532,6 +537,23 @@ impl Store {
             "UPDATE playlist SET position = ?2, watched = ?3 WHERE id = ?1",
             params![id, position, watched],
         )?;
+        Ok(())
+    }
+
+    /// Records that playback of an item started at `now` (unix seconds): it is the one to
+    /// continue watching.
+    pub fn mark_playlist_played(&self, id: i64, now: i64) -> Result<()> {
+        self.conn.execute("UPDATE playlist SET played_at = ?2 WHERE id = ?1", params![id, now])?;
+        Ok(())
+    }
+
+    /// Makes `ids` the manual order of their items (the first gets the lowest `sort`).
+    pub fn set_playlist_order(&mut self, ids: &[i64]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for (n, id) in ids.iter().enumerate() {
+            tx.execute("UPDATE playlist SET sort = ?2 WHERE id = ?1", params![id, n as i64])?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -1134,6 +1156,34 @@ mod tests {
         assert_eq!(s.playlist_lists().unwrap(), ["Play Later"]);
         s.remove_playlist_item(b).unwrap();
         assert!(s.playlist_item(b).unwrap().is_none());
+    }
+
+    #[test]
+    fn playlist_position_and_last_played_survive_reopening() {
+        let dir = std::env::temp_dir().join(format!("axion-store-pos-{}", std::process::id()));
+        let path = dir.join("axion.sqlite");
+        let (a, b);
+        {
+            let mut s = Store::open(&path).unwrap();
+            a = s.add_playlist_item(&new_item("https://a/", Some("https://a/1.mp4")), 1).unwrap().0;
+            b = s.add_playlist_item(&new_item("https://b/", Some("https://b/2.mp4")), 2).unwrap().0;
+            assert_eq!(s.playlist_item(a).unwrap().unwrap().played_at, 0);
+            s.mark_playlist_played(a, 100).unwrap();
+            s.set_playlist_progress(a, 61.25, false).unwrap();
+            s.mark_playlist_played(b, 200).unwrap();
+            s.set_playlist_progress(b, 0.0, true).unwrap();
+            // The latest save wins.
+            s.set_playlist_progress(a, 75.5, false).unwrap();
+            s.set_playlist_order(&[a, b]).unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        let item = s.playlist_item(a).unwrap().unwrap();
+        assert_eq!((item.position, item.watched, item.played_at), (75.5, false, 100));
+        let item = s.playlist_item(b).unwrap().unwrap();
+        assert_eq!((item.position, item.watched, item.played_at), (0.0, true, 200));
+        let ids: Vec<i64> = s.playlist_items("Play Later").unwrap().iter().map(|i| i.id).collect();
+        assert_eq!(ids, [a, b], "the manual order is kept");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

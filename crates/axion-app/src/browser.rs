@@ -3489,6 +3489,9 @@ impl Browser {
                 self.apply_theme();
                 self.update_layout();
                 self.tabs_changed = true;
+                if self.playlist_open() {
+                    self.playlist.reload(self.store.as_ref(), &self.config);
+                }
             }
             Outcome::Close => self.close_settings(),
             Outcome::SetAccountPassword { current, new } => {
@@ -4535,6 +4538,15 @@ impl Browser {
                 "playlist-add" => self.run(Action::PlaylistAdd),
                 "playlist-edit" => self.playlist_action(crate::playlist_page::PageAction::Edit),
                 "playlist-speed" => self.playlist_action(crate::playlist_page::PageAction::Speed),
+                "playlist-sort-menu" => self.playlist_action(crate::playlist_page::PageAction::Sort),
+                sort if sort.starts_with("playlist-sort:") => {
+                    let sort = match &sort["playlist-sort:".len()..] {
+                        "oldest" => axion_config::PlaylistSort::Oldest,
+                        "manual" => axion_config::PlaylistSort::Manual,
+                        _ => axion_config::PlaylistSort::Newest,
+                    };
+                    self.playlist_command(crate::playlist::Command::Sort(sort));
+                }
                 "playlist-sleep" => self.playlist_action(crate::playlist_page::PageAction::Sleep),
                 "playlist-popout" => self.playlist_action(crate::playlist_page::PageAction::Fullscreen),
                 "playlist-pip" => self.playlist_action(crate::playlist_page::PageAction::PictureInPicture),
@@ -5554,6 +5566,12 @@ enum Panel {
 /// Signals that `--capture` finished (not an error for the user).
 impl Drop for Browser {
     fn drop(&mut self) {
+        self.playlist_flush_all();
+        if self.config_dirty_since.take().is_some()
+            && let Err(e) = axion_config::save_config(&self.paths, &self.config)
+        {
+            tracing::error!("saving settings failed: {e}");
+        }
         self.shields.save(self.store.as_ref());
         self.save_session_if_due(true);
         Downloads::on_quit(self.store.as_ref(), &self.config, &mut self.engine);
