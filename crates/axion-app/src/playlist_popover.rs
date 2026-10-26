@@ -7,7 +7,7 @@ use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
 use axion_i18n::tr;
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
 
 use crate::popover::Popover;
@@ -227,7 +227,7 @@ impl PopoverAction {
 /// A capsule button; `primary` is the accent one.
 fn button(ui: &mut Ui, parent: NodeId, id: ActionId, icon: Icon, text: &str, primary: bool) {
     let (background, paint) = if primary {
-        (Background::Fill(Paint::Accent, 1.0), Paint::Fixed(axion_config::Color::rgb(0xFFFFFF)))
+        (Background::TintedGlass(GlassLevel::Thin, Paint::Accent), Paint::OnAccent)
     } else {
         (Background::Fill(Paint::Label, 0.08), Paint::Label)
     };

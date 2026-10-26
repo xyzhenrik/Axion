@@ -844,6 +844,24 @@ Windows/macOS, touchscreen-first mode.
     1.80 ms liquid (6 glass passes) -> 0.23 ms flat; Radeon 610M (`AXION_GPU=low`) 29.3 ms liquid
     (34 fps) -> 1.6 ms flat.
 
+- 2026-10-26 (user report, accent buttons and flat leftovers):
+  - **Accent/primary/destructive text buttons are coloured glass** (`Background::TintedGlass`, thin level),
+    never `Fill(accent, 0.14)` plates: settings rows (`pill_button`, `primary_button`, `destructive_button`),
+    alerts and sheets (lock, add account, passwords, update alert), the Playlist popover, onboarding.
+    `glass.tinted_opacity` (0.85) is how much of the colour the glass takes; it still refracts and has
+    the rim. `Theme::tinted_glass(tint)` darkens (white label) or lightens (dark label) the tint just
+    enough for 4.5:1 over any backdrop (black..white) and picks the label colour; labels use
+    `Paint::OnAccent` / `Paint::OnColor(c)`. An orange or green accent therefore gets a dark label.
+    Tinted passes use no smooth union (`merge_smoothness` 0): neighbouring buttons stay separate drops.
+  - **Flat mode leftovers**: the card shadow used a knockout (`Quad::card_shadow`) that trimmed the
+    shadow where its own offset shape lay, leaving a bright crescent of the backdrop under every card
+    (obvious on the player/PiP discs over video). Flat cards now use a plain shadow; flat shadows are
+    capped (`FLAT_SHADOW`, `Theme::flat_shadow_if_flat` also for widget shadows, knobs, pills); the start
+    page (`home.css`) has a `body.flat` block (solid cards, no backdrop-filter, rim, bounce or glow;
+    `state.flat` from `home.rs`). `axion_ui::flat_violations` audits painted layers (glass pass, rim ring,
+    knockout or heavy shadow); unit test `flat_mode_draws_no_glass_and_no_glass_lookalikes`, capture aid
+    `flat-audit` (logs findings of the next frame; chain it after an open step with `--lead`).
+
 ## 8. Open questions
 - App name final? ("Axion" for now.)
 - Default search engine?

@@ -3214,12 +3214,12 @@ fn primary_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsActio
         Widget::container()
             .with_action(action.id())
             .with_radius(CAPSULE)
-            .with_background(Background::Fill(Paint::Accent, 1.0)),
+            .with_background(Background::TintedGlass(GlassLevel::Thin, Paint::Accent)),
         Style { size: Size { width: auto(), height: length(36.0) }, padding: padding(18.0, 0.0), ..row(0.0) },
     );
     let label = ui.add_label(button, text, TextStyle::Callout, Style::default());
     if let Some(w) = ui.widget_mut(label) {
-        w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
+        w.set_paint(Paint::OnAccent);
     }
 }
 
@@ -3238,18 +3238,22 @@ fn idle_pill(ui: &mut Ui, parent: NodeId, text: &str) {
 
 /// A small capsule button (accent tint, or red for destructive ones).
 fn pill_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsAction, destructive: bool) {
-    let color = if destructive { Paint::Fixed(Color::rgb(0xD0362B)) } else { Paint::Accent };
+    let (tint, on) = if destructive {
+        (Paint::Fixed(DESTRUCTIVE), Paint::OnColor(DESTRUCTIVE))
+    } else {
+        (Paint::Accent, Paint::OnAccent)
+    };
     let button = ui.add(
         parent,
         Widget::container()
             .with_action(action.id())
             .with_radius(CAPSULE)
-            .with_background(Background::Fill(color, 0.14)),
+            .with_background(Background::TintedGlass(GlassLevel::Thin, tint)),
         Style { size: Size { width: auto(), height: length(36.0) }, padding: padding(16.0, 0.0), ..row(0.0) },
     );
     let label = ui.add_label(button, text, TextStyle::Callout, Style::default());
     if let Some(w) = ui.widget_mut(label) {
-        w.set_paint(color);
+        w.set_paint(on);
     }
 }
 
@@ -3277,15 +3281,17 @@ pub fn glass_pill(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsActio
 fn destructive_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsAction, confirming: bool) {
     let button = ui.add(
         parent,
-        Widget::container().with_action(action.id()).with_radius(CAPSULE).with_background(Background::Fill(
-            Paint::Fixed(DESTRUCTIVE),
-            if confirming { 1.0 } else { 0.14 },
-        )),
+        Widget::container().with_action(action.id()).with_radius(CAPSULE).with_background(
+            Background::TintedGlass(
+                if confirming { GlassLevel::Regular } else { GlassLevel::Thin },
+                Paint::Fixed(DESTRUCTIVE),
+            ),
+        ),
         Style { size: Size { width: auto(), height: length(36.0) }, padding: padding(16.0, 0.0), ..row(0.0) },
     );
     let label = ui.add_label(button, text, TextStyle::Callout, Style::default());
     if let Some(w) = ui.widget_mut(label) {
-        w.set_paint(Paint::Fixed(if confirming { Color::rgb(0xFFFFFF) } else { DESTRUCTIVE }));
+        w.set_paint(Paint::OnColor(DESTRUCTIVE));
     }
 }
 

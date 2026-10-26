@@ -807,6 +807,7 @@ fn state_json(
         "i18n": page_translations(),
         "icons": icons_version,
         "accent": css_color(config.appearance.accent),
+        "flat": config.glass.is_flat(),
         "clock": { "show": home.show_clock, "h24": h24, "format": match home.clock_format {
             ClockFormat::Auto => "auto", ClockFormat::H12 => "12h", ClockFormat::H24 => "24h" } },
         "greeting": { "show": home.show_greeting && !private, "name": first_name },

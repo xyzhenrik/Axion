@@ -272,6 +272,8 @@ pub struct Browser {
     /// The active page's last reported scroll position (CSS px).
     /// Frames saved so far by the `AXION_CAPTURE_FRAMES` debug aid.
     capture_frame: u32,
+    /// The next frame is audited for glass and glass look-alikes (`flat-audit` capture aid).
+    flat_audit: bool,
     /// Typing latency probe (`AXION_TYPE_PROBE`, see `typing_probe`).
     probe: Option<ProbeRun>,
     /// Those frames, kept in memory until the sequence is complete (saving each one at once
@@ -653,6 +655,7 @@ impl Browser {
             playlist,
             playlist_ui,
             capture_frame: 0,
+            flat_audit: false,
             probe: std::env::var("AXION_TYPE_PROBE")
                 .ok()
                 .and_then(|v| typing_probe::Spec::parse(&v))
@@ -5482,6 +5485,10 @@ impl Browser {
                     }
                 }
                 "paste" => self.run(Action::Paste),
+                // Capture aid: audits the next frame of a flat-mode window for glass or anything
+                // that imitates it (a glass pass, a rim, a knocked-out or heavy shadow) and logs
+                // every finding ("flat-audit: ...").
+                "flat-audit" => self.flat_audit = true,
                 // Capture aid: logs every text of the visible chrome that does not fit its box
                 // (a translation too long for its layout).
                 "i18n-overflow" => {
@@ -5957,6 +5964,17 @@ impl Browser {
             }
         }
         self.ui.paint(&mut layers);
+        if std::mem::take(&mut self.flat_audit) {
+            if self.config.glass.is_flat() {
+                let found = axion_ui::flat_violations(&layers, s);
+                tracing::info!("flat-audit: {} findings", found.len());
+                for line in found {
+                    tracing::warn!("flat-audit: {line}");
+                }
+            } else {
+                tracing::warn!("flat-audit: the window is not in flat mode (glass.style)");
+            }
+        }
         if tracing::enabled!(tracing::Level::TRACE) {
             let kinds: Vec<String> = layers
                 .iter()
