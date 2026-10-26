@@ -599,7 +599,10 @@ pub fn choose_portal(title: &str, what: Choose) -> zbus::Result<Option<PathBuf>>
         }
         Choose::Image => {
             // (name, [(1 = MIME type, pattern)])
-            let filters = vec![("Images".to_owned(), vec![(1u32, "image/*".to_owned())])];
+            let filters = vec![(
+                "Images and videos".to_owned(),
+                vec![(1u32, "image/*".to_owned()), (1, "video/mp4".to_owned()), (1, "video/webm".to_owned())],
+            )];
             options.insert("filters", Value::from(filters));
         }
     }

@@ -139,6 +139,7 @@ enum Setting {
     HomeSearch,
     HomeTopSites,
     HomeStats,
+    HomeLive,
     HomeDim,
     HomeBlur,
     TintFromPage,
@@ -191,6 +192,7 @@ impl Setting {
             Setting::HomeSearch => "Search field",
             Setting::HomeTopSites => "Top sites",
             Setting::HomeStats => "Shields statistics",
+            Setting::HomeLive => "Live wallpapers (animated images and videos)",
             Setting::HomeDim => "Dim background image",
             Setting::HomeBlur => "Blur background image",
             Setting::TintFromPage => "Colour in tab bar",
@@ -245,6 +247,7 @@ impl Setting {
                 | Setting::HomeSearch
                 | Setting::HomeTopSites
                 | Setting::HomeStats
+                | Setting::HomeLive
                 | Setting::TintFromPage
                 | Setting::FloatSidebar
                 | Setting::AdaptToPage
@@ -350,6 +353,7 @@ impl Setting {
             Setting::HomeSearch => return c.home.show_search as u8 as f32,
             Setting::HomeTopSites => return c.home.show_top_sites as u8 as f32,
             Setting::HomeStats => return c.home.show_stats as u8 as f32,
+            Setting::HomeLive => return c.home.live_wallpapers as u8 as f32,
             Setting::HomeDim => c.home.background_dim,
             Setting::HomeBlur => c.home.background_blur,
             Setting::TintFromPage => return c.appearance.tint_from_page as u8 as f32,
@@ -408,6 +412,7 @@ impl Setting {
             Setting::HomeSearch => c.home.show_search = on,
             Setting::HomeTopSites => c.home.show_top_sites = on,
             Setting::HomeStats => c.home.show_stats = on,
+            Setting::HomeLive => c.home.live_wallpapers = on,
             Setting::HomeDim => c.home.background_dim = (v * 20.0).round() / 20.0,
             Setting::HomeBlur => c.home.background_blur = v.round(),
             Setting::TintFromPage => c.appearance.tint_from_page = on,
@@ -1241,13 +1246,15 @@ impl SettingsSheet {
                     self.control_labeled(ui, config, Setting::HomeDim, "Dim");
                     self.control_labeled(ui, config, Setting::HomeBlur, "Blur");
                 }
+                self.control(ui, config, Setting::HomeLive);
                 let row_node = self.row(ui, "Add from file");
                 self.background_path = Some(text_field(ui, row_node, "~/Pictures/sea.jpg", 220.0, false));
                 pill_button(ui, row_node, "Add", SettingsAction::AddBackgroundPath, false);
                 let note = match &self.background_status {
                     Some(status) => status.clone(),
-                    None => "Added images are copied into your profile. The gear on the start page \
-                             picks them too."
+                    None => "Images, animated images (GIF, WebP) and videos (WebM, MP4) are copied into \
+                             your profile. Videos play muted and loop; MP4 needs H.264 support. The \
+                             gear on the start page picks them too."
                         .to_owned(),
                 };
                 self.note(ui, &note);

@@ -29,7 +29,7 @@ use axion_store::{Store, site_host};
 use serde_json::{Value, json};
 
 pub use backgrounds::{Arrived, Image, Textures};
-use backgrounds::{LEGACY_FILE, Library, Thumbnails, valid_name};
+use backgrounds::{Kind, LEGACY_FILE, Library, Thumbnails, valid_name};
 
 use crate::downloads::{Choose, choose_portal, spawn};
 use crate::settings::{BACKGROUND_SLOTS, BackgroundCard, SEARCH_ENGINES};
@@ -96,8 +96,19 @@ impl InternalPages for HomeService {
                 "application/json",
                 if request.private { served.private_state.as_str() } else { served.state.as_str() },
             ),
+            // The selected background, or (for the first frame of a video that has no
+            // thumbnail yet) a listed one by `name`.
             "/api/background" if !request.private => {
-                let (path, mime) = served.background.as_ref()?;
+                let (path, mime) = match query_value(request.query, "name").filter(|n| valid_name(n)) {
+                    Some(name) => {
+                        let (_, mime) = served.backgrounds.iter().find(|(n, _)| *n == name)?;
+                        (served.backgrounds_dir.join(&name), mime)
+                    }
+                    None => {
+                        let (path, mime) = served.background.as_ref()?;
+                        (path.clone(), mime)
+                    }
+                };
                 InternalResponse::ok(mime, std::fs::read(path).ok()?)
             }
             // A background's thumbnail by its file name (only listed ones), or the image
@@ -107,6 +118,8 @@ impl InternalPages for HomeService {
                 let (_, mime) = served.backgrounds.iter().find(|(n, _)| *n == name)?;
                 match std::fs::read(served.thumbs_dir.join(format!("{name}.png"))) {
                     Ok(bytes) => InternalResponse::ok("image/png", bytes),
+                    // Videos have no picture of their own; the page makes their thumbnail.
+                    Err(_) if mime.starts_with("video/") => return None,
                     Err(_) => {
                         InternalResponse::ok(mime, std::fs::read(served.backgrounds_dir.join(&name)).ok()?)
                     }
@@ -182,6 +195,7 @@ struct Inputs {
     name: String,
     dark: bool,
     accent: Color,
+    reduce_motion: bool,
 }
 
 /// The start page's side in the browser (main thread).
@@ -306,7 +320,8 @@ impl HomePage {
     /// Copies `path` into the backgrounds and selects it. Returns whether the config changed.
     pub fn add_background(&mut self, path: &Path, config: &mut Config) -> bool {
         let max = (config.home.max_backgrounds as usize).min(BACKGROUND_SLOTS);
-        let Some(name) = self.library.add(path, max) else { return false };
+        let max_bytes = u64::from(config.home.max_background_mb) * 1024 * 1024;
+        let Some(name) = self.library.add(path, max, max_bytes) else { return false };
         self.backgrounds_changed();
         config.home.background = name;
         true
@@ -338,7 +353,7 @@ impl HomePage {
     /// Opens the desktop's file chooser for a new background (taken by [`Self::poll_chooser`]).
     pub fn choose_background(&self) {
         let chosen = Arc::clone(&self.chosen);
-        spawn("choose-background", move || match choose_portal("Background Image", Choose::Image) {
+        spawn("choose-background", move || match choose_portal("Background", Choose::Image) {
             Ok(Some(path)) => *chosen.lock().unwrap_or_else(PoisonError::into_inner) = Some(path),
             Ok(None) => {}
             Err(e) => tracing::warn!("file chooser unavailable: {e}"),
@@ -361,6 +376,7 @@ impl HomePage {
             name: account_name.to_owned(),
             dark,
             accent: config.appearance.accent,
+            reduce_motion: config.glass.reduce_motion,
         };
         let interval = Duration::from_secs_f32(config.home.stats_refresh_seconds.max(0.0));
         let stats_due =
@@ -375,7 +391,24 @@ impl HomePage {
             .map_or(0, |d| d.as_secs() as i64);
         let selected = self.selected(config);
         let names: Vec<&str> = self.library.names().collect();
-        let backgrounds = Backgrounds { selected, names: &names };
+        let mimes: Vec<&str> = self.library.entries().iter().map(|(_, m)| m.as_str()).collect();
+        let kinds: Vec<&str> =
+            names.iter().map(|n| self.library.kind(n).map_or("image", Kind::as_str)).collect();
+        let needs_thumb: Vec<&str> = names
+            .iter()
+            .zip(&kinds)
+            .filter(|(n, k)| **k == "video" && !self.library.thumb_path(n).exists())
+            .map(|(n, _)| *n)
+            .collect();
+        let backgrounds = Backgrounds {
+            selected,
+            names: &names,
+            kinds: &kinds,
+            mimes: &mimes,
+            needs_thumb: &needs_thumb,
+            live: config.home.live_wallpapers && !config.glass.reduce_motion,
+            live_setting: config.home.live_wallpapers,
+        };
         let state = state_json(
             self.icons_version,
             config,
@@ -439,6 +472,7 @@ impl HomePage {
                     "search" => home.show_search = on,
                     "topSites" => home.show_top_sites = on,
                     "stats" => home.show_stats = on,
+                    "liveWallpapers" => home.live_wallpapers = on,
                     _ => return HomeAction::Nothing,
                 }
             }
@@ -456,6 +490,16 @@ impl HomePage {
                 if let Some(blur) = message.get("blur").and_then(Value::as_f64) {
                     home.background_blur = (blur as f32).clamp(0.0, 40.0);
                 }
+            }
+            // The first frame of a video the page decoded (a data URL), as its thumbnail.
+            "backgroundThumb" => {
+                let data = text("data");
+                let bytes = data.split_once(";base64,").and_then(|(_, b64)| base64_decode(b64));
+                if bytes.is_some_and(|b| self.library.save_video_thumb(&text("name"), &b)) {
+                    self.thumbs.forget(&text("name"));
+                    self.backgrounds_changed();
+                }
+                return HomeAction::Nothing;
             }
             "chooseBackground" => {
                 self.choose_background();
@@ -502,11 +546,53 @@ struct Backgrounds<'a> {
     /// The selected one, if any (and it exists).
     selected: Option<&'a str>,
     names: &'a [&'a str],
+    /// What each of `names` is (`image`, `animated`, `video`).
+    kinds: &'a [&'a str],
+    /// Their MIME types.
+    mimes: &'a [&'a str],
+    /// Videos without a thumbnail: the page makes one from the first frame.
+    needs_thumb: &'a [&'a str],
+    /// Animated images and videos play (`home.live_wallpapers`, not Reduce Motion).
+    live: bool,
+    /// The `home.live_wallpapers` setting itself (`live` is also off with Reduce Motion).
+    live_setting: bool,
 }
 
 impl Backgrounds<'_> {
     /// Private start pages show none and list none.
-    const PRIVATE: Backgrounds<'static> = Backgrounds { selected: None, names: &[] };
+    const PRIVATE: Backgrounds<'static> = Backgrounds {
+        selected: None,
+        names: &[],
+        kinds: &[],
+        mimes: &[],
+        needs_thumb: &[],
+        live: false,
+        live_setting: false,
+    };
+}
+
+/// Decodes standard base64 (padding optional); `None` for anything else.
+fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for b in text.trim_end_matches('=').bytes() {
+        let v = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        acc = acc << 6 | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
 }
 
 /// `#RRGGBB` for CSS (the accent is opaque).
@@ -674,6 +760,11 @@ fn state_json(
             "show": backgrounds.selected.is_some() && !private,
             "selected": backgrounds.selected.unwrap_or_default(),
             "list": backgrounds.names,
+            "kinds": backgrounds.kinds,
+            "mimes": backgrounds.mimes,
+            "liveSetting": backgrounds.live_setting,
+            "needsThumb": backgrounds.needs_thumb,
+            "live": backgrounds.live,
             "canAdd": backgrounds.names.len() < (home.max_backgrounds as usize).min(BACKGROUND_SLOTS),
             "dim": home.background_dim,
             "blur": home.background_blur,
@@ -692,6 +783,14 @@ mod tests {
         assert!(is_home_url("axion://HOME/?x#y"));
         assert!(!is_home_url("axion://settings/"));
         assert!(!is_home_url("https://home/"));
+    }
+
+    #[test]
+    fn base64() {
+        assert_eq!(base64_decode("aGVsbG8=").as_deref(), Some(&b"hello"[..]));
+        assert_eq!(base64_decode("aGVsbG8").as_deref(), Some(&b"hello"[..]));
+        assert_eq!(base64_decode("").as_deref(), Some(&b""[..]));
+        assert!(base64_decode("a b").is_none());
     }
 
     #[test]
@@ -773,7 +872,15 @@ mod tests {
         let mut config = Config::default();
         config.appearance.accent = Color::rgb(0xE2457A);
         let names = ["bg-1.png"];
-        let backgrounds = Backgrounds { selected: Some("bg-1.png"), names: &names };
+        let backgrounds = Backgrounds {
+            selected: Some("bg-1.png"),
+            names: &names,
+            kinds: &[],
+            mimes: &[],
+            needs_thumb: &[],
+            live: true,
+            live_setting: true,
+        };
         let state = state_json(1, &config, Some(&store), 7, "Ada Lovelace", true, &Backgrounds::PRIVATE, 100);
         assert_eq!(state["topSites"]["sites"].as_array().map(Vec::len), Some(0));
         assert_eq!(state["stats"]["show"], false);

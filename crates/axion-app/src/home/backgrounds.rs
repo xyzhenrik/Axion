@@ -1,6 +1,7 @@
-//! The start page's background images.
+//! The start page's backgrounds: still images, animated images (GIF, WebP, APNG) and videos
+//! (mp4, webm: "live wallpapers").
 //!
-//! Images the user adds are copied into the account's backgrounds directory
+//! Files the user adds are copied into the account's backgrounds directory
 //! (`<profile>/home/backgrounds/`) under new, unique file names that keep the original's
 //! extension; `home.background` names the selected one. Nothing outside that directory is
 //! ever referenced, and only plain files with a safe name (see [`valid_name`]) count.
@@ -19,8 +20,8 @@ pub const DIR: &str = "backgrounds";
 const THUMBS: &str = ".thumbs";
 /// The single image older versions kept (`<profile>/home/background`), migrated once.
 pub const LEGACY_FILE: &str = "background";
-/// Larger images are refused as backgrounds.
-const MAX_BYTES: u64 = 40 * 1024 * 1024;
+/// How much of a file's start [`sniff`] reads.
+const SNIFF_BYTES: usize = 4096;
 /// Thumbnails fit in this many pixels: twice Settings' largest picture of one (its preview,
 /// see `settings::BACKGROUND_PREVIEW`), so they stay sharp on HiDPI screens.
 pub const THUMB_MAX: (u32, u32) = (840, 525);
@@ -42,15 +43,66 @@ pub fn valid_name(name: &str) -> bool {
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
-/// The MIME type of an image file, by its first bytes (`None`: not an image Chromium shows).
-pub fn image_mime(path: &Path) -> Option<String> {
+/// What a background is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Image,
+    /// Animated GIF, WebP or APNG: Chromium plays it by itself in a CSS background.
+    Animated,
+    /// mp4 or webm: played by a muted, looping `<video>` the page makes.
+    Video,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Image => "image",
+            Kind::Animated => "animated",
+            Kind::Video => "video",
+        }
+    }
+}
+
+/// The MIME type and kind of a background file, by its first bytes (`None`: neither an image
+/// Chromium shows nor a video).
+pub fn sniff(path: &Path) -> Option<(String, Kind)> {
     use std::io::Read;
-    let mut head = [0u8; 32];
+    let mut head = [0u8; SNIFF_BYTES];
     let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut head)).ok()?;
-    let format = image::guess_format(&head[..n]).ok()?;
-    use image::ImageFormat as F;
-    matches!(format, F::Png | F::Jpeg | F::Gif | F::WebP | F::Avif | F::Bmp)
-        .then(|| format.to_mime_type().to_owned())
+    let head = &head[..n];
+    if let Ok(format) = image::guess_format(head) {
+        use image::ImageFormat as F;
+        if !matches!(format, F::Png | F::Jpeg | F::Gif | F::WebP | F::Avif | F::Bmp) {
+            return None;
+        }
+        let animated = match format {
+            F::Gif => true,
+            // VP8X header with the animation flag.
+            F::WebP => head.get(12..16) == Some(b"VP8X") && head.get(20).is_some_and(|f| f & 0x02 != 0),
+            // APNG: an `acTL` chunk before the image data.
+            F::Png => head
+                .windows(4)
+                .position(|w| w == b"acTL")
+                .is_some_and(|at| head.windows(4).position(|w| w == b"IDAT").is_none_or(|idat| at < idat)),
+            _ => false,
+        };
+        let kind = if animated { Kind::Animated } else { Kind::Image };
+        return Some((format.to_mime_type().to_owned(), kind));
+    }
+    // EBML header: WebM (and Matroska, which Chromium plays when its codecs are inside).
+    if head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        return Some(("video/webm".to_owned(), Kind::Video));
+    }
+    // ISO base media: `ftyp` box (AVIF was caught above).
+    if head.get(4..8) == Some(b"ftyp") {
+        return Some(("video/mp4".to_owned(), Kind::Video));
+    }
+    None
+}
+
+/// The MIME type of a background file (see [`sniff`]).
+pub fn image_mime(path: &Path) -> Option<String> {
+    sniff(path).map(|(mime, _)| mime)
 }
 
 /// The extension a copy of `source` gets: the original's (lower case) when it is a short
@@ -59,6 +111,8 @@ fn extension_for(source: &Path, mime: &str) -> String {
     let original = source.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
     match original {
         Some(e) if (1..=5).contains(&e.len()) && e.bytes().all(|b| b.is_ascii_alphanumeric()) => e,
+        _ if mime == "video/webm" => "webm".to_owned(),
+        _ if mime == "video/mp4" => "mp4".to_owned(),
         _ => image::ImageFormat::from_mime_type(mime)
             .and_then(|f| f.extensions_str().first().copied())
             .unwrap_or("img")
@@ -71,12 +125,13 @@ pub struct Library {
     dir: PathBuf,
     /// File name and MIME type, oldest first (names start with the time they were added).
     entries: Vec<(String, String)>,
+    kinds: HashMap<String, Kind>,
 }
 
 impl Library {
     /// The library in `<home>/backgrounds` (`home`: `<profile>/home`).
     pub fn new(home: &Path) -> Self {
-        let mut library = Self { dir: home.join(DIR), entries: Vec::new() };
+        let mut library = Self { dir: home.join(DIR), entries: Vec::new(), kinds: HashMap::new() };
         library.scan();
         library
     }
@@ -88,6 +143,7 @@ impl Library {
     /// Reads the directory again: plain image files with a valid name (no links).
     pub fn scan(&mut self) {
         self.entries.clear();
+        self.kinds.clear();
         let Ok(read) = std::fs::read_dir(&self.dir) else { return };
         for entry in read.flatten() {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
@@ -95,7 +151,8 @@ impl Library {
             if !plain || !valid_name(&name) {
                 continue;
             }
-            if let Some(mime) = image_mime(&entry.path()) {
+            if let Some((mime, kind)) = sniff(&entry.path()) {
+                self.kinds.insert(name.clone(), kind);
                 self.entries.push((name, mime));
             }
         }
@@ -108,6 +165,10 @@ impl Library {
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.entries.iter().map(|(n, _)| n.as_str())
+    }
+
+    pub fn kind(&self, name: &str) -> Option<Kind> {
+        self.kinds.get(name).copied()
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -137,11 +198,16 @@ impl Library {
             .unwrap_or_else(|| format!("bg-{millis:013}.{ext}"))
     }
 
-    /// Copies the image at `source` in (at most `max` are kept). Returns its new name.
-    pub fn add(&mut self, source: &Path, max: usize) -> Option<String> {
+    /// Copies the file at `source` in (at most `max` are kept, each at most `max_bytes` big).
+    /// Returns its new name.
+    pub fn add(&mut self, source: &Path, max: usize, max_bytes: u64) -> Option<String> {
         let size = std::fs::metadata(source).map(|m| m.len()).unwrap_or(0);
-        let Some(mime) = image_mime(source).filter(|_| size > 0 && size <= MAX_BYTES) else {
-            tracing::warn!(path = %source.display(), "not a usable background image");
+        if size > max_bytes {
+            tracing::warn!(path = %source.display(), size, max_bytes, "background file too big");
+            return None;
+        }
+        let Some(mime) = image_mime(source).filter(|_| size > 0) else {
+            tracing::warn!(path = %source.display(), "not a usable background image or video");
             return None;
         };
         if self.entries.len() >= max {
@@ -160,6 +226,31 @@ impl Library {
         }
         self.scan();
         Some(name)
+    }
+
+    /// Stores the first frame the start page made of video `name` (any image format) as its
+    /// thumbnail, shrunk to `THUMB_MAX`. Returns whether it was usable.
+    pub fn save_video_thumb(&self, name: &str, bytes: &[u8]) -> bool {
+        if self.kind(name) != Some(Kind::Video) {
+            return false;
+        }
+        let Ok(image) = image::load_from_memory(bytes) else { return false };
+        let image = if image.width() <= THUMB_MAX.0 && image.height() <= THUMB_MAX.1 {
+            image
+        } else {
+            image.thumbnail(THUMB_MAX.0, THUMB_MAX.1)
+        };
+        let cache = self.thumb_path(name);
+        let saved =
+            std::fs::create_dir_all(self.thumbs_dir()).map_err(image::ImageError::IoError).and_then(|()| {
+                let tmp = cache.with_extension("tmp");
+                image.to_rgba8().save_with_format(&tmp, image::ImageFormat::Png)?;
+                std::fs::rename(&tmp, &cache).map_err(image::ImageError::IoError)
+            });
+        if let Err(e) = &saved {
+            tracing::debug!("saving a video thumbnail failed: {e}");
+        }
+        saved.is_ok()
     }
 
     /// Deletes a background's copy and thumbnail. Returns whether it was there.
@@ -232,7 +323,7 @@ fn thumbnail(source: &Path, cache: &Path) -> Option<RgbaImage> {
         Ok(reader) => match reader.decode() {
             Ok(image) => image,
             Err(e) => {
-                // Formats Chromium shows but we can't decode (WebP, GIF, AVIF): no thumbnail.
+                // Formats Chromium shows but we can't decode (AVIF, videos): no thumbnail.
                 tracing::debug!(path = %source.display(), "no thumbnail: {e}");
                 return None;
             }
@@ -355,6 +446,11 @@ impl Thumbnails {
         }
     }
 
+    /// Drops what is known about `name`'s thumbnail, so the next [`Self::request`] loads it again.
+    pub fn forget(&mut self, name: &str) {
+        self.textures.remove(name);
+    }
+
     pub fn set_gpu(&mut self, gpu: Textures) {
         self.gpu = Some(gpu);
     }
@@ -468,6 +564,42 @@ mod tests {
         assert!(!valid_name(&"a".repeat(80)));
     }
 
+    const MAX: u64 = 1024 * 1024;
+
+    #[test]
+    fn kinds_and_limits() {
+        let tmp = std::env::temp_dir().join(format!("axion-bg-kinds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let write = |name: &str, bytes: &[u8]| {
+            let path = tmp.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let gif = write("a.gif", b"GIF89a\x01\x00\x01\x00\x00\x00\x00;");
+        assert_eq!(sniff(&gif), Some(("image/gif".to_owned(), Kind::Animated)));
+        let webm = write("a.webm", &[0x1A, 0x45, 0xDF, 0xA3, 0x80, 0, 0, 0]);
+        assert_eq!(sniff(&webm), Some(("video/webm".to_owned(), Kind::Video)));
+        let mp4 = write("a.mp4", b"\0\0\0\x18ftypisom\0\0\x02\0isomiso2");
+        assert_eq!(sniff(&mp4), Some(("video/mp4".to_owned(), Kind::Video)));
+        let still = tmp.join("s.png");
+        png(&still, 4, 4);
+        assert_eq!(sniff(&still), Some(("image/png".to_owned(), Kind::Image)));
+        let mut library = Library::new(&tmp.join("home"));
+        assert!(library.add(&mp4, 9, 8).is_none(), "the size limit holds");
+        let name = library.add(&mp4, 9, MAX).unwrap();
+        assert!(name.ends_with(".mp4"));
+        assert_eq!(library.kind(&name), Some(Kind::Video));
+        // A first frame from the page becomes the PNG thumbnail; stills can't take one.
+        let frame = std::fs::read(&still).unwrap();
+        assert!(library.save_video_thumb(&name, &frame));
+        assert!(library.thumb_path(&name).exists());
+        assert!(!library.save_video_thumb(&name, b"junk"));
+        let still_name = library.add(&still, 9, MAX).unwrap();
+        assert!(!library.save_video_thumb(&still_name, &frame));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     fn png(path: &Path, w: u32, h: u32) {
         RgbaImage::from_pixel(w, h, image::Rgba([200, 40, 40, 255]))
             .save_with_format(path, image::ImageFormat::Png)
@@ -483,14 +615,14 @@ mod tests {
         png(&source, 64, 40);
         let mut library = Library::new(&tmp.join("home"));
         assert_eq!(library.entries().len(), 0);
-        let a = library.add(&source, 2).unwrap();
+        let a = library.add(&source, 2, MAX).unwrap();
         assert!(a.ends_with(".png") && valid_name(&a));
-        let b = library.add(&source, 2).unwrap();
+        let b = library.add(&source, 2, MAX).unwrap();
         assert_ne!(a, b);
-        assert!(library.add(&source, 2).is_none(), "the limit holds");
-        assert!(library.add(&tmp.join("missing.png"), 9).is_none());
+        assert!(library.add(&source, 2, MAX).is_none(), "the limit holds");
+        assert!(library.add(&tmp.join("missing.png"), 9, MAX).is_none());
         std::fs::write(tmp.join("text.png"), b"not an image").unwrap();
-        assert!(library.add(&tmp.join("text.png"), 9).is_none());
+        assert!(library.add(&tmp.join("text.png"), 9, MAX).is_none());
         assert_eq!(library.file(&a).map(|(_, m)| m).as_deref(), Some("image/png"));
         // The source stays where it was; the copy is inside the directory.
         assert!(source.exists());

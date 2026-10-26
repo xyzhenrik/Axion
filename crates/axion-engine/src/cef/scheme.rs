@@ -166,7 +166,7 @@ wrap_resource_handler! {
                 // Only the page's own files; images also from data: URLs.
                 response.set_header_by_name(
                     Some(&"Content-Security-Policy".into()),
-                    Some(&"default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'".into()),
+                    Some(&"default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'".into()),
                     1,
                 );
             }
