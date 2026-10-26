@@ -1215,6 +1215,23 @@ impl Chrome {
         }
     }
 
+    /// A floating sidebar lies over the bars (in small windows it covers the toolbar's left
+    /// end, which must not draw over it); a docked one sits beside them, under their popovers.
+    fn stack_sidebar(&self, ui: &mut Ui) {
+        let Some(root) = ui.parent(self.sidebar) else { return };
+        let mut order: Vec<NodeId> = ui.children(root).into_iter().filter(|&n| n != self.sidebar).collect();
+        let bars = [self.bar, self.tab_strip, self.bookmarks.bar];
+        let at = if self.docked {
+            order.iter().position(|n| bars.contains(n)).unwrap_or(0)
+        } else {
+            order.iter().rposition(|n| bars.contains(n)).map_or(order.len(), |i| i + 1)
+        };
+        order.insert(at, self.sidebar);
+        if order != ui.children(root) {
+            ui.set_children(root, &order);
+        }
+    }
+
     /// How much of a docked sidebar is in view right now (logical px; follows its slide).
     fn docked_sidebar_width(&self, config: &Config) -> f32 {
         if !self.docked || self.page_fullscreen {
@@ -1615,6 +1632,7 @@ impl Chrome {
             Mode::Narrow
         };
         self.docked = self.sidebar_docked(config);
+        self.stack_sidebar(ui);
         let show_sidebar = self.sidebar_open() && !self.is_fullscreen();
         let m = l.margin;
 
