@@ -641,6 +641,9 @@ impl Engine for CefEngine {
         let geometry = &state.ctx.geometry;
         let scale_changed = geometry.scale.get() != size.scale;
         tracing::trace!(?view, from = ?geometry.logical.get(), to = ?size.logical, "resize view");
+        if geometry.logical.get() != size.logical || scale_changed {
+            state.ctx.frames.resized();
+        }
         geometry.logical.set(size.logical);
         geometry.scale.set(size.scale);
         if let Some(host) = self.host(view) {

@@ -135,6 +135,8 @@ const CLEAR_HISTORY_CONFIRM: &str = "Click Again to Clear";
 const ZOOM_BASE: f64 = 1.2;
 /// Pixels per wheel notch.
 const LINE_SCROLL: f32 = 100.0;
+/// Opacity below which the page's frame from before a sidebar slide is gone (see `slide_fade`).
+const SLIDE_FADE_DONE: f32 = 0.01;
 /// Pages' frame rate when the display's refresh rate is unknown.
 const FALLBACK_FRAME_RATE: u32 = 60;
 /// The chrome turns dark on pages whose colour is darker than this.
@@ -305,10 +307,13 @@ pub struct Browser {
     /// Capture aid "wheel:N": the page gets a wheel event at its centre every frame for N
     /// frames, down then back up (frames left), to measure scrolling (input → page frame).
     wheel_frames: u32,
-    /// While the sidebar slides: the page's size before the slide began, and the size the
-    /// shown view was given for it (see `redraw_frame`).
-    slide_page_size: Option<Vec2>,
+    /// While the sidebar slides: the size the shown view was given for it (its size once the
+    /// slide settles), and a copy of its frame from before the slide (see `redraw_frame`).
     slide_view_size: Option<(ViewId, Vec2)>,
+    slide_snapshot: Option<wgpu::Texture>,
+    /// Once the page's frame at its new size took over from its wider frame from before an
+    /// opening slide: that old layout, fading out over the new one.
+    slide_fade: Option<(wgpu::Texture, axion_physics::Animated<f32>)>,
 }
 
 impl Browser {
@@ -553,8 +558,9 @@ impl Browser {
             capture: options.capture.clone().map(|path| (path, Instant::now() + options.capture_after)),
             sweep: None,
             wheel_frames: 0,
-            slide_page_size: None,
             slide_view_size: None,
+            slide_snapshot: None,
+            slide_fade: None,
             sheet_origin: None,
             engine_icons: None,
             menu_click_frame: None,
@@ -4231,32 +4237,49 @@ impl Browser {
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
         self.ui.animate(dt);
-        let before_slide = self.page_rect().size;
         let was_sliding = self.chrome.is_sliding();
         self.chrome.animate_all(&mut self.ui, dt);
         if was_sliding {
             // The page's rectangle and the toolbar follow the sidebar frame by frame, but the
-            // page itself is resized at most once while it slides: to the larger of its size
-            // before and after, so its frame always covers the rectangle (drawn cropped, never
-            // stretched or with a gap). Resizing Chromium every frame made it re-render at each
-            // size, and every new size started with an empty frame. The final size, and the
-            // other tabs, follow once the slide has settled.
+            // page itself is resized once, as the slide starts, to its size once it settles:
+            // resizing Chromium every frame made it re-render at each size, every new size
+            // starting with an empty frame. While the sidebar moves, the page is drawn from the
+            // rectangle's right edge, which stays put, so its content stands still and the
+            // sidebar slides over it or away from it (see `slide_page_frame`). The other tabs
+            // follow once the slide has settled.
             let size = self.logical_size();
             self.chrome.apply_layout(&mut self.ui, &self.config, size);
             if self.chrome.is_sliding() {
-                let start = *self.slide_page_size.get_or_insert(before_slide);
                 let end = self.chrome.settled_page_rect(&self.config, size).size;
-                let during = start.max(end);
                 if let Some(view) = self.active_view()
-                    && self.slide_view_size != Some((view, during))
+                    && self.slide_view_size != Some((view, end))
                 {
-                    self.slide_view_size = Some((view, during));
-                    self.engine.resize(view, ViewSize { logical: during, scale: self.scale() });
+                    if self.slide_view_size.is_none_or(|(v, _)| v != view) {
+                        self.slide_snapshot = self.engine.frame(view).map(|f| self.copy_texture(&f.texture));
+                        self.slide_fade = None;
+                    }
+                    self.slide_view_size = Some((view, end));
+                    self.engine.resize(view, ViewSize { logical: end, scale: self.scale() });
+                }
+                // The page's frame at its new size covers the rectangle now: it takes over.
+                let (scale, rect) = (self.scale(), self.page_rect().size.x);
+                let covered = self.active_view().and_then(|v| self.engine.frame(v)).is_some_and(|f| {
+                    let width = f.texture.width() as f32;
+                    (width - (end.x * scale).round()).abs() <= 1.0 && width + 0.5 >= rect * scale
+                });
+                if covered {
+                    self.fade_out_slide_snapshot();
                 }
             } else {
-                self.slide_page_size = None;
+                self.fade_out_slide_snapshot();
                 self.slide_view_size = None;
                 self.update_layout();
+            }
+        }
+        if let Some((_, fade)) = &mut self.slide_fade {
+            fade.step(dt);
+            if fade.value <= SLIDE_FADE_DONE {
+                self.slide_fade = None;
             }
         }
         self.menu.track_hover(&mut self.ui, &self.config);
@@ -4323,6 +4346,10 @@ impl Browser {
         // Locked private pages aren't drawn at all (the lock screen covers their place).
         let frame = self.active_view().filter(|_| !self.is_locked()).and_then(|v| self.engine.frame(v));
         let page_view = frame.as_ref().map(|f| f.texture.create_view(&Default::default()));
+        let slide_frame = frame.as_ref().and_then(|f| self.slide_page_frame(&f.texture));
+        let slide_view = slide_frame.as_ref().map(|t| t.create_view(&Default::default()));
+        let fade = self.slide_fade.as_ref().filter(|_| frame.is_some()).map(|(t, a)| (t.clone(), a.value));
+        let fade_view = fade.as_ref().map(|(t, _)| t.create_view(&Default::default()));
         let s = self.scale();
         let page = self.page_rect();
         let tint_dt = self.last_tint_step.elapsed().as_secs_f32();
@@ -4334,7 +4361,15 @@ impl Browser {
         let mut layers = Vec::new();
         // The page ends where its rectangle ends (below the bar, beside a docked sidebar), with
         // rounded corners; square in page fullscreen (video).
-        if let (Some(view), Some(frame)) = (&page_view, &frame) {
+        if let (Some(texture), Some(view)) = (&slide_frame, &slide_view) {
+            push_slide_page(
+                &mut layers,
+                view,
+                texture,
+                page_px,
+                self.chrome.page_corner_radius(&self.config) * s,
+            );
+        } else if let (Some(view), Some(frame)) = (&page_view, &frame) {
             // Drawn at its own pixel size from the page's top-left, never stretched: while the
             // page is resized (sidebar sliding) Chromium's frames lag a little, and stretching
             // the older size into the new rectangle made the page wobble and flicker.
@@ -4372,6 +4407,21 @@ impl Browser {
             page.uv = Rect { origin: Vec2::ZERO, size: shown * texel };
             page.radius = radius;
             layers.push(Layer::Image(page));
+        }
+        if let (Some((texture, opacity)), Some(view)) = (&fade, &fade_view) {
+            let first = layers.len();
+            push_slide_page(
+                &mut layers,
+                view,
+                texture,
+                page_px,
+                self.chrome.page_corner_radius(&self.config) * s,
+            );
+            for layer in &mut layers[first..] {
+                if let Layer::Image(image) = layer {
+                    image.opacity = opacity.clamp(0.0, 1.0);
+                }
+            }
         }
         self.ui.paint(&mut layers);
         if tracing::enabled!(tracing::Level::TRACE) {
@@ -4520,6 +4570,55 @@ impl Browser {
     /// Pages render at the refresh rate of the window's monitor (or the configured rate).
     fn sync_frame_rate(&mut self) {
         self.engine.set_frame_rate(page_frame_rate(&self.config, &self.window));
+    }
+
+    /// While the sidebar slides: the frame to show for the page, drawn from the page
+    /// rectangle's right edge (see `push_slide_page`). The page's current frame, unless it is
+    /// narrower than the rectangle and the frame from before the slide isn't (the sidebar is
+    /// opening: the page keeps its wider layout under the sidebar until the slide settles).
+    /// `None` when not sliding.
+    fn slide_page_frame(&self, current: &wgpu::Texture) -> Option<wgpu::Texture> {
+        self.slide_view_size?;
+        let width = self.page_rect().size.x * self.scale();
+        let covers = |t: &wgpu::Texture| t.width() as f32 + 0.5 >= width;
+        match &self.slide_snapshot {
+            Some(snapshot) if !covers(current) && covers(snapshot) => Some(snapshot.clone()),
+            _ => Some(current.clone()),
+        }
+    }
+
+    /// The page's frame at its new size took over from the one before the slide. If the page
+    /// kept that older, wider layout under the opening sidebar, it fades into the new one
+    /// instead of jumping. (A closing sidebar uncovers the page's new, wider frame as soon as it
+    /// comes, a frame or two into the slide: a fade there would only ghost the moving page.)
+    fn fade_out_slide_snapshot(&mut self) {
+        let width = self.page_rect().size.x * self.scale();
+        if let Some(snapshot) = self.slide_snapshot.take().filter(|t| t.width() as f32 > width + 0.5) {
+            let mut fade = axion_physics::Animated::new(
+                1.0,
+                crate::drip::spring(&self.config, self.config.motion.snappy),
+            );
+            fade.target = 0.0;
+            self.slide_fade = Some((snapshot, fade));
+        }
+    }
+
+    /// A copy of a page frame (Chromium reuses the textures of its later frames).
+    fn copy_texture(&self, texture: &wgpu::Texture) -> wgpu::Texture {
+        let copy = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("page before the slide"),
+            size: texture.size(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: texture.format(),
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_texture(texture.as_image_copy(), copy.as_image_copy(), texture.size());
+        self.queue.submit([encoder.finish()]);
+        copy
     }
 
     /// When the event loop should wake up next at the latest (the engine's next pump).
@@ -4676,6 +4775,37 @@ fn zoom_label(zoom: f64) -> String {
 
 fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Draws a page frame while the sidebar slides: at its own pixel size, its right edge on the
+/// page rectangle's (which stays put while the left edge follows the sidebar), cropped to the
+/// rectangle. A frame narrower than the rectangle (the sidebar is closing and the wider frame
+/// hasn't come yet, a frame or two) has its left column stretched over the rest.
+fn push_slide_page<'a>(
+    layers: &mut Vec<Layer<'a>>,
+    view: &'a wgpu::TextureView,
+    texture: &wgpu::Texture,
+    page: Rect,
+    radius: f32,
+) {
+    let tex = Vec2::new(texture.width() as f32, texture.height() as f32);
+    let texel = Vec2::ONE / tex.max(Vec2::ONE);
+    let shown = page.size.min(tex);
+    let right = page.origin.x + page.size.x;
+    // The leftmost part of the frame that is shown.
+    let skip = tex.x - shown.x;
+    if shown.x < page.size.x {
+        let mut edge =
+            ImageDraw::new(view, Rect { origin: page.origin, size: Vec2::new(page.size.x, shown.y) });
+        edge.uv = Rect { origin: Vec2::ZERO, size: Vec2::new(texel.x, shown.y * texel.y) };
+        edge.radius = radius;
+        layers.push(Layer::Image(edge));
+    }
+    let mut image =
+        ImageDraw::new(view, Rect { origin: Vec2::new(right - shown.x, page.origin.y), size: shown });
+    image.uv = Rect { origin: Vec2::new(skip * texel.x, 0.0), size: shown * texel };
+    image.radius = radius;
+    layers.push(Layer::Image(image));
 }
 
 /// Frames per second pages render at: `tabs.max_frame_rate`, or the window's monitor's

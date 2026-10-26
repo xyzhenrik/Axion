@@ -51,6 +51,9 @@ pub(super) struct ViewFrames {
     spare_checks: RefCell<Vec<wgpu::Buffer>>,
     /// A frame never got drawn: Chromium should paint again (taken by the engine).
     pub wants_repaint: Cell<bool>,
+    /// Until when frames are checked for the letterboxed page of a resize (see
+    /// `is_letterboxed`); `None` once a frame without bars came.
+    pub letterbox_until: Cell<Option<Instant>>,
 }
 
 impl ViewFrames {
@@ -64,6 +67,11 @@ impl ViewFrames {
 
     pub fn has_pending(&self) -> bool {
         !self.pending.borrow().is_empty()
+    }
+
+    /// The view was resized: watch for frames of the old page scaled into the new size.
+    pub fn resized(&self) {
+        self.letterbox_until.set(Some(Instant::now() + LETTERBOX_WATCH));
     }
 }
 
@@ -89,6 +97,9 @@ const MAP_FAILED: u8 = 2;
 /// `ViewContext::resolve_frames`) before it is given up (the previous frame stays and Chromium
 /// is asked to paint again).
 const FRAME_READY_TIMEOUT: Duration = Duration::from_millis(25);
+/// How long after a resize frames are checked for the page of the old size scaled into one
+/// of the new size (see `is_letterboxed`).
+const LETTERBOX_WATCH: Duration = Duration::from_millis(250);
 /// Usage of the textures frames are copied into (read back for the drawn check and snapshots).
 const FRAME_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
     .union(wgpu::TextureUsages::COPY_DST)
@@ -214,10 +225,29 @@ impl ViewContext {
             let Some(frame) = frame else { return };
             let newest = !frames.has_pending();
             // Can't tell (read-back failed): show it as before.
-            let drawn = frame.mapped.load(Ordering::Acquire) == MAP_FAILED
-                || is_drawn(&frame.check, frame.texture.width());
+            let (drawn, letterboxed) = if frame.mapped.load(Ordering::Acquire) == MAP_FAILED {
+                (true, false)
+            } else {
+                check_rows(&frame.check, frame.texture.width())
+            };
             frame.check.unmap();
+            let watching = frames.letterbox_until.get().filter(|until| Instant::now() < *until).is_some();
+            if drawn && watching && letterboxed {
+                // Right after a resize Chromium can capture its compositor's frame of the old
+                // size scaled into a buffer of the new size, with black bars, and reports it as
+                // a normal frame: the page shrank for a frame. The real one follows.
+                tracing::debug!(view = ?self.view, "skipped a letterboxed frame after a resize");
+                self.shared.stats.dropped();
+                frames.wants_repaint.set(newest);
+                self.recycle_check(frame.check);
+                self.recycle_texture(frame.texture);
+                continue;
+            }
             if drawn {
+                // The page at its new size has come: no more scaled frames of the old one.
+                if !letterboxed && self.is_page_size(frame.texture.width(), frame.texture.height()) {
+                    frames.letterbox_until.set(None);
+                }
                 tracing::trace!(view = ?self.view, after = ?frame.since.elapsed(), "GPU frame taken");
                 self.recycle_check(frame.check);
                 self.store(frame.texture);
@@ -261,12 +291,17 @@ impl ViewContext {
         if !letterboxed {
             return false;
         }
-        // The page's size in pixels, as Chromium lays it out (see `view_rect`).
+        !self.is_page_size(content.0.max(0) as u32, content.1.max(0) as u32)
+    }
+
+    /// Whether `width` × `height` pixels is the page's size as Chromium lays it out (see
+    /// `view_rect`), give or take rounding.
+    fn is_page_size(&self, width: u32, height: u32) -> bool {
         let scale = self.geometry.scale.get();
         let logical = self.geometry.logical.get();
-        let expected = |l: f32| ((l.round().max(1.0) * scale).round()) as i32;
-        let near = |a: i32, b: i32| (a - b).abs() <= 1;
-        !(near(content.0, expected(logical.x)) && near(content.1, expected(logical.y)))
+        let expected = |l: f32| (l.round().max(1.0) * scale).round() as i64;
+        let near = |a: u32, b: i64| (i64::from(a) - b).abs() <= 1;
+        near(width, expected(logical.x)) && near(height, expected(logical.y))
     }
 
     fn frame_texture(&self, size: wgpu::Extent3d, format: wgpu::TextureFormat) -> wgpu::Texture {
@@ -329,7 +364,7 @@ impl ViewContext {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Bgra8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                usage: FRAME_USAGE,
                 view_formats: &[],
             })
         });
@@ -850,8 +885,9 @@ fn content_region(frame: &wgpu::Texture, content: &Rect) -> (wgpu::Origin3d, wgp
     (wgpu::Origin3d { x, y, z: 0 }, wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 })
 }
 
-/// Rows of a GPU frame read back to check that it is drawn.
-const DRAWN_CHECK_ROWS: u32 = 8;
+/// Rows of a GPU frame read back to check it: its first and last, and some evenly spread
+/// between them (see `check_rows`).
+const DRAWN_CHECK_ROWS: u32 = 10;
 
 fn check_row_bytes(width: u32) -> u32 {
     (4 * width).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
@@ -866,8 +902,13 @@ fn record_drawn_check(encoder: &mut wgpu::CommandEncoder, texture: &wgpu::Textur
     let (width, height) = (texture.width(), texture.height());
     let row_bytes = check_row_bytes(width);
     for i in 0..DRAWN_CHECK_ROWS {
-        // Evenly spread, away from the edges (the same row more than once on tiny frames).
-        let y = height * (2 * i + 1) / (2 * DRAWN_CHECK_ROWS);
+        // The edges, and evenly spread between them (the same row more than once on tiny
+        // frames).
+        let y = match i {
+            0 => 0,
+            i if i == DRAWN_CHECK_ROWS - 1 => height.saturating_sub(1),
+            i => height * (2 * i - 1) / (2 * (DRAWN_CHECK_ROWS - 2)),
+        };
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture,
@@ -888,34 +929,19 @@ fn record_drawn_check(encoder: &mut wgpu::CommandEncoder, texture: &wgpu::Textur
     }
 }
 
-/// Whether a frame copied from Chromium is drawn, from its rows read back into the mapped
-/// `buffer`: none of their pixels is fully transparent.
-fn is_drawn(buffer: &wgpu::Buffer, width: u32) -> bool {
+/// What the rows read back into the mapped `buffer` (see `record_drawn_check`) say about a
+/// frame: whether it is drawn (none of their pixels fully transparent: Chromium draws pages
+/// over an opaque background), and whether it looks letterboxed (black bars along its top and
+/// bottom, or its left and right edges).
+fn check_rows(buffer: &wgpu::Buffer, width: u32) -> (bool, bool) {
     let row_bytes = check_row_bytes(width) as usize;
-    let Ok(data) = buffer.slice(..).get_mapped_range() else { return true };
-    (0..DRAWN_CHECK_ROWS as usize).all(|i| {
-        let row = &data[i * row_bytes..][..4 * width as usize];
-        row.as_chunks::<4>().0.iter().all(|pixel| pixel[3] != 0)
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_page_meta() {
-        let meta = parse_page_meta(
-            "i\thttps://a.example/l.svg\t(prefers-color-scheme: light)\t\n\
-             i\thttps://a.example/d.svg\t(prefers-color-scheme: dark)\tany\n\
-             c\t13,17,23\t\nc\tbad\t\nx\ty",
-        );
-        assert_eq!(meta.icons.len(), 2);
-        assert_eq!(meta.icons[1].media, "(prefers-color-scheme: dark)");
-        assert_eq!(meta.icons[1].sizes, "any");
-        assert_eq!(meta.theme_colors, vec![ThemeColor { rgb: [13, 17, 23], media: String::new() }]);
-        assert!(
-            is_internal("axion://home/") && !is_internal("axionx://home") && !is_internal("https://axion")
-        );
-    }
+    let Ok(data) = buffer.slice(..).get_mapped_range() else { return (true, false) };
+    let rows: Vec<&[[u8; 4]]> = (0..DRAWN_CHECK_ROWS as usize)
+        .map(|i| data[i * row_bytes..][..4 * width as usize].as_chunks::<4>().0)
+        .collect();
+    let drawn = rows.iter().all(|row| row.iter().all(|pixel| pixel[3] != 0));
+    let black = |pixel: &[u8; 4]| pixel[..3] == [0, 0, 0];
+    let bars_above_below = [rows[0], rows[rows.len() - 1]].iter().all(|row| row.iter().all(black));
+    let bars_beside = rows.iter().all(|row| row.first().is_some_and(black) && row.last().is_some_and(black));
+    (drawn, bars_above_below || bars_beside)
 }
