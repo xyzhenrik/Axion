@@ -70,7 +70,7 @@ use crate::toast::Toast;
 use crate::tooltip::Tooltip;
 use crate::typing_probe;
 use crate::update::{InstallMode, Notice, Phase, Updater};
-use crate::update_alert::{AlertAction, UpdateAlert};
+use crate::update_alert::{AlertAction, AlertView, Tone, UpdateAlert};
 use crate::url::display_host;
 use crate::url::resolve_input;
 
@@ -197,8 +197,6 @@ const SLIDE_FADE_DONE: f32 = 0.01;
 const FALLBACK_FRAME_RATE: u32 = 60;
 /// The chrome turns dark on pages whose colour is darker than this.
 const DARK_BELOW: f32 = 0.5;
-/// PCI vendor id of NVIDIA, the one driver where zero-copy frame import is verified.
-const NVIDIA_VENDOR_ID: u32 = 0x10DE;
 
 pub struct Options {
     /// Tabs to open; the first one is active. Empty opens the homepage.
@@ -247,6 +245,10 @@ pub struct Browser {
     toast: Toast,
     updater: Updater,
     update_alert: UpdateAlert,
+    /// The graphics settings' confirmation (shared GPU memory on AMD) is showing in the alert.
+    gpu_confirm: bool,
+    /// What the GPU session actually uses (Settings › Hardware, diagnostics).
+    hardware_status: crate::hardware::Status,
     /// When the first automatic update check runs (a moment after start; none when not due).
     update_check_at: Option<Instant>,
     /// Where the install stood when the About page was last drawn.
@@ -470,7 +472,10 @@ impl Browser {
             Some((x, y)) => window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y)),
             None => place_on_monitor(event_loop, &window),
         }
-        let (instance, surface, adapter, device, queue) = crate::gpu::init(event_loop, &window)?;
+        let hardware_env = crate::hardware::Overrides::from_env();
+        let adapter_choice = crate::hardware::adapter_choice(&config.hardware, &hardware_env);
+        let (instance, surface, adapter, device, queue) =
+            crate::gpu::init(event_loop, &window, &adapter_choice)?;
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
         // Pages arrive as 8-bit sRGB-encoded BGRA and the compositor blends in that space, so
@@ -490,16 +495,30 @@ impl Browser {
         surface.configure(&device, &surface_config);
 
         let info = adapter.get_info();
-        let accelerated = adapter.features().contains(axion_engine::cef::required_features())
-            && match std::env::var("AXION_OSR").as_deref() {
-                Ok("software") => false,
-                Ok("gpu") => true,
-                // Zero-copy import is only verified on NVIDIA's driver so far. On RADV (AMD) it
-                // currently triggers a GPU memory fault and context loss, so other drivers use
-                // software paint until that is understood (see plan.md, Phase 0 follow-ups).
-                // Under X11/XWayland Chromium has no GBM device for shared buffers at all.
-                _ => info.vendor == NVIDIA_VENDOR_ID && std::env::var_os("WAYLAND_DISPLAY").is_some(),
-            };
+        let can_import = adapter.features().contains(axion_engine::cef::required_features());
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        // Zero-copy import is only verified on NVIDIA's driver so far. On RADV (AMD) it
+        // currently triggers a GPU memory fault and context loss, so other drivers use
+        // software paint until that is understood (see plan.md, Phase 0 follow-ups).
+        // Under X11/XWayland Chromium has no GBM device for shared buffers at all.
+        // `hardware::frame_mode` holds the rule (and the setting and AXION_OSR on top).
+        let (frame_mode, frames_source) = crate::hardware::frame_mode(
+            &config.hardware,
+            &hardware_env,
+            crate::hardware::Session { vendor: info.vendor, wayland, can_import },
+        );
+        let accelerated = frame_mode == crate::hardware::FrameMode::Gpu;
+        let hardware_status = crate::hardware::Status {
+            adapters: crate::gpu::adapters(&instance),
+            in_use: crate::hardware::AdapterLine::of(&info),
+            frames: frame_mode,
+            frames_source,
+            video_decoding: crate::hardware::video_decoding(&config),
+            cef_version: axion_engine::cef::cef_version(),
+            wayland,
+            env: hardware_env,
+            startup: crate::hardware::Startup::of(&config),
+        };
         if !accelerated {
             tracing::info!(driver = %info.driver, "using software paint for pages (set AXION_OSR=gpu to force GPU sharing)");
         }
@@ -517,7 +536,9 @@ impl Browser {
             CefOptions {
                 profile_dir: profile.clone(),
                 accelerated,
-                render_node: if std::env::var_os("AXION_NO_RENDER_NODE").is_some() {
+                render_node: if std::env::var_os("AXION_NO_RENDER_NODE").is_some()
+                    || !crate::hardware::pin_render_node(&config.hardware)
+                {
                     None
                 } else {
                     axion_engine::cef::render_node_for(info.vendor, info.device)
@@ -532,7 +553,8 @@ impl Browser {
                         .max(0.0)
                         / 1000.0,
                 ),
-                hardware_video_decoding: config.media.hardware_decoding,
+                hardware_video_decoding: crate::hardware::video_decoding(&config),
+                extra_switches: crate::hardware::chromium_switches(&config.hardware),
                 waker: options.waker.clone(),
             },
         )?;
@@ -561,7 +583,8 @@ impl Browser {
         let toast = Toast::build(&mut ui, chrome.bar_node());
         let find = FindBar::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
-        let settings = SettingsSheet::build(&mut ui);
+        let mut settings = SettingsSheet::build(&mut ui);
+        settings.set_hardware(hardware_status.clone());
         // The vault's second key factor: this device's key (TPM-sealed or a private file in
         // the user's data directory, never in the profile).
         let device_key: std::sync::Arc<dyn axion_vault::DeviceKey> =
@@ -639,6 +662,8 @@ impl Browser {
             toast,
             updater: Updater::new(),
             update_alert,
+            gpu_confirm: false,
+            hardware_status,
             update_check_at,
             update_phase: Phase::Idle,
             about_icon: None,
@@ -3793,6 +3818,9 @@ impl Browser {
             Outcome::InstallUpdate => self.request_update_install(),
             Outcome::OpenReleasePage => self.open_release_page(),
             Outcome::RelaunchNow => self.relaunch_for_update(),
+            Outcome::CopyDiagnostics => self.copy_gpu_diagnostics(),
+            Outcome::RestartAxion => self.restart_to_apply_settings(),
+            Outcome::ConfirmGpuFrames => self.confirm_gpu_frames(),
             Outcome::SkipUpdate => {
                 if let Some(release) = self.updater.available() {
                     axion_update::skip(&mut self.config.updates, &release.version);
@@ -4174,7 +4202,65 @@ impl Browser {
         }
     }
 
+    /// Settings › Hardware: copies the GPU summary (adapter, driver, frame mode, VA-API, CEF).
+    fn copy_gpu_diagnostics(&mut self) {
+        let text = self.hardware_status.diagnostics();
+        let Some(clipboard) = &mut self.clipboard else { return };
+        if clipboard.set_text(text).is_ok() {
+            self.show_toast(Icon::Check, tr("Diagnostics copied"));
+        }
+    }
+
+    /// Writes the settings now and starts Axion again (the Hardware settings are read at start).
+    fn restart_to_apply_settings(&mut self) {
+        self.config_dirty_since = None;
+        match axion_config::save_config(&self.paths, &self.config) {
+            Ok(()) => self.last_saved_config = std::fs::read_to_string(&self.paths.config).ok(),
+            Err(e) => {
+                tracing::error!("saving settings failed: {e}");
+                return;
+            }
+        }
+        let account = self.account_id.clone();
+        self.relaunch_into(&account);
+    }
+
+    /// "Shared GPU memory" on AMD graphics asks first: it has crashed the driver there.
+    fn confirm_gpu_frames(&mut self) {
+        self.gpu_confirm = true;
+        self.update_alert.show(
+            &mut self.ui,
+            &self.config,
+            AlertView {
+                icon: Some(Icon::Info),
+                title: tr("Use shared GPU memory on AMD graphics?").to_owned(),
+                lines: vec![
+                    tr("On AMD graphics (RADV) this can crash the graphics driver and freeze the screen \
+                        until it recovers. Pages may also turn black.")
+                    .to_owned(),
+                    tr("Only continue if you know that it works on this computer. It applies after \
+                        restarting Axion.")
+                    .to_owned(),
+                ],
+                primary: Some((tr("Use Anyway").to_owned(), Tone::Plain)),
+                secondary: Some(tr("Cancel").to_owned()),
+                dismissable: true,
+                ..Default::default()
+            },
+        );
+    }
+
     fn update_alert_action(&mut self, action: AlertAction) {
+        if self.gpu_confirm {
+            self.gpu_confirm = false;
+            self.update_alert.close();
+            if action == AlertAction::Primary {
+                self.config.hardware.page_frames = axion_config::PageFrames::Gpu;
+                self.settings_outcome(Outcome::Changed);
+                self.refresh_settings();
+            }
+            return;
+        }
         match self.updater.phase() {
             Phase::Idle => self.update_alert.close(),
             Phase::Confirm => {
@@ -5503,6 +5589,14 @@ impl Browser {
                     }
                 }
                 "settings-scroll" => self.settings.scroll_by(&mut self.ui, -400.0),
+                // Capture aids for Settings › Hardware: a change that needs a restart, and the
+                // AMD confirmation.
+                "hardware-change" => {
+                    self.config.hardware.gpu_rasterization = false;
+                    self.settings_outcome(Outcome::Changed);
+                    self.refresh_settings();
+                }
+                "hardware-confirm" => self.confirm_gpu_frames(),
                 "player-speed" => {
                     let _ = self.player.click(&mut self.ui, PlayerControl::Speed, &self.config);
                 }

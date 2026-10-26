@@ -142,8 +142,8 @@ cargo run -p axion-glass --example playground --release            # glass playg
 cargo run -p axion-glass --example playground --release -- --demo  # scripted drag (merge/stretch)
 cargo run -p axion-glass --example playground --release -- --bench # GPU time per 1440p frame
 cargo run -p axion-glass --example playground --release -- --capture=out.png  # offscreen screenshot
-AXION_GPU=low ...            # force the integrated GPU
-AXION_OSR=software|gpu ...   # force page frame sharing off/on (default: on for NVIDIA only)
+AXION_GPU=low ...            # force the integrated GPU (also high, or part of an adapter's name; Settings › Hardware has the same choice)
+AXION_OSR=software|gpu ...   # force page frame sharing off/on (default: on for NVIDIA only; also `hardware.page_frames`)
 AXION_CONFIG_DIR / AXION_PROFILE_DIR   # use throwaway settings/profile bases (do this for test runs)
 AXION_DEVICE_KEY_DIR                   # throwaway vault device key (default ~/.local/share/axion; set it too)
 cargo test -p axion-vault -- --ignored real_tpm --nocapture   # seal/unseal with the real TPM (needs tss group)

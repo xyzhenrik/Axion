@@ -844,6 +844,28 @@ Windows/macOS, touchscreen-first mode.
     1.80 ms liquid (6 glass passes) -> 0.23 ms flat; Radeon 610M (`AXION_GPU=low`) 29.3 ms liquid
     (34 fps) -> 1.6 ms flat.
 
+- **Hardware acceleration settings (Settings › Hardware, `[hardware]` in config.toml)** (2026-10):
+  GPU behaviour that used to be env vars + hard-coded rules is now configurable, read at start
+  (a "Restart Axion to Apply" button appears once a setting differs from what the process started
+  with; it writes the config and relaunches like the language switch).
+  - Keys: `hardware.enabled` (master; off = Chromium `--disable-gpu --disable-gpu-compositing`, software
+    page frames, no VA-API, GPU process not pinned to a render node; Axion's own UI still needs wgpu),
+    `hardware.page_frames` = auto|gpu|software (auto = the old rule: shared GPU memory only on NVIDIA
+    under Wayland), `hardware.gpu` = auto|low|high (power preference + adapter-type match; `AXION_GPU`
+    also accepts a name fragment), `hardware.gpu_rasterization` (off adds `--disable-gpu-rasterization
+    --disable-accelerated-2d-canvas --disable-zero-copy`; on adds nothing, so Chromium's own driver
+    blocklist keeps deciding: we never *force* GPU raster). `media.hardware_decoding` stays the one key
+    for VA-API (shown in both Media and Hardware; the master switch also turns it off).
+  - Env vars still win: `AXION_GPU=low|high|<name>`, `AXION_OSR=software|gpu`.
+  - Picking "Shared GPU memory" on an AMD adapter asks for confirmation first (RADV context loss, see
+    Phase 0) and the page shows a warning there.
+  - All mapping lives in `crates/axion-app/src/hardware.rs` as pure functions with unit tests
+    (config + vendor + env -> frame mode / switches / power preference / adapter pick). The page lists
+    the wgpu adapters, what is actually active, and "Copy Diagnostics" (adapter, driver, frame mode,
+    VA-API flag, CEF version) puts a plain-text summary on the clipboard. VA-API is reported as
+    "requested", not probed (no cheap reliable check without linking libva).
+  - Capture aids: `--open=settings-page:11` (+ `hardware-change`, `hardware-confirm`).
+
 ## 8. Open questions
 - App name final? ("Axion" for now.)
 - Default search engine?
