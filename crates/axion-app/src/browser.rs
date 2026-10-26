@@ -4352,6 +4352,16 @@ impl Browser {
                     self.settings.set_category(Category::Appearance);
                     self.run(Action::OpenSettings);
                 }
+                "keyboard-settings" => {
+                    self.settings.set_category(Category::Keyboard);
+                    self.run(Action::OpenSettings);
+                }
+                // Capture aid: filter the Keyboard page's list by "keys-search:TEXT".
+                query if query.starts_with("keys-search:") => {
+                    if let Some(field) = self.settings.key_search_field() {
+                        self.ui.set_field_text(field, &query["keys-search:".len()..]);
+                    }
+                }
                 "tabs-settings" => {
                     self.settings.set_category(Category::Tabs);
                     self.run(Action::OpenSettings);
