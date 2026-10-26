@@ -42,7 +42,7 @@ use crate::mpris::{Mpris, MprisCommand, Track};
 use crate::overview::{Overview, OverviewAction};
 use crate::page_color::{PageTint, lightness};
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
-use crate::pip::{PipOutcome, PipWindow};
+use crate::pip::{PipControl, PipOutcome, PipWindow};
 use crate::platform::clipboard::ClipboardReader;
 use crate::platform::pointer::PointerProbe;
 use crate::player::{
@@ -191,10 +191,8 @@ pub struct Browser {
     /// Those frames, kept in memory until the sequence is complete (saving each one at once
     /// would stall the frame loop and change the timing being looked at).
     captured_frames: Vec<image::RgbaImage>,
-    /// The Picture in Picture window (kept once opened, hidden while unused).
+    /// Picture in Picture (made with the first one; its window only exists while PiP is on).
     pip: Option<PipWindow>,
-    /// PiP to start once the window exists (windows are made in `sync_windows`).
-    pip_request: Option<(ViewId, axion_media::Player)>,
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     site_click: Option<SiteClick>,
@@ -474,7 +472,6 @@ impl Browser {
             capture_frame: 0,
             captured_frames: Vec::new(),
             pip: None,
-            pip_request: None,
             instance,
             adapter: adapter.clone(),
             site_click: None,
@@ -1358,10 +1355,9 @@ impl Browser {
             let leave = axion_media::Command::new(&player.id, axion_media::Action::Fullscreen(false));
             self.media_command(view, &leave);
         }
-        match &mut self.pip {
-            Some(pip) => pip.show(view, player),
-            None => self.pip_request = Some((view, player)),
-        }
+        // Its window opens from the event loop (`sync_windows`).
+        let (device, queue, config) = (&self.device, &self.queue, &self.config);
+        self.pip.get_or_insert_with(|| PipWindow::new(device, queue, config)).show(view, player);
     }
 
     fn pip_view(&self) -> Option<ViewId> {
@@ -1370,35 +1366,31 @@ impl Browser {
 
     /// Opens windows that need the event loop (the PiP window).
     pub fn sync_windows(&mut self, event_loop: &ActiveEventLoop) {
-        let Some((view, player)) = self.pip_request.take() else { return };
-        if self.pip.is_none() {
-            match PipWindow::new(
-                event_loop,
-                &self.instance,
-                &self.adapter,
-                &self.device,
-                &self.queue,
-                &self.config,
-            ) {
-                Ok(pip) => self.pip = Some(pip),
-                Err(e) => {
-                    tracing::error!("Picture in Picture failed: {e:#}");
-                    return;
-                }
+        let Some(pip) = self.pip.as_mut().filter(|p| p.needs_window()) else { return };
+        if let Err(e) = pip.open(event_loop, &self.instance, &self.adapter) {
+            tracing::error!("Picture in Picture failed: {e:#}");
+            if let Some(view) = pip.view {
+                self.end_pip(view, None, false);
             }
-        }
-        if let Some(pip) = &mut self.pip {
-            pip.show(view, player);
         }
     }
 
     pub fn is_pip_window(&self, id: winit::window::WindowId) -> bool {
-        self.pip.as_ref().is_some_and(|p| p.id() == id)
+        self.pip.as_ref().and_then(PipWindow::id) == Some(id)
+    }
+
+    pub fn is_main_window(&self, id: winit::window::WindowId) -> bool {
+        self.window.id() == id
     }
 
     pub fn pip_window_event(&mut self, event: WindowEvent) {
         let Some(pip) = &mut self.pip else { return };
-        match pip.window_event(event, &self.config) {
+        let outcome = pip.window_event(event, &self.config);
+        self.pip_outcome(outcome);
+    }
+
+    fn pip_outcome(&mut self, outcome: Option<PipOutcome>) {
+        match outcome {
             Some(PipOutcome::Command(view, command)) => self.media_command(view, &command),
             Some(PipOutcome::Close(view, id)) => self.end_pip(view, Some(&id), false),
             Some(PipOutcome::BackToTab(view)) => {
@@ -1464,7 +1456,9 @@ impl Browser {
             let uv = if !shown {
                 letterbox(tex, player.aspect())
             } else {
-                let r = Rect::new(player.x * dpr, player.y * dpr, player.w * dpr, player.h * dpr);
+                // The video itself, not its element's black bars around it.
+                let (x, y, w, h) = player.picture_rect();
+                let r = Rect::new(x * dpr, y * dpr, w * dpr, h * dpr);
                 let min = (r.origin / tex).clamp(Vec2::ZERO, Vec2::ONE);
                 let max = ((r.origin + r.size) / tex).clamp(Vec2::ZERO, Vec2::ONE);
                 Rect { origin: min, size: (max - min).max(Vec2::splat(0.001)) }
@@ -1475,7 +1469,7 @@ impl Browser {
         if let Some(pip) = &mut self.pip {
             pip.takeover = !shown;
             pip.player = Some(player);
-            pip.render(picture);
+            pip.render(picture, &self.config);
         }
     }
 
@@ -3895,9 +3889,23 @@ impl Browser {
                         }]);
                     }
                 }
-                // Capture aid: start Picture in Picture for the page's main video.
                 // Capture aid: the window manager closes the PiP window (Alt+F4, its close button).
                 "pip-close" => self.pip_window_event(WindowEvent::CloseRequested),
+                // Capture aids: the PiP window's × and "back to the tab" buttons.
+                "pip-x" | "pip-back" => {
+                    let control = if what == "pip-x" { PipControl::Close } else { PipControl::BackToTab };
+                    let outcome = self.pip.as_mut().and_then(|p| p.click(control, &self.config));
+                    self.pip_outcome(outcome);
+                }
+                // Capture aid: resize the PiP window to "pip-size:W:H" (logical px), like the
+                // user dragging its edge.
+                size if size.starts_with("pip-size:") => {
+                    let n: Vec<f64> = size.split(':').skip(1).filter_map(|v| v.parse().ok()).collect();
+                    if let (&[w, h], Some(pip)) = (&n[..], &mut self.pip) {
+                        pip.request_size(winit::dpi::LogicalSize::new(w, h), &self.config);
+                    }
+                }
+                // Capture aid: start Picture in Picture for the page's main video.
                 "player-pip" => {
                     let target = self
                         .active_view()
