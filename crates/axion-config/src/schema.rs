@@ -45,6 +45,23 @@ pub struct General {
 const OLD_DEFAULT_HOMEPAGE: &str = "https://duckduckgo.com/";
 
 impl General {
+    /// The homepage in effect: the user's own URL, or Axion Home when none is set.
+    pub fn effective_homepage(&self) -> &str {
+        let home = self.homepage.trim();
+        if home.is_empty() { START_PAGE_URL } else { home }
+    }
+
+    /// Text for the settings field: empty while the default applies, so its placeholder shows.
+    pub fn homepage_field_text(&self) -> &str {
+        if self.effective_homepage() == START_PAGE_URL { "" } else { self.homepage.trim() }
+    }
+
+    /// Stores what the user typed; blank returns to the default (Axion Home).
+    pub fn set_homepage(&mut self, typed: &str) {
+        let typed = typed.trim();
+        self.homepage = if typed.is_empty() { START_PAGE_URL.into() } else { typed.into() };
+    }
+
     /// An empty homepage or the old default becomes Axion's start page.
     pub fn upgrade_homepage(&mut self) {
         if self.homepage.trim().is_empty() || self.homepage == OLD_DEFAULT_HOMEPAGE {
@@ -56,6 +73,25 @@ impl General {
 impl Default for General {
     fn default() -> Self {
         Self { homepage: START_PAGE_URL.into(), search_url: "https://duckduckgo.com/?q={}".into() }
+    }
+}
+
+#[cfg(test)]
+mod homepage_tests {
+    use super::*;
+
+    #[test]
+    fn effective_homepage_resolution() {
+        let mut g = General::default();
+        assert_eq!(g.effective_homepage(), START_PAGE_URL);
+        assert_eq!(g.homepage_field_text(), "");
+        g.set_homepage("  https://start.example/ ");
+        assert_eq!(g.effective_homepage(), "https://start.example/");
+        assert_eq!(g.homepage_field_text(), "https://start.example/");
+        g.set_homepage("   ");
+        assert_eq!(g, General::default());
+        g.homepage = String::new();
+        assert_eq!(g.effective_homepage(), START_PAGE_URL);
     }
 }
 

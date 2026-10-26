@@ -616,7 +616,7 @@ impl Browser {
             return Ok(browser);
         }
         if urls.is_empty() {
-            urls.push(browser.config.general.homepage.clone());
+            urls.push(browser.config.general.effective_homepage().to_owned());
         }
         browser.open_tab(&urls[0], true)?;
         // Background tabs go in right after the active one, so add them last-first.
@@ -708,7 +708,7 @@ impl Browser {
             // Closing the last private tab leaves private browsing, like Safari.
             self.toggle_private_mode();
         } else if self.tabs.is_empty() {
-            let home = self.config.general.homepage.clone();
+            let home = self.config.general.effective_homepage().to_owned();
             if let Err(e) = self.open_tab(&home, true) {
                 tracing::error!("opening a new tab failed: {e:#}");
             }
@@ -797,7 +797,7 @@ impl Browser {
         match action {
             Action::FocusAddressBar => self.edit_address(),
             Action::NewTab => {
-                let home = self.config.general.homepage.clone();
+                let home = self.config.general.effective_homepage().to_owned();
                 if let Err(e) = self.open_tab(&home, true) {
                     tracing::error!("opening a new tab failed: {e:#}");
                 }
@@ -1806,7 +1806,7 @@ impl Browser {
         if self.tabs.is_empty() && self.overview.is_open() && !self.private_mode {
             // Normal tabs all closed in the overview: it makes one when it is left.
         } else if self.tabs.is_empty() {
-            let home = self.config.general.homepage.clone();
+            let home = self.config.general.effective_homepage().to_owned();
             if let Err(e) = self.open_tab(&home, true) {
                 tracing::error!("opening a tab failed: {e:#}");
             }
@@ -1934,7 +1934,7 @@ impl Browser {
         }
         let index = if self.tabs.is_empty() {
             // The last tab was closed in the overview; leaving it asks for a new one.
-            let home = self.config.general.homepage.clone();
+            let home = self.config.general.effective_homepage().to_owned();
             if let Err(e) = self.open_tab(&home, true) {
                 tracing::error!("opening a new tab failed: {e:#}");
             }
@@ -1971,7 +1971,7 @@ impl Browser {
             OverviewAction::NewTab | OverviewAction::Unlock if self.is_locked() => self.show_unlock_alert(),
             OverviewAction::Unlock => {}
             OverviewAction::NewTab => {
-                let home = self.config.general.homepage.clone();
+                let home = self.config.general.effective_homepage().to_owned();
                 if let Err(e) = self.open_tab(&home, true) {
                     tracing::error!("opening a new tab failed: {e:#}");
                 }
@@ -2712,7 +2712,7 @@ impl Browser {
                     self.settings_outcome(outcome);
                 }
                 UiEvent::Submitted { node, text } if Some(node) == self.settings.homepage_field() => {
-                    self.config.general.homepage = text.trim().to_owned();
+                    self.config.general.set_homepage(&text);
                     self.settings_outcome(Outcome::Changed);
                 }
                 UiEvent::Clicked { action, .. } if LockScreen::is_unlock(action) => self.try_unlock(),
@@ -2813,7 +2813,7 @@ impl Browser {
                     Some(ChromeAction::Back) => self.run(Action::Back),
                     Some(ChromeAction::Forward) => self.run(Action::Forward),
                     Some(ChromeAction::Home) => {
-                        let home = self.config.general.homepage.clone();
+                        let home = self.config.general.effective_homepage().to_owned();
                         self.navigate_to(home);
                     }
                     Some(ChromeAction::ReloadOrStop) => {
