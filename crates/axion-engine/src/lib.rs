@@ -233,6 +233,9 @@ pub trait Engine {
     /// Where downloads are saved, and whether to ask each time.
     fn set_download_options(&mut self, options: DownloadOptions);
     fn download_action(&mut self, id: u32, action: DownloadAction);
+    /// Downloads `url` through the view's network stack into `directory` (no dialog); the
+    /// download reports as [`EngineEvent::DownloadUpdated`] with this `url` as its original.
+    fn start_download(&mut self, view: ViewId, url: &str, directory: std::path::PathBuf);
     /// Clears cached files and / or cookies and site storage (normal profile).
     fn clear_data(&mut self, what: &ClearData);
     /// Lists the sites with cookies; answers with [`EngineEvent::SiteData`].

@@ -64,7 +64,103 @@ const MIGRATIONS: &[&str] = &[
         position INTEGER NOT NULL DEFAULT 0,
         hidden INTEGER NOT NULL DEFAULT 0
     );",
+    // 8: the Playlist (videos saved for later, optionally downloaded)
+    "CREATE TABLE playlist (
+        id INTEGER PRIMARY KEY,
+        list TEXT NOT NULL DEFAULT '',
+        sort INTEGER NOT NULL DEFAULT 0,
+        title TEXT NOT NULL DEFAULT '',
+        page_url TEXT NOT NULL,
+        media_url TEXT,
+        thumbnail TEXT NOT NULL DEFAULT '',
+        duration REAL NOT NULL DEFAULT 0,
+        added_at INTEGER NOT NULL,
+        position REAL NOT NULL DEFAULT 0,
+        watched INTEGER NOT NULL DEFAULT 0,
+        dl_state TEXT NOT NULL DEFAULT 'none',
+        dl_path TEXT NOT NULL DEFAULT '',
+        dl_size INTEGER NOT NULL DEFAULT 0,
+        dl_note TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX playlist_by_list ON playlist(list, sort);",
 ];
+
+/// Download states of a playlist item (`PlaylistItem::dl_state`).
+pub mod dl {
+    pub const NONE: &str = "none";
+    pub const QUEUED: &str = "queued";
+    pub const DOWNLOADING: &str = "downloading";
+    pub const DONE: &str = "done";
+    pub const FAILED: &str = "failed";
+    /// A stream (HLS, blob) that can only be watched online.
+    pub const STREAMING: &str = "streaming";
+}
+
+/// A video saved in the Playlist.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaylistItem {
+    pub id: i64,
+    pub list: String,
+    pub sort: i64,
+    pub title: String,
+    pub page_url: String,
+    /// A plain file's address when the page showed one.
+    pub media_url: Option<String>,
+    /// Path of the thumbnail file, empty for none.
+    pub thumbnail: String,
+    /// Seconds, 0 while unknown.
+    pub duration: f64,
+    /// Unix seconds.
+    pub added_at: i64,
+    /// Where playback stopped (seconds).
+    pub position: f64,
+    pub watched: bool,
+    /// One of the [`dl`] states.
+    pub dl_state: String,
+    pub dl_path: String,
+    pub dl_size: i64,
+    /// Why a download failed or isn't possible, for people.
+    pub dl_note: String,
+}
+
+/// A video about to be added to the Playlist.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NewPlaylistItem {
+    pub list: String,
+    pub title: String,
+    pub page_url: String,
+    pub media_url: Option<String>,
+    pub thumbnail: String,
+    pub duration: f64,
+    pub position: f64,
+    pub dl_state: String,
+    pub dl_path: String,
+    pub dl_size: i64,
+    pub dl_note: String,
+}
+
+const PLAYLIST_COLUMNS: &str = "id, list, sort, title, page_url, media_url, thumbnail, duration, added_at, \
+     position, watched, dl_state, dl_path, dl_size, dl_note";
+
+fn playlist_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<PlaylistItem> {
+    Ok(PlaylistItem {
+        id: r.get(0)?,
+        list: r.get(1)?,
+        sort: r.get(2)?,
+        title: r.get(3)?,
+        page_url: r.get(4)?,
+        media_url: r.get(5)?,
+        thumbnail: r.get(6)?,
+        duration: r.get(7)?,
+        added_at: r.get(8)?,
+        position: r.get(9)?,
+        watched: r.get::<_, i64>(10)? != 0,
+        dl_state: r.get(11)?,
+        dl_path: r.get(12)?,
+        dl_size: r.get(13)?,
+        dl_note: r.get(14)?,
+    })
+}
 
 /// A site the user pinned to (or removed from) the start page's top sites.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -324,6 +420,145 @@ impl Store {
             )?,
             None => self.conn.execute("DELETE FROM meta WHERE key = ?1", [key])?,
         };
+        Ok(())
+    }
+
+    // ---- playlist ----
+
+    /// Adds a video to the Playlist, at the top. A video already in the list (same file, or
+    /// for streams the same page) isn't added twice: returns its id and `false`.
+    pub fn add_playlist_item(&self, new: &NewPlaylistItem, now: i64) -> Result<(i64, bool)> {
+        let existing: Option<i64> = match &new.media_url {
+            Some(media) => self
+                .conn
+                .query_row(
+                    "SELECT id FROM playlist WHERE list = ?1 AND media_url = ?2",
+                    params![new.list, media],
+                    |r| r.get(0),
+                )
+                .optional()?,
+            None => self
+                .conn
+                .query_row(
+                    "SELECT id FROM playlist WHERE list = ?1 AND media_url IS NULL AND page_url = ?2",
+                    params![new.list, new.page_url],
+                    |r| r.get(0),
+                )
+                .optional()?,
+        };
+        if let Some(id) = existing {
+            return Ok((id, false));
+        }
+        let top: i64 = self.conn.query_row(
+            "SELECT COALESCE(MIN(sort), 0) - 1 FROM playlist WHERE list = ?1",
+            [&new.list],
+            |r| r.get(0),
+        )?;
+        self.conn.execute(
+            "INSERT INTO playlist (list, sort, title, page_url, media_url, thumbnail, duration, added_at,
+                position, dl_state, dl_path, dl_size, dl_note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                new.list,
+                top,
+                new.title,
+                new.page_url,
+                new.media_url,
+                new.thumbnail,
+                new.duration,
+                now,
+                new.position,
+                new.dl_state,
+                new.dl_path,
+                new.dl_size,
+                new.dl_note
+            ],
+        )?;
+        Ok((self.conn.last_insert_rowid(), true))
+    }
+
+    /// The items of a list in their order (newest added first, unless reordered).
+    pub fn playlist_items(&self, list: &str) -> Result<Vec<PlaylistItem>> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {PLAYLIST_COLUMNS} FROM playlist WHERE list = ?1 ORDER BY sort, id DESC"
+        ))?;
+        let rows = stmt.query_map([list], playlist_item)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The names of the lists that have items.
+    pub fn playlist_lists(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare_cached("SELECT DISTINCT list FROM playlist ORDER BY list")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn playlist_item(&self, id: i64) -> Result<Option<PlaylistItem>> {
+        Ok(self
+            .conn
+            .query_row(&format!("SELECT {PLAYLIST_COLUMNS} FROM playlist WHERE id = ?1"), [id], playlist_item)
+            .optional()?)
+    }
+
+    pub fn playlist_len(&self) -> Result<usize> {
+        let n: i64 = self.conn.query_row("SELECT COUNT(*) FROM playlist", [], |r| r.get(0))?;
+        Ok(n as usize)
+    }
+
+    /// Saves where playback stopped, and whether the video counts as watched now.
+    pub fn set_playlist_progress(&self, id: i64, position: f64, watched: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE playlist SET position = ?2, watched = ?3 WHERE id = ?1",
+            params![id, position, watched],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_playlist_duration(&self, id: i64, duration: f64) -> Result<()> {
+        self.conn.execute("UPDATE playlist SET duration = ?2 WHERE id = ?1", params![id, duration])?;
+        Ok(())
+    }
+
+    pub fn set_playlist_thumbnail(&self, id: i64, path: &str) -> Result<()> {
+        self.conn.execute("UPDATE playlist SET thumbnail = ?2 WHERE id = ?1", params![id, path])?;
+        Ok(())
+    }
+
+    /// Records a download's state (one of [`dl`]), file and size, and a note for people.
+    pub fn set_playlist_download(
+        &self,
+        id: i64,
+        state: &str,
+        path: &str,
+        size: i64,
+        note: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE playlist SET dl_state = ?2, dl_path = ?3, dl_size = ?4, dl_note = ?5 WHERE id = ?1",
+            params![id, state, path, size, note],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_playlist_item(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM playlist WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Swaps an item's place with its neighbour in `list` (`up`: towards the top).
+    pub fn move_playlist_item(&mut self, id: i64, up: bool) -> Result<()> {
+        let items = self.playlist_items(&self.playlist_item(id)?.map(|i| i.list).unwrap_or_default())?;
+        let Some(at) = items.iter().position(|i| i.id == id) else { return Ok(()) };
+        let other = if up { at.checked_sub(1) } else { Some(at + 1).filter(|&n| n < items.len()) };
+        let Some(other) = other else { return Ok(()) };
+        // Renumber the whole list, so equal `sort` values never leave a swap without effect.
+        let mut order: Vec<i64> = items.iter().map(|i| i.id).collect();
+        order.swap(at, other);
+        let tx = self.conn.transaction()?;
+        for (n, id) in order.iter().enumerate() {
+            tx.execute("UPDATE playlist SET sort = ?2 WHERE id = ?1", params![id, n as i64])?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -840,6 +1075,61 @@ mod tests {
         assert!(s.top_site_overrides().unwrap().is_empty());
         s.record_visit("axion://home/", "Start", NOW).unwrap();
         assert!(s.recent_history(5).unwrap().is_empty(), "Axion's own pages stay out of history");
+    }
+
+    fn new_item(url: &str, media: Option<&str>) -> NewPlaylistItem {
+        NewPlaylistItem {
+            list: "Play Later".into(),
+            title: "A video".into(),
+            page_url: url.into(),
+            media_url: media.map(str::to_owned),
+            dl_state: dl::NONE.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn playlist_adds_once_and_newest_first() {
+        let s = store();
+        let (a, created) = s.add_playlist_item(&new_item("https://a/", Some("https://a/v.mp4")), 10).unwrap();
+        assert!(created);
+        // The same file again, from another page: the same entry.
+        let (again, created) =
+            s.add_playlist_item(&new_item("https://b/", Some("https://a/v.mp4")), 11).unwrap();
+        assert_eq!((again, created), (a, false));
+        // A stream is told apart by its page.
+        let (b, _) = s.add_playlist_item(&new_item("https://s/1", None), 12).unwrap();
+        let (c, _) = s.add_playlist_item(&new_item("https://s/2", None), 13).unwrap();
+        assert_eq!(s.add_playlist_item(&new_item("https://s/1", None), 14).unwrap(), (b, false));
+        let ids: Vec<i64> = s.playlist_items("Play Later").unwrap().iter().map(|i| i.id).collect();
+        assert_eq!(ids, [c, b, a]);
+        assert_eq!(s.playlist_len().unwrap(), 3);
+        assert_eq!(s.playlist_lists().unwrap(), ["Play Later"]);
+        s.remove_playlist_item(b).unwrap();
+        assert!(s.playlist_item(b).unwrap().is_none());
+    }
+
+    #[test]
+    fn playlist_progress_download_and_order() {
+        let mut s = store();
+        let (a, _) = s.add_playlist_item(&new_item("https://a/", Some("https://a/1.mp4")), 1).unwrap();
+        let (b, _) = s.add_playlist_item(&new_item("https://b/", Some("https://b/2.mp4")), 2).unwrap();
+        s.set_playlist_progress(a, 42.5, true).unwrap();
+        s.set_playlist_download(a, dl::DONE, "/tmp/x.mp4", 1234, "").unwrap();
+        s.set_playlist_thumbnail(a, "/tmp/x.png").unwrap();
+        s.set_playlist_duration(a, 99.0).unwrap();
+        let item = s.playlist_item(a).unwrap().unwrap();
+        assert_eq!((item.position, item.watched, item.dl_size, item.duration), (42.5, true, 1234, 99.0));
+        assert_eq!((item.dl_state.as_str(), item.dl_path.as_str()), ("done", "/tmp/x.mp4"));
+        assert_eq!(item.thumbnail, "/tmp/x.png");
+        // b is on top; moving it down puts a first.
+        s.move_playlist_item(b, false).unwrap();
+        let ids: Vec<i64> = s.playlist_items("Play Later").unwrap().iter().map(|i| i.id).collect();
+        assert_eq!(ids, [a, b]);
+        s.move_playlist_item(b, false).unwrap();
+        s.move_playlist_item(a, true).unwrap();
+        let ids: Vec<i64> = s.playlist_items("Play Later").unwrap().iter().map(|i| i.id).collect();
+        assert_eq!(ids, [a, b]);
     }
 
     #[test]

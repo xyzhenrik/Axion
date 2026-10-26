@@ -20,6 +20,7 @@ pub struct Config {
     pub shields: Shields,
     pub tabs: Tabs,
     pub media: Media,
+    pub playlist: Playlist,
     pub downloads: Downloads,
     pub data: Data,
     pub passwords: Passwords,
@@ -1020,6 +1021,73 @@ impl Default for Media {
     }
 }
 
+/// Axion Playlist: videos saved for later, optionally downloaded for offline use.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Playlist {
+    /// Show the Add to Playlist button in the address field on pages with a video.
+    pub quick_action: bool,
+    /// Download a video for offline use as soon as it is added (when it is a plain file).
+    pub auto_download: bool,
+    /// Folder for downloaded videos; empty means a "Axion Playlist" folder inside the
+    /// download folder.
+    pub directory: String,
+    /// Removing an item also deletes the file it downloaded.
+    pub delete_files_on_remove: bool,
+    /// The most items the Playlist keeps; adding more is refused with a message.
+    pub max_items: u32,
+    /// Titles are cut to this many characters.
+    pub max_title_chars: u32,
+    /// Thumbnails are scaled down to at most this many pixels on the long side.
+    pub thumbnail_max_px: u32,
+    /// How long Axion waits for a thumbnail from the page before giving up (seconds).
+    pub thumbnail_wait_seconds: f32,
+    /// An item counts as watched once this much of it (0–1) has played.
+    pub watched_fraction: f32,
+    /// The playback position is saved at most this often while playing (seconds).
+    pub position_save_seconds: f32,
+    /// Positions before this (seconds) are not worth resuming from.
+    pub min_resume_seconds: f32,
+    /// Resuming starts this many seconds before where playback stopped.
+    pub resume_rewind_seconds: f32,
+    /// Thumbnails decoded onto the GPU per frame while the page fills in.
+    pub thumbnails_per_frame: u32,
+    /// Name of the list new videos go to.
+    pub list_name: String,
+    /// The sleep timer's choices (minutes); "Off" and "End of video" are always offered.
+    pub sleep_timer_minutes: Vec<u32>,
+    /// A video that was on its page for this long (seconds) gets its picture taken for the
+    /// thumbnail when none comes with the page.
+    pub thumbnail_frame_after_seconds: f32,
+    /// The video area of the Playlist page can be clicked (consent walls, play buttons of
+    /// site players): clicks reach the page inside it.
+    pub forward_clicks: bool,
+}
+
+impl Default for Playlist {
+    fn default() -> Self {
+        Self {
+            quick_action: true,
+            auto_download: false,
+            directory: String::new(),
+            delete_files_on_remove: true,
+            max_items: 1000,
+            max_title_chars: 200,
+            thumbnail_max_px: 480,
+            thumbnail_wait_seconds: 8.0,
+            watched_fraction: 0.9,
+            position_save_seconds: 5.0,
+            min_resume_seconds: 5.0,
+            resume_rewind_seconds: 2.0,
+            thumbnails_per_frame: 3,
+            list_name: "Play Later".to_owned(),
+            sleep_timer_minutes: vec![15, 30, 45, 60],
+            thumbnail_frame_after_seconds: 1.0,
+            forward_clicks: true,
+        }
+    }
+}
+
 impl Config {
     /// The full default configuration as TOML, for documentation and the settings UI.
     pub fn default_toml() -> String {
@@ -1067,6 +1135,16 @@ mod tests {
         assert!(!media.add_trusted_site("example.com"));
         assert!(!media.add_trusted_site("  "));
         assert!(!toml::to_string(&media).unwrap().contains("own_controls"));
+    }
+
+    #[test]
+    fn playlist_defaults_and_keys() {
+        let p = Playlist::default();
+        assert!(p.quick_action && !p.auto_download && p.delete_files_on_remove);
+        assert_eq!(p.list_name, "Play Later");
+        let c: Config = toml::from_str("[playlist]\nauto_download = true").unwrap();
+        assert!(c.playlist.auto_download);
+        assert_eq!(c.playlist.max_items, p.max_items);
     }
 
     #[test]

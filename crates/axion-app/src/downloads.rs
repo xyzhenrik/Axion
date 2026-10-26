@@ -68,12 +68,15 @@ impl RowButton {
 struct Jobs {
     cache_size: Option<u64>,
     folder: Option<PathBuf>,
+    playlist_folder: Option<PathBuf>,
 }
 
 /// What background work finished.
 pub enum Event {
     CacheSize(u64),
     FolderChosen(PathBuf),
+    /// The folder chosen for the Playlist's downloads.
+    PlaylistFolderChosen(PathBuf),
 }
 
 /// Where download rows are shown.
@@ -117,7 +120,15 @@ impl Downloads {
 
     /// A download changed. Finished ones go to the store (and open, if they're safe and the
     /// setting says so).
-    pub fn update(&mut self, mut info: DownloadInfo, store: Option<&Store>, config: &Config, now: i64) {
+    /// `open_when_done` is false for downloads someone else keeps (the Playlist's).
+    pub fn update(
+        &mut self,
+        mut info: DownloadInfo,
+        store: Option<&Store>,
+        config: &Config,
+        now: i64,
+        open_when_done: bool,
+    ) {
         // The first update comes before the name is decided.
         if info.file_name.is_empty() {
             let path = info.url.split(['?', '#']).next().unwrap_or_default();
@@ -164,7 +175,11 @@ impl Downloads {
                 tracing::error!("saving a download failed: {e}");
             }
         }
-        if info.state == DownloadState::Complete && config.downloads.open_safe_files && is_safe(&info.path) {
+        if open_when_done
+            && info.state == DownloadState::Complete
+            && config.downloads.open_safe_files
+            && is_safe(&info.path)
+        {
             open_path(&info.path);
         }
     }
@@ -360,6 +375,20 @@ impl Downloads {
         });
     }
 
+    /// Like [`Self::choose_folder`], for the Playlist's downloads.
+    pub fn choose_playlist_folder(&self) {
+        let jobs = Arc::clone(&self.jobs);
+        spawn("choose-playlist-folder", move || match choose_portal("Playlist Folder", Choose::Folder) {
+            Ok(Some(folder)) => {
+                if let Ok(mut jobs) = jobs.lock() {
+                    jobs.playlist_folder = Some(folder);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("folder chooser unavailable: {e}"),
+        });
+    }
+
     /// Results of background work since the last call.
     pub fn poll(&mut self) -> Vec<Event> {
         let Ok(mut jobs) = self.jobs.lock() else { return Vec::new() };
@@ -369,6 +398,9 @@ impl Downloads {
         }
         if let Some(folder) = jobs.folder.take() {
             events.push(Event::FolderChosen(folder));
+        }
+        if let Some(folder) = jobs.playlist_folder.take() {
+            events.push(Event::PlaylistFolderChosen(folder));
         }
         events
     }
@@ -500,7 +532,7 @@ pub fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
 }
 
 /// Opens a file or folder in its default application.
-fn open_path(path: &Path) {
+pub(crate) fn open_path(path: &Path) {
     let path = path.to_path_buf();
     spawn("xdg-open", move || match std::process::Command::new("xdg-open").arg(&path).status() {
         Ok(status) if !status.success() => {
@@ -512,7 +544,7 @@ fn open_path(path: &Path) {
 }
 
 /// Shows the file selected in the file manager, or at least opens its folder.
-fn show_in_folder(path: &Path) {
+pub(crate) fn show_in_folder(path: &Path) {
     let path = path.to_path_buf();
     spawn("show-in-folder", move || {
         let shown = Connection::session().and_then(|c| {

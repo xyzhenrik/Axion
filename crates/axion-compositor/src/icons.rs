@@ -101,6 +101,13 @@ icons! {
     PersonAdd => "M10 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8zM3 20.5c.8-3.8 3.4-6 7-6 1.6 0 3 .4 4.2 1.2M18.5 14v6M15.5 17h6",
     ChevronUpDown => "M8 9.5l4-4 4 4M8 14.5l4 4 4-4",
     ChevronUp => "M6 15l6-6 6 6",
+    Playlist => "M4 6.5h11M4 11.5h7M4 16.5h5M15 12.5v7l6-3.5z",
+    PlaylistAdd => "M4 6.5h11M4 11.5h7M4 16.5h5M17 12v8M13 16h8",
+    Moon => "M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z",
+    Shuffle => "M4 7h3c5 0 5 10 10 10h3M4 17h3c1.5 0 2.6-.8 3.5-2M13.5 9c1-1.3 2.3-2 3.5-2h3M17.5 4.5L20 7l-2.5 2.5M17.5 14.5L20 17l-2.5 2.5",
+    Repeat => "M5 11V9a3 3 0 0 1 3-3h11M16 3l3 3-3 3M19 13v2a3 3 0 0 1-3 3H5M8 21l-3-3 3-3",
+    Previous => "M18 5.5v13l-9-6.5zM6 5.5v13",
+    Next => "M6 5.5v13l9-6.5zM18 5.5v13",
 }
 
 /// Rotated icons (a spinning chevron) are rasterized in steps of this many degrees.

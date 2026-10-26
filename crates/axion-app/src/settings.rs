@@ -182,6 +182,9 @@ enum Setting {
     OfferToSavePasswords,
     AutofillPasswords,
     ClearClipboardAfter,
+    PlaylistQuickAction,
+    PlaylistAutoDownload,
+    PlaylistDeleteFiles,
 }
 
 impl Setting {
@@ -235,6 +238,9 @@ impl Setting {
             Setting::OfferToSavePasswords => "Offer to save passwords",
             Setting::AutofillPasswords => "Offer to fill saved passwords",
             Setting::ClearClipboardAfter => "Clear clipboard after copying",
+            Setting::PlaylistQuickAction => "Playlist button in the address field",
+            Setting::PlaylistAutoDownload => "Download videos when adding them to the Playlist",
+            Setting::PlaylistDeleteFiles => "Delete downloaded files when removing videos",
         }
     }
 
@@ -275,6 +281,9 @@ impl Setting {
                 | Setting::ClearDownloadsItem
                 | Setting::OfferToSavePasswords
                 | Setting::AutofillPasswords
+                | Setting::PlaylistQuickAction
+                | Setting::PlaylistAutoDownload
+                | Setting::PlaylistDeleteFiles
         )
     }
 
@@ -384,6 +393,9 @@ impl Setting {
             Setting::ClearDownloadsItem => return c.data.clear_downloads as u8 as f32,
             Setting::OfferToSavePasswords => return c.passwords.offer_to_save as u8 as f32,
             Setting::AutofillPasswords => return c.passwords.autofill as u8 as f32,
+            Setting::PlaylistQuickAction => return c.playlist.quick_action as u8 as f32,
+            Setting::PlaylistAutoDownload => return c.playlist.auto_download as u8 as f32,
+            Setting::PlaylistDeleteFiles => return c.playlist.delete_files_on_remove as u8 as f32,
             Setting::ClearClipboardAfter => c.passwords.clear_clipboard_seconds,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes,
@@ -443,6 +455,9 @@ impl Setting {
             Setting::ClearDownloadsItem => c.data.clear_downloads = on,
             Setting::OfferToSavePasswords => c.passwords.offer_to_save = on,
             Setting::AutofillPasswords => c.passwords.autofill = on,
+            Setting::PlaylistQuickAction => c.playlist.quick_action = on,
+            Setting::PlaylistAutoDownload => c.playlist.auto_download = on,
+            Setting::PlaylistDeleteFiles => c.playlist.delete_files_on_remove = on,
             Setting::ClearClipboardAfter => c.passwords.clear_clipboard_seconds = (v / 5.0).round() * 5.0,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds = (v * 2.0).round() / 2.0,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes = v.round(),
@@ -498,6 +513,9 @@ pub enum SettingsAction {
     /// Index into `media.trusted_player_sites`.
     RemoveTrustedSite(usize),
     ChooseDownloadFolder,
+    /// Pick the Playlist's download folder, or go back to the default one.
+    ChoosePlaylistFolder,
+    ResetPlaylistFolder,
     RemoveDownloads(RemoveDownloads),
     ClearRange(ClearRange),
     ClearBrowsingData,
@@ -595,6 +613,8 @@ impl SettingsAction {
                     SettingsAction::RestorePasswords => 88,
                     SettingsAction::RemoveTrustedSite(i) => TRUSTED_SITE_BASE + i as u32,
                     SettingsAction::ChooseDownloadFolder => 90,
+                    SettingsAction::ResetPlaylistFolder => 84,
+                    SettingsAction::ChoosePlaylistFolder => 89,
                     SettingsAction::RemoveDownloads(r) => {
                         91 + REMOVE_DOWNLOADS.iter().position(|(_, x)| *x == r).unwrap_or(0) as u32
                     }
@@ -643,6 +663,8 @@ impl SettingsAction {
             86 => SettingsAction::ImportPasswords,
             87 => SettingsAction::ExportPasswords,
             88 => SettingsAction::RestorePasswords,
+            84 => SettingsAction::ResetPlaylistFolder,
+            89 => SettingsAction::ChoosePlaylistFolder,
             90 => SettingsAction::ChooseDownloadFolder,
             91..=93 => SettingsAction::RemoveDownloads(REMOVE_DOWNLOADS[(n - 91) as usize].1),
             94..=97 => SettingsAction::ClearRange(CLEAR_RANGES[(n - 94) as usize].1),
@@ -688,6 +710,7 @@ pub enum Outcome {
     /// The Data & Downloads page opened: measure the cache and list the sites with data.
     DataPage,
     ChooseDownloadFolder,
+    ChoosePlaylistFolder,
     /// Clear what `config.data` selects.
     ClearBrowsingData,
     /// Remove one site's cookies and data, or every site's (`None`).
@@ -1379,6 +1402,25 @@ impl SettingsSheet {
                     self.control(ui, config, setting);
                 }
                 self.note(ui, "Pages keep their own player; in fullscreen, Axion's takes over.");
+                self.section(ui, "Playlist");
+                for setting in [
+                    Setting::PlaylistQuickAction,
+                    Setting::PlaylistAutoDownload,
+                    Setting::PlaylistDeleteFiles,
+                ] {
+                    self.control(ui, config, setting);
+                }
+                let folder = crate::downloads::display_path(&crate::playlist::download_directory(config));
+                let row_node = self.row(ui, "Playlist downloads");
+                let label = ui.add_label(row_node, &folder, TextStyle::Callout, Style::default());
+                if let Some(w) = ui.widget_mut(label) {
+                    w.set_paint(Paint::Secondary);
+                }
+                pill_button(ui, row_node, "Change…", SettingsAction::ChoosePlaylistFolder, false);
+                if !config.playlist.directory.trim().is_empty() {
+                    pill_button(ui, row_node, "Default", SettingsAction::ResetPlaylistFolder, false);
+                }
+                self.note(ui, "Plain video files can be downloaded; streams are watched online only.");
                 self.section(ui, "Sites that keep their own player");
                 for (i, site) in config.media.trusted_player_sites.iter().enumerate() {
                     let row_node = self.row(ui, site);
@@ -2221,6 +2263,11 @@ impl SettingsSheet {
                 }
             }
             SettingsAction::ChooseDownloadFolder => return Outcome::ChooseDownloadFolder,
+            SettingsAction::ChoosePlaylistFolder => return Outcome::ChoosePlaylistFolder,
+            SettingsAction::ResetPlaylistFolder => {
+                config.playlist.directory.clear();
+                Outcome::Changed
+            }
             SettingsAction::NoBackground => {
                 config.home.background.clear();
                 Outcome::Changed
@@ -2617,6 +2664,8 @@ fn shortcut_actions() -> Vec<KeyAction> {
         BookmarkPage,
         ShowBookmarks,
         ShowHistory,
+        OpenPlaylist,
+        PlaylistAdd,
         OpenPasswords,
         ToggleSidebar,
         OpenSettings,
@@ -2645,7 +2694,8 @@ fn shortcut_group(action: KeyAction) -> &'static str {
         | SelectLastTab => "Tabs",
         FocusAddressBar | Back | Forward | Reload | HardReload => "Navigation",
         Find | FindNext | FindPrevious | ZoomIn | ZoomOut | ZoomReset | Paste | PastePlainText => "Page",
-        BookmarkPage | ShowBookmarks | ShowHistory | OpenPasswords | ToggleSidebar => "Panels",
+        BookmarkPage | ShowBookmarks | ShowHistory | OpenPlaylist | PlaylistAdd | OpenPasswords
+        | ToggleSidebar => "Panels",
         Lock => "Privacy",
         OpenSettings | ToggleFullscreen | Quit => "Window",
         _ => "Media (fullscreen video)",
@@ -2761,6 +2811,8 @@ mod tests {
             SettingsAction::RemoveTrustedSite(7),
             SettingsAction::Category(Category::Data),
             SettingsAction::ChooseDownloadFolder,
+            SettingsAction::ChoosePlaylistFolder,
+            SettingsAction::ResetPlaylistFolder,
             SettingsAction::RemoveDownloads(RemoveDownloads::OnQuit),
             SettingsAction::ClearRange(ClearRange::LastWeek),
             SettingsAction::ClearBrowsingData,

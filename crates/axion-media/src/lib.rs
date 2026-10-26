@@ -89,6 +89,11 @@ pub struct Player {
     pub trusted: bool,
     /// It is (inside) the page's fullscreen element.
     pub fullscreen: bool,
+    /// The address the element currently plays (`currentSrc`): a plain file, or `blob:` for
+    /// streams the page assembles itself.
+    pub src: String,
+    /// The `poster` picture of a `<video>`.
+    pub poster: String,
 }
 
 impl Player {
@@ -154,6 +159,8 @@ pub struct PageMedia {
     /// CSS pixel → physical pixel (includes page zoom).
     pub dpr: f32,
     pub session: Option<SessionInfo>,
+    /// The page's preview picture (`og:image`), reported while it has players.
+    pub image: String,
 }
 
 impl PageMedia {

@@ -50,6 +50,7 @@
     'html.axion-takeover,html.axion-takeover body{background:#000!important}' +
     'html.axion-takeover *{visibility:hidden!important}' +
     'html.axion-takeover [data-axion-takeover]{visibility:visible!important}' +
+    'html.axion-takeover video::-webkit-media-controls{display:none!important}' +
     // A fullscreen <video> shows Axion's player, not the built-in controls.
     (OWN_FULLSCREEN ? 'video:fullscreen::-webkit-media-controls{display:none!important}' : '');
   function addStyle() {
@@ -117,6 +118,7 @@
       volume: el.volume, muted: el.muted, rate: el.playbackRate, buffered: buffered,
       captions: captions, caption: caption, native: !!el.__axNative,
       trusted: TRUSTED,
+      src: el.currentSrc || el.src || '', poster: el.poster || '',
       fullscreen: !!document.fullscreenElement &&
         (document.fullscreenElement === el || document.fullscreenElement.contains(el)) || (takeover && takeover.el === el) || false
     };
@@ -127,6 +129,14 @@
     if (!m) return childSession;
     var art = (m.artwork && m.artwork.length) ? m.artwork[m.artwork.length - 1].src : '';
     return { title: m.title || '', artist: m.artist || '', album: m.album || '', artwork: art };
+  }
+
+  // The page's own preview picture (Open Graph / Twitter card), for the Playlist's thumbnail.
+  function pageImage() {
+    var m = document.querySelector('meta[property="og:image"],meta[name="og:image"],meta[name="twitter:image"],meta[property="twitter:image"]');
+    var url = m && m.getAttribute('content');
+    if (!url) return '';
+    try { return new URL(url, document.baseURI).href; } catch (e) { return ''; }
   }
 
   function schedule() { if (!timer) timer = setTimeout(report, 120); }
@@ -149,7 +159,7 @@
     });
     var s = session();
     if (isTop) {
-      var msg = JSON.stringify({ t: 'state', players: list, dpr: window.devicePixelRatio, session: s });
+      var msg = JSON.stringify({ t: 'state', players: list, dpr: window.devicePixelRatio, session: s, image: list.length ? pageImage() : '' });
       if (msg !== lastSent) { lastSent = msg; log(MARK + msg); }
     } else {
       var key = JSON.stringify([list, s]);

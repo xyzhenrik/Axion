@@ -64,6 +64,7 @@ use crate::url::display_host;
 use crate::url::resolve_input;
 
 mod context;
+mod playlist;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
 /// How long before a `--capture --overview` screenshot the overview opens.
@@ -213,6 +214,9 @@ pub struct Browser {
     /// Clipboard reads for pastes into pages (where the engine can't read it itself).
     clipboard_reader: ClipboardReader,
     player: PlayerOverlay,
+    /// The Playlist: its videos, and its page, popover and thumbnails.
+    playlist: crate::playlist::Playlist,
+    playlist_ui: playlist::PlaylistUi,
     /// The active page's last reported scroll position (CSS px).
     /// Frames saved so far by the `AXION_CAPTURE_FRAMES` debug aid.
     capture_frame: u32,
@@ -490,6 +494,9 @@ impl Browser {
         engine.set_internal_pages(Some(home.service()));
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
+        let playlist = crate::playlist::Playlist::new(&profile);
+        let playlist_ui =
+            playlist::PlaylistUi::build(&mut ui, &config, chrome.bar_node(), device.clone(), queue.clone());
         let add_account = AddAccountSheet::build(&mut ui);
         // The dragged tab's lens above the chrome, and the lock screen's alert above all.
         let tab_drag = TabDrag::build(&mut ui);
@@ -534,6 +541,8 @@ impl Browser {
             file_drag_at: None,
             clipboard_reader: ClipboardReader::default(),
             player,
+            playlist,
+            playlist_ui,
             capture_frame: 0,
             captured_frames: Vec::new(),
             pip: None,
@@ -640,6 +649,7 @@ impl Browser {
         };
         browser.show_account();
         browser.update_layout();
+        browser.playlist_start();
         browser.engine.set_color_scheme(browser.dark);
         let mut urls = options.urls;
         if urls.is_empty() && browser.config.tabs.restore_session && browser.restore_session() {
@@ -730,6 +740,10 @@ impl Browser {
     }
 
     fn close_tab(&mut self, index: usize) {
+        if let Some(view) = self.tabs.all().get(index).map(|t| t.view) {
+            self.playlist_flush_tab(view);
+            self.playlist.pending.remove(&view);
+        }
         let previous = self.tabs.active().map(|t| t.view);
         let Some(tab) = self.tabs.remove(index) else { return };
         self.engine.close_view(tab.view);
@@ -781,6 +795,7 @@ impl Browser {
     }
 
     fn on_active_changed(&mut self, previous: Option<ViewId>) {
+        self.close_playlist();
         // Find on Page belongs to the page it was opened on.
         self.close_find();
         self.passwords.hide_prompt(None, false);
@@ -824,7 +839,18 @@ impl Browser {
             }
             return;
         }
+        if self.playlist_open() && !keeps_playlist(action) {
+            self.close_playlist();
+        }
         match action {
+            Action::OpenPlaylist => {
+                if self.playlist_open() {
+                    self.close_playlist();
+                } else {
+                    self.open_playlist();
+                }
+            }
+            Action::PlaylistAdd => self.playlist_add_action(),
             Action::FocusAddressBar => self.edit_address(),
             Action::NewTab => {
                 let home = self.config.general.effective_homepage().to_owned();
@@ -966,6 +992,7 @@ impl Browser {
                 }
             }
             Action::Quit => {}
+            media if self.playlist_open() => self.playlist_media_key(media),
             media => {
                 if let Some((view, command)) = self.player.key_command(media, &self.config) {
                     self.player.wake();
@@ -1304,7 +1331,9 @@ impl Browser {
             }
         };
         match message {
+            axion_media::Message::State(media) if self.playlist_playback_media(view, &media) => {}
             axion_media::Message::State(media) => {
+                self.playlist_tab_media(view, &media);
                 let playing = media.primary().is_some_and(axion_media::Player::is_playing);
                 if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
                     let audible = media.is_audible();
@@ -1901,6 +1930,17 @@ impl Browser {
         let mut planes = self.ui.children(root);
         let original = self.sidebar_before;
         planes.retain(|&n| n != sidebar);
+        if self.playlist_open() && !locked {
+            // The Playlist page lies under the sidebar and the toolbar (whose only visible
+            // part is then the sidebar's button).
+            let page = self.playlist_ui.page.root();
+            planes.retain(|&n| n != page);
+            let at = original.and_then(|next| planes.iter().position(|&n| n == next)).unwrap_or(0);
+            planes.insert(at, sidebar);
+            planes.insert(at, page);
+            self.ui.set_children(root, &planes);
+            return;
+        }
         let at = if locked {
             planes.iter().position(|&n| n == cover).map(|i| i + 1)
         } else {
@@ -1951,6 +1991,7 @@ impl Browser {
     }
 
     fn open_overview(&mut self) {
+        self.close_playlist();
         if let Some(view) = self.active_view() {
             self.engine.set_focus(view, false);
         }
@@ -2209,6 +2250,23 @@ impl Browser {
             MenuItem::new(Icon::Reload, "Reload Without Cache", MenuAction::HardReload),
             MenuItem::new(Icon::Settings, "Settings", MenuAction::Settings),
         ];
+        let mut items = items;
+        if !self.playlist_ui.candidates.is_empty() {
+            let add = MenuItem::new(
+                Icon::PlaylistAdd,
+                "Add to Playlist",
+                MenuAction::Playlist(crate::playlist::Command::Add),
+            );
+            items.insert(2, add);
+        }
+        items.insert(
+            items.len() - 1,
+            MenuItem::new(
+                Icon::Playlist,
+                "Show Playlist",
+                MenuAction::Playlist(crate::playlist::Command::Show),
+            ),
+        );
         self.account_menu.close(&mut self.ui, &self.config);
         let anchor = self.chrome.page_menu_frame(&self.ui);
         let window = self.logical_size();
@@ -2328,6 +2386,7 @@ impl Browser {
             MenuAction::LockAccount => return self.lock_account(),
             MenuAction::Tab(command) => return self.tab_command(command),
             MenuAction::Bookmark(command) => return self.bookmark_command(command),
+            MenuAction::Playlist(command) => return self.playlist_command(command),
             _ => {}
         }
         let Some(tab) = self.tabs.active() else { return };
@@ -2383,6 +2442,7 @@ impl Browser {
             | MenuAction::AccountSettings
             | MenuAction::LockAccount
             | MenuAction::Tab(_)
+            | MenuAction::Playlist(_)
             | MenuAction::Bookmark(_) => {}
         }
     }
@@ -2646,6 +2706,7 @@ impl Browser {
     }
 
     fn navigate_to(&mut self, url: String) {
+        self.close_playlist();
         self.suggestions.hide(&mut self.ui, &self.config);
         if let Some(tab) = self.tabs.active_mut() {
             tab.url.clone_from(&url);
@@ -2664,6 +2725,34 @@ impl Browser {
                     let (ui, config, clipboard) = (&mut self.ui, &mut self.config, &mut self.clipboard);
                     let outcome = self.passwords.event(ui, config, clipboard, self.pointer, event);
                     self.passwords_outcome(outcome);
+                }
+                UiEvent::Clicked { action, .. }
+                    if self.playlist_open()
+                        && crate::playlist_page::PageAction::from_id(action).is_some() =>
+                {
+                    if let Some(action) = crate::playlist_page::PageAction::from_id(action) {
+                        self.playlist_ui.page.menu().close(&mut self.ui, &self.config);
+                        self.playlist_action(action);
+                    }
+                }
+                UiEvent::Clicked { action, .. } if self.playlist_ui.page.menu().owns(action) => {
+                    let click = self.playlist_ui.page.menu().click(&mut self.ui, &self.config, action);
+                    if let Some(MenuClick { action: MenuAction::Playlist(command), .. }) = click {
+                        self.playlist_ui.page.menu().close(&mut self.ui, &self.config);
+                        self.playlist_command(command);
+                    }
+                }
+                UiEvent::Clicked { action, .. } if self.playlist_ui.popover.action(action).is_some() => {
+                    if let Some(action) = self.playlist_ui.popover.action(action) {
+                        self.playlist_popover_action(action);
+                    }
+                }
+                UiEvent::Cancelled { node } if node == self.playlist_ui.page.search_field() => {
+                    let events = self.playlist_ui.page.set_search(&mut self.ui, false);
+                    self.handle_ui_events(events);
+                }
+                UiEvent::ValueChanged { node, value } if node == self.playlist_ui.page.scrubber() => {
+                    self.playlist_seek(value);
                 }
                 UiEvent::Clicked { action, .. } if OverviewAction::from_id(action).is_some() => {
                     if let Some(action) = OverviewAction::from_id(action) {
@@ -2734,6 +2823,7 @@ impl Browser {
                     match self.player.click(&mut self.ui, control, &self.config) {
                         PlayerOutcome::Command(view, command) => self.media_command(view, &command),
                         PlayerOutcome::PictureInPicture(view, player) => self.start_pip(view, player),
+                        PlayerOutcome::AddToPlaylist(view, player) => self.playlist_add_player(view, &player),
                         PlayerOutcome::Nothing => {}
                     }
                 }
@@ -2915,6 +3005,14 @@ impl Browser {
                     Some(ChromeAction::ClearPanel) => self.clear_panel(),
                     Some(ChromeAction::DeletePanelItem(i)) => self.delete_panel_item(i),
                     Some(ChromeAction::Downloads) => self.show_panel(Panel::Downloads),
+                    Some(ChromeAction::Playlist) => {
+                        if self.playlist_open() {
+                            self.close_playlist();
+                        } else {
+                            self.open_playlist();
+                        }
+                    }
+                    Some(ChromeAction::PlaylistButton) => self.toggle_playlist_popover(),
                     Some(ChromeAction::DownloadsButton) => self.toggle_downloads_popover(),
                     Some(ChromeAction::PanelButton(i, k)) => {
                         self.downloads.row_button(List::Panel, i, k, &mut self.engine);
@@ -3092,6 +3190,10 @@ impl Browser {
                             }
                         }
                     }
+                    if loading {
+                        // Leaving a saved video's page keeps the position it reached.
+                        self.playlist_flush_tab(view);
+                    }
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
                         if loading && !tab.loading {
                             // A new page: its count starts over.
@@ -3131,6 +3233,9 @@ impl Browser {
                         self.update_layout();
                     }
                 }
+                // The Playlist page's own player opens no tabs.
+                EngineEvent::NewViewRequested { opener, .. }
+                    if self.playlist.playback.as_ref().is_some_and(|p| p.view == opener) => {}
                 EngineEvent::NewViewRequested { opener, url, kind, user_gesture, opener_frame } => {
                     let opener_url = find_tab(&self.tabs, &self.parked, opener).map(|t| t.url.clone());
                     // Axion's own pages open only from the browser or from each other.
@@ -3178,6 +3283,9 @@ impl Browser {
                 EngineEvent::InternalMessage { view, host, message } => {
                     self.internal_message(view, &host, &message);
                 }
+                EngineEvent::FaviconFailed { view, url } if self.playlist_thumbnail_failed(view, &url) => {}
+                EngineEvent::FaviconReady { view, url, width, height, rgba }
+                    if self.playlist_thumbnail_ready(view, &url, (width, height), &rgba) => {}
                 EngineEvent::FaviconFailed { view, url } => {
                     tracing::debug!("no usable icon at {url}");
                     if let Some(page) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone())
@@ -3211,7 +3319,14 @@ impl Browser {
                 }
                 EngineEvent::Closed { view } => self.page_colors.closed(view),
                 EngineEvent::DownloadUpdated(info) => {
-                    self.downloads.update(info, self.store.as_ref(), &self.config, unix_now());
+                    let playlist_download = self.playlist_download_update(&info);
+                    self.downloads.update(
+                        info,
+                        self.store.as_ref(),
+                        &self.config,
+                        unix_now(),
+                        !playlist_download,
+                    );
                     downloads_changed = true;
                 }
                 EngineEvent::SiteData(sites) => {
@@ -3221,6 +3336,7 @@ impl Browser {
             }
         }
         self.downloads_pump(downloads_changed);
+        self.playlist_housekeeping();
         self.update_home();
         if count > 0 {
             let took = started.elapsed();
@@ -3348,6 +3464,7 @@ impl Browser {
                 self.engine.request_site_data();
             }
             Outcome::ChooseDownloadFolder => self.downloads.choose_folder(),
+            Outcome::ChoosePlaylistFolder => self.downloads.choose_playlist_folder(),
             Outcome::ChooseBackground => self.home.choose_background(),
             Outcome::AddBackground(path) => {
                 if self.home.add_background(&path, &mut self.config) {
@@ -3403,6 +3520,10 @@ impl Browser {
                 downloads::Event::CacheSize(size) => self.settings.set_cache_size(Some(size)),
                 downloads::Event::FolderChosen(folder) => {
                     self.config.downloads.directory = downloads::short_path(&folder);
+                    self.settings_outcome(Outcome::Changed);
+                }
+                downloads::Event::PlaylistFolderChosen(folder) => {
+                    self.config.playlist.directory = downloads::short_path(&folder);
                     self.settings_outcome(Outcome::Changed);
                 }
             }
@@ -3749,6 +3870,12 @@ impl Browser {
                     self.passwords.scroll_by(&mut self.ui, delta.y);
                 } else if self.settings.is_open() {
                     self.settings.scroll_by(&mut self.ui, delta.y);
+                } else if self.playlist_open()
+                    && self.pointer.is_some_and(|p| self.playlist_ui.page.list_contains(&self.ui, p))
+                {
+                    self.playlist_ui.page.scroll_by(&mut self.ui, delta.y);
+                } else if self.playlist_open() && self.pointer.is_some_and(|p| self.playlist_wheel(p, delta))
+                {
                 } else if self.pointer.is_some_and(|p| self.chrome.panel_contains(&self.ui, p)) {
                     self.chrome.scroll_panel(&mut self.ui, delta.y);
                 } else if self.pointer.is_some_and(|p| self.chrome.sections_contains(&self.ui, p)) {
@@ -3803,6 +3930,12 @@ impl Browser {
         }
         let (over_ui, events) = self.ui.handle(UiInput::PointerMove(p));
         self.handle_ui_events(events);
+        if self.playlist_open() {
+            // The Playlist's video area is a page of its own; the one below rests.
+            self.playlist_pointer(p, None);
+            self.update_cursor();
+            return;
+        }
         if over_ui || self.pointer_captured_by_ui || self.is_locked() {
             self.leave_page();
         } else if let Some(view) = self.active_view() {
@@ -3892,6 +4025,24 @@ impl Browser {
         }
         if pressed && self.shields_popover.is_open() && !self.shields_popover.contains(&self.ui, p) {
             self.shields_popover.close(&mut self.ui, &self.config);
+            return;
+        }
+        if pressed
+            && self.playlist_ui.popover.is_open()
+            && !self.playlist_ui.popover.contains(&self.ui, p)
+            && !self.chrome.playlist_button_frame(&self.ui).contains(p)
+        {
+            self.playlist_ui.popover.close(&mut self.ui, &self.config);
+            return;
+        }
+        if pressed && self.playlist_open() && self.playlist_ui.page.menu().is_open() {
+            // A click outside a Playlist menu only dismisses it.
+            if !self.playlist_ui.page.menu().contains(&self.ui, p) {
+                self.playlist_ui.page.menu().close(&mut self.ui, &self.config);
+                return;
+            }
+        }
+        if self.playlist_open() && self.playlist_pointer(p, Some((button, pressed))) {
             return;
         }
         if button == winit::event::MouseButton::Left
@@ -3987,6 +4138,15 @@ impl Browser {
             self.close_settings();
             return false;
         }
+        if pressed
+            && self.playlist_open()
+            && !self.settings.is_open()
+            && self.ui.focused().is_none()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+            && self.playlist_escape()
+        {
+            return false;
+        }
         if pressed && self.tab_drag.is_dragging() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.tab_drag.cancel(&mut self.ui);
             self.tabs_changed = true;
@@ -4051,7 +4211,9 @@ impl Browser {
             && let Some(chord) = input::chord(event, self.modifiers)
             && let Some(action) = self.keymap.action_for(&chord)
             // Media keys (Space, arrows…) are ours only while a video is fullscreen.
-            && (!action.is_media() || self.player.mode() == PlayerMode::Fullscreen && self.ui.focused().is_none())
+            && (!action.is_media()
+                || (self.player.mode() == PlayerMode::Fullscreen || self.playlist_open())
+                    && self.ui.focused().is_none())
             // Pasting into the page is ours only where its engine can't reach the clipboard;
             // fields of the chrome paste by themselves.
             && (!matches!(action, Action::Paste | Action::PastePlainText)
@@ -4207,6 +4369,41 @@ impl Browser {
                 }
                 "bookmarks" => self.show_panel(Panel::Bookmarks),
                 "settings" => self.run(Action::OpenSettings),
+                // Capture aids for the Playlist: its page, the Add popover, adding the page's
+                // video, playing row N, a search, a row's menu, edit mode, the player's menus.
+                "playlist" => self.open_playlist(),
+                "playlist-popover" => self.toggle_playlist_popover(),
+                "playlist-add" => self.run(Action::PlaylistAdd),
+                "playlist-edit" => self.playlist_action(crate::playlist_page::PageAction::Edit),
+                "playlist-speed" => self.playlist_action(crate::playlist_page::PageAction::Speed),
+                "playlist-sleep" => self.playlist_action(crate::playlist_page::PageAction::Sleep),
+                "playlist-popout" => self.playlist_action(crate::playlist_page::PageAction::Fullscreen),
+                play if play.starts_with("playlist-play:") => {
+                    if let Some(id) = play["playlist-play:".len()..]
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|i| self.playlist_ui.shown.get(i).copied())
+                    {
+                        self.playlist_play(id);
+                    }
+                }
+                menu if menu.starts_with("playlist-menu:") => {
+                    if let Ok(i) = menu["playlist-menu:".len()..].parse::<usize>() {
+                        self.playlist_action(crate::playlist_page::PageAction::RowMenu(i));
+                    }
+                }
+                query if query.starts_with("playlist-search:") => {
+                    let events = self.playlist_ui.page.set_search(&mut self.ui, true);
+                    self.handle_ui_events(events);
+                    let field = self.playlist_ui.page.search_field();
+                    self.ui.set_field_text(field, &query["playlist-search:".len()..]);
+                }
+                "playlist-download" => {
+                    let ids: Vec<i64> = self.playlist.items.iter().map(|i| i.id).collect();
+                    for id in ids {
+                        self.playlist_command(crate::playlist::Command::Download(id));
+                    }
+                }
                 // Capture aid: what the start page's path field sends ("home-background:PATH"),
                 // and picking a background in its gear panel ("home-select:N", 0: none).
                 path if path.starts_with("home-background:") => {
@@ -4736,6 +4933,11 @@ impl Browser {
         let address = self.chrome.address_frame(&self.ui);
         self.passwords.animate(&mut self.ui, &self.config, dt, address);
         self.update_player(dt);
+        self.update_playlist_buttons();
+        self.playlist_ui.popover.animate(&mut self.ui, dt);
+        if self.playlist_open() {
+            self.update_playlist_page(dt);
+        }
         self.suggestions.animate(&mut self.ui, dt);
         if self.overview.is_open() {
             let query = self.ui.field_text(self.overview.search_field()).unwrap_or_default().to_owned();
@@ -5227,6 +5429,24 @@ fn allowed_while_locked(action: Action) -> bool {
     )
 }
 
+/// Actions that leave the Playlist page open (the others — new tab, address bar, reload … —
+/// are about the tab below it, so the page gives way first).
+fn keeps_playlist(action: Action) -> bool {
+    action.is_media()
+        || matches!(
+            action,
+            Action::ToggleSidebar
+                | Action::OpenPlaylist
+                | Action::OpenSettings
+                | Action::ShowBookmarks
+                | Action::ShowHistory
+                | Action::OpenPasswords
+                | Action::Lock
+                | Action::ToggleFullscreen
+                | Action::Quit
+        )
+}
+
 /// Chrome controls that still work while private browsing is shown locked.
 fn chrome_allowed_while_locked(action: ChromeAction) -> bool {
     !matches!(
@@ -5370,7 +5590,7 @@ mod tests {
     /// private tabs; and Passwords swallowed the sidebar's rows of the other tab group.)
     #[test]
     fn action_ids_are_never_shared() {
-        for id in 0..30_000 {
+        for id in 0..60_000 {
             let id = ActionId(id);
             let claims = [
                 ChromeAction::from_id(id).is_some(),
@@ -5381,6 +5601,9 @@ mod tests {
                 PlayerControl::from_id(id).is_some(),
                 (CONTEXT_MENU_BASE..CONTEXT_MENU_BASE + 4 * MAX_ITEMS as u32).contains(&id.0),
                 (PAGE_MENU_BASE..ACCOUNT_MENU_BASE + MAX_ITEMS as u32).contains(&id.0),
+                crate::playlist_page::PageAction::owns(id),
+                (crate::playlist_page::MENU_BASE..crate::playlist_page::MENU_BASE + 2 * MAX_ITEMS as u32)
+                    .contains(&id.0),
             ];
             assert!(
                 claims.iter().filter(|&&c| c).count() <= 1,
