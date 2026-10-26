@@ -703,10 +703,10 @@ pub enum BookmarksBar {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TabBarStyle {
-    /// Address bar row, and the tabs in a row below it.
+    /// Address bar row, and the tabs in a row below it (the default).
+    #[default]
     Separate,
     /// One row: the tabs, the current one holding the address.
-    #[default]
     Compact,
 }
 
@@ -732,7 +732,7 @@ impl Default for Layout {
             bookmarks_bar: BookmarksBar::Always,
             page_corner_radius: 10.0,
             page_margin: 8.0,
-            tab_bar: TabBarStyle::Compact,
+            tab_bar: TabBarStyle::Separate,
             home_button: true,
             hide_bar_on_scroll: None,
         }
@@ -1517,7 +1517,7 @@ mod tests {
     #[test]
     fn removed_layout_keys_still_load() {
         let c: Config = toml::from_str("[layout]\nhide_bar_on_scroll = true").unwrap();
-        assert_eq!(c.layout.tab_bar, TabBarStyle::Compact);
+        assert_eq!(c.layout.tab_bar, TabBarStyle::Separate);
         assert!(!toml::to_string(&c).unwrap().contains("hide_bar_on_scroll"));
     }
 

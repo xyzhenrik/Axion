@@ -3201,7 +3201,9 @@ mod tests {
     /// hid back, share, new tab and downloads, and nothing showed them again).
     #[test]
     fn unlocking_restores_the_toolbar() {
-        let config = Config::default();
+        // The capsule belongs to the compact tab bar, which is no longer the default.
+        let mut config = Config::default();
+        config.layout.tab_bar = TabBarStyle::Compact;
         let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
         let mut chrome = Chrome::build(&mut ui, &config);
         let window = Vec2::new(1400.0, 900.0);
