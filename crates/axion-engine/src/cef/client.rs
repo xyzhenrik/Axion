@@ -15,6 +15,7 @@ use glam::Vec2;
 
 use super::dmabuf::{self, ImportCache};
 use super::network::{Network, build_request_handler};
+use super::settle::Settle;
 use crate::{
     CursorKind, EngineEvent, INTERNAL_SCHEME, IconLink, NewViewKind, PAGE_MESSAGE_PREFIX, PageMeta,
     ThemeColor, ViewId,
@@ -34,6 +35,8 @@ pub(super) struct Shared {
     pub page_script: RefCell<Option<String>>,
     pub downloads: Rc<super::download::Downloads>,
     pub stats: super::stats::Stats,
+    /// How long after Chromium hands over a GPU frame it is copied (`ViewContext::submit_gpu_frame`).
+    pub frame_settle: Duration,
 }
 
 #[derive(Default)]
@@ -44,6 +47,8 @@ pub(super) struct ViewFrames {
     pub import_failures: Cell<u32>,
     /// Chromium's shared buffers, imported once each.
     imports: RefCell<ImportCache>,
+    /// The newest GPU frame, waiting for its copy to be due (see `ViewContext::submit_gpu_frame`).
+    scheduled: RefCell<Settle<(wgpu::Texture, Region)>>,
     /// GPU frames whose copy is submitted but not yet known to be drawn, oldest first.
     pending: RefCell<VecDeque<PendingFrame>>,
     /// Frame textures and read-back buffers to use again.
@@ -62,9 +67,15 @@ impl ViewFrames {
     /// Lets go of everything that refers to Chromium's buffers (the view's page closed).
     pub fn release_shared(&self) {
         self.imports.borrow_mut().clear();
+        self.scheduled.borrow_mut().clear();
         self.pending.borrow_mut().clear();
         self.spare_textures.borrow_mut().clear();
         self.spare_checks.borrow_mut().clear();
+    }
+
+    /// When the frame waiting to be copied is due, if there is one.
+    pub fn copy_due(&self) -> Option<Instant> {
+        self.scheduled.borrow().due()
     }
 
     pub fn has_pending(&self) -> bool {
@@ -76,6 +87,9 @@ impl ViewFrames {
         self.letterbox_until.set(Some(Instant::now() + LETTERBOX_WATCH));
     }
 }
+
+/// The part of a shared buffer that holds the page, and its size.
+type Region = (wgpu::Origin3d, wgpu::Extent3d);
 
 /// A shared GPU frame on its way: copied into `texture`, with a few rows read back into `check`
 /// to see whether Chromium had finished drawing it.
@@ -194,6 +208,29 @@ impl ViewContext {
         };
         frames.imported_any.set(true);
         let region = content_region(&source, &info.extra.content_rect);
+        let settle = self.shared.frame_settle;
+        if !settle.is_zero() {
+            // A newer frame replaces one that hasn't been copied yet: it shows the page later.
+            let now = Instant::now();
+            if let Some((source, region)) = frames.scheduled.borrow_mut().offer((source, region), now, settle)
+            {
+                self.copy_gpu_frame(source, region);
+            }
+            return;
+        }
+        self.copy_gpu_frame(source, region);
+    }
+
+    /// Starts copying the scheduled frame once it is due.
+    fn start_scheduled(&self) {
+        let due = self.frames.scheduled.borrow_mut().take_due(Instant::now());
+        if let Some((source, region)) = due {
+            self.copy_gpu_frame(source, region);
+        }
+    }
+
+    fn copy_gpu_frame(&self, source: wgpu::Texture, region: Region) {
+        let frames = &self.frames;
         let texture = self.frame_texture(region.1, source.format());
         let check = self.check_buffer(region.1.width);
         let frame = PendingFrame {
@@ -230,6 +267,7 @@ impl ViewContext {
     /// `FRAME_READY_TIMEOUT`. Never waits for the GPU.
     pub fn resolve_frames(&self) {
         let frames = &self.frames;
+        self.start_scheduled();
         if !frames.has_pending() {
             return;
         }

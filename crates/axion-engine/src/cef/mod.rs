@@ -14,6 +14,7 @@ mod network;
 mod paste;
 mod schedule;
 mod scheme;
+mod settle;
 mod stats;
 
 use std::collections::BTreeMap;
@@ -158,6 +159,8 @@ pub struct CefOptions {
     pub no_sandbox: bool,
     /// Frames per second views render at most (see `Engine::set_frame_rate`).
     pub max_frame_rate: u32,
+    /// How long after Chromium hands over a GPU frame it is copied (see `ViewContext::submit_gpu_frame`).
+    pub frame_settle: std::time::Duration,
     /// Decode video on the GPU (VA-API).
     pub hardware_video_decoding: bool,
     /// Wakes the embedder's event loop when Chromium has work (see [`Engine::next_pump`]).
@@ -223,7 +226,7 @@ impl CefEngine {
         Ok(Self {
             device,
             queue,
-            shared: Rc::default(),
+            shared: Rc::new(Shared { frame_settle: options.frame_settle, ..Default::default() }),
             views: BTreeMap::new(),
             next_id: 1,
             accelerated: options.accelerated,
@@ -789,7 +792,9 @@ impl Engine for CefEngine {
     }
 
     fn next_pump(&self) -> Option<Instant> {
-        Some(self.schedule.next())
+        // A frame waiting to be copied is due sooner than Chromium's own schedule.
+        let due = self.views.values().filter_map(|v| v.ctx.frames.copy_due()).min();
+        Some(due.map_or(self.schedule.next(), |d| d.min(self.schedule.next())))
     }
 
     fn pump(&mut self) -> Vec<EngineEvent> {

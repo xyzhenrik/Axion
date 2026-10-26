@@ -53,6 +53,7 @@ mod tabdrag;
 mod tabs;
 mod toast;
 mod tooltip;
+mod typing_probe;
 mod url;
 
 use std::time::Duration;
@@ -174,6 +175,7 @@ impl ApplicationHandler for App {
                 event_loop.exit();
                 return;
             }
+            browser.tick_probe();
             browser.sync_windows(event_loop);
             browser.pump();
             // Sleep until the next frame (requested below; the compositor's frame callback

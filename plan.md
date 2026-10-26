@@ -211,6 +211,14 @@ Extensions, sync, reader mode, Windows/macOS builds, touchscreen polish.
     (`tabs.max_frame_rate`); external begin frames from our loop halved pages' main-thread
     frame rate. Chromium's message loop is pumped when it asks
     (`OnScheduleMessagePumpWork` wakes winit) instead of a busy loop.
+- [x] **Typed letters vanishing on GPU frames** (NVIDIA / Wayland default): Chromium reports a
+    dma-buf frame once its drawing is submitted and NVIDIA attaches no fence (checked: the
+    buffer's sync file is always signalled), so copying at once could read the pooled buffer's
+    previous content (the letter just typed missing for a frame, or until the next caret-blink
+    paint ~500 ms later). The newest frame is now held `tabs.gpu_frame_settle_ms` (6) before it is
+    copied (`cef/settle.rs`). Measured with `AXION_TYPE_PROBE`: 2-9 vanished frames and 120-510 ms
+    latency spikes per 24 characters before, 0 and <=40 ms after. A frame later than the settle
+    time on a very busy GPU can still be stale: raise the key.
 - [ ] **Input forwarding spike**: mouse, keyboard (incl. IME), scroll, touchpad gestures into CEF.
   *(mouse, wheel, keys and text implemented in the spike, not yet verified by hand; IME and
   touchpad gestures still open)*
