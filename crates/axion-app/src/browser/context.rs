@@ -77,7 +77,10 @@ impl Browser {
         let items = tab_items(info, &self.keymap);
         self.close_other_menus();
         self.context_tab = Some((item.view, item.private));
-        self.context_row = Some((item.view, item.private, item.surface));
+        // A sidebar row is covered by its menu (which grows out of it); in the top bar the
+        // menu drips out below the tab's glass instead, bridged to it like the page menu.
+        let in_sidebar = item.surface == crate::chrome::Surface::Sidebar;
+        self.context_row = in_sidebar.then_some((item.view, item.private, item.surface));
         let plane = self.chrome.tab_plane(&item);
         let anchor = self.ui.frame(item.node);
         let window = self.logical_size();
@@ -87,9 +90,9 @@ impl Browser {
             plane,
             anchor,
             window,
-            Placement::Over,
+            if in_sidebar { Placement::Over } else { Placement::BelowStart },
             items,
-            Some(item.node),
+            in_sidebar.then_some(item.node),
         );
     }
 

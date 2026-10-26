@@ -142,6 +142,11 @@ pub fn bookmark_items(index: usize) -> Vec<MenuItem> {
     ]
 }
 
+/// How far into the tab (or bookmark) it flows out of a context menu's bridge reaches, as a
+/// share of its height: tabs are thin and an inactive one has hardly any glass of its own, so
+/// a deeper bridge would cut across its label.
+const BRIDGE_INTO_JOIN: f32 = 0.3;
+
 /// One glass menu per plane things can be right-clicked in.
 pub struct ContextMenus {
     menus: Vec<(NodeId, Menu)>,
@@ -161,7 +166,9 @@ impl ContextMenus {
             .enumerate()
             .map(|(k, &plane)| {
                 let base = CONTEXT_MENU_BASE + (k * MAX_ITEMS) as u32;
-                (plane, Menu::build(ui, plane, base, Placement::BelowStart))
+                let mut menu = Menu::build(ui, plane, base, Placement::BelowStart);
+                menu.set_bridge_into_join(BRIDGE_INTO_JOIN);
+                (plane, menu)
             })
             .collect();
         Self { page: menus.len() - 1, menus, covered: None }

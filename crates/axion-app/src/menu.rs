@@ -236,6 +236,55 @@ fn plate(ui: &mut Ui, panel: NodeId, config: &Config) {
     );
 }
 
+/// Where a menu of `width` x `height` goes for `placement` around `anchor`, kept inside
+/// `window` (all logical px).
+pub fn target_frame(placement: Placement, anchor: Frame, window: Vec2, width: f32, height: f32) -> Frame {
+    let max_left = (window.x - width - WINDOW_MARGIN).max(WINDOW_MARGIN);
+    match placement {
+        Placement::Below => {
+            // A little past the button, so the bridge reaches as far as the address field does.
+            let right = anchor.origin.x + anchor.size.x + BEYOND_ANCHOR;
+            let left = (right - width).clamp(WINDOW_MARGIN, max_left);
+            Frame::new(left, anchor.origin.y + anchor.size.y + GAP_TO_ANCHOR, width, height)
+        }
+        Placement::BelowStart => {
+            let left = anchor.origin.x.clamp(WINDOW_MARGIN, max_left);
+            let below = anchor.origin.y + anchor.size.y + GAP_TO_ANCHOR;
+            let above = anchor.origin.y - GAP_TO_ANCHOR - height;
+            // Below the anchor; flips above it when it would run off the window's bottom
+            // and fits there; else it is pushed up as far as it must.
+            let top = if below + height + WINDOW_MARGIN <= window.y || above < WINDOW_MARGIN {
+                let max_top = (window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN);
+                below.min(max_top)
+            } else {
+                above
+            };
+            Frame::new(left, top, width, height)
+        }
+        Placement::Over => {
+            let left = anchor.origin.x.clamp(WINDOW_MARGIN, max_left);
+            let bottom_up = anchor.origin.y + anchor.size.y - height;
+            let top = if anchor.origin.y + height + WINDOW_MARGIN <= window.y || bottom_up < WINDOW_MARGIN {
+                anchor.origin.y.min((window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN))
+            } else {
+                bottom_up
+            };
+            Frame::new(left, top, width, height)
+        }
+        Placement::OverCentered => {
+            let left = (anchor.origin.x + anchor.size.x / 2.0 - width / 2.0).clamp(WINDOW_MARGIN, max_left);
+            let top = (anchor.origin.y + anchor.size.y - height)
+                .clamp(WINDOW_MARGIN, (window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN));
+            Frame::new(left, top, width, height)
+        }
+        Placement::Above => {
+            let left = anchor.origin.x.clamp(WINDOW_MARGIN, max_left);
+            let top = (anchor.origin.y - GAP_TO_ANCHOR - height).max(WINDOW_MARGIN);
+            Frame::new(left, top, width, height)
+        }
+    }
+}
+
 /// What a click in a menu means.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MenuClick {
@@ -311,6 +360,11 @@ impl Menu {
         self.min_width = width;
     }
 
+    /// See [`Popover::set_bridge_into_join`].
+    pub fn set_bridge_into_join(&mut self, share: f32) {
+        self.popover.set_bridge_into_join(share);
+    }
+
     /// Where the next `open` places the menu.
     pub fn set_placement(&mut self, placement: Placement) {
         self.placement = placement;
@@ -372,52 +426,7 @@ impl Menu {
             Placement::Above => anchor.size.x.max(WIDTH * 0.75),
         }
         .max(self.min_width);
-        let max_left = (window.x - width - WINDOW_MARGIN).max(WINDOW_MARGIN);
-        let target = match self.placement {
-            Placement::Below => {
-                // A little past the button, so the bridge reaches as far as the address field does.
-                let right = anchor.origin.x + anchor.size.x + BEYOND_ANCHOR;
-                let left = (right - width).clamp(WINDOW_MARGIN, max_left);
-                Frame::new(left, anchor.origin.y + anchor.size.y + GAP_TO_ANCHOR, width, height)
-            }
-            Placement::BelowStart => {
-                let left = anchor.origin.x.clamp(WINDOW_MARGIN, max_left);
-                let below = anchor.origin.y + anchor.size.y + GAP_TO_ANCHOR;
-                let above = anchor.origin.y - GAP_TO_ANCHOR - height;
-                // Below the anchor; flips above it when it would run off the window's bottom
-                // and fits there; else it is pushed up as far as it must.
-                let top = if below + height + WINDOW_MARGIN <= window.y || above < WINDOW_MARGIN {
-                    let max_top = (window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN);
-                    below.min(max_top)
-                } else {
-                    above
-                };
-                Frame::new(left, top, width, height)
-            }
-            Placement::Over => {
-                let left = anchor.origin.x.clamp(WINDOW_MARGIN, max_left);
-                let bottom_up = anchor.origin.y + anchor.size.y - height;
-                let top = if anchor.origin.y + height + WINDOW_MARGIN <= window.y || bottom_up < WINDOW_MARGIN
-                {
-                    anchor.origin.y.min((window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN))
-                } else {
-                    bottom_up
-                };
-                Frame::new(left, top, width, height)
-            }
-            Placement::OverCentered => {
-                let left =
-                    (anchor.origin.x + anchor.size.x / 2.0 - width / 2.0).clamp(WINDOW_MARGIN, max_left);
-                let top = (anchor.origin.y + anchor.size.y - height)
-                    .clamp(WINDOW_MARGIN, (window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN));
-                Frame::new(left, top, width, height)
-            }
-            Placement::Above => {
-                let left = anchor.origin.x.clamp(WINDOW_MARGIN, max_left);
-                let top = (anchor.origin.y - GAP_TO_ANCHOR - height).max(WINDOW_MARGIN);
-                Frame::new(left, top, width, height)
-            }
-        };
+        let target = target_frame(self.placement, anchor, window, width, height);
         self.popover.open(ui, config, anchor, target);
     }
 
