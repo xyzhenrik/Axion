@@ -35,9 +35,72 @@ pub fn same_site(saved: &str, page_url: &str) -> bool {
     matches!((registrable(saved), registrable(page_url)), (Some(a), Some(b)) if a == b)
 }
 
+/// Groups of registrable domains that share one sign-in (google.com and youtube.com), so a
+/// login saved for one is offered on the others. Matching stays exact within a group:
+/// subdomains of a member belong to it, look-alikes don't.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Related {
+    groups: Vec<Vec<String>>,
+}
+
+impl Related {
+    /// Normalises each entry to its registrable domain; groups with fewer than two members
+    /// are dropped.
+    pub fn new<G, S>(groups: &[G]) -> Self
+    where
+        G: AsRef<[S]>,
+        S: AsRef<str>,
+    {
+        let groups = groups
+            .iter()
+            .map(|g| {
+                let mut members: Vec<String> =
+                    g.as_ref().iter().filter_map(|d| registrable(d.as_ref())).collect();
+                members.sort();
+                members.dedup();
+                members
+            })
+            .filter(|g| g.len() >= 2)
+            .collect();
+        Self { groups }
+    }
+
+    /// The registrable domain of `site` and every domain related to it.
+    pub fn domains(&self, site: &str) -> Vec<String> {
+        let Some(own) = registrable(site) else { return Vec::new() };
+        let mut out = vec![own.clone()];
+        for group in self.groups.iter().filter(|g| g.contains(&own)) {
+            for d in group {
+                if !out.contains(d) {
+                    out.push(d.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// [`same_site`], widened by the groups.
+    pub fn same_site(&self, saved: &str, page_url: &str) -> bool {
+        let Some(saved) = registrable(saved) else { return false };
+        self.domains(page_url).contains(&saved)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn related_domains() {
+        let r = Related::new(&[vec!["google.com", "https://www.youtube.com"], vec!["lonely.com"]]);
+        assert!(r.same_site("accounts.google.com", "https://youtube.com/"));
+        assert!(r.same_site("https://youtube.com", "https://accounts.google.com/signin"));
+        assert!(r.same_site("example.com", "https://login.example.com/"));
+        assert!(!r.same_site("google.com", "https://evil-youtube.com/"));
+        assert!(!r.same_site("google.com", "https://youtube.com.evil.net/"));
+        assert!(!r.same_site("lonely.com", "https://other.com/"));
+        assert_eq!(r.domains("https://other.com"), vec!["other.com"]);
+    }
 
     #[test]
     fn matching() {

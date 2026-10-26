@@ -303,6 +303,8 @@ pub struct Browser {
     sheet_origin: Option<Origin>,
     /// Search engine icons being fetched for the start page (once per run).
     engine_icons: Option<std::sync::mpsc::Receiver<crate::engine_icons::EngineIcon>>,
+    /// Icons of the saved logins' sites being fetched for the Passwords list.
+    password_icons: Option<std::sync::mpsc::Receiver<crate::engine_icons::EngineIcon>>,
     /// The page menu row clicked last (where a sheet it opens comes out of).
     menu_click_frame: Option<Rect>,
     /// Capture aid "sweep:X1:Y1:X2:Y2:N": the pointer moves from one point to the other in N
@@ -571,6 +573,7 @@ impl Browser {
             slide_fade: None,
             sheet_origin: None,
             engine_icons: None,
+            password_icons: None,
             menu_click_frame: None,
             open_at: options.open.clone().filter(|_| options.capture.is_some()).map(|what| {
                 (
@@ -2409,6 +2412,44 @@ impl Browser {
         }
         if !icons.is_empty() {
             self.home.icons_changed();
+        }
+    }
+
+    /// While the Passwords sheet is open: shows the icons of its logins' sites, and fetches the
+    /// ones that aren't cached (a few at a time, in the background).
+    fn sync_password_icons(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        let mut finished = false;
+        if let Some(rx) = &self.password_icons {
+            loop {
+                match rx.try_recv() {
+                    Ok(icon) => {
+                        self.favicons.insert(
+                            &icon.site,
+                            &icon.url,
+                            icon.width,
+                            icon.height,
+                            &icon.rgba,
+                            true,
+                        );
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        finished = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if finished {
+            self.password_icons = None;
+        }
+        if !self.passwords.is_open() {
+            return;
+        }
+        let missing = self.passwords.sync_icons(&mut self.ui, &self.config, &self.favicons);
+        if !missing.is_empty() && self.password_icons.is_none() {
+            self.password_icons = Some(crate::engine_icons::fetch(missing));
         }
     }
 
@@ -4405,6 +4446,7 @@ impl Browser {
         }
         self.settings.poll_search(&mut self.ui, &self.config, &self.keymap);
         self.take_engine_icons();
+        self.sync_password_icons();
         // Keeps the sidebar's scroll in range when its content got shorter (tabs closed).
         self.chrome.scroll_sections(&mut self.ui, 0.0);
         self.update_suggestions();

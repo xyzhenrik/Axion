@@ -42,6 +42,7 @@ mod item;
 mod platform;
 pub mod site;
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -118,6 +119,10 @@ pub struct Vault {
     key: Option<Key>,
     items: Vec<Item>,
     last_activity: Instant,
+    /// Domains that share a sign-in (see [`site::Related`]).
+    related: site::Related,
+    /// Site tags read from the index, for the locked-state check (see [`Vault::site_known`]).
+    index: RefCell<Option<Vec<[u8; crypto::SITE_TAG_LEN]>>>,
     /// Tests: make the format upgrade fail just before it commits.
     #[cfg(test)]
     fail_upgrade: bool,
@@ -149,6 +154,8 @@ impl Vault {
             key: None,
             items: Vec::new(),
             last_activity: Instant::now(),
+            related: site::Related::default(),
+            index: RefCell::new(None),
             #[cfg(test)]
             fail_upgrade: false,
         })
@@ -197,6 +204,7 @@ impl Vault {
         }
         self.key = Some(self.write_key(password, params)?);
         self.items.clear();
+        self.reindex();
         self.touch();
         Ok(())
     }
@@ -301,6 +309,7 @@ impl Vault {
         };
         self.key = Some(key);
         self.last_activity = Instant::now();
+        self.reindex();
         Ok(())
     }
 
@@ -413,6 +422,7 @@ impl Vault {
         self.write(&id, &envelope)?;
         self.items.push(Item { id: id.clone(), data: envelope.data, created: at, modified: at });
         self.sort();
+        self.reindex();
         self.touch();
         Ok(id)
     }
@@ -427,6 +437,7 @@ impl Vault {
             item.modified = envelope.modified;
         }
         self.sort();
+        self.reindex();
         self.touch();
         Ok(())
     }
@@ -435,6 +446,7 @@ impl Vault {
         self.key()?;
         self.conn.execute("DELETE FROM items WHERE id = ?1", [id])?;
         self.items.retain(|i| i.id != id);
+        self.reindex();
         self.touch();
         Ok(())
     }
@@ -443,8 +455,59 @@ impl Vault {
     pub fn logins_for(&self, page_url: &str) -> Vec<&Item> {
         self.items
             .iter()
-            .filter(|i| matches!(&i.data, ItemData::Login(l) if site::same_site(&l.site, page_url)))
+            .filter(|i| matches!(&i.data, ItemData::Login(l) if self.related.same_site(&l.site, page_url)))
             .collect()
+    }
+
+    /// Sets which domains share a sign-in (config: `passwords.related_domains`).
+    pub fn set_related(&mut self, related: site::Related) {
+        self.related = related;
+    }
+
+    /// Rewrites the site index from the (unlocked) items: one keyed tag per registrable
+    /// domain with a login. Only tags are stored, never domains (see [`crypto::site_tag`]).
+    fn reindex(&self) {
+        let result = (|| -> Result<()> {
+            let device = self.device.secret()?;
+            let mut tags: Vec<[u8; crypto::SITE_TAG_LEN]> = Vec::new();
+            for item in &self.items {
+                if let ItemData::Login(l) = &item.data
+                    && let Some(domain) = site::registrable(&l.site)
+                {
+                    let tag =
+                        crypto::site_tag(&device, &domain).map_err(|_| VaultError::Corrupt("site index"))?;
+                    if !tags.contains(&tag) {
+                        tags.push(tag);
+                    }
+                }
+            }
+            self.set_meta("site_index", &tags.concat())?;
+            *self.index.borrow_mut() = Some(tags);
+            Ok(())
+        })();
+        if let Err(e) = result {
+            tracing::warn!("updating the vault's site index failed: {e}");
+        }
+    }
+
+    /// Whether a login is saved for the site of `page_url` (or a related one), answered
+    /// without unlocking, from the keyed index. `None` if the vault has no index yet (it is
+    /// made on the next unlock) or the device key can't be read.
+    pub fn site_known(&self, page_url: &str) -> Option<bool> {
+        if self.index.borrow().is_none() {
+            let raw = self.meta("site_index").ok().flatten()?;
+            let tags = raw.as_chunks::<{ crypto::SITE_TAG_LEN }>().0.to_vec();
+            *self.index.borrow_mut() = Some(tags);
+        }
+        let device = self.device.secret().ok()?;
+        let index = self.index.borrow();
+        let tags = index.as_ref()?;
+        Some(
+            self.related
+                .domains(page_url)
+                .iter()
+                .any(|d| crypto::site_tag(&device, d).is_ok_and(|t| tags.contains(&t))),
+        )
     }
 
     /// The saved login for this site and user name, if any.
@@ -511,6 +574,7 @@ impl Vault {
         let count = added.len();
         self.items.extend(added);
         self.sort();
+        self.reindex();
         self.touch();
         Ok(count)
     }
@@ -532,6 +596,7 @@ impl Vault {
         self.items = added;
         self.sort();
         self.key = Some(key);
+        self.reindex();
         self.touch();
         Ok(count)
     }
@@ -617,6 +682,36 @@ mod tests {
             password: pw.into(),
             notes: String::new(),
         })
+    }
+
+    #[test]
+    fn the_site_index_answers_while_locked() {
+        let mut v = vault();
+        v.set_related(site::Related::new(&[vec!["google.com", "youtube.com"]]));
+        v.add(login("https://accounts.google.com", "me", "pw")).unwrap();
+        assert_eq!(v.site_known("https://youtube.com/"), Some(true));
+        v.lock();
+        assert_eq!(v.site_known("https://login.google.com/x"), Some(true));
+        assert_eq!(v.site_known("https://youtube.com/"), Some(true));
+        assert_eq!(v.site_known("https://example.org/"), Some(false));
+        // The stored index doesn't contain the domain.
+        let raw = v.meta("site_index").unwrap().unwrap();
+        assert_eq!(raw.len(), crypto::SITE_TAG_LEN);
+        assert!(!raw.windows(6).any(|w| w == b"google"));
+        // Deleting the last login empties it.
+        v.unlock("test-only-pass").unwrap();
+        let id = v.items()[0].id.clone();
+        v.delete(&id).unwrap();
+        v.lock();
+        assert_eq!(v.site_known("https://youtube.com/"), Some(false));
+    }
+
+    #[test]
+    fn a_vault_without_an_index_doesnt_know() {
+        let v = vault();
+        v.conn.execute("DELETE FROM meta WHERE key = 'site_index'", []).unwrap();
+        *v.index.borrow_mut() = None;
+        assert_eq!(v.site_known("https://example.org/"), None);
     }
 
     #[test]

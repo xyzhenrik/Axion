@@ -29,7 +29,7 @@ pub const FETCH_SIZE: u32 = 64;
 /// Complete passes over the candidates per site and session (the second after loading).
 const MAX_ROUNDS: u32 = 2;
 
-type SiteIcon = (wgpu::TextureView, (u32, u32));
+pub(crate) type SiteIcon = (wgpu::TextureView, (u32, u32));
 
 /// The page colour scheme an icon is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
