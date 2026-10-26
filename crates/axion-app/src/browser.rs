@@ -5514,7 +5514,13 @@ impl Browser {
                         format!("glass×{}(blur {:.0})", shapes.len(), params.blur_radius)
                     }
                     Layer::Content(c) => {
-                        format!("content(q{} i{} t{})", c.quads.len(), c.images.len(), c.text.len())
+                        format!(
+                            "content(q{} i{} icons{} t{})",
+                            c.quads.len(),
+                            c.images.len(),
+                            c.icons.len(),
+                            c.text.len()
+                        )
                     }
                 })
                 .collect();

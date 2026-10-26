@@ -144,69 +144,27 @@ pub(crate) fn rasterize(request: RasterizeCustomGlyphRequest) -> Option<Rasteriz
     let path = kurbo::BezPath::from_svg(icon.path()).ok()?;
     let scale = w.min(h) as f64 / 24.0;
 
-    // Grid fitting: the stroke is a whole number of pixels wide and every anchor sits on the
-    // pixel grid that stroke needs (pixel centres for odd widths, pixel edges for even ones), so
-    // horizontal and vertical strokes cover whole pixels instead of two half-covered ones
-    // (dark glyphs on light glass read as fuzzy otherwise). Control points ride along with
-    // their anchor, which keeps curves smooth. Rotated glyphs (spinners) stay unfitted.
-    let stroke_px = if rotation == 0.0 {
-        (weight.stroke() * scale as f32).round().max(1.0)
-    } else {
-        weight.stroke() * scale as f32
-    };
-    let fit = rotation == 0.0;
-    let grid = if stroke_px.round() as u32 % 2 == 1 { 0.5 } else { 0.0 };
-    let snap = |v: f32| if fit { (v - grid).round() + grid } else { v };
-    // An anchor in pixels, snapped; returns it with the shift the snapping made.
-    let anchor = |pt: kurbo::Point, prev: Option<((f32, f32), (f32, f32))>| {
-        let (x, y) = ((pt.x * scale) as f32, (pt.y * scale) as f32);
-        let (mut sx, mut sy) = (snap(x), snap(y));
-        // A (near) zero-length stroke, a dot, must stay a segment: keep its original offset.
-        if let Some(((qx, qy), (rx, ry))) = prev
-            && (x != rx || y != ry)
-            && (sx, sy) == (qx, qy)
-        {
-            (sx, sy) = (qx + (x - rx), qy + (y - ry));
-        }
-        ((sx, sy), (sx - x, sy - y))
-    };
     let mut builder = tiny_skia::PathBuilder::new();
-    let (mut last, mut last_shift, mut last_raw) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32), (0.0f32, 0.0f32));
-    let (mut start, mut start_shift) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32));
-    let raw = |pt: kurbo::Point| ((pt.x * scale) as f32, (pt.y * scale) as f32);
-    let moved = |pt: kurbo::Point, shift: (f32, f32)| {
-        let (x, y) = raw(pt);
-        (x + shift.0, y + shift.1)
-    };
     for el in path.elements() {
+        let p = |pt: kurbo::Point| ((pt.x * scale) as f32, (pt.y * scale) as f32);
         match *el {
             kurbo::PathEl::MoveTo(a) => {
-                let (p, shift) = anchor(a, None);
-                builder.move_to(p.0, p.1);
-                (last, last_shift, last_raw) = (p, shift, raw(a));
-                (start, start_shift) = (p, shift);
+                let (x, y) = p(a);
+                builder.move_to(x, y);
             }
             kurbo::PathEl::LineTo(a) => {
-                let (p, shift) = anchor(a, Some((last, last_raw)));
-                builder.line_to(p.0, p.1);
-                (last, last_shift, last_raw) = (p, shift, raw(a));
+                let (x, y) = p(a);
+                builder.line_to(x, y);
             }
-            kurbo::PathEl::QuadTo(c, a) => {
-                let (p, shift) = anchor(a, None);
-                let c = moved(c, shift);
-                builder.quad_to(c.0, c.1, p.0, p.1);
-                (last, last_shift, last_raw) = (p, shift, raw(a));
+            kurbo::PathEl::QuadTo(a, b) => {
+                let ((x1, y1), (x, y)) = (p(a), p(b));
+                builder.quad_to(x1, y1, x, y);
             }
-            kurbo::PathEl::CurveTo(c1, c2, a) => {
-                let (p, shift) = anchor(a, None);
-                let (c1, c2) = (moved(c1, last_shift), moved(c2, shift));
-                builder.cubic_to(c1.0, c1.1, c2.0, c2.1, p.0, p.1);
-                (last, last_shift, last_raw) = (p, shift, raw(a));
+            kurbo::PathEl::CurveTo(a, b, c) => {
+                let ((x1, y1), (x2, y2), (x, y)) = (p(a), p(b), p(c));
+                builder.cubic_to(x1, y1, x2, y2, x, y);
             }
-            kurbo::PathEl::ClosePath => {
-                builder.close();
-                (last, last_shift, last_raw) = (start, start_shift, last_raw);
-            }
+            kurbo::PathEl::ClosePath => builder.close(),
         }
     }
     let path = builder.finish()?;
@@ -214,15 +172,20 @@ pub(crate) fn rasterize(request: RasterizeCustomGlyphRequest) -> Option<Rasteriz
     paint.set_color_rgba8(255, 255, 255, 255);
     paint.anti_alias = true;
     let stroke = tiny_skia::Stroke {
-        // A hair over a whole pixel: tiny-skia draws strokes of 1 px or less as anti-aliased
-        // hairlines, which come out at about 75 % coverage instead of solid.
-        width: stroke_px + 0.001,
+        width: weight.stroke() * scale as f32,
         line_cap: tiny_skia::LineCap::Round,
         line_join: tiny_skia::LineJoin::Round,
         ..Default::default()
     };
     let transform = if rotation == 0.0 {
-        tiny_skia::Transform::identity()
+        // A square box (every resting icon) is drawn as is. A box stretched by the glass it
+        // sits on (held buttons) stretches the icon with it, per axis, about the box's centre.
+        let side = w.min(h) as f32;
+        if w == h {
+            tiny_skia::Transform::identity()
+        } else {
+            tiny_skia::Transform::from_scale(w as f32 / side, h as f32 / side)
+        }
     } else {
         tiny_skia::Transform::from_rotate_at(rotation, w as f32 / 2.0, h as f32 / 2.0)
     };
@@ -235,11 +198,11 @@ pub(crate) fn rasterize(request: RasterizeCustomGlyphRequest) -> Option<Rasteriz
 mod tests {
     use super::*;
 
-    fn mask(icon: Icon, weight: IconWeight, side: u16) -> Vec<u8> {
+    fn mask(icon: Icon, w: u16, h: u16) -> Vec<u8> {
         let request = RasterizeCustomGlyphRequest {
-            id: glyph_id(icon, weight, 0.0),
-            width: side,
-            height: side,
+            id: glyph_id(icon, IconWeight::Regular, 0.0),
+            width: w,
+            height: h,
             x_bin: glyphon::cosmic_text::SubpixelBin::Zero,
             y_bin: glyphon::cosmic_text::SubpixelBin::Zero,
             scale: 1.0,
@@ -247,19 +210,31 @@ mod tests {
         rasterize(request).expect("rasterizes").data
     }
 
-    /// Straight strokes are grid-fitted: they cover whole pixels (full alpha), not two
-    /// half-covered ones (which is what made icons look fuzzy).
-    #[test]
-    fn straight_strokes_are_crisp() {
-        for side in [16u16, 18, 20, 22, 24, 27, 36] {
-            for icon in [Icon::Plus, Icon::Minus, Icon::Pause] {
-                let data = mask(icon, IconWeight::Regular, side);
-                let soft = data.iter().filter(|&&a| (24..232).contains(&a)).count();
-                let solid = data.iter().filter(|&&a| a >= 232).count();
-                // Only the round caps' ends may be soft.
-                assert!(soft <= 12 && solid > 0, "{icon:?} at {side}: {soft} soft, {solid} solid");
+    /// Bounding box (x0, y0, x1, y1) of the pixels with alpha above a threshold.
+    fn bounds(data: &[u8], w: usize) -> (usize, usize, usize, usize) {
+        let mut b = (usize::MAX, usize::MAX, 0, 0);
+        for (i, &a) in data.iter().enumerate() {
+            if a > 40 {
+                let (x, y) = (i % w, i / w);
+                b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
             }
         }
+        b
+    }
+
+    /// A glyph box stretched by its glass (taller than wide) stretches the icon with it and
+    /// keeps it centred in the box, instead of leaving it in the box's top-left corner.
+    #[test]
+    fn a_stretched_box_stretches_the_icon_about_its_centre() {
+        let square = bounds(&mask(Icon::Plus, 20, 20), 20);
+        let tall = bounds(&mask(Icon::Plus, 20, 30), 20);
+        let (sw, sh) = (square.2 - square.0, square.3 - square.1);
+        let (tw, th) = (tall.2 - tall.0, tall.3 - tall.1);
+        assert_eq!(sw, sh, "a plus is square at rest");
+        assert!(th as f32 > sh as f32 * 1.35 && tw.abs_diff(sw) <= 1, "stretched: {square:?} → {tall:?}");
+        // Centred in the 20×30 box.
+        let (cx, cy) = ((tall.0 + tall.2) as f32 / 2.0, (tall.1 + tall.3) as f32 / 2.0);
+        assert!((cx - 10.0).abs() <= 1.0 && (cy - 15.0).abs() <= 1.0, "centre ({cx}, {cy})");
     }
 
     #[test]

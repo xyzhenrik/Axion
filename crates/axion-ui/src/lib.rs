@@ -1793,8 +1793,7 @@ impl Ui {
             WidgetKind::Icon { icon, weight, size, paint } => {
                 let mut color = theme.color(*paint);
                 color[3] *= alpha;
-                // Whole pixels, so the rasterized (grid-fitted) glyph is drawn 1:1, never resampled.
-                let side = (size * s).round().max(1.0);
+                let side = size * s;
                 let origin = (px.center() - Vec2::splat(side / 2.0)).round();
                 content.icons.push(IconDraw {
                     icon: *icon,
@@ -2677,6 +2676,135 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, vec!["glass", "content"]);
+    }
+
+    /// Every icon is drawn after all the glass that could cover it: in the same stack's content
+    /// layer, which follows its glass, and no later glass layer reaches over it. So the glass'
+    /// blur, refraction and dispersion never touch an icon's pixels.
+    fn assert_icons_above_glass(layers: &[Layer<'_>]) {
+        let mut icon_layers = 0;
+        for (i, layer) in layers.iter().enumerate() {
+            let Layer::Content(c) = layer else { continue };
+            for icon in &c.icons {
+                icon_layers += 1;
+                for later in &layers[i + 1..] {
+                    let Layer::Glass { shapes, .. } = later else { continue };
+                    for shape in shapes {
+                        let reach = shape.half_size * shape.stretch.max_element().max(1.0) + Vec2::splat(1.0);
+                        let covers =
+                            (icon.rect.center() - shape.center).abs().cmple(reach + icon.rect.size / 2.0);
+                        assert!(
+                            !covers.all(),
+                            "glass {:?} lies over the icon {:?} drawn before it",
+                            (shape.center, shape.half_size),
+                            icon.rect
+                        );
+                    }
+                }
+            }
+        }
+        assert!(icon_layers > 0, "the scene has icons");
+    }
+
+    #[test]
+    fn icons_are_drawn_above_every_glass_that_could_cover_them() {
+        // A bar (glass) holding a glass button with an icon, a glass card with its own button
+        // and icon (glass nested in glass), and a plain icon button, at rest and held.
+        let mut ui = ui();
+        let bar = ui.add(
+            ui.root(),
+            Widget::container().with_background(Background::Glass(GlassLevel::Regular)).with_radius(CAPSULE),
+            Style {
+                size: Size { width: length(300.0), height: length(56.0) },
+                align_items: AlignItems::CENTER,
+                gap: Size { width: length(12.0), height: length(0.0) },
+                padding: taffy::Rect {
+                    left: length(6.0),
+                    right: length(6.0),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
+                ..Default::default()
+            },
+        );
+        let button = |ui: &mut Ui, parent: NodeId, id: u32, glass: bool| {
+            let mut widget = Widget::container().with_action(ActionId(id)).with_radius(CAPSULE);
+            if glass {
+                widget = widget.with_background(Background::Glass(GlassLevel::Thin));
+            }
+            let b = ui.add(
+                parent,
+                widget,
+                Style {
+                    size: Size { width: length(44.0), height: length(44.0) },
+                    justify_content: JustifyContent::CENTER,
+                    align_items: AlignItems::CENTER,
+                    ..Default::default()
+                },
+            );
+            ui.add(b, Widget::icon(axion_compositor::Icon::Plus, 20.0), Style::default());
+        };
+        button(&mut ui, bar, 1, false);
+        button(&mut ui, bar, 2, true);
+        let card = ui.add(
+            bar,
+            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
+            Style {
+                size: Size { width: length(100.0), height: length(48.0) },
+                align_items: AlignItems::CENTER,
+                justify_content: JustifyContent::CENTER,
+                ..Default::default()
+            },
+        );
+        button(&mut ui, card, 3, false);
+        ui.layout();
+        for held in [false, true] {
+            if held {
+                ui.handle(UiInput::PointerMove(Vec2::new(28.0, 28.0)));
+                ui.handle(UiInput::PointerDown);
+                ui.handle(UiInput::PointerMove(Vec2::new(40.0, 36.0)));
+                for _ in 0..30 {
+                    ui.animate(1.0 / 60.0);
+                }
+            }
+            let mut layers = Vec::new();
+            ui.paint(&mut layers);
+            assert_icons_above_glass(&layers);
+        }
+    }
+
+    #[test]
+    fn a_held_button_stretches_its_icon_with_its_glass() {
+        let mut ui = ui();
+        let (_, button, _) = row(&mut ui);
+        ui.add(button, Widget::icon(axion_compositor::Icon::Back, 20.0), Style::default());
+        let mut style = ui.style(button);
+        style.justify_content = JustifyContent::CENTER;
+        style.align_items = AlignItems::CENTER;
+        ui.set_style(button, style);
+        ui.layout();
+        ui.handle(UiInput::PointerMove(Vec2::new(28.0, 28.0)));
+        ui.handle(UiInput::PointerDown);
+        ui.handle(UiInput::PointerMove(Vec2::new(60.0, 28.0)));
+        for _ in 0..40 {
+            ui.animate(1.0 / 60.0);
+        }
+        let mut layers = Vec::new();
+        ui.paint(&mut layers);
+        assert_icons_above_glass(&layers);
+        let lens = layers
+            .iter()
+            .filter_map(|l| if let Layer::Glass { shapes, .. } = l { shapes.last().copied() } else { None })
+            .next_back()
+            .expect("the lens");
+        let icon = layers
+            .iter()
+            .filter_map(|l| if let Layer::Content(c) = l { c.icons.first().copied() } else { None })
+            .next_back()
+            .expect("the icon");
+        // Same transform as the glass: it is centred in the lens and scaled by the same amount.
+        assert!((icon.rect.center() - lens.center).length() < 1.0);
+        assert!(icon.rect.size.x > 20.0 * 1.2, "scaled with the lens: {:?}", icon.rect.size);
     }
 
     fn glass_and_icons(ui: &Ui) -> (Vec<GlassShape>, Vec<Rect>, usize) {
