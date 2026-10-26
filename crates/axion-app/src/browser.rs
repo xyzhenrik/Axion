@@ -429,6 +429,8 @@ pub struct Browser {
     /// Capture aid "wheel:N": the page gets a wheel event at its centre every frame for N
     /// frames, down then back up (frames left), to measure scrolling (input → page frame).
     wheel_frames: u32,
+    /// F11 fullscreen: when the pointer resting at the top edge brings the bars back.
+    fullscreen_reveal_at: Option<Instant>,
     /// While the sidebar slides: the size the shown view was given for it (its size once the
     /// slide settles), and a copy of its frame from before the slide (see `redraw_frame`).
     slide_view_size: Option<(ViewId, Vec2)>,
@@ -842,6 +844,7 @@ impl Browser {
             capture: options.capture.clone().map(|path| (path, Instant::now() + options.capture_after)),
             sweep: None,
             wheel_frames: 0,
+            fullscreen_reveal_at: None,
             slide_view_size: None,
             slide_snapshot: None,
             slide_fade: None,
@@ -2115,9 +2118,49 @@ impl Browser {
         if !self.chrome.set_presentation(on, &self.config) {
             return;
         }
+        self.fullscreen_reveal_at = None;
         let window = on || self.chrome.page_fullscreen();
         self.window.set_fullscreen(window.then_some(Fullscreen::Borderless(None)));
         self.update_layout();
+    }
+
+    /// Whether the bars may be brought back over the F11 fullscreen page now.
+    fn fullscreen_reveal_wanted(&self) -> bool {
+        self.config.layout.fullscreen_reveal_chrome
+            && self.chrome.presentation()
+            && !self.chrome.page_fullscreen()
+            && !self.playlist.fullscreen
+            && !self.overview.is_open()
+            && !self.is_locked()
+    }
+
+    /// F11 fullscreen, like Safari's and Chrome's: the pointer resting at the window's top
+    /// edge (`layout.fullscreen_reveal_edge`, for `fullscreen_reveal_delay`) brings the bars
+    /// back over the page, which keeps its size; they go again once the pointer leaves them,
+    /// unless a menu, popover or the address field is in use.
+    fn fullscreen_reveal_pointer(&mut self, p: Vec2) {
+        if !self.fullscreen_reveal_wanted() {
+            self.fullscreen_reveal_at = None;
+            if self.chrome.fullscreen_revealed() {
+                self.chrome.set_fullscreen_reveal(false, &self.config);
+            }
+            return;
+        }
+        let layout = &self.config.layout;
+        if self.chrome.fullscreen_revealed() {
+            let below = p.y > self.chrome.revealed_bottom(&self.ui) + layout.margin;
+            let busy = self.ui.focused().is_some() || (self.tooltips_blocked() && !self.find.is_open());
+            if below && !busy {
+                self.chrome.set_fullscreen_reveal(false, &self.config);
+            }
+            return;
+        }
+        if p.y <= layout.fullscreen_reveal_edge {
+            let delay = Duration::from_secs_f32(layout.fullscreen_reveal_delay.max(0.0));
+            self.fullscreen_reveal_at.get_or_insert(Instant::now() + delay);
+        } else {
+            self.fullscreen_reveal_at = None;
+        }
     }
 
     fn update_player(&mut self, dt: f32) {
@@ -5047,6 +5090,7 @@ impl Browser {
         // Fullscreen controls that faded out come back before the pointer reaches them, so a
         // press right after the move already hits them.
         self.player.reveal(&mut self.ui);
+        self.fullscreen_reveal_pointer(p);
         let (over_ui, events) = self.ui.handle(UiInput::PointerMove(p));
         self.handle_ui_events(events);
         if self.playlist_open() {
@@ -5567,6 +5611,24 @@ impl Browser {
         }
         self.sync_bookmarks_bar(tabs_changed);
         let now = Instant::now();
+        if self.fullscreen_reveal_at.take_if(|at| now >= *at).is_some() {
+            let at_edge = self.pointer.is_some_and(|p| p.y <= self.config.layout.fullscreen_reveal_edge);
+            if at_edge && self.fullscreen_reveal_wanted() {
+                self.chrome.set_fullscreen_reveal(true, &self.config);
+            }
+        }
+        // Typing an address in F11 fullscreen (Ctrl+L): the bar comes to the field.
+        if self.ui.focused() == Some(self.chrome.address_field)
+            && !self.chrome.fullscreen_revealed()
+            && self.fullscreen_reveal_wanted()
+        {
+            self.chrome.set_fullscreen_reveal(true, &self.config);
+        } else if self.chrome.fullscreen_revealed()
+            && let Some(p) = self.pointer
+        {
+            // Done with the field or a menu while the pointer is elsewhere: they go again.
+            self.fullscreen_reveal_pointer(p);
+        }
         if self.overview_at.is_some_and(|at| now >= at) {
             self.overview_at = None;
             self.open_overview();
@@ -5896,7 +5958,8 @@ impl Browser {
                 // Capture aid: scroll the page down by 600 px.
                 "toggle-sidebar" => self.run(Action::ToggleSidebar),
                 // Capture aid: F11, whole-page fullscreen (again to leave it).
-                "presentation" => self.run(Action::ToggleFullscreen),
+                // ("hover:X:0" then rests the pointer at the top edge: the bars come back.)
+                "presentation" | "fullscreen" => self.run(Action::ToggleFullscreen),
                 // Capture aid: move the pointer to window position "hover:X:Y" (logical px).
                 hover if hover.starts_with("hover:") => {
                     let mut parts = hover.split(':').skip(1).filter_map(|n| n.parse::<f32>().ok());

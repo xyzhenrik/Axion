@@ -754,6 +754,14 @@ pub struct Layout {
     pub tab_bar: TabBarStyle,
     /// A home button (opens `general.homepage`) next to back and forward.
     pub home_button: bool,
+    /// F11 fullscreen: resting the pointer at the window's top edge brings the toolbar, tab
+    /// row and bookmarks bar back over the page (it keeps its size) until the pointer leaves
+    /// them. Off: they only come back when fullscreen ends.
+    pub fullscreen_reveal_chrome: bool,
+    /// Seconds the pointer must rest at the top edge before the bars come back.
+    pub fullscreen_reveal_delay: f32,
+    /// How close to the top edge (logical px) the pointer counts as at it.
+    pub fullscreen_reveal_edge: f32,
     /// Removed (the bars no longer hide while scrolling); still accepted in old files.
     #[serde(skip_serializing)]
     hide_bar_on_scroll: Option<bool>,
@@ -809,6 +817,9 @@ impl Default for Layout {
             page_margin: 8.0,
             tab_bar: TabBarStyle::Separate,
             home_button: true,
+            fullscreen_reveal_chrome: true,
+            fullscreen_reveal_delay: 0.35,
+            fullscreen_reveal_edge: 3.0,
             hide_bar_on_scroll: None,
         }
     }

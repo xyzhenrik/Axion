@@ -80,6 +80,13 @@ These only work while **Developer tools** is on in **Settings > General**.
 | Fullscreen window | F11 | `toggle_fullscreen` |
 | Quit | Ctrl+Q | `quit` |
 
+In fullscreen (F11) the toolbar, tab row, bookmarks bar and sidebar make way and the page fills
+the screen edge to edge. Rest the pointer at the top edge of the screen for a moment and the bars
+come back over the page (the page keeps its size); they go again when the pointer moves away.
+Escape or F11 leaves fullscreen. Turn the reveal off with `layout.fullscreen_reveal_chrome = false`;
+`layout.fullscreen_reveal_delay` (seconds, 0.35) and `layout.fullscreen_reveal_edge` (pixels, 3)
+tune it.
+
 ## Video in fullscreen
 
 These keys work only while a video plays fullscreen with Axion's controls, so plain keys like Space

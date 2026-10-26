@@ -441,6 +441,14 @@ pub struct Chrome {
     presentation_k: Animated<f32>,
     /// The bar's resting top inset (logical px), for the fullscreen transition.
     bar_top: f32,
+    /// The separate tab row's and the bookmarks bar's resting top insets (logical px).
+    strip_top: f32,
+    bookmarks_top: f32,
+    /// F11 fullscreen: the pointer at the window's top edge brings the bars back over the
+    /// page for a while (`layout.fullscreen_reveal_chrome`) …
+    revealed: bool,
+    /// … animated 0 (hidden) → 1 (shown). The page keeps its size meanwhile.
+    reveal_k: Animated<f32>,
     /// The active tab's segment; persistent so typing survives tab-list rebuilds.
     address: NodeId,
     address_close: NodeId,
@@ -700,6 +708,58 @@ pub fn bookmarks_that_fit(widths: &[f32], gap: f32, available: f32, more: f32) -
         }
     }
     widths.len()
+}
+
+/// What decides whether the toolbar area's rows are drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BarsState {
+    /// The separate tab bar (tabs in a row of their own).
+    pub separate: bool,
+    /// The bookmarks bar is wanted (`layout.bookmarks_bar` for this page).
+    pub bookmarks: bool,
+    /// Locked private browsing or the Playlist page: no address, tab row or bookmarks.
+    pub bare: bool,
+    /// A page element (video) is fullscreen.
+    pub page_fullscreen: bool,
+    /// F11 fullscreen has moved the bars out of sight and they aren't revealed.
+    pub gone: bool,
+}
+
+/// Which of the toolbar area's rows are drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BarsShown {
+    pub bar: bool,
+    pub tab_strip: bool,
+    pub bookmarks: bool,
+}
+
+/// The toolbar, tab row and bookmarks bar shown for `s`: none of them in either fullscreen
+/// (a video's, or F11 once the transition has moved them away; revealed by the pointer at
+/// the top edge they come back); the tab row and bookmarks bar never while bare.
+pub fn bars_shown(s: BarsState) -> BarsShown {
+    let out = s.page_fullscreen || s.gone;
+    BarsShown {
+        bar: !out,
+        tab_strip: s.separate && !s.bare && !out,
+        bookmarks: s.bookmarks && !s.bare && !out,
+    }
+}
+
+/// The spring the chrome's own transitions move on (sidebar slide, F11): the smooth motion,
+/// critically damped in flat mode, quick and plain with Reduce Motion.
+fn chrome_spring(config: &Config) -> Spring {
+    let motion = &config.motion;
+    if config.glass.reduce_motion {
+        Spring::new(0.2, 1.0)
+    } else {
+        Spring::new(motion.smooth.response * motion.speed, config.glass.damping(motion.smooth.damping))
+    }
+}
+
+/// A 0–1 transition's value, exactly its target once settled (a fullscreen page is edge to
+/// edge with square corners, not a hair off).
+fn settled_value(k: &Animated<f32>) -> f32 {
+    if k.is_settled(PRESENTATION_SETTLED) { k.target } else { k.value.clamp(0.0, 1.0) }
 }
 
 fn square(side: f32) -> Size<Dimension> {
@@ -1484,6 +1544,10 @@ impl Chrome {
             presentation: false,
             presentation_k: Animated::new(0.0, Spring::SMOOTH),
             bar_top: 0.0,
+            strip_top: 0.0,
+            bookmarks_top: 0.0,
+            revealed: false,
+            reveal_k: Animated::new(0.0, Spring::SMOOTH),
             address,
             address_close,
             address_label,
@@ -2020,14 +2084,49 @@ impl Chrome {
             return false;
         }
         self.presentation = on;
-        let motion = &config.motion;
-        self.presentation_k.spring = if config.glass.reduce_motion {
-            Spring::new(0.2, 1.0)
-        } else {
-            Spring::new(motion.smooth.response * motion.speed, config.glass.damping(motion.smooth.damping))
-        };
+        let spring = chrome_spring(config);
+        self.presentation_k.spring = spring;
         self.presentation_k.target = if on { 1.0 } else { 0.0 };
+        // Leaving fullscreen brings everything back anyway; entering starts hidden.
+        self.revealed = false;
+        self.reveal_k.spring = spring;
+        self.reveal_k.target = 0.0;
+        if !on {
+            self.reveal_k.snap(0.0);
+        }
         true
+    }
+
+    /// F11 fullscreen: shows the bars over the page (`true`) or hides them again. Returns
+    /// whether that changed. Outside F11 fullscreen (and in a video's fullscreen) it does
+    /// nothing.
+    pub fn set_fullscreen_reveal(&mut self, revealed: bool, config: &Config) -> bool {
+        let revealed = revealed && self.presentation && !self.page_fullscreen;
+        if revealed == self.revealed {
+            return false;
+        }
+        self.revealed = revealed;
+        self.reveal_k.spring = chrome_spring(config);
+        self.reveal_k.target = if revealed { 1.0 } else { 0.0 };
+        true
+    }
+
+    /// The bars are brought back over the F11 fullscreen page.
+    pub fn fullscreen_revealed(&self) -> bool {
+        self.revealed
+    }
+
+    /// The bottom edge (logical px) of the revealed bars (the lowest one shown), for hiding
+    /// them again once the pointer leaves.
+    pub fn revealed_bottom(&self, ui: &Ui) -> f32 {
+        [self.bar, self.tab_strip, self.bookmarks.bar]
+            .into_iter()
+            .filter(|&n| ui.is_visible(n))
+            .map(|n| {
+                let f = ui.frame(n);
+                f.origin.y + f.size.y
+            })
+            .fold(0.0, f32::max)
     }
 
     /// Whole-page fullscreen (F11) is on.
@@ -2043,37 +2142,67 @@ impl Chrome {
 
     /// How far the chrome has given way to the page (0 shown … 1 page only).
     fn chrome_away(&self) -> f32 {
-        if self.page_fullscreen { 1.0 } else { self.presentation_k.value.clamp(0.0, 1.0) }
+        if self.page_fullscreen { 1.0 } else { settled_value(&self.presentation_k) }
     }
 
-    /// F11 fullscreen has fully hidden the bars.
+    /// How far the bars are out of sight (0 shown … 1 gone): F11's transition, less a reveal.
+    fn bars_away(&self) -> f32 {
+        settled_value(&self.presentation_k) * (1.0 - settled_value(&self.reveal_k))
+    }
+
+    /// F11 fullscreen has fully hidden the bars (and they aren't being revealed).
     fn chrome_gone(&self) -> bool {
-        self.presentation && self.presentation_k.is_settled(PRESENTATION_SETTLED)
+        self.presentation
+            && self.presentation_k.is_settled(PRESENTATION_SETTLED)
+            && self.reveal_k.target <= 0.0
+            && self.reveal_k.is_settled(PRESENTATION_SETTLED)
     }
 
-    fn animate_presentation(&mut self, ui: &mut Ui, dt: f32) {
-        self.presentation_k.step(dt);
-        let k = self.presentation_k.value.clamp(0.0, 1.0);
-        let shift = k * (self.bar_top + 2.0 * (TAB_STRIP_HEIGHT + TAB_STRIP_GAP) + BAR_CAPSULE);
-        let gone = self.chrome_gone();
-        let separate = self.tab_bar == TabBarStyle::Separate;
+    /// The bars' state for [`bars_shown`].
+    fn bars_state(&self) -> BarsState {
+        BarsState {
+            separate: self.tab_bar == TabBarStyle::Separate,
+            bookmarks: self.bookmarks.shown,
+            bare: self.locked || self.playlist_page,
+            page_fullscreen: self.page_fullscreen,
+            gone: self.chrome_gone(),
+        }
+    }
+
+    /// Places the bar, the tab row and the bookmarks bar for the F11 transition: they slide
+    /// up out of the window together and fade, and are gone once out of sight (no glass over
+    /// the page). A no-op shift while not fullscreen.
+    fn place_bars(&self, ui: &mut Ui) {
+        let away = self.bars_away();
+        // Far enough that the lowest of them (the bookmarks bar) leaves the window.
+        let shift = away * (self.bookmarks_top + BOOKMARKS_BAR_HEIGHT + TAB_STRIP_GAP);
+        let shown = bars_shown(self.bars_state());
         for (node, top, shown) in [
-            (self.bar, self.bar_top, true),
-            (self.tab_strip, self.bar_top + BAR_CAPSULE + TAB_STRIP_GAP, separate),
+            (self.bar, self.bar_top, shown.bar),
+            (self.tab_strip, self.strip_top, shown.tab_strip),
+            (self.bookmarks.bar, self.bookmarks_top, shown.bookmarks),
         ] {
             let mut style = ui.style(node);
-            style.inset.top = length(top - shift);
-            ui.set_style(node, style);
-            ui.set_opacity(node, 1.0 - k);
-            // Gone entirely once out of sight: no glass is drawn over the page.
-            ui.set_visible(node, shown && !self.page_fullscreen && !gone);
+            let wanted = length(top - shift);
+            if style.inset.top != wanted {
+                style.inset.top = wanted;
+                ui.set_style(node, style);
+            }
+            ui.set_opacity(node, 1.0 - away);
+            ui.set_visible(node, shown);
         }
+        // Flat mode's toolbar surface follows the bars (its height follows the page's top).
+        ui.set_opacity(self.toolbar_band, 1.0 - away);
     }
 
     /// Advances the sidebar's slide and the F11 fullscreen transition. Call every frame.
     pub fn animate_all(&mut self, ui: &mut Ui, dt: f32) {
-        if !self.presentation_k.is_settled(PRESENTATION_SETTLED) || self.presentation {
-            self.animate_presentation(ui, dt);
+        let moving = !self.presentation_k.is_settled(PRESENTATION_SETTLED)
+            || !self.reveal_k.is_settled(PRESENTATION_SETTLED);
+        if moving || self.presentation {
+            self.presentation_k.step(dt);
+            self.reveal_k.step(dt);
+            self.place_bars(ui);
         }
         self.animate(ui, dt);
     }
@@ -2145,7 +2274,6 @@ impl Chrome {
         let separate = l.tab_bar == TabBarStyle::Separate;
         ui.set_visible(self.tab_capsule, !separate);
         ui.set_visible(self.address_slot, separate);
-        ui.set_visible(self.tab_strip, separate && !self.page_fullscreen && !self.chrome_gone());
         let mut strip = ui.style(self.tab_strip);
         // Left and width follow the tabs (see `animate_tab_widths`).
         let area = (bar_left, (window.x - bar_left - m).max(0.0));
@@ -2153,7 +2281,8 @@ impl Chrome {
             self.tab_widths.strip_area = area;
             self.tab_widths.strip_applied = (-1.0, -1.0);
         }
-        strip.inset.top = length(m + l.bar_height + TAB_STRIP_GAP);
+        self.strip_top = m + l.bar_height + TAB_STRIP_GAP;
+        strip.inset.top = length(self.strip_top);
         strip.inset.bottom = auto();
         strip.inset.right = auto();
         ui.set_style(self.tab_strip, strip);
@@ -2285,8 +2414,6 @@ impl Chrome {
             for &node in &self.lock_hidden {
                 ui.set_visible(node, false);
             }
-            ui.set_visible(self.tab_strip, false);
-            ui.set_visible(self.bookmarks.bar, false);
             ui.set_visible(self.downloads, false);
         } else {
             // Unlocked again (or never locked): the page buttons the lock hid come back.
@@ -2296,6 +2423,9 @@ impl Chrome {
             let downloads = self.download_state.is_some_and(|(shown, _)| shown);
             ui.set_visible(self.downloads, downloads);
         }
+        // The bar, tab row and bookmarks bar: where F11 fullscreen has them now, and which
+        // of them are shown at all (locked, fullscreen; see `bars_shown`).
+        self.place_bars(ui);
     }
 
     /// The page's rectangle (logical px): below the toolbar, beside a docked sidebar, with a
@@ -3332,8 +3462,10 @@ impl Chrome {
         let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 };
         let bar = self.bookmarks.bar;
         let mut style = ui.style(bar);
-        // Left and width follow the items (see `fit_bookmarks`).
-        style.inset.top = length(m + l.bar_height + strip + TAB_STRIP_GAP);
+        // Left and width follow the items (see `fit_bookmarks`); the top follows F11's
+        // transition (`place_bars`).
+        self.bookmarks_top = m + l.bar_height + strip + TAB_STRIP_GAP;
+        style.inset.top = length(self.bookmarks_top);
         style.inset.bottom = auto();
         style.inset.right = auto();
         ui.set_style(bar, style);
@@ -3343,7 +3475,6 @@ impl Chrome {
             self.bookmarks.applied = (-1.0, -1.0);
             self.bookmarks.fit = usize::MAX;
         }
-        ui.set_visible(bar, self.bookmarks.shown && !self.page_fullscreen);
     }
 
     /// The height the bookmarks bar takes from the page (with its gap), 0 while hidden.
@@ -3358,7 +3489,7 @@ impl Chrome {
             return false;
         }
         self.bookmarks.shown = shown;
-        ui.set_visible(self.bookmarks.bar, shown && !self.page_fullscreen);
+        ui.set_visible(self.bookmarks.bar, bars_shown(self.bars_state()).bookmarks);
         true
     }
 
@@ -3527,6 +3658,107 @@ mod tests {
             chrome.set_locked(&mut ui, &config, false);
             assert!(all.iter().all(|&n| ui.is_visible(n)), "round {round}: unlocked toolbar");
             assert!(ui.is_visible(chrome.tab_capsule));
+        }
+    }
+
+    #[test]
+    fn fullscreen_hides_every_bar() {
+        let all =
+            BarsState { separate: true, bookmarks: true, bare: false, page_fullscreen: false, gone: false };
+        assert_eq!(bars_shown(all), BarsShown { bar: true, tab_strip: true, bookmarks: true });
+        // F11 once the bars are out of sight, and a video's fullscreen: nothing.
+        let none = BarsShown { bar: false, tab_strip: false, bookmarks: false };
+        assert_eq!(bars_shown(BarsState { gone: true, ..all }), none);
+        assert_eq!(bars_shown(BarsState { page_fullscreen: true, ..all }), none);
+        // Locked: the bar only (its sidebar button).
+        let bare = bars_shown(BarsState { bare: true, ..all });
+        assert_eq!(bare, BarsShown { bar: true, tab_strip: false, bookmarks: false });
+        // Compact tab bar, bookmarks bar off.
+        let compact = bars_shown(BarsState { separate: false, bookmarks: false, ..all });
+        assert_eq!(compact, BarsShown { bar: true, tab_strip: false, bookmarks: false });
+    }
+
+    /// Regression: F11 fullscreen hid the toolbar and tab row but left the bookmarks bar (and
+    /// flat mode's toolbar surface) over the page. Steps the chrome as the browser does while
+    /// it moves: every bar gone, the page edge to edge with square corners; revealing brings
+    /// the bars over the page without resizing it; leaving fullscreen restores everything.
+    #[test]
+    fn f11_fullscreen_hides_and_restores_all_chrome() {
+        for flat in [false, true] {
+            let mut config = Config::default();
+            config.layout.tab_bar = TabBarStyle::Separate;
+            if flat {
+                config.glass.style = axion_config::GlassStyle::Flat;
+            }
+            let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+            let mut chrome = Chrome::build(&mut ui, &config);
+            let window = Vec2::new(1400.0, 900.0);
+            chrome.apply_layout(&mut ui, &config, window);
+            chrome.set_bookmarks_bar_shown(&mut ui, true);
+            chrome.apply_layout(&mut ui, &config, window);
+            ui.layout();
+            let bars = [chrome.bar, chrome.tab_strip, chrome.bookmarks.bar];
+            let run = |chrome: &mut Chrome, ui: &mut Ui| {
+                for _ in 0..600 {
+                    chrome.animate_all(ui, 1.0 / 60.0);
+                    chrome.apply_layout(ui, &config, window);
+                    ui.layout();
+                }
+            };
+            // The sidebar's first slide in.
+            run(&mut chrome, &mut ui);
+            let normal = chrome.page_rect(&config, window);
+            assert!(bars.iter().all(|&n| shown(&ui, n)), "flat {flat}: bars before");
+            assert_eq!(ui.is_visible(chrome.toolbar_band), flat);
+            assert!(normal.origin.y > 0.0);
+            assert_eq!(chrome.page_corner_radius(&config), config.effective_layout().page_corner_radius);
+            assert_eq!(flat, config.effective_layout().page_corner_radius == 0.0);
+
+            assert!(chrome.set_presentation(true, &config));
+            run(&mut chrome, &mut ui);
+            for &n in &bars {
+                assert!(!shown(&ui, n), "flat {flat}: {n:?} gone in fullscreen");
+            }
+            assert!(!ui.is_visible(chrome.toolbar_band), "flat {flat}: no toolbar surface");
+            assert!(!shown(&ui, chrome.sidebar), "flat {flat}: sidebar away");
+            let full = chrome.page_rect(&config, window);
+            assert_eq!((full.origin, full.size), (Vec2::ZERO, window), "flat {flat}: edge to edge");
+            assert_eq!(chrome.page_corner_radius(&config), 0.0);
+
+            // The pointer at the top edge: the bars come back over the page.
+            assert!(chrome.set_fullscreen_reveal(true, &config));
+            run(&mut chrome, &mut ui);
+            assert!(bars.iter().all(|&n| shown(&ui, n)), "flat {flat}: revealed");
+            assert!(ui.frame(chrome.bookmarks.bar).origin.y > 0.0, "flat {flat}: in the window");
+            let still = chrome.page_rect(&config, window);
+            assert_eq!((still.origin, still.size), (Vec2::ZERO, window), "flat {flat}: page keeps its size");
+            assert!(chrome.revealed_bottom(&ui) > ui.frame(chrome.bar).origin.y);
+            assert!(chrome.set_fullscreen_reveal(false, &config));
+            run(&mut chrome, &mut ui);
+            assert!(bars.iter().all(|&n| !shown(&ui, n)), "flat {flat}: hidden again");
+
+            assert!(chrome.set_presentation(false, &config));
+            run(&mut chrome, &mut ui);
+            assert!(bars.iter().all(|&n| shown(&ui, n)), "flat {flat}: bars restored");
+            assert_eq!(ui.is_visible(chrome.toolbar_band), flat);
+            let back = chrome.page_rect(&config, window);
+            // (The sidebar's slide settles within a fraction of a pixel.)
+            assert!((back.origin - normal.origin).length() < 0.1, "flat {flat}: {back:?} vs {normal:?}");
+            assert!((back.size - normal.size).length() < 0.1);
+            assert_eq!(chrome.page_corner_radius(&config), config.effective_layout().page_corner_radius);
+            // Revealing outside fullscreen does nothing.
+            assert!(!chrome.set_fullscreen_reveal(true, &config));
+
+            // A video's fullscreen: no bookmarks bar either.
+            chrome.set_page_fullscreen(true);
+            chrome.apply_layout(&mut ui, &config, window);
+            assert!(bars.iter().all(|&n| !shown(&ui, n)), "flat {flat}: page fullscreen");
+            chrome.set_bookmarks_bar_shown(&mut ui, false);
+            chrome.set_bookmarks_bar_shown(&mut ui, true);
+            assert!(!shown(&ui, chrome.bookmarks.bar), "flat {flat}: stays hidden when toggled");
+            chrome.set_page_fullscreen(false);
+            chrome.apply_layout(&mut ui, &config, window);
+            assert!(bars.iter().all(|&n| shown(&ui, n)), "flat {flat}: after the video");
         }
     }
 

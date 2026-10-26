@@ -67,6 +67,7 @@ refraction = 0.45                    # 0 to 1
 tab_bar = "compact"                  # "separate" or "compact"
 float_sidebar = true
 bookmarks_bar = "never"              # "always", "home" or "never"
+fullscreen_reveal_chrome = true      # F11: pointer at the top edge shows the bars
 
 [tabs]
 freeze_after_minutes = 5             # 0 = never
