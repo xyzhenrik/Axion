@@ -181,6 +181,9 @@ pub struct Widget {
     pub hover_fill: bool,
     /// Children are drawn only inside this widget's frame (scrolling lists).
     pub clip: bool,
+    /// A line slider's track thickness at rest (logical px); `None` is the default thin line.
+    /// The widget's own frame (its height) is what grabs the pointer, not the track.
+    pub track: Option<f32>,
     /// Shown in a glass label after the pointer rests on the widget (see `Ui::hovered_tooltip`).
     pub tooltip: Option<Tooltip>,
     /// Absolute frame in logical pixels, updated by layout.
@@ -207,6 +210,7 @@ impl Widget {
             press_whole: false,
             hover_fill: true,
             clip: false,
+            track: None,
             tooltip: None,
             frame: Rect::default(),
         }
@@ -324,6 +328,12 @@ impl Widget {
     /// See [`Widget::hover_fill`].
     pub fn without_hover_fill(mut self) -> Self {
         self.hover_fill = false;
+        self
+    }
+
+    /// A line slider's track thickness at rest (logical px); it swells while dragged.
+    pub fn with_track(mut self, thickness: f32) -> Self {
+        self.track = Some(thickness.max(1.0));
         self
     }
 

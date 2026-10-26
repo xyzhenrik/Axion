@@ -22,6 +22,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::player::volume_actions;
 use anyhow::{Context as _, Result};
 use axion_compositor::{Compositor, Icon, Rect as Frame, Scene};
 use axion_config::Config;
@@ -56,6 +57,8 @@ const CENTRE_GAP: f32 = 24.0;
 const ICON_RATIO: f32 = 0.5;
 /// The least space between two controls, and the space the controls keep to the resize band.
 const GAP_MIN: f32 = 12.0;
+/// The opened volume capsule (speaker + slider) is this many times as wide as it is tall.
+const VOLUME_OPEN_RATIO: f32 = 3.6;
 const EDGE_CLEARANCE: f32 = 4.0;
 pub const TITLE: &str = "Axion - Picture in Picture";
 
@@ -66,14 +69,17 @@ pub enum PipControl {
     SkipBack,
     PlayPause,
     SkipForward,
+    /// The speaker of the volume control: mutes and unmutes.
+    Mute,
 }
 
-const CONTROLS: [PipControl; 5] = [
+const CONTROLS: [PipControl; 6] = [
     PipControl::Close,
     PipControl::BackToTab,
     PipControl::SkipBack,
     PipControl::PlayPause,
     PipControl::SkipForward,
+    PipControl::Mute,
 ];
 
 impl PipControl {
@@ -92,6 +98,8 @@ pub type Picture = ((wgpu::TextureView, (u32, u32)), Frame);
 /// What the browser should do after something happened in the PiP window.
 pub enum PipOutcome {
     Command(ViewId, Command),
+    /// Several commands in a row (a volume change that also unmutes).
+    Commands(ViewId, Vec<Command>),
     /// Close PiP and pause the video (× or the window was closed) …
     Close(ViewId, String),
     /// … or end it and show the video's tab.
@@ -157,6 +165,10 @@ fn circle(ui: &mut Ui, parent: NodeId, control: PipControl, icon: Icon, text: Op
 struct Layout {
     buttons: [Frame; 5],
     bar: Frame,
+    /// The volume's speaker button, and the capsule it opens into (to the right of it, in the
+    /// top row between the close and the back button).
+    volume: Frame,
+    volume_open: Frame,
     /// The control scale actually used (the configured one, shrunk to fit a small window).
     scale: f32,
 }
@@ -228,7 +240,14 @@ fn layout(window: Vec2, sizing: Sizing) -> Layout {
     let play_y = (window.y / 2.0 - play / 2.0).clamp(band_top, (band_bottom - play).max(band_top));
     let centre_y = play_y + play / 2.0;
     let square = |x: f32, y: f32, side: f32| Frame { origin: Vec2::new(x, y), size: Vec2::splat(side) };
+    // The speaker sits right of the close button; opened, its capsule grows rightwards but
+    // stays clear of the back button.
+    let volume_x = inset + top + GAP_MIN;
+    let free = (window.x - inset - top - GAP_MIN - volume_x).max(top);
+    let volume_w = (top * VOLUME_OPEN_RATIO).min(free).max(top);
     Layout {
+        volume: square(volume_x, inset, top),
+        volume_open: Frame { origin: Vec2::new(volume_x, inset), size: Vec2::new(volume_w, top) },
         buttons: [
             square(inset, inset, top),
             square(window.x - inset - top, inset, top),
@@ -246,7 +265,7 @@ fn layout(window: Vec2, sizing: Sizing) -> Layout {
 
 impl Layout {
     fn rects(&self) -> impl Iterator<Item = Frame> + '_ {
-        self.buttons.iter().copied().chain(std::iter::once(self.bar))
+        self.buttons.iter().copied().chain([self.bar, self.volume_open])
     }
 }
 
@@ -383,6 +402,16 @@ pub struct PipWindow {
     play_icon: NodeId,
     bar: NodeId,
     progress: NodeId,
+    /// The volume: a capsule with the speaker (mute) and a slider that opens when the pointer
+    /// is over it and closes when it leaves.
+    volume_capsule: NodeId,
+    volume_button: NodeId,
+    volume_icon: NodeId,
+    volume_slider: NodeId,
+    /// 0 closed, 1 open.
+    volume_open: Animated<f32>,
+    /// The volume slider was moved a moment ago.
+    volume_set_at: Option<Instant>,
     /// The window size and control sizing the controls were last laid out for.
     laid_out: Option<(Vec2, Sizing)>,
     sizing: Sizing,
@@ -472,13 +501,42 @@ impl PipWindow {
         );
         let progress = ui.add(
             bar,
-            Widget::line_slider(0.0),
+            Widget::line_slider(0.0).with_track(config.media.progress_thickness),
             Style {
                 flex_grow: 1.0,
                 flex_shrink: 1.0,
                 min_size: Size { width: length(20.0), height: auto() },
                 ..Default::default()
             },
+        );
+        // The volume: the speaker button, and the slider that opens beside it.
+        let volume_capsule = ui.add(
+            controls,
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thick))
+                .with_radius(CAPSULE)
+                .with_clip(),
+            Style { position: Position::Absolute, ..Default::default() },
+        );
+        let volume_button = ui.add(
+            volume_capsule,
+            Widget::container().with_action(PipControl::Mute.id()).with_radius(CAPSULE).without_hover_fill(),
+            Style {
+                position: Position::Absolute,
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        let volume_icon = ui.add(
+            volume_button,
+            Widget::icon(Icon::Volume, TOP_BUTTON * ICON_RATIO).with_paint(Paint::Label),
+            Style::default(),
+        );
+        let volume_slider = ui.add(
+            volume_capsule,
+            Widget::line_slider(1.0).with_track(config.media.progress_thickness),
+            Style { position: Position::Absolute, ..Default::default() },
         );
         Self {
             output: None,
@@ -492,6 +550,12 @@ impl PipWindow {
             play_icon,
             bar,
             progress,
+            volume_capsule,
+            volume_button,
+            volume_icon,
+            volume_slider,
+            volume_open: Animated::new(0.0, Spring::SNAPPY),
+            volume_set_at: None,
             laid_out: None,
             sizing: Sizing::new(config),
             min_width: config.media.pip_min_width,
@@ -585,6 +649,7 @@ impl PipWindow {
         self.ui.end_interaction();
         self.ui.handle(UiInput::PointerLeave);
         self.controls_opacity = Animated::new(0.0, Spring::SNAPPY);
+        self.volume_open = Animated::new(0.0, Spring::SNAPPY);
         if let Some(output) = self.output.take() {
             self.last_size = Some(output.logical_size());
             output.window.set_visible(false);
@@ -657,6 +722,30 @@ impl PipWindow {
             }
         }
         place(&mut self.ui, self.bar, l.bar);
+    }
+
+    /// Places the volume capsule: the speaker button, and the slider the capsule opens to
+    /// (every frame while it moves).
+    fn place_volume(&mut self) {
+        let Some(l) = self.layout else { return };
+        let open = self.volume_open.value.clamp(0.0, 1.0);
+        let side = l.volume.size.x;
+        let width = side + (l.volume_open.size.x - side) * open;
+        let place = |ui: &mut Ui, node: NodeId, x: f32, y: f32, w: f32, h: f32| {
+            let mut style = ui.style(node);
+            style.position = Position::Absolute;
+            style.inset = Rect { left: length(x), top: length(y), right: auto(), bottom: auto() };
+            style.size = Size { width: length(w), height: length(h) };
+            if style != ui.style(node) {
+                ui.set_style(node, style);
+            }
+        };
+        place(&mut self.ui, self.volume_capsule, l.volume.origin.x, l.volume.origin.y, width, side);
+        place(&mut self.ui, self.volume_button, 0.0, 0.0, side, side);
+        // The slider keeps its size while the capsule opens over it (the capsule clips it).
+        let slider = (l.volume_open.size.x - side - side * 0.4).max(1.0);
+        place(&mut self.ui, self.volume_slider, side, 0.0, slider, side);
+        self.ui.set_icon_size(self.volume_icon, side * ICON_RATIO);
     }
 
     /// What a press at `p` (logical px) starts.
@@ -763,6 +852,7 @@ impl PipWindow {
     /// progress bar seeking (live while it is dragged).
     fn outcome_of(&mut self, events: Vec<UiEvent>, config: &Config) -> Option<PipOutcome> {
         let mut seek = None;
+        let mut volume = None;
         for event in events {
             match event {
                 UiEvent::Clicked { action, .. } => {
@@ -771,8 +861,15 @@ impl PipWindow {
                     }
                 }
                 UiEvent::ValueChanged { node, value } if node == self.progress => seek = Some(value),
+                UiEvent::ValueChanged { node, value } if node == self.volume_slider => volume = Some(value),
                 _ => {}
             }
+        }
+        if let Some(value) = volume {
+            let (view, player) = (self.view?, self.player.clone()?);
+            self.volume_set_at = Some(Instant::now());
+            let commands = volume_actions(&player, value).into_iter().map(|a| Command::new(&player.id, a));
+            return Some(PipOutcome::Commands(view, commands.collect()));
         }
         let value = seek?;
         let (view, player) = (self.view?, self.player.clone()?);
@@ -795,6 +892,7 @@ impl PipWindow {
             PipControl::SkipBack => Action::Skip(-skip),
             PipControl::SkipForward => Action::Skip(skip),
             PipControl::PlayPause => Action::Toggle,
+            PipControl::Mute => Action::Mute(!player.muted),
         };
         Some(PipOutcome::Command(view, Command::new(&player.id, action)))
     }
@@ -842,12 +940,35 @@ impl PipWindow {
                 self.ui.set_value(self.progress, (player.time / player.duration) as f32);
             }
         }
+        if let Some(player) = &self.player {
+            let silent = player.muted || player.volume <= 0.0;
+            self.ui.set_icon(self.volume_icon, if silent { Icon::Muted } else { Icon::Volume });
+            let adjusting = self.ui.dragging() == Some(self.volume_slider)
+                || self.volume_set_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
+            if !adjusting {
+                self.ui.set_value(self.volume_slider, if player.muted { 0.0 } else { player.volume as f32 });
+            }
+        }
+        // The volume opens while the pointer is on it (or drags its slider), and closes when it
+        // leaves.
+        let on_volume = self.pointer.zip(self.layout).is_some_and(|(p, l)| {
+            let area = if self.volume_open.target > 0.5 { l.volume_open } else { l.volume };
+            area.contains(p)
+        });
+        let dragging = self.ui.dragging() == Some(self.volume_slider);
+        self.volume_open.target = if self.hovered && (on_volume || dragging) { 1.0 } else { 0.0 };
+        if config.glass.reduce_motion {
+            self.volume_open.snap(self.volume_open.target);
+        } else {
+            self.volume_open.step(dt);
+        }
         let paused = self.player.as_ref().is_some_and(|p| !p.is_playing());
         self.controls_opacity.target = if self.hovered || paused { 1.0 } else { 0.0 };
         self.controls_opacity.step(dt);
         self.ui.set_opacity(self.controls, self.controls_opacity.value.clamp(0.0, 1.0));
         self.ui.set_visible(self.controls, self.controls_opacity.value > 0.01);
         self.apply_layout();
+        self.place_volume();
         self.ui.animate(dt);
         self.ui.layout();
 

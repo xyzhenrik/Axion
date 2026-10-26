@@ -933,6 +933,8 @@ impl Browser {
             repeat: self.playlist.repeat,
             rate: self.playlist.rate,
             sleep: self.playlist.sleep != Sleep::Off,
+            volume: self.config.playlist.volume,
+            muted: self.config.playlist.muted,
             note: note.as_deref(),
             open_page,
             video: None,
@@ -1007,6 +1009,8 @@ impl Browser {
             repeat: self.playlist.repeat,
             rate: player.as_ref().map_or(self.playlist.rate, |p| p.rate),
             sleep: self.playlist.sleep != Sleep::Off,
+            volume: self.config.playlist.volume,
+            muted: self.config.playlist.muted,
             note,
             open_page: false,
             video: if player.is_some() { picture } else { None },
@@ -1140,6 +1144,8 @@ impl Browser {
         if local || self.playlist.fullscreen {
             commands.push(MediaAction::Takeover(true));
         }
+        // Every Playlist video plays at the shared volume.
+        commands.extend(crate::playlist::volume_actions(&self.config.playlist));
         if (rate - 1.0).abs() > 0.01 {
             commands.push(MediaAction::Rate(rate));
         }
@@ -1604,6 +1610,7 @@ impl Browser {
                     self.playlist_open_in_tab(id, false);
                 }
             }
+            PageAction::Mute => self.playlist_volume(&[MediaAction::Mute(!self.config.playlist.muted)]),
             PageAction::Shuffle => self.playlist.shuffle = !self.playlist.shuffle,
             PageAction::Repeat => self.playlist.repeat = self.playlist.repeat.next(),
             PageAction::Previous | PageAction::Next => {
@@ -1935,7 +1942,11 @@ impl Browser {
         p: Vec2,
         _button: Option<(winit::event::MouseButton, bool)>,
     ) -> bool {
-        if !self.playlist.fullscreen || self.ui.hit_action(p).is_some() {
+        if !self.playlist.fullscreen {
+            return false;
+        }
+        // Anything the controls cover (buttons, the sliders) takes the pointer.
+        if self.ui.covers(p) {
             return false;
         }
         self.player.wake();
@@ -1955,6 +1966,28 @@ impl Browser {
                 self.playlist_media(MediaAction::Mute(!muted));
             }
             _ => {}
+        }
+    }
+
+    /// The page's volume slider moved: the shared volume follows (taking it up from muted
+    /// unmutes), on the playing video too.
+    pub(super) fn playlist_set_volume(&mut self, value: f32) {
+        self.playlist_ui.page.volume_adjusted();
+        let muted = self.config.playlist.muted;
+        let mut actions = vec![MediaAction::Volume(f64::from(value.clamp(0.0, 1.0)))];
+        if muted && value > 0.0 {
+            actions.push(MediaAction::Mute(false));
+        }
+        self.playlist_volume(&actions);
+    }
+
+    /// Sets the Playlist's shared volume / mute state, and the playing video to it.
+    fn playlist_volume(&mut self, actions: &[MediaAction]) {
+        for action in actions {
+            if crate::playlist::remember_volume(&mut self.config.playlist, action) {
+                self.config_dirty_since.get_or_insert(Instant::now());
+            }
+            self.playlist_media(*action);
         }
     }
 

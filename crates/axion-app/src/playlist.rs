@@ -293,6 +293,62 @@ pub fn download_directory(config: &Config, default_dir: &Path) -> PathBuf {
     }
 }
 
+/// A volume control moved on a Playlist video: the Playlist's one shared volume (and mute
+/// state) follows. Returns whether it changed (so it is saved).
+pub fn remember_volume(config: &mut PlaylistConfig, action: &axion_media::Action) -> bool {
+    match *action {
+        axion_media::Action::Volume(v) => {
+            let v = (v as f32).clamp(0.0, 1.0);
+            let changed = (config.volume - v).abs() > f32::EPSILON;
+            config.volume = v;
+            changed
+        }
+        axion_media::Action::Mute(m) => {
+            let changed = config.muted != m;
+            config.muted = m;
+            changed
+        }
+        _ => false,
+    }
+}
+
+/// The commands that bring a freshly loaded Playlist video to the shared volume and mute state.
+pub fn volume_actions(config: &PlaylistConfig) -> [axion_media::Action; 2] {
+    [
+        axion_media::Action::Volume(f64::from(config.volume.clamp(0.0, 1.0))),
+        axion_media::Action::Mute(config.muted),
+    ]
+}
+
+#[cfg(test)]
+mod volume_tests {
+    use super::*;
+    use axion_media::Action;
+
+    #[test]
+    fn controls_set_the_shared_volume() {
+        let mut c = PlaylistConfig::default();
+        assert!(remember_volume(&mut c, &Action::Volume(0.4)));
+        assert!((c.volume - 0.4).abs() < 1e-6);
+        // The same value again changes nothing (nothing to save).
+        assert!(!remember_volume(&mut c, &Action::Volume(0.4)));
+        assert!(remember_volume(&mut c, &Action::Mute(true)));
+        assert!(c.muted && (c.volume - 0.4).abs() < 1e-6);
+        assert!(!remember_volume(&mut c, &Action::Skip(10.0)));
+        // Out-of-range values are clamped.
+        remember_volume(&mut c, &Action::Volume(3.0));
+        assert_eq!(c.volume, 1.0);
+    }
+
+    #[test]
+    fn a_new_video_starts_at_the_shared_volume() {
+        let c = PlaylistConfig { volume: 0.25, muted: true, ..PlaylistConfig::default() };
+        let [volume, mute] = volume_actions(&c);
+        assert!(matches!(volume, Action::Volume(v) if (v - 0.25).abs() < 1e-6));
+        assert!(matches!(mute, Action::Mute(true)));
+    }
+}
+
 #[cfg(test)]
 mod directory_tests {
     use super::*;

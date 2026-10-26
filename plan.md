@@ -433,6 +433,11 @@ Exit criteria: a page renders at 60+ fps with one glass capsule refracting it. â
 - [x] Liquid Glass switch/slider knobs: lens while held, rubber band, frost back.
 - [x] Player like Safari's: corner circles, volume capsule, centre Â±10/play, progress capsule,
       speed menu; audio indicator in the address field (click mutes the tab).
+- [x] Sliders in the players (2026-10-26): the fullscreen Playlist player swallowed presses on sliders
+      (`hit_action` ignores non-button widgets) - now `Ui::covers`; thick progress bar
+      (`media.progress_thickness` / `progress_hit_height`) with a lens while dragged; volume control
+      on the Playlist page and in PiP (speaker = mute, slider opens beside it); one shared Playlist
+      volume + mute (`playlist.volume` / `playlist.muted`) set by every control, applied to each video.
 - [x] Locked private browsing view + unlock alert card.
 - [x] Tab overview top bar [Private | N Tabs], +, search, blue done; light backdrop.
 - [x] Grouped settings (cards, sections, notes), scrolling with clipping; Safari's tab options:

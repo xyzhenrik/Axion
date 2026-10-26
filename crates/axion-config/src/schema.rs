@@ -986,6 +986,12 @@ pub struct Media {
     pub pip_min_target: f32,
     /// Narrowest the PiP window can be made (logical px).
     pub pip_min_width: f32,
+    /// Thickness (logical px) of the progress bar's track in the fullscreen player, the
+    /// Playlist player and Picture in Picture (at rest; it grows while it is dragged).
+    pub progress_thickness: f32,
+    /// Height (logical px) of the area that grabs the progress bar: the track alone would be
+    /// too thin to hit comfortably. At least 24.
+    pub progress_hit_height: f32,
     /// Side (logical px) of the artwork tile of the sidebar's Now Playing card.
     pub now_playing_artwork_size: f32,
     /// Gap (logical px) between the Now Playing card and the account button below it (and the
@@ -1054,6 +1060,8 @@ impl Default for Media {
             pip_resize_border: 6.0,
             pip_min_target: 36.0,
             pip_min_width: 272.0,
+            progress_thickness: 8.0,
+            progress_hit_height: 28.0,
             now_playing_artwork_size: 52.0,
             now_playing_gap: 10.0,
             now_playing_artwork: true,
@@ -1126,6 +1134,11 @@ pub struct Playlist {
     pub autoadvance: bool,
     /// How the list is ordered (below the continue-watching item).
     pub sort: PlaylistSort,
+    /// The volume (0–1) every Playlist video plays at: the fullscreen player, the Playlist
+    /// page's player and Picture in Picture share it, and every volume control there sets it.
+    pub volume: f32,
+    /// Playlist videos are muted (the volume above is kept for when they are not).
+    pub muted: bool,
 }
 
 /// How the Playlist page orders its videos. More modes can be added later.
@@ -1169,6 +1182,8 @@ impl Default for Playlist {
             continue_on_top: true,
             autoadvance: true,
             sort: PlaylistSort::Newest,
+            volume: 1.0,
+            muted: false,
         }
     }
 }

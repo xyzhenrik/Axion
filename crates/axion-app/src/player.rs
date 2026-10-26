@@ -27,6 +27,8 @@ const SPEED_CHOICE_BASE: u32 = ACTION_BASE + 50;
 const ICON_RATIO: f32 = 0.5;
 /// After scrubbing, page reports still carry the old time for a moment; ignore them.
 const SCRUB_SETTLE: Duration = Duration::from_millis(600);
+/// The progress bar's grab area is never shorter than this (logical px).
+pub const MIN_HIT_HEIGHT: f32 = 24.0;
 const SETTLED: f32 = 0.01;
 const SPEED_MENU_WIDTH: f32 = 200.0;
 const SPEED_ROW: f32 = 34.0;
@@ -427,6 +429,16 @@ impl PlayerOverlay {
         self.mode != Mode::Hidden && self.opacity.target > 0.5
     }
 
+    /// The pointer moved: fullscreen controls that had faded out are there again at once (not
+    /// only with the next frame), so a press right after the move hits them.
+    pub fn reveal(&mut self, ui: &mut Ui) {
+        if self.mode == Mode::Fullscreen && self.target.is_some() && !ui.is_visible(self.root) {
+            self.wake();
+            ui.set_visible(self.root, true);
+            ui.layout();
+        }
+    }
+
     /// Something the user did that should bring the controls back (key press, click).
     pub fn wake(&mut self) {
         self.last_activity = Instant::now();
@@ -449,7 +461,7 @@ impl PlayerOverlay {
         };
         if !self.laid_out {
             self.laid_out = true;
-            self.apply_layout(ui);
+            self.apply_layout(ui, config);
         }
         self.place(ui, rect);
         self.show_state(ui, &player);
@@ -480,7 +492,7 @@ impl PlayerOverlay {
         }
     }
 
-    fn apply_layout(&self, ui: &mut Ui) {
+    fn apply_layout(&self, ui: &mut Ui, config: &Config) {
         let m = FULLSCREEN;
         let set = |ui: &mut Ui, node: NodeId, f: &dyn Fn(&mut Style)| {
             let mut style = ui.style(node);
@@ -540,6 +552,14 @@ impl PlayerOverlay {
                 right: length(m.margin),
                 bottom: length(m.margin + m.bar_height + m.small + 2.0 * CIRCLE_GAP),
             };
+        });
+        // The progress bar: a thick track, and a tall area that grabs the pointer.
+        let media = &config.media;
+        if let Some(w) = ui.widget_mut(self.scrubber) {
+            w.track = Some(media.progress_thickness.max(1.0));
+        }
+        set(ui, self.scrubber, &|st| {
+            st.min_size.height = length(media.progress_hit_height.max(MIN_HIT_HEIGHT));
         });
         ui.set_icon(self.first_icon, Icon::Close);
     }
@@ -681,11 +701,12 @@ impl PlayerOverlay {
         }
     }
 
-    /// The volume slider moved.
-    pub fn volume_command(&mut self, value: f32) -> Option<(ViewId, Command)> {
+    /// The volume slider moved: the commands that set it (see [`volume_actions`]).
+    pub fn volume_command(&mut self, value: f32) -> Option<(ViewId, Vec<Command>)> {
         let (view, player) = self.target.as_ref()?;
         self.volume_set_at = Some(Instant::now());
-        Some((*view, Command::new(&player.id, Action::Volume(f64::from(value)))))
+        let commands = volume_actions(player, value).into_iter().map(|a| Command::new(&player.id, a));
+        Some((*view, commands.collect()))
     }
 
     /// The bridge command for a click on one of the controls.
@@ -753,6 +774,17 @@ impl PlayerOverlay {
     }
 }
 
+/// What a volume slider at `value` (0–1) sends for `player`: the volume, and — as the slider
+/// shows 0 while muted — taking it up from there also unmutes.
+pub fn volume_actions(player: &Player, value: f32) -> Vec<Action> {
+    let value = f64::from(value.clamp(0.0, 1.0));
+    let mut actions = vec![Action::Volume(value)];
+    if player.muted && value > 0.0 {
+        actions.push(Action::Mute(false));
+    }
+    actions
+}
+
 /// 1 → "1×", 1.25 → "1.25×".
 fn format_rate(rate: f64) -> String {
     let text = format!("{rate:.2}");
@@ -791,6 +823,18 @@ fn next_caption(player: &Player) -> i32 {
 mod tests {
     use super::*;
     use axion_media::Caption;
+
+    #[test]
+    fn the_volume_slider_sets_the_volume_and_unmutes() {
+        let mut p = Player { volume: 0.5, ..Player::default() };
+        assert_eq!(volume_actions(&p, 0.3), vec![Action::Volume(f64::from(0.3_f32))]);
+        // Muted, the slider shows 0: taking it up unmutes as well; 0 itself stays muted.
+        p.muted = true;
+        assert_eq!(volume_actions(&p, 0.3), vec![Action::Volume(f64::from(0.3_f32)), Action::Mute(false)]);
+        assert_eq!(volume_actions(&p, 0.0), vec![Action::Volume(0.0)]);
+        // Out of range is clamped.
+        assert_eq!(volume_actions(&Player::default(), 4.0), vec![Action::Volume(1.0)]);
+    }
 
     #[test]
     fn rates() {

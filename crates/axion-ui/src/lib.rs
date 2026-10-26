@@ -54,6 +54,10 @@ const SLIDER_TRACK: f32 = 4.0;
 /// Line slider thickness at rest and while dragged.
 const LINE_SLIDER: f32 = 4.0;
 const LINE_SLIDER_HELD: f32 = 8.0;
+/// A line slider with its own thickness swells to this many times it while dragged.
+const LINE_SLIDER_SWELL: f32 = 1.5;
+/// The lens of a dragged line slider, as a multiple of the track's thickness at rest.
+const LINE_LENS: f32 = 2.4;
 /// Below this opacity a widget (and its subtree) isn't drawn.
 const MIN_VISIBLE: f32 = 0.01;
 /// How much glass swells while a button on it is held.
@@ -1794,17 +1798,27 @@ impl Ui {
                     origin.x + TOGGLE_INSET * s + knob.x / 2.0 + travel * pos,
                     origin.y + size.y / 2.0,
                 );
-                self.paint_knob(center, knob, lens, speed, fade, depth, stacks);
+                self.paint_knob(center, knob, lens, speed, fade, depth, true, stacks);
             }
             WidgetKind::Slider { value, line: true } => {
-                let held = self.dragging == Some(node);
-                let h = if held { LINE_SLIDER_HELD } else { LINE_SLIDER } * s;
+                let held = self.knobs.get(&node);
+                let lens = held.map_or(0.0, |k| k.lens.value.clamp(0.0, 1.0));
+                let rest = widget.track.unwrap_or(LINE_SLIDER);
+                let swollen = widget.track.map_or(LINE_SLIDER_HELD, |t| t * LINE_SLIDER_SWELL);
+                let h = (rest + (swollen - rest) * lens) * s;
                 let y = px.origin.y + px.size.y / 2.0;
                 let track = Rect::new(px.origin.x, y - h / 2.0, px.size.x, h);
                 let label = theme.color(Paint::Label);
                 content.quads.push(Quad::fill(track, h / 2.0, faded([label[0], label[1], label[2], 0.28])));
                 let filled = Rect { size: Vec2::new(px.size.x * value, h), ..track };
                 content.quads.push(Quad::fill(filled, h / 2.0, faded([label[0], label[1], label[2], 0.95])));
+                // A dragged slider's fill end is a glass lens (no knob at rest).
+                if lens > MIN_VISIBLE {
+                    let speed = held.map_or(0.0, |k| k.speed);
+                    let center = Vec2::new(px.origin.x + px.size.x * value, y);
+                    let side = rest.max(LINE_SLIDER) * LINE_LENS * s;
+                    self.paint_knob(center, Vec2::splat(side), lens, speed, fade, depth, false, stacks);
+                }
             }
             WidgetKind::Slider { value, line: false } => {
                 let knob = SLIDER_KNOB * s;
@@ -1825,7 +1839,7 @@ impl Ui {
                 let lens = held.map_or(0.0, |k| k.lens.value.clamp(0.0, 1.0));
                 let speed = held.map_or(0.0, |k| k.speed);
                 let center = Vec2::new(px.origin.x + inset + width * value, y);
-                self.paint_knob(center, Vec2::splat(knob), lens, speed, fade, depth, stacks);
+                self.paint_knob(center, Vec2::splat(knob), lens, speed, fade, depth, true, stacks);
             }
         }
 
@@ -1858,8 +1872,9 @@ impl Ui {
         }
     }
 
-    /// A switch or slider knob (physical px): opaque white at rest, a clear glass lens while
-    /// held (`lens` 0→1), stretched along fast motion.
+    /// A switch or slider knob (physical px): opaque white at rest (a line slider has
+    /// none: `rest_knob` off), a clear glass lens while held (`lens` 0→1), stretched along fast
+    /// motion.
     #[allow(clippy::too_many_arguments)]
     fn paint_knob(
         &self,
@@ -1869,6 +1884,7 @@ impl Ui {
         speed: f32,
         fade: f32,
         depth: usize,
+        rest_knob: bool,
         stacks: &mut [Stack<'_>],
     ) {
         let s = self.scale;
@@ -1878,7 +1894,7 @@ impl Ui {
         let rect = Rect { origin: center - size / 2.0, size };
         let radius = size.y / 2.0;
         // The opaque knob fades out as the lens forms, and back in as it frosts over.
-        let opaque = (1.0 - lens) * fade;
+        let opaque = if rest_knob { (1.0 - lens) * fade } else { 0.0 };
         if opaque > MIN_VISIBLE {
             let content = &mut stacks[depth].content;
             content.quads.push(Quad::shadow(rect, radius, 2.0 * s, 6.0 * s, [0.0, 0.0, 0.0, 0.18 * opaque]));
@@ -2435,6 +2451,47 @@ mod tests {
         ui.set_visible(slider, true);
         grab(&mut ui);
         ui.remove(slider);
+        assert!(!ui.is_holding());
+    }
+
+    #[test]
+    fn a_line_slider_covers_the_pointer_and_maps_x_to_its_value() {
+        let mut ui = ui();
+        let root = ui.root();
+        let bar = ui.add(
+            root,
+            Widget::container(),
+            Style { size: Size { width: length(400.0), height: length(40.0) }, ..Default::default() },
+        );
+        let slider = ui.add(
+            bar,
+            Widget::line_slider(0.0).with_track(8.0),
+            Style {
+                flex_grow: 1.0,
+                min_size: Size { width: length(40.0), height: length(28.0) },
+                ..Default::default()
+            },
+        );
+        ui.layout();
+        let f = ui.frame(slider);
+        assert!(f.size.y >= 24.0, "the grab area is tall: {f:?}");
+        let at = |t: f32| Vec2::new(f.origin.x + f.size.x * t, f.center().y);
+        // It takes the pointer but is no button: `hit_action` misses it, `covers` doesn't (the
+        // fullscreen Playlist player let sliders' presses fall through because of that).
+        assert!(ui.covers(at(0.5)));
+        assert!(ui.hit_action(at(0.5)).is_none());
+        // A click seeks to where it lands, a drag follows.
+        ui.handle(UiInput::PointerMove(at(0.25)));
+        let (consumed, events) = ui.handle(UiInput::PointerDown);
+        assert!(consumed);
+        let value = |events: &[UiEvent]| match events.last() {
+            Some(UiEvent::ValueChanged { value, .. }) => *value,
+            other => panic!("no value change: {other:?}"),
+        };
+        assert!((value(&events) - 0.25).abs() < 1e-3);
+        let (_, events) = ui.handle(UiInput::PointerMove(at(0.8)));
+        assert!((value(&events) - 0.8).abs() < 1e-3);
+        ui.handle(UiInput::PointerUp);
         assert!(!ui.is_holding());
     }
 
