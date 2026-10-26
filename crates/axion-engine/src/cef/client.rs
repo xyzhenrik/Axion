@@ -51,6 +51,8 @@ pub(super) struct ViewFrames {
     spare_checks: RefCell<Vec<wgpu::Buffer>>,
     /// A frame never got drawn: Chromium should paint again (taken by the engine).
     pub wants_repaint: Cell<bool>,
+    /// Software frames with a black bar skipped in a row (see `ViewContext::upload`).
+    pub skipped_bars: Cell<u32>,
     /// Until when frames are checked for the letterboxed page of a resize (see
     /// `is_letterboxed`); `None` once a frame without bars came.
     pub letterbox_until: Cell<Option<Instant>>,
@@ -87,6 +89,25 @@ struct PendingFrame {
     mapped: Arc<AtomicU8>,
     /// When Chromium handed the frame over.
     since: Instant,
+}
+
+/// Most software frames with a black bar skipped in a row after a resize.
+const MAX_SKIPPED_BARS: u32 = 3;
+
+/// Whether a BGRA frame has a black line along an edge but isn't black through the middle: the
+/// page of another size scaled into the buffer with a bar (see `ViewContext::upload`).
+fn has_black_bar(pixels: &[u8], width: usize, height: usize) -> bool {
+    if width < 8 || height < 8 || pixels.len() < width * height * 4 {
+        return false;
+    }
+    let black = |x: usize, y: usize| {
+        let p = &pixels[(y * width + x) * 4..][..3];
+        p == [0, 0, 0]
+    };
+    let row = |y: usize| (0..width).step_by(4).all(|x| black(x, y));
+    let column = |x: usize| (0..height).step_by(4).all(|y| black(x, y));
+    let edge = row(0) || row(height - 1) || column(0) || column(width - 1);
+    edge && !(0..width).step_by(4).all(|x| black(x, height / 2))
 }
 
 const MAP_WAITING: u8 = 0;
@@ -344,6 +365,21 @@ impl ViewContext {
 
     /// Software paint: upload BGRA pixels, reusing the texture while the size is unchanged.
     fn upload(&self, pixels: &[u8], width: u32, height: u32) {
+        // Right after a resize Chromium can hand over the page of the old size scaled into the
+        // new buffer with a black bar along one edge (as on the shared-buffer path, see
+        // `is_scaled`): skip it, the real frame follows. At most a few in a row, so a page that
+        // really has a black edge still gets drawn.
+        let watching = self.frames.letterbox_until.get().is_some_and(|until| Instant::now() < until);
+        if watching && has_black_bar(pixels, width as usize, height as usize) {
+            let skipped = self.frames.skipped_bars.get();
+            if skipped < MAX_SKIPPED_BARS {
+                self.frames.skipped_bars.set(skipped + 1);
+                self.shared.stats.dropped();
+                self.frames.wants_repaint.set(true);
+                return;
+            }
+        }
+        self.frames.skipped_bars.set(0);
         let reusable = self
             .frames
             .texture

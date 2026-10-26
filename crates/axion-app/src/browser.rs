@@ -9,7 +9,9 @@ use anyhow::{Context, Result, bail};
 use axion_accounts::{Accounts, Bases};
 use axion_compositor::Icon;
 use axion_compositor::{Compositor, ImageDraw, Layer, Rect, Scene};
-use axion_config::{Action, Config, ConfigPaths, ConfigWatcher, Key, Keymap, Modifiers, ThemeMode};
+use axion_config::{
+    Action, Config, ConfigPaths, ConfigWatcher, Key, Keymap, Modifiers, SidebarSlideResize, ThemeMode,
+};
 use axion_engine::cef::{CefEngine, CefOptions};
 use axion_engine::{CursorKind, Engine, EngineEvent, InputEvent, MouseButton, NewViewKind, ViewId, ViewSize};
 use axion_shields::Level;
@@ -143,6 +145,8 @@ const LINE_SCROLL: f32 = 100.0;
 const SLIDE_ANCHOR_STILL: f32 = 1.0;
 const SLIDE_ANCHOR_CENTRED: f32 = 0.5;
 
+/// How fast the measured delay of a live-resized page's frames follows each new measurement.
+const PAGE_LAG_SMOOTHING: f32 = 0.25;
 /// Opacity below which the page's frame from before a sidebar slide is gone (see `slide_fade`).
 const SLIDE_FADE_DONE: f32 = 0.01;
 /// Pages' frame rate when the display's refresh rate is unknown.
@@ -331,6 +335,18 @@ pub struct Browser {
     /// Once the page's frame at its new size took over from its wider frame from before an
     /// opening slide: that old layout, fading out over the new one.
     slide_fade: Option<(wgpu::Texture, axion_physics::Animated<f32>)>,
+    /// `sidebar_slide_resize = "live"`: the width the shown page was last resized to.
+    slide_live_width: Option<f32>,
+    /// A live-resized page is drawn stretched over the rectangle until its frames have caught
+    /// up with the end of the slide.
+    live_stretch: bool,
+    /// Live resizing: the width (logical) the rectangle had in the previous frame, the sizes
+    /// the page was asked for (when, width in pixels), the width of the latest frame seen, and
+    /// the measured delay between a resize and its frame (seconds).
+    slide_prev_width: Option<f32>,
+    slide_sent: Vec<(Instant, f32)>,
+    slide_seen_width: Option<f32>,
+    page_lag: Option<f32>,
 }
 
 impl Browser {
@@ -585,6 +601,12 @@ impl Browser {
             slide_view_size: None,
             slide_snapshot: None,
             slide_fade: None,
+            slide_live_width: None,
+            live_stretch: false,
+            slide_prev_width: None,
+            slide_sent: Vec::new(),
+            slide_seen_width: None,
+            page_lag: None,
             sheet_origin: None,
             engine_icons: None,
             password_icons: None,
@@ -4586,7 +4608,10 @@ impl Browser {
             // follow once the slide has settled.
             let size = self.logical_size();
             self.chrome.apply_layout(&mut self.ui, &self.config, size);
-            if self.chrome.is_sliding() {
+            if self.chrome.is_sliding() && self.config.layout.sidebar_slide_resize == SidebarSlideResize::Live
+            {
+                self.resize_page_live(dt);
+            } else if self.chrome.is_sliding() {
                 let end = self.chrome.settled_page_rect(&self.config, size).size;
                 if let Some(view) = self.active_view()
                     && self.slide_view_size != Some((view, end))
@@ -4610,6 +4635,10 @@ impl Browser {
             } else {
                 self.fade_out_slide_snapshot();
                 self.slide_view_size = None;
+                self.slide_live_width = None;
+                self.slide_prev_width = None;
+                self.slide_sent.clear();
+                self.slide_seen_width = None;
                 self.update_layout();
             }
         }
@@ -4712,7 +4741,23 @@ impl Browser {
                 self.chrome.page_corner_radius(&self.config) * s,
                 anchor,
             );
+        } else if let (Some(view), Some(frame)) = (&page_view, &frame)
+            && self.live_stretch
+            && (frame.texture.width() as f32 - page_px.size.x).abs() > 1.0
+        {
+            // A live-resized page (see `resize_page_live`): Chromium's frames trail the
+            // rectangle by a few frames, so the latest one is drawn stretched across it. The
+            // difference is a few percent: content keeps its place relative to the rectangle
+            // (centred or left-aligned) and no edge is ever uncovered or cropped.
+            tracing::trace!(serial = frame.serial, tex = ?(frame.texture.width(), frame.texture.height()), page = ?page_px, "page frame stretched");
+            let mut page = ImageDraw::new(view, page_px);
+            page.radius = self.chrome.page_corner_radius(&self.config) * s;
+            layers.push(Layer::Image(page));
         } else if let (Some(view), Some(frame)) = (&page_view, &frame) {
+            if self.live_stretch && !self.chrome.is_sliding() {
+                // The frame of the slide's final size arrived: the page is pixel-exact again.
+                self.live_stretch = false;
+            }
             // Drawn at its own pixel size from the page's top-left, never stretched: while the
             // page is resized (sidebar sliding) Chromium's frames lag a little, and stretching
             // the older size into the new rectangle made the page wobble and flicker.
@@ -4953,6 +4998,50 @@ impl Browser {
             );
             fade.target = 0.0;
             self.slide_fade = Some((snapshot, fade));
+        }
+    }
+
+    /// `sidebar_slide_resize = "live"`: while the sidebar slides, the shown page follows the
+    /// rectangle, resized again whenever its target moved by `sidebar_slide_resize_step`.
+    /// Chromium's frame of a size arrives a few frames after the resize (`page_lag`, measured
+    /// from the frames that come), so the page is resized to where the rectangle will be by then
+    /// (its width plus its speed times the lag, never beyond the settled width). The engine
+    /// keeps the last complete frame until one of the new size arrives and the page is drawn
+    /// stretched over the rectangle (see `redraw_frame`): no blank frames, no jump when the
+    /// slide settles.
+    fn resize_page_live(&mut self, dt: f32) {
+        let Some(view) = self.active_view() else { return };
+        let now = Instant::now();
+        let scale = self.scale();
+        // How long the page's latest frame took: the one that now arrives was asked for at the
+        // size it has.
+        if let Some(frame) = self.engine.frame(view) {
+            let arrived = frame.texture.width() as f32;
+            if self.slide_seen_width != Some(arrived) {
+                self.slide_seen_width = Some(arrived);
+                let asked = self.slide_sent.iter().rposition(|&(_, w)| (w - arrived).abs() <= 1.0);
+                if let Some(i) = asked {
+                    let lag = now.duration_since(self.slide_sent[i].0).as_secs_f32();
+                    let known = self.page_lag.unwrap_or(self.config.layout.sidebar_slide_lead);
+                    self.page_lag = Some(known + (lag - known) * PAGE_LAG_SMOOTHING);
+                    tracing::trace!(arrived, lag, known, "page frame of a live size arrived");
+                    self.slide_sent.drain(..=i);
+                }
+            }
+        }
+        let rect = self.view_size();
+        let end = self.chrome.settled_page_rect(&self.config, self.logical_size()).size.x;
+        let speed = self.slide_prev_width.map_or(0.0, |p| (rect.logical.x - p) / dt.max(1e-3));
+        self.slide_prev_width = Some(rect.logical.x);
+        let lag = self.page_lag.unwrap_or(self.config.layout.sidebar_slide_lead);
+        let ahead = rect.logical.x + speed * lag;
+        let target = ahead.clamp(rect.logical.x.min(end), rect.logical.x.max(end));
+        let step = self.config.layout.sidebar_slide_resize_step.max(0.5);
+        if self.slide_live_width.is_none_or(|w| (w - target).abs() >= step) {
+            self.slide_live_width = Some(target);
+            self.live_stretch = true;
+            self.slide_sent.push((now, (target * scale).round()));
+            self.engine.resize(view, ViewSize { logical: Vec2::new(target, rect.logical.y), scale });
         }
     }
 
