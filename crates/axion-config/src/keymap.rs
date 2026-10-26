@@ -3,7 +3,7 @@
 //! `keymap.toml` maps action names to lists of chords, e.g.
 //!
 //! ```toml
-//! focus_address_bar = ["Ctrl+L", "Alt+D"]
+//! focus_address_bar = ["Alt+D", "Ctrl+K"]
 //! toggle_sidebar = ["Ctrl+Shift+L"]
 //! tab_overview = []          # unbind
 //! ```
@@ -47,6 +47,8 @@ pub enum Action {
     ShowBookmarks,
     ShowHistory,
     OpenPasswords,
+    /// Locks private tabs and password filling (the account menu's Lock).
+    Lock,
     Find,
     FindNext,
     FindPrevious,
@@ -113,6 +115,7 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::ShowBookmarks, "show_bookmarks"),
     (Action::ShowHistory, "show_history"),
     (Action::OpenPasswords, "open_passwords"),
+    (Action::Lock, "lock"),
     (Action::Find, "find"),
     (Action::FindNext, "find_next"),
     (Action::FindPrevious, "find_previous"),
@@ -361,7 +364,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         let parsed = chords.iter().filter_map(|c| c.parse().ok()).collect();
         map.insert(action, parsed);
     };
-    bind(Action::FocusAddressBar, &["Ctrl+L", "Alt+D", "F6"]);
+    bind(Action::FocusAddressBar, &["Alt+D", "F6", "Ctrl+K"]);
     bind(Action::NewTab, &["Alt+T"]);
     bind(Action::CloseTab, &["Alt+Q"]);
     bind(Action::ReopenClosedTab, &["Alt+Shift+T"]);
@@ -383,6 +386,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::ShowBookmarks, &["Ctrl+B"]);
     bind(Action::ShowHistory, &["Ctrl+H"]);
     bind(Action::OpenPasswords, &["Ctrl+P"]);
+    bind(Action::Lock, &["Ctrl+L"]);
     bind(Action::Find, &["Ctrl+F"]);
     bind(Action::FindNext, &["Ctrl+G", "F3"]);
     bind(Action::FindPrevious, &["Ctrl+Shift+G", "Shift+F3"]);
@@ -454,7 +458,10 @@ mod tests {
     fn defaults_have_no_conflicts() {
         let keymap = Keymap::default();
         assert!(keymap.conflicts().is_empty(), "{:?}", keymap.conflicts());
-        assert_eq!(keymap.action_for(&chord("Ctrl+L")), Some(Action::FocusAddressBar));
+        assert_eq!(keymap.action_for(&chord("Ctrl+L")), Some(Action::Lock));
+        for keys in ["Alt+D", "F6", "Ctrl+K"] {
+            assert_eq!(keymap.action_for(&chord(keys)), Some(Action::FocusAddressBar), "{keys}");
+        }
         assert_eq!(keymap.action_for(&chord("Alt+3")), Some(Action::SelectTab(3)));
         assert_eq!(keymap.action_for(&chord("Alt+T")), Some(Action::NewTab));
         assert_eq!(keymap.action_for(&chord("Alt+Q")), Some(Action::CloseTab));

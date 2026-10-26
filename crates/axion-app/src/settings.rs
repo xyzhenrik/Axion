@@ -2622,6 +2622,7 @@ fn shortcut_actions() -> Vec<KeyAction> {
         OpenSettings,
         ToggleFullscreen,
         Quit,
+        Lock,
         MediaPlayPause,
         MediaSeekBack,
         MediaSeekForward,
@@ -2645,6 +2646,7 @@ fn shortcut_group(action: KeyAction) -> &'static str {
         FocusAddressBar | Back | Forward | Reload | HardReload => "Navigation",
         Find | FindNext | FindPrevious | ZoomIn | ZoomOut | ZoomReset | Paste | PastePlainText => "Page",
         BookmarkPage | ShowBookmarks | ShowHistory | OpenPasswords | ToggleSidebar => "Panels",
+        Lock => "Privacy",
         OpenSettings | ToggleFullscreen | Quit => "Window",
         _ => "Media (fullscreen video)",
     }

@@ -937,6 +937,12 @@ impl Browser {
                 self.show_panel(panel);
             }
             Action::OpenPasswords => self.open_passwords(),
+            // The account menu's Lock: only accounts with a password have something to lock.
+            Action::Lock => {
+                if self.passwords.has_password() {
+                    self.lock_account();
+                }
+            }
             Action::Find => self.open_find(),
             Action::FindNext | Action::FindPrevious => {
                 if self.find.is_open() {
@@ -1040,7 +1046,11 @@ impl Browser {
         items.push(MenuItem::new(Icon::PersonAdd, "Add Account…", MenuAction::AddAccount).separated());
         items.push(MenuItem::new(Icon::Settings, "Account Settings…", MenuAction::AccountSettings));
         if self.passwords.has_password() {
-            items.push(MenuItem::new(Icon::Lock, "Lock", MenuAction::LockAccount));
+            let mut lock = MenuItem::new(Icon::Lock, "Lock", MenuAction::LockAccount);
+            if let Some(chord) = self.keymap.chords_for(Action::Lock).first() {
+                lock = lock.with_detail(chord.to_string());
+            }
+            items.push(lock);
         }
         let anchor = self.chrome.account_frame(&self.ui);
         let window = self.logical_size();

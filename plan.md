@@ -86,7 +86,7 @@ with genuine Liquid Glass, Brave-level blocking, and every knob exposed.
 ### 2.6 Input
 - Keyboard (decision 2026-10-26): tabs are `Alt` + key (Alt+T new, Alt+Q close, Alt+Shift+T
   reopen, Alt+Up/Down or Alt+PageUp/PageDown prev/next, Alt+1…8/9 select, Alt+P pin, Alt+O or
-  F9 overview); browser/system things are `Ctrl` + key (Ctrl+L address, Ctrl+R reload,
+  F9 overview); browser/system things are `Ctrl` + key (Alt+D / F6 / Ctrl+K address, Ctrl+L lock (private tabs + password filling), Ctrl+R reload,
   Ctrl+Shift+L sidebar, Ctrl+B bookmarks, Ctrl+H history, Ctrl+D bookmark page, Ctrl+P
   passwords, Ctrl+F find, Ctrl+G next match, Ctrl+S or Ctrl+, settings). Ctrl+Tab /
   Ctrl+Shift+Tab also cycle tabs (wrapping). Alt+Left/Right stay back/forward; Ctrl+W/T
