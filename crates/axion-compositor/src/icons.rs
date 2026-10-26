@@ -110,6 +110,7 @@ icons! {
     Previous => "M18 5.5v13l-9-6.5zM6 5.5v13",
     Next => "M6 5.5v13l9-6.5zM18 5.5v13",
     Code => "M8.5 7L3.5 12l5 5M15.5 7l5 5-5 5M13.5 5l-3 14",
+    Info => "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM12 11v5.5M12 7.5h.01",
 }
 
 /// Rotated icons (a spinning chevron) are rasterized in steps of this many degrees.

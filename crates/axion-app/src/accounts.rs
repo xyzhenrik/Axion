@@ -340,6 +340,9 @@ pub struct Relaunch {
     pub maximized: bool,
     /// Capture aid: the relaunched window takes this screenshot.
     pub capture: Option<PathBuf>,
+    /// The program to start; none: this executable again. An update points it at the new
+    /// AppImage or the rebuilt binary (the running one may be gone by then).
+    pub exe: Option<PathBuf>,
 }
 
 impl Relaunch {
@@ -363,7 +366,10 @@ impl Relaunch {
     /// Starts the new process (call once this one's Chromium has shut down). The environment
     /// (`AXION_MONITOR`, `AXION_PROFILE_DIR` …) carries over.
     pub fn spawn(&self) -> Result<()> {
-        let exe = std::env::current_exe().context("finding Axion's executable")?;
+        let exe = match &self.exe {
+            Some(exe) => exe.clone(),
+            None => axion_update::install::current_exe().context("finding Axion's executable")?,
+        };
         tracing::info!(account = %self.account, "starting Axion in the other account");
         std::process::Command::new(&exe)
             .args(self.args())
@@ -385,6 +391,7 @@ mod tests {
             position: Some((10, -20)),
             maximized: true,
             capture: Some(PathBuf::from("/tmp/x.png")),
+            exe: None,
         };
         assert_eq!(
             relaunch.args(),

@@ -1,6 +1,7 @@
 //! Axion — a Liquid Glass web browser.
 //!
 //! ```bash
+//! axion --check-update   # asks the configured update source once, prints the answer and exits
 //! axion [url…] [--account=ID] [--capture=out.png] [--size=1440x900] [--position=X,Y] [--maximized] [--overview] [--address=TEXT] [--open=menu|history|bookmarks|settings|private|private-locked|account-menu|…] [--lead=MS]
 //! ```
 //!
@@ -58,6 +59,8 @@ mod tabs;
 mod toast;
 mod tooltip;
 mod typing_probe;
+mod update;
+mod update_alert;
 mod url;
 
 use std::time::Duration;
@@ -87,6 +90,9 @@ fn main() -> Result<()> {
         .init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--check-update") {
+        std::process::exit(check_update_cli(&args));
+    }
     let mut options = Options {
         urls: args.iter().filter(|a| !a.starts_with("--")).cloned().collect(),
         overview: args.iter().any(|a| a == "--overview"),
@@ -189,6 +195,24 @@ impl ApplicationHandler for App {
                 None => ControlFlow::Poll,
             });
             browser.request_redraw();
+        }
+    }
+}
+
+/// `--check-update`: the account's `[updates]` settings, one check, the answer on stdout.
+fn check_update_cli(args: &[String]) -> i32 {
+    let load = || -> Result<axion_config::Config> {
+        let mut accounts = axion_accounts::Accounts::load(axion_accounts::Bases::discover()?, i64::try_from(update::now()).unwrap_or(0))?;
+        let wanted = args.iter().find_map(|a| a.strip_prefix("--account=")).map(str::to_owned);
+        let id = accounts.select(wanted.as_deref())?;
+        let paths = axion_config::ConfigPaths::in_dir(accounts.paths(&id)?.config);
+        Ok(axion_config::load_config(&paths)?)
+    };
+    match load() {
+        Ok(config) => update::check_cli(&config),
+        Err(e) => {
+            tracing::error!("could not read the settings: {e:#}");
+            1
         }
     }
 }

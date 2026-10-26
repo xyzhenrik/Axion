@@ -17,6 +17,7 @@ use zeroize::Zeroizing;
 use crate::home::Image;
 use crate::morph::{Origin, SheetMorph};
 use crate::passwords::MIN_MASTER_LENGTH;
+use crate::update::{AboutInfo, AboutState, InstallMode};
 
 mod search;
 
@@ -38,6 +39,14 @@ const GROUP_RADIUS: f32 = 14.0;
 const GROUP_INSET: f32 = 16.0;
 const GROUP_GAP: f32 = 22.0;
 const BACKDROP_DIM: f32 = 0.28;
+/// The dot on the About entry (and the account button) while an update is waiting.
+const UPDATE_DOT: Color = Color::rgb(0xFF3B30);
+/// The release notes box: its height, and the app icon's size and corner radius.
+const NOTES_HEIGHT: f32 = 168.0;
+const ABOUT_ICON: f32 = 64.0;
+const ABOUT_ICON_RADIUS: f32 = 15.0;
+/// A release note line wraps onto at most this many lines.
+const NOTES_LINE_WRAP: usize = 8;
 
 pub const SEARCH_ENGINES: [(&str, &str); 5] = [
     ("DuckDuckGo", "https://duckduckgo.com/?q={}"),
@@ -87,10 +96,11 @@ pub enum Category {
     Privacy,
     Data,
     Passwords,
+    About,
 }
 
 impl Category {
-    pub const ALL: [Category; 11] = [
+    pub const ALL: [Category; 12] = [
         Category::Account,
         Category::General,
         Category::Appearance,
@@ -102,6 +112,7 @@ impl Category {
         Category::Privacy,
         Category::Data,
         Category::Passwords,
+        Category::About,
     ];
 
     /// The page's name, translated.
@@ -123,6 +134,7 @@ impl Category {
             Category::Privacy => tr_mark("Privacy"),
             Category::Data => tr_mark("Data & Downloads"),
             Category::Passwords => tr_mark("Passwords"),
+            Category::About => tr_mark("About & Updates"),
         }
     }
 
@@ -139,6 +151,7 @@ impl Category {
             Category::Privacy => Icon::Lock,
             Category::Data => Icon::Download,
             Category::Passwords => Icon::Key,
+            Category::About => Icon::Info,
         }
     }
 }
@@ -199,6 +212,8 @@ enum Setting {
     PlaylistQuickAction,
     PlaylistAutoDownload,
     PlaylistDeleteFiles,
+    AutoCheckUpdates,
+    UpdatePrereleases,
 }
 
 impl Setting {
@@ -263,6 +278,8 @@ impl Setting {
             Setting::PlaylistQuickAction => tr_mark("Playlist button in the address field"),
             Setting::PlaylistAutoDownload => tr_mark("Download videos when adding them to the Playlist"),
             Setting::PlaylistDeleteFiles => tr_mark("Delete downloaded files when removing videos"),
+            Setting::AutoCheckUpdates => tr_mark("Check for updates automatically"),
+            Setting::UpdatePrereleases => tr_mark("Include pre-releases"),
         }
     }
 
@@ -308,6 +325,8 @@ impl Setting {
                 | Setting::PlaylistQuickAction
                 | Setting::PlaylistAutoDownload
                 | Setting::PlaylistDeleteFiles
+                | Setting::AutoCheckUpdates
+                | Setting::UpdatePrereleases
         )
     }
 
@@ -427,6 +446,10 @@ impl Setting {
             Setting::PlaylistQuickAction => return c.playlist.quick_action as u8 as f32,
             Setting::PlaylistAutoDownload => return c.playlist.auto_download as u8 as f32,
             Setting::PlaylistDeleteFiles => return c.playlist.delete_files_on_remove as u8 as f32,
+            Setting::AutoCheckUpdates => return c.updates.auto_check_on_start as u8 as f32,
+            Setting::UpdatePrereleases => {
+                return (c.updates.channel == axion_config::UpdateChannel::Prerelease) as u8 as f32;
+            }
             Setting::ClearClipboardAfter => c.passwords.clear_clipboard_seconds,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes,
@@ -496,6 +519,11 @@ impl Setting {
             Setting::PlaylistQuickAction => c.playlist.quick_action = on,
             Setting::PlaylistAutoDownload => c.playlist.auto_download = on,
             Setting::PlaylistDeleteFiles => c.playlist.delete_files_on_remove = on,
+            Setting::AutoCheckUpdates => c.updates.auto_check_on_start = on,
+            Setting::UpdatePrereleases => {
+                c.updates.channel =
+                    if on { axion_config::UpdateChannel::Prerelease } else { axion_config::UpdateChannel::Stable };
+            }
             Setting::ClearClipboardAfter => c.passwords.clear_clipboard_seconds = (v / 5.0).round() * 5.0,
             Setting::HideControlsAfter => c.media.hide_controls_after_seconds = (v * 2.0).round() / 2.0,
             Setting::FreezeAfter => c.tabs.freeze_after_minutes = v.round(),
@@ -582,7 +610,20 @@ pub enum SettingsAction {
     /// Add a background with the desktop's file chooser, or from the path field.
     ChooseBackground,
     AddBackgroundPath,
+    /// About & Updates.
+    CheckForUpdates,
+    InstallUpdate,
+    SkipUpdate,
+    RemindLater,
+    OpenReleasePage,
+    /// Store the repository typed into the field.
+    SaveRepository,
+    RelaunchNow,
 }
+
+/// The About page's actions: the ids after the background picker's.
+const UPDATE_BASE: u32 = 990;
+const UPDATE_ACTIONS: u32 = 7;
 
 /// The background picker's actions (after the categories' ids).
 const NO_BACKGROUND: u32 = 920;
@@ -731,6 +772,13 @@ impl SettingsAction {
                     SettingsAction::AddBackgroundPath => ADD_BACKGROUND_PATH,
                     SettingsAction::Background(i) => BACKGROUND_BASE + i as u32,
                     SettingsAction::RemoveBackground(i) => REMOVE_BACKGROUND_BASE + i as u32,
+                    SettingsAction::CheckForUpdates => UPDATE_BASE,
+                    SettingsAction::InstallUpdate => UPDATE_BASE + 1,
+                    SettingsAction::SkipUpdate => UPDATE_BASE + 2,
+                    SettingsAction::RemindLater => UPDATE_BASE + 3,
+                    SettingsAction::OpenReleasePage => UPDATE_BASE + 4,
+                    SettingsAction::SaveRepository => UPDATE_BASE + 5,
+                    SettingsAction::RelaunchNow => UPDATE_BASE + 6,
                 },
         )
     }
@@ -796,6 +844,15 @@ impl SettingsAction {
             n if (REMOVE_BACKGROUND_BASE..REMOVE_BACKGROUND_BASE + BACKGROUND_SLOTS as u32).contains(&n) => {
                 SettingsAction::RemoveBackground((n - REMOVE_BACKGROUND_BASE) as usize)
             }
+            n if (UPDATE_BASE..UPDATE_BASE + UPDATE_ACTIONS).contains(&n) => [
+                SettingsAction::CheckForUpdates,
+                SettingsAction::InstallUpdate,
+                SettingsAction::SkipUpdate,
+                SettingsAction::RemindLater,
+                SettingsAction::OpenReleasePage,
+                SettingsAction::SaveRepository,
+                SettingsAction::RelaunchNow,
+            ][(n - UPDATE_BASE) as usize],
             _ => return None,
         })
     }
@@ -848,6 +905,16 @@ pub enum Outcome {
     AddBackground(PathBuf),
     /// Delete the start page background with this file name.
     RemoveBackground(String),
+    /// About: check now (opened from the page, so the result shows in it).
+    CheckForUpdates,
+    /// About: confirm and install the available update (or open its page, for packages).
+    InstallUpdate,
+    SkipUpdate,
+    RemindLater,
+    OpenReleasePage,
+    RelaunchNow,
+    /// The repository changed (`config.updates.repository`); save it and look for updates.
+    SourceChanged,
 }
 
 pub struct SettingsSheet {
@@ -913,6 +980,17 @@ pub struct SettingsSheet {
     background_status: Option<String>,
     /// The start page's last "could not add" message that `background_status` followed.
     background_error: Option<String>,
+    /// About & Updates: what the page shows, the repository field and its last message, the
+    /// release notes box (clipped viewport, scrolling content) with its scroll, and the dot
+    /// beside the page's entry in the list.
+    about: AboutInfo,
+    repository_field: Option<NodeId>,
+    repository_status: Option<String>,
+    /// What was typed in the repository field when it was refused (put back after a redraw).
+    repository_draft: Option<String>,
+    notes: Option<(NodeId, NodeId)>,
+    notes_scroll: f32,
+    about_badge: NodeId,
 }
 
 fn row(gap: f32) -> Style {
@@ -1012,6 +1090,7 @@ impl SettingsSheet {
             },
         );
         let mut nav = Vec::new();
+        let mut about_badge = None;
         for category in Category::ALL {
             let item = ui.add(
                 nav_column,
@@ -1024,8 +1103,21 @@ impl SettingsSheet {
             );
             ui.add(item, Widget::icon(category.icon(), 19.0).with_paint(Paint::Accent), Style::default());
             ui.add_label(item, category.title(), TextStyle::Body, grow_label());
+            if category == Category::About {
+                let dot = ui.add(
+                    item,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Fixed(UPDATE_DOT), 1.0))
+                        .with_radius(CAPSULE)
+                        .without_feedback(),
+                    Style { size: Size { width: length(9.0), height: length(9.0) }, flex_shrink: 0.0, ..Default::default() },
+                );
+                ui.set_visible(dot, false);
+                about_badge = Some(dot);
+            }
             nav.push((category, item));
         }
+        let about_badge = about_badge.unwrap_or(search);
         // The page scrolls inside a clipped viewport.
         let viewport = ui.add(
             sheet,
@@ -1100,7 +1192,26 @@ impl SettingsSheet {
             background_path: None,
             background_status: None,
             background_error: None,
+            about: AboutInfo::default(),
+            repository_field: None,
+            repository_status: None,
+            repository_draft: None,
+            notes: None,
+            notes_scroll: 0.0,
+            about_badge,
         }
+    }
+
+    /// What the About & Updates page shows; call [`Self::show`] to redraw it.
+    pub fn set_about(&mut self, ui: &mut Ui, about: AboutInfo) {
+        let waiting = matches!(about.state, AboutState::Available { .. } | AboutState::Installed { .. })
+            && !about.skipped;
+        ui.set_visible(self.about_badge, waiting);
+        self.about = about;
+    }
+
+    pub fn repository_field(&self) -> Option<NodeId> {
+        self.repository_field
     }
 
     /// The start page's backgrounds, listed on the General page.
@@ -1338,6 +1449,8 @@ impl SettingsSheet {
         self.passwords_secret = None;
         self.preview_node = None;
         self.background_path = None;
+        self.repository_field = None;
+        self.notes = None;
         if !self.query.is_empty() {
             self.show_results(ui, config);
             return;
@@ -1795,6 +1908,7 @@ impl SettingsSheet {
             }
             Category::Data => self.data_page(ui, config),
             Category::Account => self.account_page(ui),
+            Category::About => self.about_page(ui, config),
         }
     }
 
@@ -1881,6 +1995,262 @@ impl SettingsSheet {
     }
 
     /// The fields to set the account password, or to change it.
+    /// Settings › About & Updates: the app, the update status with the available release's
+    /// notes and its buttons, and the update preferences.
+    fn about_page(&mut self, ui: &mut Ui, config: &Config) {
+        let about = self.about.clone();
+        let parent = self.group_for_row(ui);
+        let header = ui.add(
+            parent,
+            Widget::container(),
+            Style {
+                min_size: Size { width: auto(), height: length(ABOUT_ICON + 28.0) },
+                flex_shrink: 0.0,
+                padding: padding(0.0, 14.0),
+                ..row(16.0)
+            },
+        );
+        let icon_box = ui.add(
+            header,
+            Widget::container()
+                .with_background(Background::Fill(Paint::Accent, 0.14))
+                .with_radius(ABOUT_ICON_RADIUS),
+            Style {
+                size: Size { width: length(ABOUT_ICON), height: length(ABOUT_ICON) },
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        match &about.icon {
+            Some(picture) => {
+                let node = ui.add(
+                    icon_box,
+                    Widget::image().with_radius(ABOUT_ICON_RADIUS),
+                    Style {
+                        position: Position::Absolute,
+                        inset: Rect { left: length(0.0), right: auto(), top: length(0.0), bottom: auto() },
+                        size: Size { width: length(ABOUT_ICON), height: length(ABOUT_ICON) },
+                        ..Default::default()
+                    },
+                );
+                ui.set_image(node, Some(picture.clone()));
+            }
+            None => {
+                ui.add(icon_box, Widget::icon(Icon::Info, 30.0).with_paint(Paint::Accent), Style::default());
+            }
+        }
+        let text = ui.add(
+            header,
+            Widget::container(),
+            Style {
+                flex_direction: FlexDirection::Column,
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                min_size: Size { width: length(0.0), height: auto() },
+                gap: Size { width: length(0.0), height: length(2.0) },
+                ..Default::default()
+            },
+        );
+        ui.add_label(text, "Axion", TextStyle::Title2, Style::default());
+        let version = if about.build.is_empty() {
+            tr_fmt!("Version {version}", version = about.version.as_str())
+        } else {
+            tr_fmt!("Version {version} ({build})", version = about.version.as_str(), build = about.build.as_str())
+        };
+        let secondary = |ui: &mut Ui, text_node: NodeId, line: &str| {
+            let label = ui.add_label(text_node, line, TextStyle::Footnote, Style::default());
+            ui.set_label_lines(label, 2);
+            if let Some(w) = ui.widget_mut(label) {
+                w.set_paint(Paint::Secondary);
+            }
+        };
+        secondary(ui, text, &version);
+        let install = match about.mode {
+            InstallMode::AppImage => tr("Installed as an AppImage"),
+            InstallMode::Source => tr("Built from a Git checkout"),
+            InstallMode::Other => tr("Installed with a package manager or by hand"),
+        };
+        secondary(ui, text, install);
+
+        self.section(ui, tr("Software update"));
+        let source_set = !matches!(about.state, AboutState::NoSource);
+        let status = match &about.state {
+            AboutState::NoSource => tr("No update source set yet").to_owned(),
+            AboutState::NeverChecked => tr("Not checked yet").to_owned(),
+            AboutState::Checking => tr("Checking for updates…").to_owned(),
+            AboutState::UpToDate => tr("Axion is up to date").to_owned(),
+            AboutState::Available { version, prerelease: false } => {
+                tr_fmt!("Axion {version} is available", version = version.as_str())
+            }
+            AboutState::Available { version, prerelease: true } => {
+                tr_fmt!("Axion {version} (pre-release) is available", version = version.as_str())
+            }
+            AboutState::Installed { version } => {
+                tr_fmt!("Axion {version} is installed. Relaunch to use it.", version = version.as_str())
+            }
+            AboutState::Error(message) => message.clone(),
+        };
+        let row_node = self.row(ui, &status);
+        match &about.state {
+            AboutState::Checking => idle_pill(ui, row_node, tr("Checking…")),
+            AboutState::NoSource => {}
+            AboutState::Installed { .. } => {
+                primary_button(ui, row_node, tr("Relaunch Now"), SettingsAction::RelaunchNow)
+            }
+            _ if about.busy => {}
+            _ => pill_button(ui, row_node, tr("Check for Updates"), SettingsAction::CheckForUpdates, false),
+        }
+        if source_set {
+            let row_node = self.row(ui, tr("Last checked"));
+            let when =
+                if about.last_checked.is_empty() { tr("Never").to_owned() } else { about.last_checked.clone() };
+            let label = ui.add_label(row_node, &when, TextStyle::Callout, Style::default());
+            if let Some(w) = ui.widget_mut(label) {
+                w.set_paint(Paint::Secondary);
+            }
+        }
+        if let AboutState::Available { .. } = &about.state {
+            if !about.notes.is_empty() {
+                self.section(ui, tr("Release notes"));
+                self.notes_box(ui, &about.notes);
+            }
+            let row_node = self.button_row(ui);
+            if !about.busy {
+                let (text, action) = match about.mode {
+                    InstallMode::AppImage => (tr("Update"), SettingsAction::InstallUpdate),
+                    InstallMode::Source => (tr("Update from Git"), SettingsAction::InstallUpdate),
+                    InstallMode::Other => (tr("Open Release Page"), SettingsAction::OpenReleasePage),
+                };
+                primary_button(ui, row_node, text, action);
+                if !about.skipped {
+                    pill_button(ui, row_node, tr("Skip This Version"), SettingsAction::SkipUpdate, false);
+                    pill_button(ui, row_node, tr("Remind Me Later"), SettingsAction::RemindLater, false);
+                }
+                if about.mode != InstallMode::Other {
+                    pill_button(ui, row_node, tr("Release Page"), SettingsAction::OpenReleasePage, false);
+                }
+            }
+            if about.skipped {
+                self.note(ui, tr("You skipped this version: Axion won't announce it again."));
+            }
+            if about.mode == InstallMode::Other {
+                self.note(
+                    ui,
+                    tr("Axion was installed by a package manager or by hand. Update it the same way; the release page has the notes and downloads."),
+                );
+            }
+        }
+        if !source_set {
+            self.note(
+                ui,
+                tr("Until a repository is set, Axion never contacts an update server. Enter it below, or set updates.manifest_url in config.toml."),
+            );
+        }
+
+        self.section(ui, tr("Updates"));
+        self.control(ui, config, Setting::AutoCheckUpdates);
+        self.control(ui, config, Setting::UpdatePrereleases);
+        let row_node = self.row(ui, tr("Repository"));
+        let field = text_field(ui, row_node, tr("owner/name"), 230.0, false);
+        let shown = self.repository_draft.clone().unwrap_or_else(|| config.updates.repository.clone());
+        ui.set_field_text(field, &shown);
+        self.repository_field = Some(field);
+        pill_button(ui, row_node, tr("Save"), SettingsAction::SaveRepository, false);
+        let note = self.repository_status.clone().unwrap_or_else(|| {
+            tr("Where Axion's releases are published, as owner/name. Leave it empty to turn updates off. Looking for an update sends nothing but a request for the newest release.")
+                .to_owned()
+        });
+        self.note(ui, &note);
+        if !config.updates.manifest_url.trim().is_empty() {
+            self.note(
+                ui,
+                tr("updates.manifest_url is set in config.toml and is used instead of the repository."),
+            );
+        }
+    }
+
+    /// The release notes in a box of their own that scrolls when they are longer.
+    fn notes_box(&mut self, ui: &mut Ui, notes: &str) {
+        let parent = self.group_for_row(ui);
+        let hidden = axion_ui::taffy::Point {
+            x: axion_ui::taffy::Overflow::Hidden,
+            y: axion_ui::taffy::Overflow::Hidden,
+        };
+        let viewport = ui.add(
+            parent,
+            Widget::container().with_clip(),
+            Style {
+                size: Size { width: auto(), height: length(NOTES_HEIGHT) },
+                flex_shrink: 0.0,
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::START,
+                overflow: hidden,
+                ..Default::default()
+            },
+        );
+        let content = ui.add(
+            viewport,
+            Widget::container(),
+            Style {
+                size: Size { width: percent(1.0), height: auto() },
+                flex_shrink: 0.0,
+                flex_direction: FlexDirection::Column,
+                gap: Size { width: length(0.0), height: length(3.0) },
+                padding: padding(0.0, 10.0),
+                ..Default::default()
+            },
+        );
+        for line in notes.lines() {
+            if line.trim().is_empty() {
+                ui.add(
+                    content,
+                    Widget::container(),
+                    Style { size: Size { width: auto(), height: length(6.0) }, ..Default::default() },
+                );
+                continue;
+            }
+            let label = ui.add_label(
+                content,
+                line,
+                TextStyle::Callout,
+                Style { min_size: Size { width: length(0.0), height: auto() }, ..Default::default() },
+            );
+            ui.set_label_lines(label, NOTES_LINE_WRAP);
+        }
+        self.notes = Some((viewport, content));
+        self.notes_scroll = 0.0;
+    }
+
+    /// A point inside the release notes box (capture aid), if the page has one.
+    pub fn notes_point(&self, ui: &Ui) -> Option<Vec2> {
+        self.notes.map(|(viewport, _)| ui.frame(viewport).center())
+    }
+
+    /// Scrolls the release notes under the pointer, if there are some that overflow; returns
+    /// whether it took the wheel (the page does not scroll then).
+    pub fn scroll_notes(&mut self, ui: &mut Ui, dy: f32, pointer: Option<Vec2>) -> bool {
+        let (Some((viewport, content)), Some(p)) = (self.notes, pointer) else { return false };
+        if !ui.frame(viewport).contains(p) {
+            return false;
+        }
+        let max = (ui.frame(content).size.y - ui.frame(viewport).size.y).max(0.0);
+        if max <= 0.0 {
+            return false;
+        }
+        let next = (self.notes_scroll - dy).clamp(0.0, max);
+        // At either end the wheel goes on to the page.
+        if (next - self.notes_scroll).abs() < f32::EPSILON {
+            return false;
+        }
+        self.notes_scroll = next;
+        let mut style = ui.style(content);
+        style.margin = Rect { left: length(0.0), right: length(0.0), top: length(-next), bottom: length(0.0) };
+        ui.set_style(content, style);
+        true
+    }
+
     fn password_rows(&mut self, ui: &mut Ui) {
         let current = if self.account.has_password {
             let row_node = self.row(ui, tr("Current password"));
@@ -2731,6 +3101,42 @@ impl SettingsSheet {
                     _ => Outcome::ExportPasswords { path, password },
                 };
             }
+            SettingsAction::CheckForUpdates => return Outcome::CheckForUpdates,
+            SettingsAction::InstallUpdate => return Outcome::InstallUpdate,
+            SettingsAction::SkipUpdate => return Outcome::SkipUpdate,
+            SettingsAction::RemindLater => return Outcome::RemindLater,
+            SettingsAction::OpenReleasePage => return Outcome::OpenReleasePage,
+            SettingsAction::RelaunchNow => return Outcome::RelaunchNow,
+            SettingsAction::SaveRepository => {
+                let text =
+                    self.repository_field.and_then(|f| ui.field_text(f)).unwrap_or_default().trim().to_owned();
+                if text.is_empty() {
+                    config.updates.repository.clear();
+                    self.repository_draft = None;
+                    self.repository_status = Some(tr("Updates are off: no repository is set.").to_owned());
+                    Outcome::SourceChanged
+                } else {
+                    match axion_update::parse_repository(&text) {
+                        Ok(repository) => {
+                            config.updates.repository = repository.to_string();
+                            self.repository_draft = None;
+                            self.repository_status = Some(tr_fmt!(
+                                "Saved. Looking for updates in {repository}.",
+                                repository = repository.to_string()
+                            ));
+                            Outcome::SourceChanged
+                        }
+                        Err(_) => {
+                            self.repository_status = Some(
+                                tr("That isn't a repository. Use owner/name, for example henrik/axion.")
+                                    .to_owned(),
+                            );
+                            self.repository_draft = Some(text);
+                            Outcome::Nothing
+                        }
+                    }
+                }
+            }
             SettingsAction::ClearHistory => {
                 if self.confirm_clear {
                     self.confirm_clear = false;
@@ -2771,6 +3177,35 @@ fn background_ring(ui: &mut Ui, parent: NodeId, action: SettingsAction, selected
             }),
         Style { padding: padding(BACKGROUND_RING, BACKGROUND_RING), flex_shrink: 0.0, ..Default::default() },
     )
+}
+
+/// A solid accent button: the main action of a row of buttons.
+fn primary_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsAction) {
+    let button = ui.add(
+        parent,
+        Widget::container()
+            .with_action(action.id())
+            .with_radius(CAPSULE)
+            .with_background(Background::Fill(Paint::Accent, 1.0)),
+        Style { size: Size { width: auto(), height: length(36.0) }, padding: padding(18.0, 0.0), ..row(0.0) },
+    );
+    let label = ui.add_label(button, text, TextStyle::Callout, Style::default());
+    if let Some(w) = ui.widget_mut(label) {
+        w.set_paint(Paint::Fixed(Color::rgb(0xFFFFFF)));
+    }
+}
+
+/// A button that does nothing (a check is running).
+fn idle_pill(ui: &mut Ui, parent: NodeId, text: &str) {
+    let button = ui.add(
+        parent,
+        Widget::container().with_radius(CAPSULE).with_background(Background::Fill(Paint::Label, 0.07)),
+        Style { size: Size { width: auto(), height: length(36.0) }, padding: padding(16.0, 0.0), ..row(0.0) },
+    );
+    let label = ui.add_label(button, text, TextStyle::Callout, Style::default());
+    if let Some(w) = ui.widget_mut(label) {
+        w.set_paint(Paint::Secondary);
+    }
 }
 
 /// A small capsule button (accent tint, or red for destructive ones).
@@ -3269,15 +3704,26 @@ mod tests {
             SettingsAction::Background(BACKGROUND_SLOTS - 1),
             SettingsAction::RemoveBackground(0),
             SettingsAction::RemoveBackground(BACKGROUND_SLOTS - 1),
+            SettingsAction::CheckForUpdates,
+            SettingsAction::InstallUpdate,
+            SettingsAction::SkipUpdate,
+            SettingsAction::RemindLater,
+            SettingsAction::OpenReleasePage,
+            SettingsAction::SaveRepository,
+            SettingsAction::RelaunchNow,
+            SettingsAction::Category(Category::About),
         ] {
             assert_eq!(SettingsAction::from_id(action.id()), Some(action));
         }
         // Clear of the other overlays' ids (the lock screen starts at 9000).
         assert!(SettingsAction::RemoveBackground(BACKGROUND_SLOTS - 1).id().0 < 9000);
+        // The About page's ids follow the background picker's.
         assert_eq!(
             SettingsAction::from_id(ActionId(ACTION_BASE + REMOVE_BACKGROUND_BASE + BACKGROUND_SLOTS as u32)),
-            None
+            Some(SettingsAction::CheckForUpdates)
         );
+        assert_eq!(SettingsAction::from_id(ActionId(ACTION_BASE + UPDATE_BASE + UPDATE_ACTIONS)), None);
+        assert!(SettingsAction::RelaunchNow.id().0 < 9000);
         let crop = cover_crop((200, 100), Vec2::new(100.0, 100.0));
         assert!(
             (crop.size.x - 0.5).abs() < 1e-4 && (crop.origin.x - 0.25).abs() < 1e-4 && crop.size.y == 1.0

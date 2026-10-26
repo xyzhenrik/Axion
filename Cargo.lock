@@ -420,6 +420,7 @@ dependencies = [
  "axion-store",
  "axion-tabs",
  "axion-ui",
+ "axion-update",
  "axion-vault",
  "directories",
  "glam",

@@ -27,6 +27,9 @@ use crate::url::display_host;
 pub use crate::now_playing::NowPlaying;
 use crate::now_playing::{Art, NowPlayingCard};
 
+/// The dot on the account button that says an update is available (Apple's notification red).
+const UPDATE_BADGE: Color = Color::rgb(0xFF3B30);
+const UPDATE_BADGE_SIZE: f32 = 11.0;
 /// The account button at the bottom of the sidebar, and its avatar.
 const ACCOUNT_HEIGHT: f32 = 48.0;
 const ACCOUNT_AVATAR: f32 = 30.0;
@@ -345,6 +348,8 @@ pub struct Chrome {
     account_initials: NodeId,
     /// The profile picture over the initials (hidden without one).
     account_picture: NodeId,
+    /// A dot on the avatar while an update is available.
+    update_badge: NodeId,
     account_name: NodeId,
     now_playing: NowPlayingCard,
     mode: Mode,
@@ -1039,6 +1044,20 @@ impl Chrome {
             },
         );
         ui.set_visible(account_picture, false);
+        let update_badge = ui.add(
+            account_avatar,
+            Widget::container()
+                .with_background(Background::Fill(Paint::Fixed(UPDATE_BADGE), 1.0))
+                .with_radius(CAPSULE)
+                .without_feedback(),
+            Style {
+                position: Position::Absolute,
+                inset: Rect { left: auto(), right: length(-3.0), top: length(-3.0), bottom: auto() },
+                size: square(UPDATE_BADGE_SIZE),
+                ..Default::default()
+            },
+        );
+        ui.set_visible(update_badge, false);
         let account_name = ui.add_label(account, "", TextStyle::BodyEmphasis, shrinking_label());
         ui.add(
             account,
@@ -1266,6 +1285,7 @@ impl Chrome {
             account_avatar,
             account_initials,
             account_picture,
+            update_badge,
             account_name,
             now_playing,
             mode: Mode::Wide,
@@ -2183,6 +2203,11 @@ impl Chrome {
         if let Some(w) = ui.widget_mut(self.account_avatar) {
             w.background = Background::Fill(Paint::Fixed(color), 1.0);
         }
+    }
+
+    /// Shows or hides the dot on the account button that says an update is available.
+    pub fn set_update_badge(&self, ui: &mut Ui, shown: bool) {
+        ui.set_visible(self.update_badge, shown);
     }
 
     /// The account button (logical px), where the account menu rises from.

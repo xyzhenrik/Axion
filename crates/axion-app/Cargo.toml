@@ -24,6 +24,7 @@ axion-physics.workspace = true
 axion-shields.workspace = true
 axion-tabs.workspace = true
 axion-store.workspace = true
+axion-update.workspace = true
 axion-ui.workspace = true
 axion-vault = { workspace = true }
 directories = "6"

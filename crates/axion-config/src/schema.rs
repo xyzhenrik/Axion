@@ -1010,6 +1010,9 @@ pub struct Updates {
     pub check_interval_hours: u32,
     /// Check shortly after Axion starts, when the interval has passed.
     pub auto_check_on_start: bool,
+    /// The automatic check runs this long after Axion started (seconds), out of the way of
+    /// loading the first page.
+    pub startup_delay_seconds: u32,
     /// "Remind Me Later" silences the automatic notice for this long (hours).
     pub remind_later_hours: u32,
     /// Give up on a check after this many seconds.
@@ -1020,6 +1023,8 @@ pub struct Updates {
     pub last_checked: u64,
     /// A version the user chose to skip: no automatic notice for it. Written by Axion.
     pub skipped_version: String,
+    /// The version the toast already announced (once per version). Written by Axion.
+    pub notified_version: String,
     /// No automatic notice before this time (Unix seconds). Written by Axion.
     pub remind_until: u64,
 }
@@ -1034,11 +1039,13 @@ impl Default for Updates {
             channel: UpdateChannel::Stable,
             check_interval_hours: 24,
             auto_check_on_start: true,
+            startup_delay_seconds: 8,
             remind_later_hours: 24,
             timeout_seconds: 10,
             max_download_mb: 1024,
             last_checked: 0,
             skipped_version: String::new(),
+            notified_version: String::new(),
             remind_until: 0,
         }
     }
@@ -1057,11 +1064,13 @@ impl Updates {
 pub struct Toast {
     /// How long a toast stays before it springs away (seconds).
     pub duration_seconds: f32,
+    /// How long a toast with a button ("Axion 0.2.0 is available" – Update) stays (seconds).
+    pub action_duration_seconds: f32,
 }
 
 impl Default for Toast {
     fn default() -> Self {
-        Self { duration_seconds: 2.0 }
+        Self { duration_seconds: 2.0, action_duration_seconds: 8.0 }
     }
 }
 
