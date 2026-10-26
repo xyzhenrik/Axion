@@ -91,19 +91,51 @@
     node.style.background = `hsl(${hue(host || name)} 62% 52%)`;
   };
 
-  // The site's cached icon from the browser, or a monogram while it has none.
+  // The site's cached icon from the browser, or a monogram while it has none. Every render
+  // rebuilds the tiles, so loaded icons are kept per host: a rebuilt tile shows its icon at
+  // once (never the monogram in between), and a newer icon replaces the old one only once it
+  // has loaded.
+  const iconCache = new Map(); // host -> { img, version, pending }
+  const iconNodes = new Map(); // host -> Set of nodes showing it
+
+  const showIcon = (node, img) => {
+    const copy = img.cloneNode(false);
+    copy.decoding = "sync";
+    node.textContent = "";
+    node.style.background = "transparent";
+    node.appendChild(copy);
+  };
+
   const siteIcon = (node, host, title) => {
     monogram(node, host, title);
     if (!host) return;
+    if (!iconNodes.has(host)) iconNodes.set(host, new Set());
+    const nodes = iconNodes.get(host);
+    for (const n of nodes) if (!n.isConnected) nodes.delete(n);
+    nodes.add(node);
+    const version = state ? state.icons : 0;
+    let entry = iconCache.get(host);
+    if (entry && entry.img) showIcon(node, entry.img);
+    if (entry && (entry.version === version || entry.pending === version)) return;
+    if (!entry) {
+      entry = { img: null, version: -1, pending: null };
+      iconCache.set(host, entry);
+    }
+    entry.pending = version;
     const img = new Image();
     img.alt = "";
-    img.decoding = "async";
     img.onload = () => {
-      node.textContent = "";
-      node.style.background = "transparent";
-      node.appendChild(img);
+      entry.img = img;
+      entry.version = version;
+      entry.pending = null;
+      for (const n of nodes) if (n.isConnected) showIcon(n, img);
     };
-    img.src = `/api/favicon?host=${encodeURIComponent(host)}&v=${state ? state.icons : 0}`;
+    img.onerror = () => {
+      // No icon (yet): ask again only when icons changed.
+      entry.version = version;
+      entry.pending = null;
+    };
+    img.src = `/api/favicon?host=${encodeURIComponent(host)}&v=${version}`;
   };
 
   const formatCount = (n) => Math.round(n).toLocaleString("en-US");
