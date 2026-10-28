@@ -39,7 +39,10 @@ const SELECTED_OPACITY: f32 = 0.16;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResultKind {
     /// An open tab (`private`: in the private group).
-    Tab { view: ViewId, private: bool },
+    Tab {
+        view: ViewId,
+        private: bool,
+    },
     /// A tab closed a moment ago.
     Closed,
     History,
@@ -164,7 +167,12 @@ impl TabSearch {
                 inset: Rect { left: length(0.0), right: length(0.0), top: length(0.0), bottom: length(0.0) },
                 justify_content: JustifyContent::CENTER,
                 align_items: AlignItems::START,
-                padding: Rect { left: length(0.0), right: length(0.0), top: length(TOP), bottom: length(0.0) },
+                padding: Rect {
+                    left: length(0.0),
+                    right: length(0.0),
+                    top: length(TOP),
+                    bottom: length(0.0),
+                },
                 ..Default::default()
             },
         );
@@ -190,7 +198,12 @@ impl TabSearch {
             Widget::container().with_background(Background::Fill(Paint::Label, 0.07)).with_radius(CAPSULE),
             Style {
                 size: Size { width: percent(1.0), height: length(FIELD_HEIGHT) },
-                padding: Rect { left: length(14.0), right: length(14.0), top: length(0.0), bottom: length(0.0) },
+                padding: Rect {
+                    left: length(14.0),
+                    right: length(14.0),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
                 align_items: AlignItems::CENTER,
                 gap: Size { width: length(10.0), height: length(0.0) },
                 ..Default::default()
@@ -201,7 +214,11 @@ impl TabSearch {
             field_box,
             tr("Search Tabs"),
             TextStyle::Body,
-            Style { flex_grow: 1.0, size: Size { width: auto(), height: length(22.0) }, ..Default::default() },
+            Style {
+                flex_grow: 1.0,
+                size: Size { width: auto(), height: length(22.0) },
+                ..Default::default()
+            },
         );
         let list = ui.add(
             card,
@@ -213,7 +230,12 @@ impl TabSearch {
             tr("No matching tabs or history."),
             TextStyle::Footnote,
             Style {
-                padding: Rect { left: length(14.0), right: length(14.0), top: length(10.0), bottom: length(10.0) },
+                padding: Rect {
+                    left: length(14.0),
+                    right: length(14.0),
+                    top: length(10.0),
+                    bottom: length(10.0),
+                },
                 ..Default::default()
             },
         );
@@ -322,10 +344,18 @@ impl TabSearch {
         for (i, result) in results.iter().enumerate() {
             let row = ui.add(
                 self.list,
-                Widget::container().with_action(ActionId(ROW_BASE + i as u32)).with_radius(CAPSULE).without_feedback(),
+                Widget::container()
+                    .with_action(ActionId(ROW_BASE + i as u32))
+                    .with_radius(CAPSULE)
+                    .without_feedback(),
                 Style {
                     size: Size { width: percent(1.0), height: length(ROW_HEIGHT) },
-                    padding: Rect { left: length(14.0), right: length(14.0), top: length(0.0), bottom: length(0.0) },
+                    padding: Rect {
+                        left: length(14.0),
+                        right: length(14.0),
+                        top: length(0.0),
+                        bottom: length(0.0),
+                    },
                     align_items: AlignItems::CENTER,
                     gap: Size { width: length(12.0), height: length(0.0) },
                     ..Default::default()

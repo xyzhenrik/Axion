@@ -11,8 +11,8 @@ use axion_ui::taffy::NodeId;
 use axion_ui::{ActionId, Ui};
 use glam::Vec2;
 
-use crate::tabs::GroupColor;
 use crate::menu::{MAX_ITEMS, Menu, MenuAction, MenuClick, MenuItem, Placement};
+use crate::tabs::GroupColor;
 
 /// The context menus' rows (one block of `MAX_ITEMS` per plane).
 pub const CONTEXT_MENU_BASE: u32 = 17_000;

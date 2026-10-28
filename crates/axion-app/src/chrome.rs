@@ -72,6 +72,8 @@ const CAPTURE_DOT: f32 = 8.0;
 /// The speaker of a playing or muted tab, and a tab group's markers (logical px).
 const TAB_SPEAKER: f32 = 14.0;
 const GROUP_MARKER_HEIGHT: f32 = 3.0;
+/// The colour line's share of its tab's width.
+const GROUP_MARKER_SHARE: f32 = 0.7;
 const GROUP_BAR_WIDTH: f32 = 3.0;
 const GROUP_BAR_INSET: f32 = 4.0;
 const GROUP_BAR_MARGIN: f32 = 10.0;
@@ -452,6 +454,8 @@ pub struct Chrome {
     /// The tab groups' headers (sidebar) and chips (bar), as built by `sync_tabs`: group, node,
     /// index of its first tab, whether it is a sidebar header.
     group_nodes: Vec<(u32, NodeId, usize, bool)>,
+    /// The colour lines under the bar's grouped tabs and the tabs they belong to.
+    group_markers: Vec<(NodeId, NodeId)>,
     /// The row under the pointer, lit with a glass highlight (`update_hover`).
     hovered_row: Option<NodeId>,
     /// Private tabs are the current group (listed under "Private" instead of "N Tabs").
@@ -1576,6 +1580,7 @@ impl Chrome {
             items: Vec::new(),
             tab_options: TabOptions::default(),
             group_nodes: Vec::new(),
+            group_markers: Vec::new(),
             hovered_row: None,
             private_mode: false,
             normal_count: 0,
@@ -2314,6 +2319,24 @@ impl Chrome {
         }
     }
 
+    /// Sizes each grouped tab's colour line to the tab as laid out: insets and percentages of
+    /// an absolute child resolve against the tab's unsqueezed width.
+    fn fit_group_markers(&self, ui: &mut Ui) {
+        for &(marker, pill) in &self.group_markers {
+            let width = ui.frame(pill).size.x;
+            if width <= 1.0 {
+                continue;
+            }
+            let wanted = length(width * GROUP_MARKER_SHARE);
+            let mut style = ui.style(marker);
+            if style.size.width != wanted {
+                style.size.width = wanted;
+                style.inset.left = length(width * (1.0 - GROUP_MARKER_SHARE) / 2.0);
+                ui.set_style(marker, style);
+            }
+        }
+    }
+
     /// Advances the sidebar's slide (and the tabs' widths, the bookmarks bar's fit). Call
     /// every frame.
     pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
@@ -2322,6 +2345,7 @@ impl Chrome {
         self.animate_tab_widths(ui, dt);
         self.fit_bookmarks(ui);
         self.fit_progress(ui);
+        self.fit_group_markers(ui);
         if self.slide.is_settled(SLIDE_SETTLED) {
             if self.slide.target < 0.0 && ui.is_visible(self.sidebar) {
                 ui.set_visible(self.sidebar, false);
@@ -2793,12 +2817,7 @@ impl Chrome {
             self.items
                 .iter()
                 .filter(|i| i.surface == Surface::Sidebar && i.private == private)
-                .map(|i| SidebarRow {
-                    view: i.view,
-                    frame: ui.frame(i.node),
-                    index: i.index,
-                    group: i.group,
-                })
+                .map(|i| SidebarRow { view: i.view, frame: ui.frame(i.node), index: i.index, group: i.group })
                 .collect()
         };
         SidebarLayout {
@@ -2947,6 +2966,7 @@ impl Chrome {
         let private = self.private_mode;
         ui.set_opacity(self.address, 1.0);
         self.group_nodes.clear();
+        self.group_markers.clear();
         let chips = self.tab_options.group_chips;
         let mut last_group: Option<u32> = None;
         for (i, tab) in tabs.all().iter().enumerate() {
@@ -3040,18 +3060,24 @@ impl Chrome {
             }
             // The tab group's colour under the tab.
             if let Some(group) = tab.group.and_then(|id| tabs.group(id)) {
-                ui.add(
+                let marker = ui.add(
                     pill,
                     Widget::container()
                         .with_background(Background::Fill(Paint::Fixed(group.color.color()), 1.0))
                         .with_radius(CAPSULE),
                     Style {
                         position: Position::Absolute,
-                        inset: Rect { left: length(14.0), right: length(14.0), top: auto(), bottom: length(1.0) },
-                        size: Size { width: auto(), height: length(GROUP_MARKER_HEIGHT) },
+                        inset: Rect {
+                            left: length(0.0),
+                            right: auto(),
+                            top: length(height - GROUP_MARKER_HEIGHT - 1.0),
+                            bottom: auto(),
+                        },
+                        size: Size { width: length(0.0), height: length(GROUP_MARKER_HEIGHT) },
                         ..Default::default()
                     },
                 );
+                self.group_markers.push((marker, pill));
             }
             if separate {
                 // A hairline before every tab but the first (shown by `update_separators`).
@@ -3193,6 +3219,13 @@ impl Chrome {
                 group: tab.group,
             });
         }
+    }
+
+    /// Capture aid: the first tab group's header (the sidebar's, else the bar's chip): its id,
+    /// node and whether it is in the sidebar.
+    pub fn first_group_header(&self) -> Option<(u32, NodeId, bool)> {
+        let g = self.group_nodes.iter().find(|g| g.3).or_else(|| self.group_nodes.first())?;
+        Some((g.0, g.1, g.3))
     }
 
     /// What the tab lists show (applied by the next `sync_tabs`).
@@ -3354,11 +3387,21 @@ fn sidebar_tab_row(
     if let Some(color) = extras.group {
         ui.add(
             row_node,
-            Widget::container().with_background(Background::Fill(Paint::Fixed(color), 1.0)).with_radius(CAPSULE),
+            Widget::container()
+                .with_background(Background::Fill(Paint::Fixed(color), 1.0))
+                .with_radius(CAPSULE),
             Style {
                 position: Position::Absolute,
-                inset: Rect { left: length(GROUP_BAR_INSET), right: auto(), top: auto(), bottom: auto() },
-                size: Size { width: length(GROUP_BAR_WIDTH), height: length(ROW_HEIGHT - 2.0 * GROUP_BAR_MARGIN) },
+                inset: Rect {
+                    left: length(GROUP_BAR_INSET),
+                    right: auto(),
+                    top: length(GROUP_BAR_MARGIN),
+                    bottom: auto(),
+                },
+                size: Size {
+                    width: length(GROUP_BAR_WIDTH),
+                    height: length(ROW_HEIGHT - 2.0 * GROUP_BAR_MARGIN),
+                },
                 ..Default::default()
             },
         );
@@ -3380,9 +3423,15 @@ fn audio_button(ui: &mut Ui, parent: NodeId, tab: &Tab, action: ChromeAction) ->
     let button = ui.add(
         parent,
         Widget::container().with_action(action.id()).with_radius(CAPSULE),
-        Style { size: square(TAB_SPEAKER + 8.0), justify_content: JustifyContent::CENTER, flex_shrink: 0.0, ..row(0.0) },
+        Style {
+            size: square(TAB_SPEAKER + 8.0),
+            justify_content: JustifyContent::CENTER,
+            flex_shrink: 0.0,
+            ..row(0.0)
+        },
     );
-    let (icon, paint) = if tab.muted { (Icon::Muted, Paint::Secondary) } else { (Icon::Volume, Paint::Label) };
+    let (icon, paint) =
+        if tab.muted { (Icon::Muted, Paint::Secondary) } else { (Icon::Volume, Paint::Label) };
     ui.add(button, Widget::icon(icon, TAB_SPEAKER).with_paint(paint), Style::default());
     tip(ui, button, if tab.muted { tr("Unmute Tab") } else { tr("Mute Tab") }, None);
     button
@@ -3412,7 +3461,10 @@ fn group_header_row(ui: &mut Ui, parent: NodeId, group: &crate::tabs::TabGroup, 
     ui.add(
         row_node,
         Widget::icon(chevron, 12.0).with_icon_weight(IconWeight::Bold).with_paint(Paint::Secondary),
-        Style { margin: Rect { left: length(4.0), right: length(0.0), top: length(0.0), bottom: length(0.0) }, ..Default::default() },
+        Style {
+            margin: Rect { left: length(4.0), right: length(0.0), top: length(0.0), bottom: length(0.0) },
+            ..Default::default()
+        },
     );
     ui.add(
         row_node,
@@ -3446,12 +3498,17 @@ fn group_chip(ui: &mut Ui, parent: NodeId, group: &crate::tabs::TabGroup, count:
             ..row(4.0)
         },
     );
-    let text = if group.collapsed { format!("{} \u{b7} {count}", group_title(group)) } else { group_title(group) };
+    let text =
+        if group.collapsed { format!("{} \u{b7} {count}", group_title(group)) } else { group_title(group) };
     let label = ui.add_label(
         chip,
         &text,
         TextStyle::Footnote,
-        Style { flex_shrink: 1.0, min_size: Size { width: length(0.0), height: auto() }, ..Default::default() },
+        Style {
+            flex_shrink: 1.0,
+            min_size: Size { width: length(0.0), height: auto() },
+            ..Default::default()
+        },
     );
     if let Some(w) = ui.widget_mut(label) {
         w.set_paint(Paint::OnColor(color));
@@ -4264,6 +4321,19 @@ mod tests {
         for action in
             [ChromeAction::OpenBookmark(0), ChromeAction::OpenBookmark(42), ChromeAction::BookmarksOverflow]
         {
+            assert_eq!(ChromeAction::from_id(action.id()), Some(action));
+        }
+    }
+
+    #[test]
+    fn tab_group_and_speaker_actions_round_trip() {
+        for action in [
+            ChromeAction::MuteTabAt(0),
+            ChromeAction::MuteTabAt(57),
+            ChromeAction::MuteOtherTabAt(3),
+            ChromeAction::ToggleTabGroup(1),
+            ChromeAction::ToggleTabGroup(4242),
+        ] {
             assert_eq!(ChromeAction::from_id(action.id()), Some(action));
         }
     }

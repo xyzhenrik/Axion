@@ -90,7 +90,7 @@ impl Browser {
     }
 
     /// Opens a tab's context menu, flowing out of its segment or row.
-    fn open_tab_menu(&mut self, item: TabItem) {
+    pub(super) fn open_tab_menu(&mut self, item: TabItem) {
         let group = self.group(item.private);
         let Some(index) = group.index_of(item.view) else { return };
         let tabs = group.all();
@@ -106,7 +106,8 @@ impl Browser {
             can_bookmark: self.store.is_some(),
             can_group: !item.private && !tab.pinned,
             in_group: tab.group.is_some(),
-            site_muted: host.as_ref().is_some_and(|h| self.muted_sites.contains(h)) || (tab.muted && tab.site_muted),
+            site_muted: host.as_ref().is_some_and(|h| self.muted_sites.contains(h))
+                || (tab.muted && tab.site_muted),
             has_site: host.is_some(),
         };
         let choices = self.group_choices(tab.group);

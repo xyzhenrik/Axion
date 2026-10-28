@@ -531,7 +531,8 @@ impl Tabs {
             match rest[i].group {
                 Some(g) if !placed.contains(&g) => {
                     placed.push(g);
-                    let (mine, others): (Vec<Tab>, Vec<Tab>) = rest.drain(i..).partition(|x| x.group == Some(g));
+                    let (mine, others): (Vec<Tab>, Vec<Tab>) =
+                        rest.drain(i..).partition(|x| x.group == Some(g));
                     out.extend(mine);
                     rest.extend(others);
                 }

@@ -132,6 +132,12 @@ How tabs look and how Axion saves memory. See [Tabs and memory](features/tabs-an
 | **Page colour** (**Extreme** / **Dominant**) | Shown when **Colour in tab bar** is on. **Extreme** takes the darkest or lightest prominent colour. **Dominant** takes the main colour, evened out. Turning the colour on switches from neutral to **Extreme**. | Neutral (page colour off) | `appearance.tint_mode` (`neutral`, `extreme`, `dominant`) |
 | **Open new tabs in background** | Tabs opened from links do not take over the screen. | On | `tabs.open_links_in_background` |
 | **Middle click closes tabs** | A middle click on a tab (bar, sidebar or tab overview) closes it. | On | `tabs.middle_click_closes_tab` |
+| **New tabs join the group they open from** | A tab opened from a tab of a tab group (a link, **New Tab to the Right**) joins that group. | On | `tabs.new_tab_joins_group` |
+| **Show tab group names in the tab bar** | Tab groups get a coloured chip with their name in front of their tabs. Off: only a colour line under the tabs. | On | `tabs.group_chips_in_bar` |
+| **Show a speaker on tabs playing sound** | Tabs that play sound, or are muted, show a speaker in the tab bar and the sidebar. Click it to mute or unmute. | On | `tabs.show_audio_indicator` |
+| **Remember muted sites** | **Mute Site** in a tab's menu is remembered: tabs of that site start muted. | On | `tabs.remember_site_mute` |
+| Closed tabs remembered | How many closed tabs **Reopen Closed Tab** and the tab search remember. | 25 | `tabs.closed_tabs_remembered` |
+| History results in the tab search | At most this many history entries in the tab search (0: none). | 8 | `tabs.tab_search_history_results` |
 | **Drag tabs out as links** | Dragging a tab out of the window into another app drops its address there (a text field gets the link). | On | `tabs.drag_out_links` (`tabs.drag_out_distance`: how far outside the window counts as out, default 12 px) |
 | **Close tabs** | Closes tabs you have not looked at for a while: **Manually** (never), **After a Day**, **After a Week**, **After a Month**. Pinned tabs and tabs playing media stay. | Manually | `tabs.close_after_days` (0, 1, 7, 30) |
 | **Bookmarks bar** | When the bookmarks bar shows: **Always**, **On Home Page**, **Never**. | Always | `layout.bookmarks_bar` (`always`, `home`, `never`) |

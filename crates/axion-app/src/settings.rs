@@ -3984,8 +3984,8 @@ fn shortcut_actions() -> Vec<KeyAction> {
 fn shortcut_group(action: KeyAction) -> &'static str {
     use KeyAction::*;
     match action {
-        NewTab | CloseTab | ReopenClosedTab | SearchTabs | NextTab | PreviousTab | PinTab | TabOverview | SelectTab(_)
-        | SelectLastTab => tr("Tabs"),
+        NewTab | CloseTab | ReopenClosedTab | SearchTabs | NextTab | PreviousTab | PinTab | TabOverview
+        | SelectTab(_) | SelectLastTab => tr("Tabs"),
         FocusAddressBar | Back | Forward | Reload | HardReload => tr("Navigation"),
         Find | FindNext | FindPrevious | ZoomIn | ZoomOut | ZoomReset | Paste | PastePlainText => tr("Page"),
         BookmarkPage | ShowBookmarks | ShowHistory | OpenPlaylist | PlaylistAdd | OpenPasswords

@@ -103,7 +103,11 @@ impl GroupSheet {
             field_box,
             tr("Group Name"),
             TextStyle::Body,
-            Style { flex_grow: 1.0, size: Size { width: auto(), height: length(22.0) }, ..Default::default() },
+            Style {
+                flex_grow: 1.0,
+                size: Size { width: auto(), height: length(22.0) },
+                ..Default::default()
+            },
         );
         let swatches = ui.add(
             alert,
@@ -300,8 +304,7 @@ mod tests {
 
     #[test]
     fn colour_ids_round_trip() {
-        let sheet_ids: Vec<_> =
-            (0..GroupColor::ALL.len() as u32).map(|i| ActionId(COLOR_BASE + i)).collect();
+        let sheet_ids: Vec<_> = (0..GroupColor::ALL.len() as u32).map(|i| ActionId(COLOR_BASE + i)).collect();
         for (id, color) in sheet_ids.iter().zip(GroupColor::ALL) {
             let n = id.0;
             assert!((COLOR_BASE..COLOR_BASE + 8).contains(&n));

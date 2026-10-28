@@ -16,9 +16,9 @@ use axion_ui::taffy::prelude::*;
 use axion_ui::{Background, CAPSULE, GlassLevel, TextStyle, Ui, Widget};
 use glam::Vec2;
 
-use crate::chrome::{Chrome, MoveKey, SidebarLayout, SidebarRow, Surface, TabItem};
 #[cfg(test)]
 use crate::chrome::SidebarHeader;
+use crate::chrome::{Chrome, MoveKey, SidebarLayout, SidebarRow, Surface, TabItem};
 use crate::favicons::{Favicons, favicon_node};
 use crate::tabs::Tab;
 
@@ -137,8 +137,7 @@ pub fn sidebar_target(layout: &SidebarLayout, source: ViewId, y: f32) -> Target 
     }
     // Over the lower half of a group's last row the tab stays in the group; further down it
     // leaves.
-    let (index, tab_group) =
-        drop_among(&others, source_index, k, |p| y <= p.frame.origin.y + p.frame.size.y);
+    let (index, tab_group) = drop_among(&others, source_index, k, |p| y <= p.frame.origin.y + p.frame.size.y);
     Target { private, index, tab_group, on_header: false }
 }
 
@@ -475,7 +474,7 @@ mod tests {
         // Below that row: out of it.
         assert_eq!(at(&l, 3, last.origin.y + last.size.y + 2.0), (false, 3, None, false));
         // Between ungrouped rows: ungrouped.
-        assert_eq!(at(&l, 5, 44.0 + 44.0 + 22.0), (false, 1, None, false));
+        assert_eq!(at(&l, 5, 100.0), (false, 1, None, false));
     }
 
     #[test]
@@ -512,8 +511,8 @@ mod tests {
         // Tab 3 between the group's two tabs.
         assert_eq!(bar_target(&items, ViewId(3), None, 150.0), (2, Some(5)));
         // A group tab reordered past its group's end stays in it.
-        assert_eq!(bar_target(&items, ViewId(1), Some(5), 210.0), (2, Some(5)));
+        assert_eq!(bar_target(&items, ViewId(1), Some(5), 260.0), (2, Some(5)));
         // An ungrouped tab behind the group stays out.
-        assert_eq!(bar_target(&items, ViewId(0), None, 230.0), (2, None));
+        assert_eq!(bar_target(&items, ViewId(0), None, 300.0), (2, None));
     }
 }

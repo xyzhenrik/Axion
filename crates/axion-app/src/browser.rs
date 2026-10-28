@@ -37,9 +37,8 @@ use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
 use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::filedrop::{DropOutcome, FileDrop};
 use crate::find::{FindAction, FindBar};
-use crate::group_sheet::{GroupSheet, GroupSheetAction};
-use crate::tab_search::TabSearch;
 use crate::frame_rate::{self, RefreshWatch};
+use crate::group_sheet::{GroupSheet, GroupSheetAction};
 use crate::home::{HomeAction, HomePage, REFRESH_SCRIPT, is_home_url};
 use crate::import::Importer;
 use crate::input::{self, ClickCounter};
@@ -71,6 +70,7 @@ use crate::settings::{AccountInfo, Category, Outcome, SettingsAction, SettingsSh
 use crate::shields::ShieldsState;
 use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
 use crate::suggestions::{SuggestionList, suggest};
+use crate::tab_search::TabSearch;
 use crate::tabdrag::{TabDrag, Target};
 use crate::tabs::{Tab, Tabs, ZOOM_STEP};
 use crate::toast::Toast;
@@ -3800,7 +3800,12 @@ impl Browser {
                     }
                     Some(ChromeAction::MuteTabAt(i)) => self.toggle_tab_mute_at(false, i),
                     Some(ChromeAction::MuteOtherTabAt(i)) => self.toggle_tab_mute_at(true, i),
-                    Some(ChromeAction::ToggleTabGroup(id)) => self.toggle_tab_group(id),
+                    Some(ChromeAction::ToggleTabGroup(id)) => {
+                        self.toggle_tab_group(id);
+                        if self.overview.is_open() {
+                            self.rebuild_overview();
+                        }
+                    }
                     Some(ChromeAction::NowPlaying) => {
                         if let Some(view) = self.now_playing {
                             self.show_view(view);
@@ -6527,6 +6532,28 @@ impl Browser {
                     }
                 }
                 "account-menu" => self.toggle_account_menu(),
+                // Capture aids for tab groups and tab search: the search card (type into it with
+                // "ui-text:"), the sheet naming a new group for the active tab, and the menus of
+                // the first group's header and of sidebar tab N.
+                "tab-search" => self.toggle_tab_search(),
+                "group-sheet" => {
+                    if let Some(view) = self.active_view() {
+                        self.open_group_sheet(crate::group_sheet::GroupSheetPurpose::New(view));
+                    }
+                }
+                "group-menu" => {
+                    if let Some((id, node, sidebar)) = self.chrome.first_group_header() {
+                        self.open_tab_group_menu(id, node, sidebar);
+                    }
+                }
+                menu if menu.starts_with("tab-menu:") => {
+                    let n = menu["tab-menu:".len()..].parse::<usize>().ok();
+                    if let Some(item) =
+                        n.and_then(|n| self.chrome.tab_items(Surface::Sidebar).get(n).copied())
+                    {
+                        self.open_tab_menu(item);
+                    }
+                }
                 "add-account" => self.open_add_account(),
                 // Capture aid: type "add-account-name:NAME" into the open Add Account sheet.
                 name if name.starts_with("add-account-name:") => {
@@ -7513,6 +7540,7 @@ fn chrome_allowed_while_locked(action: ChromeAction) -> bool {
             | ChromeAction::Share
             | ChromeAction::NewTab
             | ChromeAction::MuteTab
+            | ChromeAction::MuteTabAt(_)
             | ChromeAction::DownloadsButton
             | ChromeAction::SelectTab(_)
             | ChromeAction::CloseTab(_)

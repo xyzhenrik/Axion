@@ -813,7 +813,14 @@ impl Store {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
             for (i, tab) in tabs.iter().enumerate() {
-                insert.execute(params![i as i64, tab.url, tab.title, i == active, tab.last_viewed, tab.group])?;
+                insert.execute(params![
+                    i as i64,
+                    tab.url,
+                    tab.title,
+                    i == active,
+                    tab.last_viewed,
+                    tab.group
+                ])?;
             }
         }
         tx.commit()?;
@@ -822,9 +829,9 @@ impl Store {
 
     /// The saved session's tabs and the active one's index.
     pub fn session(&self) -> Result<(Vec<SessionTab>, usize)> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT url, title, active, last_viewed, group_id FROM session_tabs ORDER BY position")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT url, title, active, last_viewed, group_id FROM session_tabs ORDER BY position",
+        )?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 SessionTab { url: r.get(0)?, title: r.get(1)?, last_viewed: r.get(3)?, group: r.get(4)? },
@@ -848,9 +855,8 @@ impl Store {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM session_groups", [])?;
         {
-            let mut insert = tx.prepare(
-                "INSERT INTO session_groups (id, name, color, collapsed) VALUES (?1, ?2, ?3, ?4)",
-            )?;
+            let mut insert = tx
+                .prepare("INSERT INTO session_groups (id, name, color, collapsed) VALUES (?1, ?2, ?3, ?4)")?;
             for g in groups {
                 insert.execute(params![g.id, g.name, g.color, g.collapsed])?;
             }
@@ -861,7 +867,8 @@ impl Store {
 
     /// The saved tab groups.
     pub fn session_groups(&self) -> Result<Vec<SessionGroup>> {
-        let mut stmt = self.conn.prepare("SELECT id, name, color, collapsed FROM session_groups ORDER BY id")?;
+        let mut stmt =
+            self.conn.prepare("SELECT id, name, color, collapsed FROM session_groups ORDER BY id")?;
         let rows = stmt.query_map([], |r| {
             Ok(SessionGroup { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, collapsed: r.get(3)? })
         })?;
@@ -1339,8 +1346,12 @@ mod tests {
     fn session_round_trip() {
         let mut s = store();
         assert_eq!(s.session().unwrap(), (vec![], 0));
-        let tab =
-            |url: &str, title: &str| SessionTab { url: url.into(), title: title.into(), last_viewed: 7, group: None };
+        let tab = |url: &str, title: &str| SessionTab {
+            url: url.into(),
+            title: title.into(),
+            last_viewed: 7,
+            group: None,
+        };
         let tabs = vec![tab("https://a/", "A"), tab("https://b/", "B")];
         s.save_session(&tabs, 1).unwrap();
         assert_eq!(s.session().unwrap(), (tabs.clone(), 1));
@@ -1358,7 +1369,8 @@ mod tests {
         ];
         s.save_session_groups(&groups).unwrap();
         assert_eq!(s.session_groups().unwrap(), groups);
-        let mut tab = SessionTab { url: "https://a/".into(), title: "A".into(), last_viewed: 1, group: Some(2) };
+        let mut tab =
+            SessionTab { url: "https://a/".into(), title: "A".into(), last_viewed: 1, group: Some(2) };
         s.save_session(std::slice::from_ref(&tab), 0).unwrap();
         assert_eq!(s.session().unwrap().0[0].group, Some(2));
         tab.group = None;

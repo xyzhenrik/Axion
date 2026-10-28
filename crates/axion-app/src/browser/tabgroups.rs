@@ -46,7 +46,12 @@ impl Browser {
         self.group(false)
             .groups()
             .iter()
-            .map(|g| GroupChoice { id: g.id, name: g.name.clone(), color: g.color, current: current == Some(g.id) })
+            .map(|g| GroupChoice {
+                id: g.id,
+                name: g.name.clone(),
+                color: g.color,
+                current: current == Some(g.id),
+            })
             .collect()
     }
 
