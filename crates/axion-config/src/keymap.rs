@@ -3,7 +3,7 @@
 //! `keymap.toml` maps action names to lists of chords, e.g.
 //!
 //! ```toml
-//! focus_address_bar = ["Alt+D", "Ctrl+K"]
+//! focus_address_bar = ["Alt+D", "Ctrl+E"]
 //! toggle_sidebar = ["Ctrl+Shift+L"]
 //! tab_overview = []          # unbind
 //! ```
@@ -40,6 +40,8 @@ pub enum Action {
     Forward,
     ToggleSidebar,
     TabOverview,
+    /// Search open tabs, recently closed tabs and history.
+    SearchTabs,
     /// Pin or unpin the current tab.
     PinTab,
     /// Bookmark the current page (or remove its bookmark).
@@ -50,6 +52,10 @@ pub enum Action {
     OpenPlaylist,
     /// Add the page's video to the Playlist.
     PlaylistAdd,
+    /// Show the page's article in Reader view, or the page again.
+    ToggleReader,
+    /// Translate the page, or show the original again.
+    TranslatePage,
     OpenPasswords,
     /// Locks private tabs and password filling (the account menu's Lock).
     Lock,
@@ -65,6 +71,8 @@ pub enum Action {
     ZoomOut,
     ZoomReset,
     OpenSettings,
+    /// The command palette: fuzzy search over every other action.
+    CommandPalette,
     ToggleFullscreen,
     /// Chromium's developer tools for the page (toggles).
     DevTools,
@@ -72,6 +80,10 @@ pub enum Action {
     DevToolsConsole,
     /// The page's source in a new tab (`view-source:`).
     ViewSource,
+    /// Print / save the page as PDF.
+    Print,
+    /// The screenshot tool.
+    Screenshot,
     Quit,
     // Media keys: only while a video plays fullscreen with Axion's controls, so plain keys
     // like Space keep reaching the page otherwise.
@@ -88,6 +100,12 @@ pub enum Action {
 }
 
 impl Action {
+    /// Every action that has one fixed meaning (all but `SelectTab(n)`), in declaration order:
+    /// the registry the command palette lists, so a new action appears there by itself.
+    pub fn all() -> impl Iterator<Item = Action> {
+        SIMPLE_ACTIONS.iter().map(|(a, _)| *a)
+    }
+
     /// Media keys apply only while a video is fullscreen (see the enum).
     pub fn is_media(self) -> bool {
         matches!(
@@ -120,12 +138,15 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::Forward, "forward"),
     (Action::ToggleSidebar, "toggle_sidebar"),
     (Action::TabOverview, "tab_overview"),
+    (Action::SearchTabs, "search_tabs"),
     (Action::PinTab, "pin_tab"),
     (Action::BookmarkPage, "bookmark_page"),
     (Action::ShowBookmarks, "show_bookmarks"),
     (Action::ShowHistory, "show_history"),
     (Action::OpenPlaylist, "open_playlist"),
     (Action::PlaylistAdd, "playlist_add"),
+    (Action::ToggleReader, "toggle_reader"),
+    (Action::TranslatePage, "translate_page"),
     (Action::OpenPasswords, "open_passwords"),
     (Action::Lock, "lock"),
     (Action::Find, "find"),
@@ -137,10 +158,13 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::ZoomOut, "zoom_out"),
     (Action::ZoomReset, "zoom_reset"),
     (Action::OpenSettings, "open_settings"),
+    (Action::CommandPalette, "command_palette"),
     (Action::ToggleFullscreen, "toggle_fullscreen"),
     (Action::DevTools, "devtools"),
     (Action::DevToolsConsole, "devtools_console"),
     (Action::ViewSource, "view_source"),
+    (Action::Print, "print"),
+    (Action::Screenshot, "screenshot"),
     (Action::Quit, "quit"),
     (Action::MediaPlayPause, "media_play_pause"),
     (Action::MediaSeekBack, "media_seek_back"),
@@ -379,7 +403,8 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
         let parsed = chords.iter().filter_map(|c| c.parse().ok()).collect();
         map.insert(action, parsed);
     };
-    bind(Action::FocusAddressBar, &["Alt+D", "F6", "Ctrl+K"]);
+    bind(Action::FocusAddressBar, &["Alt+D", "F6"]);
+    bind(Action::CommandPalette, &["Ctrl+K"]);
     bind(Action::NewTab, &["Alt+T"]);
     bind(Action::CloseTab, &["Alt+Q"]);
     bind(Action::ReopenClosedTab, &["Alt+Shift+T"]);
@@ -397,12 +422,14 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::Forward, &["Alt+Right", "Ctrl+]"]);
     bind(Action::ToggleSidebar, &["Ctrl+Shift+L"]);
     bind(Action::TabOverview, &["Alt+O", "F9"]);
+    bind(Action::SearchTabs, &["Ctrl+Shift+A"]);
     bind(Action::BookmarkPage, &["Ctrl+D"]);
     bind(Action::ShowBookmarks, &["Ctrl+B"]);
     bind(Action::ShowHistory, &["Ctrl+H"]);
     bind(Action::OpenPlaylist, &["Ctrl+Shift+P"]);
     bind(Action::PlaylistAdd, &["Ctrl+Shift+D"]);
-    bind(Action::OpenPasswords, &["Ctrl+P"]);
+    bind(Action::ToggleReader, &["Ctrl+Alt+R"]);
+    bind(Action::OpenPasswords, &["Ctrl+Alt+P"]);
     bind(Action::Lock, &["Ctrl+L"]);
     bind(Action::Find, &["Ctrl+F"]);
     bind(Action::FindNext, &["Ctrl+G", "F3"]);
@@ -417,6 +444,8 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::DevTools, &["F12", "Ctrl+Shift+I"]);
     bind(Action::DevToolsConsole, &["Ctrl+Shift+J"]);
     bind(Action::ViewSource, &["Ctrl+U"]);
+    bind(Action::Print, &["Ctrl+P"]);
+    bind(Action::Screenshot, &["Ctrl+Shift+S"]);
     bind(Action::Quit, &["Ctrl+Q"]);
     bind(Action::MediaPlayPause, &["Space", "K"]);
     bind(Action::MediaSeekBack, &["Left", "J"]);
@@ -479,13 +508,14 @@ mod tests {
         let keymap = Keymap::default();
         assert!(keymap.conflicts().is_empty(), "{:?}", keymap.conflicts());
         assert_eq!(keymap.action_for(&chord("Ctrl+L")), Some(Action::Lock));
-        for keys in ["Alt+D", "F6", "Ctrl+K"] {
+        for keys in ["Alt+D", "F6"] {
             assert_eq!(keymap.action_for(&chord(keys)), Some(Action::FocusAddressBar), "{keys}");
         }
         assert_eq!(keymap.action_for(&chord("Alt+3")), Some(Action::SelectTab(3)));
         assert_eq!(keymap.action_for(&chord("Alt+T")), Some(Action::NewTab));
         assert_eq!(keymap.action_for(&chord("Alt+Q")), Some(Action::CloseTab));
-        assert_eq!(keymap.action_for(&chord("Ctrl+P")), Some(Action::OpenPasswords));
+        assert_eq!(keymap.action_for(&chord("Ctrl+P")), Some(Action::Print));
+        assert_eq!(keymap.action_for(&chord("Ctrl+Alt+P")), Some(Action::OpenPasswords));
         assert_eq!(keymap.action_for(&chord("Ctrl+F")), Some(Action::Find));
         assert_eq!(keymap.action_for(&chord("Alt+Left")), Some(Action::Back));
         for (keys, action) in [

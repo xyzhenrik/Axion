@@ -6,7 +6,7 @@ use axion_config::Config;
 use axion_i18n::{tr, tr_mark};
 use axion_shields::Level;
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
 
 use crate::popover::Popover;
@@ -156,7 +156,7 @@ impl ShieldsPopover {
             Widget::container()
                 .with_action(SETTINGS)
                 .with_radius(CAPSULE)
-                .with_background(Background::Fill(Paint::Label, 0.07)),
+                .with_background(Background::Glass(GlassLevel::Thin)),
             Style {
                 size: Size { width: auto(), height: length(FOOTER) },
                 padding: Rect {

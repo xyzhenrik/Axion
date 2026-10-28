@@ -1,0 +1,15 @@
+[package]
+name = "axion-reader"
+description = "Axion's Reader view: the script that finds a page's article and shows it on a clean sheet, and its protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+axion-config.workspace = true
+
+[lints]
+workspace = true

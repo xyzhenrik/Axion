@@ -14,15 +14,26 @@
     return sites.some(function (s) { return host === s || host.slice(-s.length - 1) === '.' + s; });
   })(location.hostname, __AXION_TRUSTED__);
   if (TRUSTED) OWN_FULLSCREEN = false;
+  // Sites whose media elements are calls and chats (Discord voice/video...), not media.
+  // How long a paused element that left the document is still reported (ms).
+  var KEEP = __AXION_KEEP__;
+  var IGNORED = (function (host, sites) {
+    return sites.some(function (s) { return host === s || host.slice(-s.length - 1) === '.' + s; });
+  })(location.hostname, __AXION_IGNORED__);
   var MARK = '\u0001axion:';
   var log = console.debug.bind(console);
   var isTop = window === window.top;
   var FRAME = Math.random().toString(36).slice(2, 8);
   var EVENTS = ['play', 'playing', 'pause', 'ended', 'timeupdate', 'volumechange', 'ratechange',
-    'durationchange', 'seeked', 'loadedmetadata', 'emptied', 'progress', 'resize'];
+    'durationchange', 'seeked', 'loadedmetadata', 'emptied', 'progress', 'resize', 'waiting', 'stalled',
+    'canplay', 'seeking', 'loadstart', 'error'];
   var seq = 0;
   var media = new Set();
-  var shadowRoots = [];
+  // Shadow roots are held weakly: sites like YouTube create thousands of them while the page
+  // lives, and a strong list would keep every removed component's whole DOM alive (a leak that
+  // ends in the renderer running out of memory after hours of watching).
+  var shadowRefs = [];
+  var WEAK = typeof WeakRef === 'function';
   var children = new Map();   // child window -> its players
   var childOf = new Map();    // player id -> child window
   var childSession = null;
@@ -35,12 +46,19 @@
   var attachShadow = Element.prototype.attachShadow;
   Element.prototype.attachShadow = function () {
     var root = attachShadow.apply(this, arguments);
-    shadowRoots.push(root);
+    shadowRefs.push(WEAK ? new WeakRef(root) : root);
     return root;
   };
   var play = HTMLMediaElement.prototype.play;
+  // After Axion paused the page's media on the user's behalf, a `play()` the page itself calls
+  // within this long is not carried out: sites that start their element again as soon as it
+  // pauses (to "keep playing") would otherwise undo the user's pause.
+  var HOLD_MS = 1500;
+  var holdUntil = 0;
+  var ownPlay = false;
   HTMLMediaElement.prototype.play = function () {
     register(this);
+    if (!ownPlay && Date.now() < holdUntil) return Promise.resolve();
     return play.apply(this, arguments);
   };
 
@@ -73,27 +91,58 @@
   }
   if (!addStyle()) document.addEventListener('DOMContentLoaded', addStyle);
 
+  // The live shadow roots; the ones the page let go of are dropped from the list.
+  function shadowRoots() {
+    var live = [], keep = [];
+    for (var i = 0; i < shadowRefs.length; i++) {
+      var root = WEAK ? shadowRefs[i].deref() : shadowRefs[i];
+      if (!root) continue;
+      keep.push(shadowRefs[i]);
+      live.push(root);
+    }
+    // Without WeakRef, roots whose host left the document are dropped (media in them is found
+    // again by `play()`).
+    if (!WEAK) {
+      keep = []; live = live.filter(function (r) { var ok = r.host && r.host.isConnected; if (ok) keep.push(r); return ok; });
+    }
+    shadowRefs = keep;
+    return live;
+  }
+
+  // A call's or camera's live stream (WebRTC, getUserMedia) is not something to play, list or
+  // control as media: such elements are left alone, wherever they appear.
+  function isCall(el) {
+    if (IGNORED) return true;
+    try {
+      return !!el.srcObject && typeof MediaStream !== 'undefined' && el.srcObject instanceof MediaStream;
+    } catch (e) { return false; }
+  }
+
   function register(el) {
+    if (IGNORED) return;
     // The start page's live wallpaper is decoration, not media: no player, no "playing" tab,
     // no Now Playing entry, and it never keeps the tab from freezing.
     if (el.hasAttribute && el.hasAttribute('data-axion-wallpaper')) return;
     if (media.has(el)) return;
     media.add(el);
     el.__axId = FRAME + ':' + (++seq);
+    // A `new Audio()` never put in the document: it is the player, and stays reported (paused
+    // too) for as long as it has a source.
+    el.__axDetached = !el.isConnected;
     if (el.tagName === 'VIDEO' && el.hasAttribute('controls')) el.__axNative = true;
     EVENTS.forEach(function (t) { el.addEventListener(t, schedule, true); });
     schedule();
   }
 
   function scan() {
-    [document].concat(shadowRoots).forEach(function (root) {
+    [document].concat(shadowRoots()).forEach(function (root) {
       if (root.querySelectorAll) root.querySelectorAll('video,audio').forEach(register);
     });
   }
 
   function frames() {
     var out = [];
-    [document].concat(shadowRoots).forEach(function (root) {
+    [document].concat(shadowRoots()).forEach(function (root) {
       if (root.querySelectorAll) root.querySelectorAll('iframe,frame').forEach(function (f) { out.push(f); });
     });
     return out;
@@ -102,6 +151,27 @@
     var all = frames();
     for (var i = 0; i < all.length; i++) if (all[i].contentWindow === win) return all[i];
     return null;
+  }
+
+  // A live stream: an endless duration, or (in Axion's own media view) a live HLS playlist,
+  // whose duration hls.js otherwise reports as the length of the window it holds.
+  function isLive(el) {
+    if (el.duration === Infinity) return true;
+    try {
+      var h = window.__axionHls;
+      if (h && h.media === el && h.levels && h.levels[h.currentLevel] && h.levels[h.currentLevel].details) {
+        return !!h.levels[h.currentLevel].details.live;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  // Hover previews and autoplaying tiles (YouTube's home page): muted, no controls, and the
+  // page says nothing about them (no media session). They are not what the Now Playing card
+  // or the desktop's media controls are about.
+  function isPreview(el) {
+    var meta = navigator.mediaSession && navigator.mediaSession.metadata;
+    return !!el.muted && !meta && !el.controls;
   }
 
   function describe(el) {
@@ -126,7 +196,9 @@
       x: r.left, y: r.top, w: r.width, h: r.height, vw: el.videoWidth || 0, vh: el.videoHeight || 0,
       fit: el.tagName === 'VIDEO' ? (getComputedStyle(el).objectFit || '') : '',
       paused: el.paused, ended: el.ended, time: el.currentTime || 0,
-      duration: isFinite(el.duration) ? el.duration : 0, live: el.duration === Infinity,
+      duration: isFinite(el.duration) ? el.duration : 0, live: isLive(el),
+      preview: isPreview(el),
+      loading: !el.ended && !el.error && el.readyState < 3 && (!el.paused || el.networkState === 2),
       volume: el.volume, muted: el.muted, rate: el.playbackRate, buffered: buffered,
       captions: captions, caption: caption, native: !!el.__axNative,
       trusted: TRUSTED,
@@ -164,10 +236,30 @@
   function report() {
     timer = 0;
     var list = [];
-    media.forEach(function (el) { if (el.isConnected || !el.paused) list.push(describe(el)); });
+    media.forEach(function (el) {
+      if (isCall(el)) return;
+      // Nothing loaded (a page that cleared its element when the track or the page changed):
+      // there is nothing to show or control.
+      if (el.paused && !el.currentSrc && !el.src && !el.srcObject) return;
+      if (el.isConnected) { el.__axGoneAt = 0; el.__axDetached = false; list.push(describe(el)); return; }
+      if (!el.paused) { list.push(describe(el)); return; }
+      var hasSource = !!(el.currentSrc || el.src || el.srcObject);
+      if (el.__axDetached && hasSource) { list.push(describe(el)); return; }
+      // Left the document while paused (a site swapping its element): kept for a while, so
+      // the card stays on its play button until the page's new element takes over.
+      var now = Date.now();
+      if (!el.__axGoneAt) el.__axGoneAt = now;
+      if (now - el.__axGoneAt < KEEP) { list.push(describe(el)); return; }
+      // Really gone: forgotten (a later play() registers it again).
+      media.delete(el);
+    });
     children.forEach(function (players, win) {
       var f = frameOf(win);
-      if (!f) { children.delete(win); return; }
+      if (!f) {
+        players.forEach(function (p) { childOf.delete(p.id); });
+        children.delete(win);
+        return;
+      }
       var r = f.getBoundingClientRect();
       var ox = r.left + f.clientLeft, oy = r.top + f.clientTop;
       var inFullscreen = !!document.fullscreenElement && (document.fullscreenElement === f || document.fullscreenElement.contains(f));
@@ -220,9 +312,17 @@
   function apply(el, c) {
     var v = c.value;
     switch (c.action) {
-      case 'play': el.play(); break;
+      case 'play': holdUntil = 0; ownPlay = true; try { el.play(); } finally { ownPlay = false; } break;
       case 'pause': el.pause(); break;
-      case 'toggle': if (el.paused || el.ended) el.play(); else el.pause(); break;
+      case 'stop':
+        // Stop: paused, back at the start. A live stream has no start: it just pauses.
+        el.pause();
+        if (!isLive(el) && isFinite(el.duration)) { try { el.currentTime = 0; } catch (e) {} }
+        break;
+      case 'toggle':
+        if (el.paused || el.ended) { holdUntil = 0; ownPlay = true; try { el.play(); } finally { ownPlay = false; } }
+        else pauseAll(1);
+        break;
       case 'seek': el.currentTime = Math.max(0, v); break;
       case 'skip': el.currentTime = Math.max(0, el.currentTime + v); break;
       case 'volume': el.volume = Math.min(1, Math.max(0, v)); if (v > 0) el.muted = false; break;
@@ -249,7 +349,31 @@
     schedule();
   }
 
+  // Pauses what plays in this frame and, by message, in the child frames; then looks again
+  // after a moment: sites start their element again, or swap it for a new one, and a pause
+  // that did not stick is repeated, then asked of the page's own `pause` handler.
+  function pauseAll(depth) {
+    var n = 0;
+    holdUntil = Date.now() + HOLD_MS;
+    media.forEach(function (el) { if (!el.paused) { n++; try { el.pause(); } catch (e) {} } });
+    children.forEach(function (players, win) {
+      try { win.postMessage({ s: SECRET, k: 'cmd', cmd: { id: '*', action: 'pauseall' } }, '*'); } catch (e) {}
+    });
+    if (depth > 1) return n;
+    setTimeout(function () {
+      scan();
+      var still = 0;
+      media.forEach(function (el) { if (!el.paused && !isCall(el)) { still++; try { el.pause(); } catch (e) {} } });
+      if (still && handlers.pause) { try { handlers.pause({ action: 'pause' }); } catch (e) {} }
+      if (isTop) log(MARK + JSON.stringify({ t: 'probe', event: 'pauseall', frame: location.href, paused: n, still: still,
+        handler: !!handlers.pause }));
+      schedule();
+    }, 200);
+    return n;
+  }
+
   function cmd(c) {
+    if (c.action === 'pauseall') { pauseAll(1); schedule(); return; }
     if (c.action === 'prev' || c.action === 'next') {
       var name = c.action === 'prev' ? 'previoustrack' : 'nexttrack';
       var h = handlers[name];
@@ -259,9 +383,21 @@
       return;
     }
     var el = find(c.id);
-    if (el) { apply(el, c); return; }
+    if (el) {
+      apply(el, c);
+      if (isTop) {
+        setTimeout(function () {
+          log(MARK + JSON.stringify({ t: 'probe', event: 'cmd-result', action: c.action, id: c.id, found: true,
+            paused: el.paused, connected: el.isConnected, time: el.currentTime }));
+        }, 250);
+      }
+      return;
+    }
     var win = childOf.get(c.id);
-    if (!win) return;
+    if (!win) {
+      if (isTop) log(MARK + JSON.stringify({ t: 'probe', event: 'cmd-result', action: c.action, id: c.id, found: false }));
+      return;
+    }
     // A player in a child frame: fullscreen goes to its iframe here (only this frame has
     // the user activation), the child fills the iframe with the video.
     if (c.action === 'fullscreen') {
@@ -286,14 +422,35 @@
     if (d.k === 'cmd' && e.source === parent && !isTop) { cmd(d.cmd); return; }
     if (!frameOf(e.source)) return;
     if (d.k === 'state') {
+      var before = children.get(e.source) || [];
+      var now = {};
+      d.players.forEach(function (p) { now[p.id] = true; childOf.set(p.id, e.source); });
+      before.forEach(function (p) { if (!now[p.id]) childOf.delete(p.id); });
       children.set(e.source, d.players);
-      d.players.forEach(function (p) { childOf.set(p.id, e.source); });
       if (d.session) childSession = d.session;
       schedule();
     } else if (d.k === 'event') {
       event(d.event);
     }
   });
+
+  // Single-page sites change the page without loading one: what the old page had removed
+  // (and left paused) is gone for good then, with no grace period.
+  function navigated() {
+    media.forEach(function (el) { if (!el.isConnected && !el.__axDetached) media.delete(el); });
+    schedule();
+  }
+  ['pushState', 'replaceState'].forEach(function (name) {
+    var original = history[name];
+    history[name] = function () {
+      var result = original.apply(this, arguments);
+      setTimeout(navigated, 0);
+      return result;
+    };
+  });
+  window.addEventListener('popstate', navigated);
+  window.addEventListener('hashchange', navigated);
+  window.addEventListener('yt-navigate-finish', navigated);
 
   document.addEventListener('fullscreenchange', function () {
     if (!document.fullscreenElement) setTakeover(null, false);
@@ -302,7 +459,7 @@
   window.addEventListener('scroll', schedule, { passive: true, capture: true });
   window.addEventListener('resize', schedule);
   window.addEventListener('pagehide', function () {
-    media.clear(); children.clear();
+    media.clear(); children.clear(); childOf.clear();
     if (timer) clearTimeout(timer);
     report();
   });

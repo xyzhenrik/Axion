@@ -11,7 +11,7 @@ use axion_config::Config;
 use axion_engine::{Engine, FindRequest, ViewId};
 use axion_i18n::tr;
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 
 use crate::popover::Popover;
 
@@ -32,9 +32,6 @@ const GAP_BELOW_ANCHOR: f32 = 26.0;
 const PAGE_INSET: f32 = 10.0;
 /// Kept free at the window's edges.
 const WINDOW_MARGIN: f32 = 8.0;
-/// The case toggle's fill while on (accent at this opacity) and off (label colour).
-const TOGGLE_ON: f32 = 0.18;
-const BUTTON_FILL: f32 = 0.06;
 
 /// A click in the find bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,13 +112,13 @@ impl FindBar {
             w.set_paint(Paint::Secondary);
         }
         ui.set_label_align(count, axion_ui::Align::Center);
-        let case_button = button(ui, plate, MATCH_CASE, BUTTON_FILL);
+        let case_button = button(ui, plate, MATCH_CASE);
         ui.add_label(case_button, "Aa", TextStyle::Callout, Style::default());
-        let previous = button(ui, plate, PREVIOUS, BUTTON_FILL);
+        let previous = button(ui, plate, PREVIOUS);
         ui.add(previous, Widget::icon(Icon::ChevronUp, 17.0).with_paint(Paint::Accent), Style::default());
-        let next = button(ui, plate, NEXT, BUTTON_FILL);
+        let next = button(ui, plate, NEXT);
         ui.add(next, Widget::icon(Icon::ChevronDown, 17.0).with_paint(Paint::Accent), Style::default());
-        let close = button(ui, plate, CLOSE, BUTTON_FILL);
+        let close = button(ui, plate, CLOSE);
         ui.add(close, Widget::icon(Icon::Close, 15.0).with_paint(Paint::Secondary), Style::default());
         Self {
             popover,
@@ -273,9 +270,9 @@ impl FindBar {
     fn show_match_case(&self, ui: &mut Ui) {
         if let Some(w) = ui.widget_mut(self.case_button) {
             w.background = if self.match_case {
-                Background::Fill(Paint::Accent, TOGGLE_ON)
+                Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
             } else {
-                Background::Fill(Paint::Label, BUTTON_FILL)
+                Background::Glass(GlassLevel::Thin)
             };
         }
     }
@@ -290,13 +287,13 @@ fn target(anchor: Frame, window_width: f32, page_top: f32) -> Frame {
     Frame::new(left, top, WIDTH, HEIGHT)
 }
 
-fn button(ui: &mut Ui, parent: NodeId, action: ActionId, fill: f32) -> NodeId {
+fn button(ui: &mut Ui, parent: NodeId, action: ActionId) -> NodeId {
     ui.add(
         parent,
         Widget::container()
             .with_action(action)
             .with_radius(CAPSULE)
-            .with_background(Background::Fill(Paint::Label, fill)),
+            .with_background(Background::Glass(GlassLevel::Thin)),
         Style {
             size: Size { width: length(BUTTON), height: length(BUTTON) },
             flex_shrink: 0.0,

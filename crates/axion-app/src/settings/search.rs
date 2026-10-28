@@ -174,6 +174,21 @@ pub const INDEX: &[Entry] = &[
     ),
     control(
         C::General,
+        S::HomeGlassGround,
+        &[
+            "start page",
+            "background",
+            "default",
+            "ground",
+            "grey",
+            "gray",
+            "startseite",
+            "hintergrund",
+            "grau",
+        ],
+    ),
+    control(
+        C::General,
         S::HomeLive,
         &[
             "start page",
@@ -306,6 +321,7 @@ pub const INDEX: &[Entry] = &[
     control(C::LiquidGlass, S::Blur, &["frosted", "unschärfe", "weichzeichnen", "milky"]),
     control(C::LiquidGlass, S::Dispersion, &["rainbow", "chromatic", "prism", "farbsaum"]),
     control(C::LiquidGlass, S::Squash, &["stretch", "jelly", "wobble", "physics", "physik", "dehnen"]),
+    control(C::LiquidGlass, S::DragStretch, &["stretch", "pull", "drag", "jelly", "ziehen", "dehnen"]),
     control(C::LiquidGlass, S::MergeDistance, &["blob", "connect", "drops", "verschmelzen", "goo"]),
     page(
         C::Keyboard,
@@ -315,6 +331,19 @@ pub const INDEX: &[Entry] = &[
     page(C::Tabs, tr_mark("Tab bar layout"), &["compact", "separate", "tab strip", "tableiste", "kompakt"]),
     control(C::Tabs, S::TintFromPage, &["color", "page colour", "tint", "farbe"]),
     control(C::Tabs, S::OpenInBackground, &["new tab", "links", "hintergrund", "middle click"]),
+    control(C::Tabs, S::CloseAnimation, &["close", "animation", "schließen", "animieren", "shrink"]),
+    control(C::Tabs, S::KeepTabWidths, &["close", "width", "breite", "schließen", "pointer"]),
+    control(C::Tabs, S::DragOutLinks, &["drag", "tab", "link", "paste", "ziehen", "text field"]),
+    control(C::Tabs, S::DragOutImage, &["drag", "tab", "preview", "image", "card", "ziehen", "vorschau"]),
+    control(
+        C::Tabs,
+        S::MiddleClickClosesTab,
+        &["middle click", "mittlere maustaste", "close tab", "mouse wheel"],
+    ),
+    control(C::Tabs, S::NewTabJoinsGroup, &["group", "tab group", "gruppe", "new tab"]),
+    control(C::Tabs, S::GroupChipsInBar, &["group", "chip", "name", "gruppe", "colour"]),
+    control(C::Tabs, S::ShowAudioIndicator, &["audio", "speaker", "mute", "sound", "lautsprecher", "ton"]),
+    control(C::Tabs, S::RememberSiteMute, &["mute site", "audio", "stumm", "ton"]),
     page(C::Tabs, tr_mark("Close tabs"), &["auto close", "old tabs", "cleanup", "schließen", "aufräumen"]),
     page(
         C::Tabs,
@@ -363,6 +392,31 @@ pub const INDEX: &[Entry] = &[
         C::Media,
         S::PlaylistDeleteFiles,
         &["playlist", "remove", "delete files", "löschen", "dateien löschen", "wiedergabeliste", "entfernen"],
+    ),
+    control(
+        C::Reading,
+        S::ReaderButton,
+        &["reader", "article", "reading", "lesen", "leseansicht", "artikel"],
+    ),
+    control(C::Reading, S::ReaderRememberPerSite, &["reader", "site", "remember", "website", "merken"]),
+    page(C::Reading, tr_mark("Font"), &["reader", "serif", "sans", "mono", "schrift", "font", "typeface"]),
+    page(C::Reading, tr_mark("Theme"), &["reader", "sepia", "dark", "light", "design", "dunkel", "hell"]),
+    control(
+        C::Reading,
+        S::TranslateOffer,
+        &["translate", "translation", "language", "übersetzen", "übersetzung", "sprache"],
+    ),
+    control(C::Reading, S::TranslatePrompt, &["translate", "prompt", "offer", "übersetzen", "angebot"]),
+    control(C::Reading, S::TranslateChanges, &["translate", "dynamic", "übersetzen", "später"]),
+    page(
+        C::Reading,
+        tr_mark("Translate pages into"),
+        &["translate", "target", "language", "übersetzen", "zielsprache"],
+    ),
+    page(
+        C::Reading,
+        tr_mark("Downloaded language data"),
+        &["translate", "models", "bergamot", "download", "remove", "sprachdaten", "modelle", "löschen"],
     ),
     page(
         C::Media,
@@ -586,6 +640,21 @@ pub const INDEX: &[Entry] = &[
             "password manager",
             "passwortmanager",
         ],
+    ),
+    control(
+        C::Privacy,
+        S::ExtensionsEnabled,
+        &["extension", "extensions", "erweiterung", "erweiterungen", "chrome", "add-on", "addon", "plugin"],
+    ),
+    control(
+        C::Privacy,
+        S::ExtensionsWebStore,
+        &["web store", "webstore", "chrome web store", "extension", "erweiterung", "tampermonkey", "install"],
+    ),
+    control(
+        C::Privacy,
+        S::ExtensionsAutoUpdate,
+        &["update", "aktualisieren", "extension", "erweiterung", "automatic", "automatisch"],
     ),
     control(
         C::Passwords,

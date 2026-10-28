@@ -81,7 +81,7 @@ fn column_gap(gap: f32) -> Size<LengthPercentage> {
 fn button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, tone: Tone) {
     let background = match tone {
         Tone::Accent => Background::TintedGlass(GlassLevel::Thin, Paint::Accent),
-        Tone::Plain => Background::Fill(Paint::Label, 0.08),
+        Tone::Plain => Background::Glass(GlassLevel::Thin),
     };
     let node = ui.add(
         parent,
@@ -149,6 +149,7 @@ impl UpdateAlert {
                 ..Default::default()
             },
         );
+        ui.claim_space(alert);
         ui.set_visible(root, false);
         Self {
             root,

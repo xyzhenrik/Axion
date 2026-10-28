@@ -131,7 +131,10 @@ pub fn candidates(
                 position: p.time,
                 rect: (p.x, p.y, p.w, p.h),
                 dpr: media.dpr,
-                capture: axion_media::capture(&p.src, &p.frame, page_url, sniffed),
+                capture: match axion_media::capture(&p.src, &p.frame, page_url, sniffed) {
+                    Capture::Found(source) => Capture::Found(source.with_live(p.live)),
+                    other => other,
+                },
             }
         })
         .collect()
@@ -543,6 +546,7 @@ pub fn failure_text(code: &str) -> &'static str {
     match code {
         "hls" => tr("This stream couldn’t be loaded. Its server may refuse playback outside the page."),
         "source" => tr("The video’s address is no longer available."),
+        "codec" => tr("This video’s picture can’t be decoded (unsupported format)."),
         _ => tr("This video can’t be played outside its page."),
     }
 }

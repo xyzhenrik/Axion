@@ -22,13 +22,18 @@ pub const MARKER: &str = "\u{1}axion:";
 const SOURCE: &str = include_str!("bridge.js");
 
 /// How the bridge treats the page's players.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BridgeOptions {
     /// Axion's player takes over videos in fullscreen (the built-in controls of a fullscreen
     /// `<video>` are hidden).
     pub own_fullscreen: bool,
     /// Sites (and their subdomains) whose players are kept as they are, also in fullscreen.
     pub trusted_sites: Vec<String>,
+    /// Sites (and their subdomains) whose media elements are calls or chats, not media: the
+    /// bridge reports nothing for them.
+    pub ignored_sites: Vec<String>,
+    /// How long a paused element that left the document is still reported (seconds).
+    pub keep_seconds: f32,
 }
 
 /// The bridge script. `secret` keeps the frames' postMessage traffic apart from the page's.
@@ -36,7 +41,11 @@ pub fn bridge_script(secret: &str, options: &BridgeOptions) -> String {
     let secret: String = secret.chars().filter(char::is_ascii_alphanumeric).collect();
     let trusted: Vec<String> = options.trusted_sites.iter().map(|s| s.trim().to_ascii_lowercase()).collect();
     let trusted = serde_json::to_string(&trusted).unwrap_or_else(|_| "[]".into());
+    let ignored: Vec<String> = options.ignored_sites.iter().map(|s| s.trim().to_ascii_lowercase()).collect();
+    let ignored = serde_json::to_string(&ignored).unwrap_or_else(|_| "[]".into());
     SOURCE
+        .replace("__AXION_IGNORED__", &ignored)
+        .replace("__AXION_KEEP__", &format!("{}", (options.keep_seconds.max(0.0) * 1000.0).round()))
         .replace("__AXION_SECRET__", &secret)
         .replace("__AXION_TRUSTED__", &trusted)
         .replace("__AXION_OWN_FULLSCREEN__", if options.own_fullscreen { "true" } else { "false" })
@@ -80,6 +89,11 @@ pub struct Player {
     /// Seconds; 0 while unknown.
     pub duration: f64,
     pub live: bool,
+    /// Waiting for data: loading, or buffering (not enough decoded to keep playing).
+    pub loading: bool,
+    /// A muted hover preview or autoplaying tile the page says nothing about: never the player
+    /// the Now Playing card or the desktop controls are about.
+    pub preview: bool,
     pub volume: f64,
     pub muted: bool,
     pub rate: f64,
@@ -106,6 +120,12 @@ pub struct Player {
 impl Player {
     pub fn is_playing(&self) -> bool {
         !self.paused && !self.ended
+    }
+
+    /// Sound without a picture: it has played, yet no video frame size is known (music, a
+    /// podcast, a "video" that is only its audio track). Axion's players show a cover then.
+    pub fn audio_only(&self) -> bool {
+        self.vw <= 0.0 && self.time > 1.0
     }
 
     /// Playing and audible.
@@ -178,11 +198,14 @@ impl PageMedia {
     /// else the biggest video, else any audio.
     pub fn primary(&self) -> Option<&Player> {
         let biggest = |filter: &dyn Fn(&Player) -> bool| {
-            self.players.iter().filter(|p| filter(p)).max_by(|a, b| a.area().total_cmp(&b.area()))
+            self.players
+                .iter()
+                .filter(|p| !p.preview && filter(p))
+                .max_by(|a, b| a.area().total_cmp(&b.area()))
         };
         biggest(&|p| p.is_playing())
             .or_else(|| biggest(&|p| p.kind == Kind::Video && p.area() > 0.0))
-            .or_else(|| self.players.first())
+            .or_else(|| self.players.iter().find(|p| !p.preview))
     }
 
     pub fn get(&self, id: &str) -> Option<&Player> {
@@ -300,6 +323,11 @@ pub enum Action {
     NextTrack,
     /// Log the element's loading state from its own frame (debugging).
     Probe,
+    /// Stop: pause and go back to the start (a live stream just pauses).
+    Stop,
+    /// Pause every playing media element of the page, in all its frames, and check after a
+    /// moment that it stuck (sites re-create their elements, or start them again).
+    PauseAll,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -313,11 +341,19 @@ impl Command {
         Self { player: player.to_owned(), action }
     }
 
+    /// Pause everything that plays in the page (see [`Action::PauseAll`]).
+    pub fn pause_all() -> Self {
+        Self::new("*", Action::PauseAll)
+    }
+
     /// Whether the script must run as if the user had clicked: fullscreen and playback with
     /// sound are refused otherwise. Commands come from the user's clicks and keys, so this
     /// only passes their gesture on.
     pub fn needs_gesture(&self) -> bool {
-        !matches!(self.action, Action::Takeover(_) | Action::Pause | Action::Probe)
+        !matches!(
+            self.action,
+            Action::Takeover(_) | Action::Pause | Action::PauseAll | Action::Stop | Action::Probe
+        )
     }
 
     /// JavaScript for the top frame.
@@ -337,6 +373,8 @@ impl Command {
             Action::PreviousTrack => ("prev", serde_json::Value::Null),
             Action::NextTrack => ("next", serde_json::Value::Null),
             Action::Probe => ("probe", serde_json::Value::Null),
+            Action::Stop => ("stop", serde_json::Value::Null),
+            Action::PauseAll => ("pauseall", serde_json::Value::Null),
         };
         let command = serde_json::json!({ "id": self.player, "action": name, "value": value });
         format!("window.__axionMedia && window.__axionMedia.cmd({command});")
@@ -371,11 +409,17 @@ mod tests {
 
     #[test]
     fn script_is_filled_in() {
-        let options = BridgeOptions { own_fullscreen: true, trusted_sites: vec!["YouTube.com".into()] };
+        let options = BridgeOptions {
+            own_fullscreen: true,
+            trusted_sites: vec!["YouTube.com".into()],
+            ignored_sites: vec!["Discord.com".into()],
+            keep_seconds: 30.0,
+        };
         let s = bridge_script("abc'; alert(1)//", &options);
         assert!(s.contains(r#"})(location.hostname, ["youtube.com"]);"#));
         assert!(s.contains("var SECRET = 'abcalert1';"), "secret must be sanitised");
         assert!(s.contains("var OWN_FULLSCREEN = true;"));
+        assert!(s.contains(r#"["discord.com"]"#));
         assert!(!s.contains("__AXION_"));
     }
 
@@ -412,6 +456,38 @@ mod tests {
             format!("{MARKER}{}", r#"{"t":"state","players":[{"id":"a:1","frame":"https://h/embed/1"}]}"#);
         let Ok(Some(Message::State(state))) = parse(&framed) else { panic!("{framed}") };
         assert_eq!(state.players[0].frame, "https://h/embed/1");
+    }
+
+    #[test]
+    fn previews_are_never_the_primary_player() {
+        let preview = Player {
+            id: "tile".into(),
+            paused: false,
+            muted: true,
+            preview: true,
+            w: 300.0,
+            h: 170.0,
+            ..Default::default()
+        };
+        let mut m = PageMedia { players: vec![preview], ..Default::default() };
+        assert!(m.primary().is_none());
+        m.players.push(Player { id: "real".into(), kind: Kind::Audio, paused: true, ..Default::default() });
+        assert_eq!(m.primary().map(|p| p.id.as_str()), Some("real"));
+    }
+
+    #[test]
+    fn a_paused_player_stays_the_primary_one() {
+        // Pausing on the site must keep the Now Playing card (with a play button), also for audio
+        // without a picture.
+        let playing = Player { id: "a:1".into(), kind: Kind::Audio, paused: false, ..Default::default() };
+        let mut m = PageMedia { players: vec![playing], ..Default::default() };
+        assert_eq!(m.primary().map(|p| p.id.as_str()), Some("a:1"));
+        m.players[0].paused = true;
+        let p = m.primary().expect("a paused audio player is still there");
+        assert!(!p.is_playing());
+        // A swapped element: the new one (playing) takes over, the old paused one steps back.
+        m.players.push(Player { id: "a:2".into(), kind: Kind::Audio, paused: false, ..Default::default() });
+        assert_eq!(m.primary().map(|p| p.id.as_str()), Some("a:2"));
     }
 
     #[test]

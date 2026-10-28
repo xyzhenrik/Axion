@@ -18,9 +18,12 @@ axion-accounts.workspace = true
 axion-compositor.workspace = true
 axion-config.workspace = true
 axion-engine.workspace = true
+axion-extensions.workspace = true
 axion-i18n.workspace = true
 axion-import.workspace = true
 axion-media.workspace = true
+axion-reader.workspace = true
+axion-translate.workspace = true
 axion-physics.workspace = true
 axion-shields.workspace = true
 axion-tabs.workspace = true
@@ -45,10 +48,14 @@ zeroize = "1"
 # Both already come with winit and arboard: the clipboard for pastes into pages (Wayland
 # data-control) and the pointer during file drags (X11).
 wl-clipboard-rs = "0.9"
-x11rb = { version = "0.13", default-features = false }
+x11rb = { version = "0.13", default-features = false, features = ["randr", "shape"] }
+# Dragging a tab out of the window starts a Wayland drag on winit's connection (winit 0.30 cannot
+# be a drag source; see `platform::dragout`). Both come with winit already.
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
 # Already in the tree (wayland, wl-clipboard-rs): with `AXION_STALL_STACK` a debugger may read
 # the main thread's stack during a freeze (see `platform::stall`).
-rustix = { version = "1.1", features = ["process"] }
+rustix = { version = "1.1", features = ["process", "fs"] }
 
 [features]
 # The vault's device key is sealed with the TPM (needs libtss2-esys to build); without it the
@@ -59,6 +66,7 @@ tpm = ["axion-vault/tpm"]
 [dev-dependencies]
 # A stub GPU device for tests that need one (favicons, the chrome built with tabs).
 wgpu = { workspace = true, features = ["noop"] }
+tempfile = "3"
 
 [lints]
 workspace = true

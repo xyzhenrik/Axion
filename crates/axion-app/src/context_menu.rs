@@ -12,6 +12,7 @@ use axion_ui::{ActionId, Ui};
 use glam::Vec2;
 
 use crate::menu::{MAX_ITEMS, Menu, MenuAction, MenuClick, MenuItem, Placement};
+use crate::tabs::GroupColor;
 
 /// The context menus' rows (one block of `MAX_ITEMS` per plane).
 pub const CONTEXT_MENU_BASE: u32 = 17_000;
@@ -34,6 +35,33 @@ pub enum TabCommand {
     Bookmark,
     MoveToPrivate,
     MoveToNormal,
+    /// Puts the tab into a new tab group (named afterwards).
+    NewGroup,
+    MoveToGroup(u32),
+    RemoveFromGroup,
+    /// Mutes (or unmutes) every tab of the tab's site, and remembers it.
+    MuteSite,
+    UnmuteSite,
+}
+
+/// What a tab group header's menu does with its group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupCommand {
+    NewTab,
+    Rename,
+    SetColor(GroupColor),
+    Ungroup,
+    Close,
+}
+
+/// A group the tab menu can move its tab into.
+#[derive(Clone, Debug)]
+pub struct GroupChoice {
+    pub id: u32,
+    pub name: String,
+    pub color: GroupColor,
+    /// The tab is in it already.
+    pub current: bool,
 }
 
 /// What a bookmark's context menu (or the bookmarks bar's overflow menu) does; indices are
@@ -59,11 +87,19 @@ pub struct TabMenuInfo {
     pub can_reopen: bool,
     /// Bookmarks can be saved (the profile's database is open).
     pub can_bookmark: bool,
+    /// The tab can go into a tab group (not private, not pinned).
+    pub can_group: bool,
+    /// It is in a tab group.
+    pub in_group: bool,
+    /// Its site is muted (by "Mute Site").
+    pub site_muted: bool,
+    /// It has a site to mute (a web page).
+    pub has_site: bool,
 }
 
 /// The rows of a tab's context menu: short and compact, only what concerns that one tab.
 /// The group-wide commands live in the menu of the group's header ([`group_items`]).
-pub fn tab_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
+pub fn tab_items(info: TabMenuInfo, groups: &[GroupChoice], keymap: &Keymap) -> Vec<MenuItem> {
     let shortcut = |action: Action| keymap.chords_for(action).first().map(ToString::to_string);
     let item = |icon: Icon, label: &str, command: TabCommand, action: Option<Action>| {
         let item = MenuItem::new(icon, label, MenuAction::Tab(command));
@@ -81,8 +117,41 @@ pub fn tab_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
             item(Icon::Muted, tr("Mute Tab"), TabCommand::Mute, None)
         },
     ];
+    if info.has_site {
+        items.push(if info.site_muted {
+            item(Icon::Volume, tr("Unmute Site"), TabCommand::UnmuteSite, None)
+        } else {
+            item(Icon::Muted, tr("Mute Site"), TabCommand::MuteSite, None)
+        });
+    }
     if info.can_bookmark {
         items.push(item(Icon::Bookmark, tr("Bookmark"), TabCommand::Bookmark, None));
+    }
+    if info.can_group {
+        items.push(item(Icon::NewTabGroup, tr("Add to New Group"), TabCommand::NewGroup, None).separated());
+        if !groups.is_empty() {
+            let rows = groups
+                .iter()
+                .map(|g| {
+                    let name = if g.name.trim().is_empty() { tr("Untitled Group") } else { g.name.as_str() };
+                    MenuItem::account(
+                        String::new(),
+                        g.color.color(),
+                        None,
+                        name,
+                        g.current,
+                        MenuAction::Tab(TabCommand::MoveToGroup(g.id)),
+                    )
+                })
+                .collect();
+            items.push(
+                MenuItem::new(Icon::TabGroup, tr("Move to Group"), MenuAction::Tab(TabCommand::NewGroup))
+                    .with_submenu(rows),
+            );
+        }
+        if info.in_group {
+            items.push(item(Icon::Close, tr("Remove from Group"), TabCommand::RemoveFromGroup, None));
+        }
     }
     items.push(item(Icon::Close, tr("Close Tab"), TabCommand::Close, Some(Action::CloseTab)).separated());
     items
@@ -127,6 +196,34 @@ pub fn group_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
         items.push(item(Icon::Close, tr("Close Other Tabs"), TabCommand::CloseOthers, None).separated());
     }
     items
+}
+
+/// The rows of a tab group header's menu.
+pub fn tab_group_items(group: &crate::tabs::TabGroup) -> Vec<MenuItem> {
+    let item = |icon: Icon, label: &str, command: GroupCommand| {
+        MenuItem::new(icon, label, MenuAction::Group(command))
+    };
+    let colors = GroupColor::ALL
+        .iter()
+        .map(|&c| {
+            MenuItem::account(
+                String::new(),
+                c.color(),
+                None,
+                tr(c.label()),
+                c == group.color,
+                MenuAction::Group(GroupCommand::SetColor(c)),
+            )
+        })
+        .collect();
+    vec![
+        item(Icon::Plus, tr("New Tab in Group"), GroupCommand::NewTab),
+        item(Icon::Pencil, tr("Rename Group"), GroupCommand::Rename),
+        MenuItem::new(Icon::TabGroup, tr("Colour"), MenuAction::Group(GroupCommand::Rename))
+            .with_submenu(colors),
+        item(Icon::TabGroup, tr("Ungroup Tabs"), GroupCommand::Ungroup).separated(),
+        item(Icon::Close, tr("Close Group"), GroupCommand::Close),
+    ]
 }
 
 /// The rows of a bookmark's context menu.
@@ -288,7 +385,7 @@ mod tests {
     use super::*;
 
     fn labels(info: TabMenuInfo) -> Vec<String> {
-        tab_items(info, &Keymap::default()).into_iter().map(|i| i.label).collect()
+        tab_items(info, &[], &Keymap::default()).into_iter().map(|i| i.label).collect()
     }
 
     #[test]
@@ -325,7 +422,7 @@ mod tests {
 
     #[test]
     fn shortcuts_come_from_the_keymap() {
-        let items = tab_items(TabMenuInfo::default(), &Keymap::default());
+        let items = tab_items(TabMenuInfo::default(), &[], &Keymap::default());
         let close = items.iter().find(|i| i.label == "Close Tab").and_then(|i| i.detail.clone());
         assert_eq!(close.as_deref(), Some("Alt+Q"));
         assert!(items.iter().find(|i| i.label == "Duplicate").is_some_and(|i| i.detail.is_none()));

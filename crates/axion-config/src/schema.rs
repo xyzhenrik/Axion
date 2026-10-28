@@ -23,16 +23,23 @@ pub struct Config {
     pub media: Media,
     pub hardware: Hardware,
     pub playlist: Playlist,
+    pub reader: Reader,
+    pub translation: Translation,
     pub downloads: Downloads,
     pub data: Data,
     pub passwords: Passwords,
     pub accounts: Accounts,
     pub import: Import,
     pub find: Find,
+    pub zoom: Zoom,
+    pub command_palette: CommandPalette,
+    pub print: Print,
+    pub screenshot: Screenshot,
     pub devtools: DevTools,
     pub clipboard: Clipboard,
     pub toast: Toast,
     pub sidebar: Sidebar,
+    pub window: WindowBehavior,
     pub ui: Ui,
     pub updates: Updates,
     pub extensions: Extensions,
@@ -224,8 +231,12 @@ pub struct Home {
     pub show_stats: bool,
     /// The selected background image: a file name in the account's backgrounds directory
     /// (`<profile>/home/backgrounds/`, where added images are copied). Empty: none, the
-    /// background is plain white or black with the theme.
+    /// background is the chrome's own neutral ground (see `glass_ground`).
     pub background: String,
+    /// Without a background image the start page takes the chrome's neutral ground colour
+    /// (`colors.*.ground`, the tone around the page card and behind the bars), in light and
+    /// dark. Off: plain white or black with the theme. Private tabs stay dark either way.
+    pub glass_ground: bool,
     /// At most this many backgrounds are kept (adding more is refused).
     pub max_backgrounds: u32,
     /// Larger files are refused as backgrounds (MB). Live wallpapers (videos) are big.
@@ -271,6 +282,7 @@ impl Default for Home {
             top_sites_pages: None,
             show_stats: true,
             background: String::new(),
+            glass_ground: true,
             max_backgrounds: 24,
             max_background_mb: 200,
             live_wallpapers: true,
@@ -446,6 +458,15 @@ pub struct Glass {
     pub merge_distance: f32,
     /// Maximum squash along the direction of motion (0.08 = 8%).
     pub squash: f32,
+    /// Largest stretch of glass pulled by a held pointer (0.08 = 8%): the asymptote of the
+    /// drag curve, reached only far from the glass's rest position.
+    pub drag_stretch_max: f32,
+    /// Deprecated and ignored (kept so old config files still load): the drag curve is now
+    /// UIScrollView's rubber band over the element's size, see `rubber_band_c`.
+    pub drag_resistance: f32,
+    /// Advanced: the rubber-band constant `c` of `f(x, d) = (1 - 1/(x·c/d + 1))·d`; Apple's
+    /// UIScrollView uses 0.55 (smaller: stiffer, the pull saturates later).
+    pub rubber_band_c: f32,
     /// Smooth-union radius in logical pixels of the broad glass bridge that joins a popover
     /// or menu to the bar or button it flows out of: how wide the concave fillets at the
     /// junction's ends are (at most `merge_distance` has no extra effect).
@@ -457,6 +478,10 @@ pub struct Glass {
     /// thickness: buttons are pure refractive glass, never a grey plate. Text-bearing panels keep
     /// their level's opacity.
     pub button_opacity: f32,
+    /// Share (0-1) of the glass drop shadow that a glass *button* casts. 0 (the default): none,
+    /// so a button is pure refractive glass with nothing dark around it; panels, sheets and
+    /// popovers keep their shadow.
+    pub button_shadow: f32,
     /// Tint opacity (0–1) of tinted (primary, destructive) glass buttons: how much of the accent
     /// colour the glass takes. The rest is the backdrop, refracted, with the rim light on top.
     pub tinted_opacity: f32,
@@ -485,6 +510,16 @@ impl Glass {
     /// Maximum squash of moving glass (0 under Reduce Motion and in flat mode).
     pub fn squash(&self) -> f32 {
         if self.reduce_motion || self.is_flat() { 0.0 } else { self.squash.max(0.0) }
+    }
+
+    /// Largest stretch of pulled glass and of its content (0 under Reduce Motion and in flat mode).
+    pub fn drag_stretch_max(&self) -> f32 {
+        if self.reduce_motion || self.is_flat() { 0.0 } else { self.drag_stretch_max.max(0.0) }
+    }
+
+    /// The rubber-band constant (clamped to a usable range; default exactly 0.55).
+    pub fn rubber_band_c(&self) -> f32 {
+        self.rubber_band_c.clamp(0.05, 2.0)
     }
 
     /// Smooth-union radius of a popover's bridge (0 in flat mode: no bridges).
@@ -524,9 +559,13 @@ impl Default for Glass {
             bezel_width: 22.0,
             merge_distance: 20.0,
             squash: 0.08,
+            drag_stretch_max: 0.08,
+            drag_resistance: 40.0,
+            rubber_band_c: 0.55,
             popover_bridge_fillet: 30.0,
             menu_plate_opacity: 0.6,
             button_opacity: 0.04,
+            button_shadow: 0.0,
             tinted_opacity: 0.65,
             tinted_rim: 1.6,
             adaptive_opacity: 0.12,
@@ -632,10 +671,15 @@ pub struct SpringSpec {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Motion {
-    /// Tabs, toggles, buttons.
+    /// Apple `.snappy` (`Spring(duration: 0.5, bounce: 0.15)`): tabs, toggles, buttons.
     pub snappy: SpringSpec,
-    /// Sidebar, sheets, settings.
+    /// Apple `.smooth` (duration 0.5, bounce 0): sidebar, sheets, settings.
     pub smooth: SpringSpec,
+    /// Apple `.bouncy` (duration 0.5, bounce 0.3): glass springing back after being pulled.
+    pub bouncy: SpringSpec,
+    /// Apple `interactiveSpring` (response 0.15, dampingFraction 0.86): following the pointer
+    /// while dragging.
+    pub interactive: SpringSpec,
     /// Glass merge and split, popover drip.
     pub liquid: SpringSpec,
     /// A closing popover or sheet draining back into the glass it came from: its far edge
@@ -650,6 +694,12 @@ pub struct Motion {
     pub drain_drop: f32,
     /// Overview zoom, scroll hand-off.
     pub fling: SpringSpec,
+    /// A closing tab shrinking and fading away (tab bar, sidebar, overview). The tabs beside it
+    /// slide into the gap on `snappy`.
+    pub tab_close: SpringSpec,
+    /// A switch's knob travelling (and the knob swelling into a glass lens), also segmented
+    /// controls. Quick: settles in about 0.2 s with a small bounce.
+    pub switch: SpringSpec,
     /// Multiplies every spring response (0.5 = twice as fast).
     pub speed: f32,
 }
@@ -657,14 +707,18 @@ pub struct Motion {
 impl Default for Motion {
     fn default() -> Self {
         Self {
-            snappy: SpringSpec { response: 0.28, damping: 0.90 },
-            smooth: SpringSpec { response: 0.45, damping: 1.00 },
+            snappy: SpringSpec { response: 0.50, damping: 0.85 },
+            smooth: SpringSpec { response: 0.50, damping: 1.00 },
+            bouncy: SpringSpec { response: 0.50, damping: 0.70 },
+            interactive: SpringSpec { response: 0.15, damping: 0.86 },
             liquid: SpringSpec { response: 0.50, damping: 0.62 },
             drain: SpringSpec { response: 0.42, damping: 0.55 },
             drain_neck: SpringSpec { response: 0.34, damping: 1.00 },
             drain_absorb: SpringSpec { response: 0.20, damping: 1.00 },
             drain_drop: 18.0,
             fling: SpringSpec { response: 0.60, damping: 0.85 },
+            tab_close: SpringSpec { response: 0.34, damping: 0.95 },
+            switch: SpringSpec { response: 0.18, damping: 0.80 },
             speed: 1.0,
         }
     }
@@ -845,15 +899,71 @@ impl Default for Privacy {
     }
 }
 
-/// Chrome extensions.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Chrome extensions (Manifest V3, installed from the Chrome Web Store, an unpacked folder or a
+/// `.crx` file).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Extensions {
-    /// Chrome extensions are not supported yet; the Web Store cannot install them. Leave this
-    /// off: with the extension system running, the Web Store's "Add to Chrome" reaches an
-    /// install dialog that has no window to attach to in off-screen mode and crashes Chromium.
-    /// Applies after a restart. Default: off.
+    /// Run Chromium's extension system and show the extensions button in the toolbar. Off: no
+    /// extension loads and the button is hidden. Applies after a restart. Default: on.
     pub enabled: bool,
+    /// "Add to Chrome" on the Chrome Web Store installs extensions (after a confirmation in
+    /// Axion's own dialog). Off: the store opens as a normal website and cannot install.
+    /// Needs `enabled`. Default: on.
+    pub web_store: bool,
+    /// Check Web Store extensions for newer versions in the background (no other site is
+    /// contacted; an update runs after the next restart). Default: on.
+    pub auto_update: bool,
+    /// Turn on Chromium's "Allow User Scripts" switch for extensions that ask for the
+    /// `userScripts` permission (Tampermonkey, Violentmonkey: they need it to run scripts).
+    /// Default: on.
+    pub allow_user_scripts: bool,
+    /// Remove the `webRequest` and `declarativeNetRequest` permissions from installed
+    /// extensions. Today they make Chromium stall every navigation to a website in Axion's
+    /// off-screen browser, so extensions that hold them (and most blockers do) would break
+    /// browsing. Userscript managers, content scripts and the other APIs are not affected.
+    /// Turn off to test once the engine handles them. Default: on.
+    pub block_request_apis: bool,
+    /// Hours between two update checks. At least 1. Default: 24.
+    pub update_interval_hours: u32,
+    /// Seconds a Web Store request (a download or an update check) may take. Default: 60.
+    pub timeout_seconds: u32,
+    /// The extension popup's smallest size, per side (logical px, like Chrome's 25). Default: 25.
+    pub popup_min_size: u32,
+    /// The extension popup's largest width (logical px, like Chrome's 800). Default: 800.
+    pub popup_max_width: u32,
+    /// The extension popup's largest height (logical px, like Chrome's 600). Default: 600.
+    pub popup_max_height: u32,
+    /// Milliseconds between two measurements of the popup's content (it grows and shrinks with
+    /// it). Default: 150.
+    pub popup_measure_ms: u32,
+    /// Removed: extension icons in the address field. Old config files that set it still load;
+    /// the value is ignored and not written back.
+    #[serde(skip_serializing)]
+    pub show_in_address_bar: Option<String>,
+    /// Milliseconds a popup may take to report its size before it opens in a tab instead.
+    /// Default: 3000.
+    pub popup_load_timeout_ms: u32,
+}
+
+impl Default for Extensions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            web_store: true,
+            auto_update: true,
+            allow_user_scripts: true,
+            block_request_apis: true,
+            update_interval_hours: 24,
+            timeout_seconds: 60,
+            show_in_address_bar: None,
+            popup_min_size: 25,
+            popup_max_width: 800,
+            popup_max_height: 600,
+            popup_measure_ms: 150,
+            popup_load_timeout_ms: 3000,
+        }
+    }
 }
 
 /// What happens when a site asks for a permission nobody has decided for it yet.
@@ -893,6 +1003,25 @@ pub struct Permissions {
     /// "Stop" in the capture popover ends the page's tracks; if the page still records this
     /// long after, the page is reloaded (milliseconds).
     pub stop_reload_after_ms: u32,
+    /// Who chooses what a page shares when it calls `getDisplayMedia()`.
+    pub screen_picker: ScreenPicker,
+    /// Most screens and windows the picker lists (screens first).
+    pub screen_picker_max_sources: u32,
+    /// Width of the picker's thumbnails (logical pixels); their height follows at 16:9.
+    pub screen_picker_thumbnail_width: u32,
+}
+
+/// Who chooses what a shared screen or window is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenPicker {
+    /// Axion's own picker on X11; the desktop's (screen cast portal) on Wayland.
+    #[default]
+    Auto,
+    /// Axion's own picker wherever it can list sources (X11 and XWayland).
+    Own,
+    /// Chromium and the desktop decide (the portal's dialog, else the whole screen).
+    System,
 }
 
 impl Default for Permissions {
@@ -906,6 +1035,9 @@ impl Default for Permissions {
             clipboard: PermissionDefault::Ask,
             other: PermissionDefault::Ask,
             stop_reload_after_ms: 1500,
+            screen_picker: ScreenPicker::Auto,
+            screen_picker_max_sources: 12,
+            screen_picker_thumbnail_width: 160,
         }
     }
 }
@@ -970,6 +1102,9 @@ pub struct Data {
     pub clear_cache: bool,
     pub clear_downloads: bool,
     pub clear_range: ClearRange,
+    /// How long (milliseconds) the window waits for the history database when another part of
+    /// Axion (an import) holds it, before the entry is skipped. The window freezes meanwhile.
+    pub db_busy_timeout_ms: u32,
 }
 
 impl Default for Data {
@@ -981,6 +1116,7 @@ impl Default for Data {
             clear_cache: true,
             clear_downloads: true,
             clear_range: ClearRange::AllTime,
+            db_busy_timeout_ms: 500,
         }
     }
 }
@@ -1065,12 +1201,182 @@ impl Default for Passwords {
     }
 }
 
+/// Paper sizes of the print dialog.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperSize {
+    #[default]
+    A4,
+    A3,
+    A5,
+    Letter,
+    Legal,
+}
+
+/// Page margins of the print dialog (their widths are `print.margin_*_inches`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrintMargins {
+    None,
+    Narrow,
+    #[default]
+    Default,
+    Wide,
+}
+
+/// Print and Save as PDF.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Print {
+    /// Folder the PDF goes to when not asking where; empty: the download folder.
+    pub directory: String,
+    /// The dialog's last choices (they are kept for next time).
+    pub paper: PaperSize,
+    pub landscape: bool,
+    pub margins: PrintMargins,
+    /// Print background colours and images.
+    pub backgrounds: bool,
+    /// Title, date, address and page numbers in the page margins.
+    pub header_footer: bool,
+    /// Scale of the content in percent.
+    pub scale_percent: u32,
+    /// Margin widths of the three presets (inches).
+    pub margin_narrow_inches: f32,
+    pub margin_default_inches: f32,
+    pub margin_wide_inches: f32,
+    /// Open the PDF in Axion once it is saved.
+    pub open_after_saving: bool,
+}
+
+impl Default for Print {
+    fn default() -> Self {
+        Self {
+            directory: String::new(),
+            paper: PaperSize::A4,
+            landscape: false,
+            margins: PrintMargins::Default,
+            backgrounds: false,
+            header_footer: false,
+            scale_percent: 100,
+            margin_narrow_inches: 0.2,
+            margin_default_inches: 0.4,
+            margin_wide_inches: 1.0,
+            open_after_saving: false,
+        }
+    }
+}
+
+/// File formats of screenshots.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShotFormat {
+    #[default]
+    Png,
+    Jpeg,
+}
+
+/// What happens to a screenshot once it is taken.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShotAfter {
+    /// Show it with the choice to copy or save.
+    #[default]
+    Ask,
+    Copy,
+    Save,
+}
+
+/// The screenshot tool.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Screenshot {
+    /// Folder for saved screenshots when not asking where; empty: the download folder.
+    pub directory: String,
+    pub format: ShotFormat,
+    /// JPEG quality, 1–100.
+    pub jpeg_quality: u8,
+    pub after_capture: ShotAfter,
+    /// A full page screenshot stops at this many CSS pixels of height.
+    pub full_page_max_height: u32,
+    /// How long a full page screenshot waits after each scroll step for the page to draw (ms).
+    pub scroll_settle_ms: u32,
+    /// How dark the page gets around the selection (0–1).
+    pub dim_opacity: f32,
+    /// The smallest selection that counts (logical px); smaller drags are ignored.
+    pub min_selection: f32,
+}
+
+impl Default for Screenshot {
+    fn default() -> Self {
+        Self {
+            directory: String::new(),
+            format: ShotFormat::Png,
+            jpeg_quality: 90,
+            after_capture: ShotAfter::Ask,
+            full_page_max_height: 16_000,
+            scroll_settle_ms: 250,
+            dim_opacity: 0.45,
+            min_selection: 8.0,
+        }
+    }
+}
+
 /// Find on Page.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Find {
     /// Match upper and lower case exactly (the find bar's "Aa" toggle).
     pub match_case: bool,
+}
+
+/// Page zoom (Ctrl +/-/0), remembered per site.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Zoom {
+    /// Zoom of sites that have none of their own (percent).
+    pub default_percent: f64,
+    /// One zoom step, in Chromium zoom levels (each level is x1.2; 0.5 steps through 100, 110, 120, 131 ...).
+    pub step: f64,
+    /// Smallest and largest zoom (percent).
+    pub min_percent: f64,
+    pub max_percent: f64,
+    /// Remember a site's zoom (in the profile's site settings) and apply it to every page of
+    /// that site. Off: zoom belongs to the tab and resets when another site loads.
+    pub remember_per_site: bool,
+    /// Show the zoom (with a reset on click) in the address field while a page is not at its
+    /// default zoom.
+    pub show_indicator: bool,
+}
+
+impl Default for Zoom {
+    fn default() -> Self {
+        Self {
+            default_percent: 100.0,
+            step: 0.5,
+            min_percent: 25.0,
+            max_percent: 500.0,
+            remember_per_site: true,
+            show_indicator: true,
+        }
+    }
+}
+
+/// The command palette (Ctrl+K).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommandPalette {
+    /// Rows listed at once (the list scrolls by the selection).
+    pub max_rows: u32,
+    /// Show each command's shortcut.
+    pub show_shortcuts: bool,
+    /// The palette is this wide (logical px; it shrinks with the window).
+    pub width: f32,
+}
+
+impl Default for CommandPalette {
+    fn default() -> Self {
+        Self { max_rows: 8, show_shortcuts: true, width: 560.0 }
+    }
 }
 
 /// Chromium's developer tools (unchanged: Axion does not build its own). They open in a
@@ -1085,6 +1391,46 @@ pub struct DevTools {
 impl Default for DevTools {
     fn default() -> Self {
         Self { enabled: true }
+    }
+}
+
+/// Remembering the window and the panels between runs, and how quitting behaves. The remembered
+/// values themselves (position, size, which panels are open) live in the profile's
+/// `window.toml`, not here: they change all the time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WindowBehavior {
+    /// Reopen the window where and how big it was (maximized, fullscreen and monitor included).
+    pub restore_geometry: bool,
+    /// Reopen the sidebar and its sections as they were.
+    pub restore_panels: bool,
+    /// Reopen Picture in Picture as big as the user last made it (the same area, at the new
+    /// video's shape).
+    pub restore_pip_size: bool,
+    /// The window's state is written this many milliseconds after it last changed.
+    pub save_delay_ms: u32,
+    /// A remembered position is used only while at least this much of the window (logical px
+    /// each way) is still on a connected monitor; else the window opens on the default monitor.
+    pub min_visible_px: u32,
+    /// Quitting waits this long (milliseconds) for Chromium to shut down; then the process
+    /// ends at once (everything of ours is saved before that). 0 never forces the exit.
+    pub shutdown_timeout_ms: u32,
+    /// How long (milliseconds) quitting waits for the pages to close before it stops
+    /// waiting for them.
+    pub close_pages_timeout_ms: u32,
+}
+
+impl Default for WindowBehavior {
+    fn default() -> Self {
+        Self {
+            restore_geometry: true,
+            restore_panels: true,
+            restore_pip_size: true,
+            save_delay_ms: 800,
+            min_visible_px: 120,
+            shutdown_timeout_ms: 6000,
+            close_pages_timeout_ms: 2500,
+        }
     }
 }
 
@@ -1114,6 +1460,9 @@ pub struct Ui {
     pub page_context_menu_label_chars: u32,
     /// The most characters of a selection the context menu searches for.
     pub page_context_menu_query_chars: u32,
+    /// The context menu's "Share…" row for selected text (opens a new e-mail with the text and
+    /// the page's address).
+    pub page_context_menu_share: bool,
     /// "Copy Image" scales images larger than this down (pixels on the long side).
     pub copy_image_max_px: u32,
     /// The first-run introduction's card is at most this wide (logical px); it shrinks with
@@ -1135,6 +1484,7 @@ impl Default for Ui {
             tooltip_delay_ms: 700,
             page_context_menu_label_chars: 14,
             page_context_menu_query_chars: 400,
+            page_context_menu_share: true,
             copy_image_max_px: 8192,
             onboarding_max_width: 880.0,
             onboarding_max_height: 640.0,
@@ -1268,11 +1618,13 @@ pub struct Toast {
     pub duration_seconds: f32,
     /// How long a toast with a button ("Axion 0.2.0 is available" – Update) stays (seconds).
     pub action_duration_seconds: f32,
+    /// Gap kept between a toast and a popover, menu or sheet it would otherwise overlap (px).
+    pub clearance: f32,
 }
 
 impl Default for Toast {
     fn default() -> Self {
-        Self { duration_seconds: 2.0, action_duration_seconds: 8.0 }
+        Self { duration_seconds: 2.0, action_duration_seconds: 8.0, clearance: 12.0 }
     }
 }
 
@@ -1411,6 +1763,21 @@ pub struct Tabs {
     pub restore_session: bool,
     /// Tabs opened from links start in the background.
     pub open_links_in_background: bool,
+    /// A middle click on a tab (in the tab bar, the sidebar or the tab overview) closes it.
+    pub middle_click_closes_tab: bool,
+    /// A tab opened from a tab of a tab group (a link, New Tab to the Right) joins that group.
+    pub new_tab_joins_group: bool,
+    /// Tab groups show as a coloured chip with their name in the compact tab bar and the
+    /// separate tab row (off: only a colour marker on their tabs).
+    pub group_chips_in_bar: bool,
+    /// Tabs that play sound show a speaker (click to mute) in the tab bar and the sidebar.
+    pub show_audio_indicator: bool,
+    /// "Mute Site" is remembered: new tabs of a muted site start muted.
+    pub remember_site_mute: bool,
+    /// How many closed tabs the tab search (and Reopen Closed Tab) remembers.
+    pub closed_tabs_remembered: u32,
+    /// How many history entries the tab search lists at most.
+    pub tab_search_history_results: u32,
     /// Close tabs not looked at for this many days (0: never).
     pub close_after_days: u32,
     /// How often memory use is measured and the tab rules are applied.
@@ -1418,6 +1785,26 @@ pub struct Tabs {
     /// A press on a tab turns into dragging it (to reorder, or to move it between normal and
     /// private tabs) once the pointer moved this far (logical px); shorter moves are clicks.
     pub drag_threshold: f32,
+    /// A tab that is closed shrinks and fades away while the tabs beside it slide into its place
+    /// (tab bar, sidebar and tab overview). Off: tabs vanish at once. Reduce Motion and flat
+    /// mode keep only a short fade.
+    pub close_animation: bool,
+    /// Closing tabs with the pointer in the tab bar: the remaining tabs keep their widths until
+    /// the pointer leaves the bar, so the next close button stays under the pointer.
+    pub keep_widths_while_closing: bool,
+    /// Dragging a tab out of the window into another app drops its link there (a text field gets
+    /// the address).
+    pub drag_out_links: bool,
+    /// A dragged tab counts as leaving the window once the pointer is this far outside it
+    /// (logical px).
+    pub drag_out_distance: f32,
+    /// A tab dragged out of the window carries a small card of the page (a preview with the
+    /// site icon and title) beside the pointer, as drag image.
+    pub drag_out_image: bool,
+    /// Width of that card (logical px).
+    pub drag_out_image_width: f32,
+    /// How opaque the card is (0 invisible .. 1 solid).
+    pub drag_out_image_opacity: f32,
     /// Pages draw at most this many frames per second; 0 follows the display's refresh rate.
     pub max_frame_rate: u32,
     /// Following the display (`max_frame_rate = 0`), pages draw at most this many frames per
@@ -1444,9 +1831,23 @@ impl Default for Tabs {
             keep_media_awake: true,
             restore_session: true,
             open_links_in_background: true,
+            middle_click_closes_tab: true,
+            new_tab_joins_group: true,
+            group_chips_in_bar: true,
+            show_audio_indicator: true,
+            remember_site_mute: true,
+            closed_tabs_remembered: 25,
+            tab_search_history_results: 8,
             close_after_days: 0,
             check_interval_seconds: 5.0,
             drag_threshold: 6.0,
+            close_animation: true,
+            keep_widths_while_closing: true,
+            drag_out_links: true,
+            drag_out_distance: 12.0,
+            drag_out_image: true,
+            drag_out_image_width: 200.0,
+            drag_out_image_opacity: 0.9,
             max_frame_rate: 0,
             max_frame_rate_cap: 120,
             gpu_frame_settle_ms: 6.0,
@@ -1465,6 +1866,12 @@ pub struct Media {
     /// Sites whose own player is kept, also in fullscreen. Just the site's name, like
     /// "youtube.com" — its subdomains (www., m., …) count too. Edit in Settings › Media.
     pub trusted_player_sites: Vec<String>,
+    /// Sites whose `<video>`/`<audio>` elements are not media to play or list: calls and chats
+    /// (Discord voice/video, …) where the elements carry live call streams. The bridge does not
+    /// see them, so no player, no Now Playing entry, no Playlist entry. The site's name, like
+    /// "discord.com"; subdomains count too. Streams the page gets from the camera, microphone
+    /// or a peer connection (`srcObject`) are skipped on every site.
+    pub ignored_media_sites: Vec<String>,
     /// Older settings (Axion's controls inline), no longer used; accepted so old files load.
     #[serde(skip_serializing)]
     own_controls: Option<bool>,
@@ -1487,13 +1894,22 @@ pub struct Media {
     /// video is always visible (no black bars, nothing cropped). Off: free resizing.
     #[serde(alias = "pip_keep_aspect")]
     pub pip_lock_aspect: bool,
-    /// How long after the last resize step of the PiP window it snaps to the video's aspect
-    /// (window managers resize in many small steps). Only used when the live snapping
-    /// (`pip_aspect_live_seconds`) is off.
-    pub pip_aspect_settle_seconds: f32,
-    /// While the PiP window is being resized it is brought to the video's aspect at most this
-    /// often (seconds); 0 = only after the resize settled.
-    pub pip_aspect_live_seconds: f32,
+    /// Older settings (the PiP window used to snap back to the aspect after a delay), no longer
+    /// used: the window now follows the pointer continuously. Accepted so old files load.
+    #[serde(skip_serializing)]
+    pip_aspect_settle_seconds: Option<f32>,
+    #[serde(skip_serializing)]
+    pip_aspect_live_seconds: Option<f32>,
+    /// A PiP resize the window manager started on its own (no edge of ours grabbed, e.g.
+    /// Alt + right drag) counts as over when no new size arrived for this long (seconds).
+    pub pip_resize_idle_seconds: f32,
+    /// Width (logical px) of a fresh PiP window (the video fits a square of this side) when no
+    /// size is remembered.
+    pub pip_default_width: f32,
+    /// Widest the PiP window can be made (logical px).
+    pub pip_max_width: f32,
+    /// The PiP window never grows beyond this share of its monitor (0.1-1), either way.
+    pub pip_max_screen_fraction: f32,
     /// Size of the PiP window's controls (buttons, icons and the progress bar), as a multiple
     /// of the base size. Shrinks by itself in a small window so everything still fits.
     pub pip_control_scale: f32,
@@ -1510,6 +1926,13 @@ pub struct Media {
     /// Height (logical px) of the area that grabs the progress bar: the track alone would be
     /// too thin to hit comfortably. At least 24.
     pub progress_hit_height: f32,
+    /// Opacity (0-1) of a black veil over the whole picture of Picture in Picture while its
+    /// controls show. 0 (the default): none. The controls keep their labels legible through
+    /// their own glass tint instead, so the picture stays clean.
+    pub controls_scrim: f32,
+    /// Side of the cover picture shown for sound without a picture (fullscreen player,
+    /// Picture in Picture), as a share (0.1-1) of the shorter side of the picture area.
+    pub cover_size: f32,
     /// Side (logical px) of the artwork tile of the sidebar's Now Playing card.
     pub now_playing_artwork_size: f32,
     /// Gap (logical px) between the Now Playing card and the account button below it (and the
@@ -1522,6 +1945,14 @@ pub struct Media {
     pub now_playing_marquee: bool,
     /// Scroll speed of that title (logical px per second).
     pub now_playing_marquee_speed: f32,
+    /// Show a turning ring on the players while a video loads or buffers.
+    pub loading_indicator: bool,
+    /// A player that left the page's document (a site swapping its `<audio>` element) while
+    /// paused keeps the Now Playing card for this long (seconds); a `new Audio()` never put in
+    /// the document keeps it as long as it has a source.
+    pub now_playing_keep_seconds: f32,
+    /// Seconds for one turn of that ring.
+    pub loading_spin_seconds: f32,
 }
 
 impl Media {
@@ -1564,6 +1995,9 @@ impl Default for Media {
             ]
             .map(String::from)
             .to_vec(),
+            ignored_media_sites: ["discord.com", "discordapp.com", "discord.gg", "discord.media"]
+                .map(String::from)
+                .to_vec(),
             own_controls: None,
             replace_site_players: None,
             hide_controls_after_seconds: 2.5,
@@ -1573,19 +2007,28 @@ impl Default for Media {
             hardware_decoding: true,
             desktop_integration: true,
             pip_lock_aspect: true,
-            pip_aspect_settle_seconds: 0.3,
-            pip_aspect_live_seconds: 0.06,
+            pip_aspect_settle_seconds: None,
+            pip_aspect_live_seconds: None,
+            pip_resize_idle_seconds: 0.5,
+            pip_default_width: 480.0,
+            pip_max_width: 1280.0,
+            pip_max_screen_fraction: 0.9,
             pip_control_scale: 1.3,
             pip_resize_border: 6.0,
             pip_min_target: 36.0,
             pip_min_width: 272.0,
             progress_thickness: 8.0,
             progress_hit_height: 28.0,
+            controls_scrim: 0.0,
+            cover_size: 0.55,
             now_playing_artwork_size: 52.0,
             now_playing_gap: 10.0,
             now_playing_artwork: true,
             now_playing_marquee: true,
             now_playing_marquee_speed: 28.0,
+            loading_indicator: true,
+            now_playing_keep_seconds: 30.0,
+            loading_spin_seconds: 0.9,
         }
     }
 }
@@ -1658,6 +2101,196 @@ pub struct Playlist {
     pub volume: f32,
     /// Playlist videos are muted (the volume above is kept for when they are not).
     pub muted: bool,
+}
+
+/// The font family of Reader view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReaderFont {
+    /// A book face.
+    #[default]
+    Serif,
+    /// The system's UI face.
+    Sans,
+    /// A fixed-width face.
+    Mono,
+}
+
+/// The colours of Reader view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReaderTheme {
+    /// Light or dark with Axion's own theme.
+    #[default]
+    Auto,
+    Light,
+    Sepia,
+    Dark,
+}
+
+/// Reader view: the article of a page on a clean sheet.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Reader {
+    /// Offer Reader View in the page menu (on pages that have an article). The key kept its
+    /// name from when this was a button in the address field.
+    pub button: bool,
+    pub font: ReaderFont,
+    /// Text size in CSS pixels.
+    pub font_size: f32,
+    /// Line height as a multiple of the text size.
+    pub line_height: f32,
+    /// Width of the text column in CSS pixels.
+    pub width: f32,
+    pub theme: ReaderTheme,
+    /// The Aa menu's choices are remembered for each site (otherwise they are the choices for
+    /// every site, saved here).
+    pub remember_per_site: bool,
+    /// A page counts as readable when its main text has at least this many characters.
+    pub min_chars: u32,
+    /// How long after a page loaded it is checked for an article (milliseconds); pages that
+    /// build their text with scripts need a moment.
+    pub detect_delay_ms: u32,
+    /// The Aa menu's text size range and step (CSS pixels).
+    pub min_font_size: f32,
+    pub max_font_size: f32,
+    pub font_step: f32,
+    /// The Aa menu's column width range and step (CSS pixels).
+    pub min_width: f32,
+    pub max_width: f32,
+    pub width_step: f32,
+}
+
+impl Default for Reader {
+    fn default() -> Self {
+        Self {
+            button: true,
+            font: ReaderFont::Serif,
+            font_size: 20.0,
+            line_height: 1.6,
+            width: 680.0,
+            theme: ReaderTheme::Auto,
+            remember_per_site: true,
+            min_chars: 600,
+            detect_delay_ms: 700,
+            min_font_size: 14.0,
+            max_font_size: 36.0,
+            font_step: 2.0,
+            min_width: 480.0,
+            max_width: 1000.0,
+            width_step: 80.0,
+        }
+    }
+}
+
+/// Where translations are computed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranslationBackend {
+    /// On this computer, with Mozilla's Bergamot models (downloaded once, with your consent).
+    #[default]
+    Local,
+    /// A LibreTranslate-compatible server you run or trust (`translation.endpoint_url`):
+    /// page text is sent there.
+    Endpoint,
+}
+
+/// How much of a page is translated up front.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranslationScope {
+    /// What is on screen plus `viewport_margin` screens around it; the rest as it is scrolled
+    /// into view.
+    #[default]
+    Visible,
+    /// The whole page: the visible part first, then the rest in the background.
+    Page,
+}
+
+/// Page translation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Translation {
+    /// Offer to translate pages written in another language than `target_language`.
+    pub offer: bool,
+    /// The offer opens by itself once such a page has loaded (otherwise only the Translate
+    /// button appears in the address field).
+    pub prompt: bool,
+    /// ISO 639-1 code pages are translated into; empty: the interface language.
+    pub target_language: String,
+    pub backend: TranslationBackend,
+    /// LibreTranslate-compatible server (`https://host/translate`), used when `backend` is
+    /// `endpoint`. Empty: none. Page text is sent to it.
+    pub endpoint_url: String,
+    /// The server's API key (empty: none).
+    pub endpoint_api_key: String,
+    /// Sites (and their subdomains) that are never offered for translation.
+    pub never_sites: Vec<String>,
+    /// Languages (ISO 639-1) that are never offered for translation, besides the target.
+    pub known_languages: Vec<String>,
+    /// Where the model list comes from (Mozilla Remote Settings).
+    pub models_records_url: String,
+    /// Where model files are downloaded from.
+    pub models_attachments_url: String,
+    /// Translated in one go: at most this many characters and text pieces.
+    pub batch_chars: u32,
+    pub batch_pieces: u32,
+    /// Text that appears on a translated page later (feeds, comments) is translated too.
+    pub translate_changes: bool,
+    /// A page without a declared language is guessed from at least this many characters.
+    pub detect_min_chars: u32,
+    /// How long an endpoint may take for one request (seconds).
+    pub endpoint_timeout_seconds: u32,
+    /// The hidden page that runs the local engine is closed after this many seconds without
+    /// work, which frees the memory of the models.
+    pub engine_idle_seconds: u32,
+    /// How much of the page is translated up front (`visible`: the viewport and its margin,
+    /// the rest while scrolling; `page`: everything, visible part first).
+    pub scope: TranslationScope,
+    /// With `scope = "visible"`: how many screens above and below the viewport are translated
+    /// ahead of scrolling.
+    pub viewport_margin: f32,
+    /// The first request carries at most this many text pieces, so the first translation
+    /// shows up quickly.
+    pub first_pieces: u32,
+    /// Requests the page keeps waiting for the engine at once; more would only delay what
+    /// scrolls into view.
+    pub inflight_batches: u32,
+    /// Engine workers translating in parallel (0: half the processor cores, 1 to 4).
+    pub engine_workers: u32,
+    /// Starts the engine and loads the model as soon as a translation is offered or the
+    /// Translate button is used, so the first translation doesn't wait for them.
+    pub prewarm: bool,
+}
+
+impl Default for Translation {
+    fn default() -> Self {
+        Self {
+            offer: true,
+            prompt: true,
+            target_language: String::new(),
+            backend: TranslationBackend::Local,
+            endpoint_url: String::new(),
+            endpoint_api_key: String::new(),
+            never_sites: Vec::new(),
+            known_languages: Vec::new(),
+            models_records_url: "https://firefox.settings.services.mozilla.com/v1/buckets/main/collections"
+                .to_owned(),
+            models_attachments_url: "https://firefox-settings-attachments.cdn.mozilla.net/".to_owned(),
+            batch_chars: 4000,
+            batch_pieces: 60,
+            translate_changes: true,
+            detect_min_chars: 120,
+            endpoint_timeout_seconds: 30,
+            engine_idle_seconds: 120,
+            scope: TranslationScope::Visible,
+            viewport_margin: 1.0,
+            first_pieces: 12,
+            inflight_batches: 2,
+            engine_workers: 0,
+            prewarm: true,
+        }
+    }
 }
 
 /// How the Playlist page orders its videos. More modes can be added later.
@@ -1758,6 +2391,13 @@ mod tests {
     }
 
     #[test]
+    fn removed_extension_icon_key_still_loads_and_is_not_written() {
+        let c: Config = toml::from_str("[extensions]\nshow_in_address_bar = \"pinned\"\n").unwrap();
+        assert!(c.extensions.enabled);
+        assert!(!toml::to_string(&c).unwrap().contains("show_in_address_bar"));
+    }
+
+    #[test]
     fn removed_layout_keys_still_load() {
         let c: Config = toml::from_str("[layout]\nhide_bar_on_scroll = true").unwrap();
         assert_eq!(c.layout.tab_bar, TabBarStyle::Separate);
@@ -1796,6 +2436,16 @@ mod tests {
         assert!(!media.add_trusted_site("example.com"));
         assert!(!media.add_trusted_site("  "));
         assert!(!toml::to_string(&media).unwrap().contains("own_controls"));
+    }
+
+    #[test]
+    fn pip_old_snap_keys_still_load() {
+        let c: Config =
+            toml::from_str("[media]\npip_aspect_settle_seconds = 0.3\npip_aspect_live_seconds = 0.06")
+                .unwrap();
+        assert_eq!(c.media.pip_max_width, Media::default().pip_max_width);
+        assert!(!toml::to_string(&c.media).unwrap().contains("pip_aspect_"));
+        assert!(Config::default().window.restore_pip_size);
     }
 
     #[test]
@@ -1907,6 +2557,19 @@ mod glass_style_tests {
         assert!(l.margin <= FLAT_MARGIN);
         assert_eq!((l.page_margin, l.page_corner_radius), (0.0, 0.0));
         assert_eq!(l.sidebar_width, c.layout.sidebar_width, "everything else is as configured");
+    }
+
+    #[test]
+    fn drag_stretch_is_off_in_flat_mode_and_under_reduce_motion() {
+        let mut glass = Glass::default();
+        assert_eq!(glass.drag_stretch_max(), glass.drag_stretch_max);
+        assert_eq!(glass.drag_stretch_max, 0.08, "the old maximum");
+        glass.reduce_motion = true;
+        assert_eq!(glass.drag_stretch_max(), 0.0);
+        glass.reduce_motion = false;
+        glass.style = GlassStyle::Flat;
+        assert_eq!(glass.drag_stretch_max(), 0.0);
+        assert_eq!(Glass::default().rubber_band_c(), 0.55, "Apple's UIScrollView constant");
     }
 
     #[test]

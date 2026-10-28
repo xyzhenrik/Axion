@@ -22,6 +22,7 @@ use glam::Vec2;
 use crate::favicons::{Favicons, favicon_or};
 use crate::menu::{Menu, MenuItem, Placement};
 use crate::playlist::{Repeat, wrap_title};
+use crate::spinner::Spinner;
 
 /// Action ids of the page: the buttons, then the rows' (`ROW_BASE + 8 * row + kind`), then
 /// the page's menu.
@@ -56,6 +57,8 @@ pub enum PageAction {
     DownloadSelected,
     /// The player area's *Open page* button (a video that can't play there).
     OpenPage,
+    /// The player area's *Retry* button (a video that failed to play).
+    Retry,
     /// The row (index into the shown rows) was clicked.
     Row(usize),
     RowMenu(usize),
@@ -64,7 +67,7 @@ pub enum PageAction {
     RowDown(usize),
 }
 
-const SIMPLE: [PageAction; 19] = [
+const SIMPLE: [PageAction; 20] = [
     PageAction::Close,
     PageAction::PlayAll,
     PageAction::Edit,
@@ -84,6 +87,7 @@ const SIMPLE: [PageAction; 19] = [
     PageAction::DeleteSelected,
     PageAction::DownloadSelected,
     PageAction::OpenPage,
+    PageAction::Retry,
 ];
 
 impl PageAction {
@@ -237,9 +241,9 @@ fn plain_button(
 /// A glass capsule with a text, for the edit bar.
 fn capsule(ui: &mut Ui, parent: NodeId, action: PageAction, icon: Icon, text: &str, danger: bool) -> NodeId {
     let background = if danger {
-        Background::Fill(Paint::Fixed(DANGER), 0.16)
+        Background::TintedGlass(GlassLevel::Thin, Paint::Fixed(DANGER))
     } else {
-        Background::Fill(Paint::Label, 0.08)
+        Background::Glass(GlassLevel::Thin)
     };
     let node = ui.add(
         parent,
@@ -259,6 +263,14 @@ fn capsule(ui: &mut Ui, parent: NodeId, action: PageAction, icon: Icon, text: &s
     }
     node
 }
+
+/// Space between the failure state's buttons (more than the glass merge distance).
+const FAILURE_BUTTON_GAP: f32 = 40.0;
+/// How far the ring sits above the middle while a note's text is under it.
+const RING_LIFT: f32 = 76.0;
+const SPINNER_SIDE: f32 = 56.0;
+/// The narrowest the volume pill gets in a narrow window (speaker, a short slider, padding).
+const VOLUME_MIN_WIDTH: f32 = 76.0;
 
 const DANGER: Color = Color::rgb(0xE5483E);
 
@@ -295,6 +307,10 @@ pub struct PlayerModel<'a> {
     pub site: &'a str,
     pub elapsed: f64,
     pub duration: f64,
+    /// A live stream: the timeline is full and says *Live*.
+    pub live: bool,
+    /// Waiting for the video (loading or buffering): the player area shows the loading ring.
+    pub loading: bool,
     pub playing: bool,
     pub shuffle: bool,
     pub repeat: Repeat,
@@ -339,7 +355,17 @@ pub struct PlaylistPage {
     video_box: NodeId,
     video: NodeId,
     video_note: NodeId,
-    open_page_button: NodeId,
+    failure_buttons: NodeId,
+    /// The row of the bottom buttons, and the volume pill whose width follows its room.
+    bottom: NodeId,
+    volume_capsule: NodeId,
+    /// The placeholder glyph over the note (hidden while the ring turns instead of it) and the
+    /// overlay that centres the ring.
+    note_icon: NodeId,
+    ring_overlay: NodeId,
+    spinner: Spinner,
+    /// The player area waits for its video (the ring turns).
+    loading: bool,
     title: NodeId,
     site: NodeId,
     elapsed: NodeId,
@@ -431,7 +457,7 @@ impl PlaylistPage {
             Widget::container()
                 .with_action(PageAction::Sort.id())
                 .with_radius(CAPSULE)
-                .with_background(Background::Fill(Paint::Label, 0.08))
+                .with_background(Background::Glass(GlassLevel::Thin))
                 .with_tooltip(tr("Sort"), None),
             Style {
                 size: square(34.0),
@@ -564,6 +590,9 @@ impl PlaylistPage {
                 .with_radius(VIDEO_RADIUS)
                 .with_clip(),
             Style {
+                // The containing block of the loading ring's overlay (a static box is none:
+                // the overlay would resolve against the page).
+                position: Position::Relative,
                 flex_grow: 1.0,
                 flex_shrink: 1.0,
                 size: Size { width: percent(1.0), height: auto() },
@@ -573,11 +602,13 @@ impl PlaylistPage {
                 ..Default::default()
             },
         );
+        // Black in every scheme: what lies on it (the failure's buttons, the ring) is drawn dark.
+        ui.set_plane_dark(video_box, true);
         let video = ui.add(video_box, Widget::image(), Style::default());
         ui.set_visible(video, false);
         let note_box =
             ui.add(video_box, Widget::container(), Style { align_items: AlignItems::CENTER, ..column(10.0) });
-        ui.add(
+        let note_icon = ui.add(
             note_box,
             Widget::icon(Icon::Playlist, 40.0).with_paint(Paint::Fixed(Color::rgb(0x8E8E93))),
             Style::default(),
@@ -586,9 +617,30 @@ impl PlaylistPage {
         if let Some(w) = ui.widget_mut(video_note) {
             w.set_paint(Paint::Fixed(Color::rgb(0x8E8E93)));
         }
-        let open_page_button =
-            capsule(ui, note_box, PageAction::OpenPage, Icon::Globe, tr("Open page"), false);
-        ui.set_visible(open_page_button, false);
+        // The failure's two buttons side by side, wide apart: glass this close would flow into
+        // one shape (and make a dark bridge between them).
+        let failure_buttons = ui.add(
+            note_box,
+            Widget::container(),
+            Style { align_items: AlignItems::CENTER, ..row(FAILURE_BUTTON_GAP) },
+        );
+        capsule(ui, failure_buttons, PageAction::OpenPage, Icon::Globe, tr("Open page"), false);
+        capsule(ui, failure_buttons, PageAction::Retry, Icon::Reload, tr("Retry"), false);
+        ui.set_visible(failure_buttons, false);
+        // The loading ring sits over the middle of the video area (in an overlay that fills
+        // it and takes no clicks).
+        let ring_overlay = ui.add(
+            video_box,
+            Widget::container(),
+            Style {
+                position: Position::Absolute,
+                inset: Rect { left: length(0.0), right: length(0.0), top: length(0.0), bottom: length(0.0) },
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        let spinner = Spinner::build(ui, ring_overlay, SPINNER_SIDE);
 
         let info = ui.add(
             player_col,
@@ -694,6 +746,9 @@ impl PlaylistPage {
                     flex_grow: 1.0,
                     flex_basis: length(0.0),
                     size: Size { width: auto(), height: length(BOTTOM_BUTTON) },
+                    // Not as wide as its content wants: the volume pill shrinks instead of the
+                    // slot growing over its neighbour.
+                    min_size: Size { width: length(0.0), height: auto() },
                     justify_content: justify,
                     ..row(0.0)
                 },
@@ -720,6 +775,7 @@ impl PlaylistPage {
                 .with_tooltip(tr("Playback Speed"), None),
             Style {
                 size: Size { width: length(BOTTOM_BUTTON + 14.0), height: length(BOTTOM_BUTTON) },
+                flex_shrink: 0.0,
                 justify_content: JustifyContent::CENTER,
                 ..row(0.0)
             },
@@ -729,10 +785,15 @@ impl PlaylistPage {
         // The volume: a glass capsule with the speaker (mute) and a slider, right of the speed.
         let volume_capsule = ui.add(
             left_slot,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thin))
+                .with_button_tint()
+                .with_radius(CAPSULE),
             Style {
+                // As wide as VOLUME_WIDTH where there is room, narrower (down to the speaker
+                // and a short slider) where the window is narrow: never over the sleep button.
                 size: Size { width: length(VOLUME_WIDTH), height: length(BOTTOM_BUTTON) },
-                flex_shrink: 1.0,
+                flex_shrink: 0.0,
                 margin: Rect {
                     left: length(VOLUME_GAP),
                     right: length(0.0),
@@ -814,7 +875,13 @@ impl PlaylistPage {
             video_box,
             video,
             video_note,
-            open_page_button,
+            failure_buttons,
+            bottom,
+            volume_capsule,
+            note_icon,
+            ring_overlay,
+            spinner,
+            loading: false,
             title,
             site,
             elapsed,
@@ -1015,9 +1082,9 @@ impl PlaylistPage {
                     .with_action(PageAction::RowSelect(i).id())
                     .with_radius(CAPSULE)
                     .with_background(if m.selected {
-                        Background::Fill(Paint::Accent, 1.0)
+                        Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
                     } else {
-                        Background::Fill(Paint::Label, 0.12)
+                        Background::Glass(GlassLevel::Thin)
                     }),
                 Style {
                     size: square(SELECT_CIRCLE),
@@ -1238,6 +1305,12 @@ impl PlaylistPage {
         ui.frame(self.video_box)
     }
 
+    /// The loading ring's disc on screen (logical px).
+    #[cfg(test)]
+    pub fn spinner_frame(&self, ui: &Ui) -> Frame {
+        self.spinner.frame(ui)
+    }
+
     pub fn scroll_by(&mut self, ui: &mut Ui, dy: f32) {
         self.scroll += -dy;
         self.clamp_scroll(ui);
@@ -1280,28 +1353,32 @@ impl PlaylistPage {
     ) {
         self.menu.set_placement(placement);
         self.menu.set_covered_nodes(ui, cover);
+        if matches!(placement, Placement::AboveStart | Placement::AboveCentered) {
+            let candidates = self.control_glass(ui);
+            self.menu.set_covered_if_under(candidates);
+        }
         self.menu.open(ui, config, anchor, window, items);
     }
 
+    /// The player's glass controls (play, speed, volume, sleep, fullscreen): content on glass
+    /// lies in the menu's own layer, so where a menu lies on one the control has to fade out.
+    fn control_glass(&self, ui: &Ui) -> Vec<NodeId> {
+        let mut nodes: Vec<NodeId> = ui.parent(self.play_icon).into_iter().collect();
+        // sleep icon -> sleep button -> its slot -> the bottom row, whose slots hold the rest.
+        let bottom = ui.parent(self.sleep_icon).and_then(|b| ui.parent(b)).and_then(|s| ui.parent(s));
+        for slot in bottom.map(|b| ui.children(b)).unwrap_or_default() {
+            nodes.extend(ui.children(slot));
+        }
+        nodes
+    }
+
     /// Placement and covered node for the menu of a button of the player.
-    pub fn menu_at(&self, ui: &Ui, action: PageAction) -> (Placement, Vec<NodeId>) {
-        let parent = |n: NodeId| ui.parent(n);
+    pub fn menu_at(&self, action: PageAction) -> (Placement, Vec<NodeId>) {
         match action {
-            PageAction::Sleep => {
-                // The sleep button and the whole transport row it grows over.
-                let transport = parent(self.play_icon).and_then(parent);
-                let mut nodes: Vec<NodeId> = transport.map(|t| ui.children(t)).unwrap_or_default();
-                nodes.extend(parent(self.sleep_icon));
-                (Placement::OverCentered, nodes)
-            }
-            PageAction::Speed => {
-                // The speed button, and the shuffle and previous buttons it grows over.
-                let transport = parent(self.play_icon).and_then(parent);
-                let mut nodes: Vec<NodeId> =
-                    transport.map(|t| ui.children(t).into_iter().take(2).collect()).unwrap_or_default();
-                nodes.extend(parent(self.speed_label));
-                (Placement::Over, nodes)
-            }
+            // Above the button, clear of the controls beside it (the volume capsule next to the
+            // speed button): a menu over the bottom row would lie on top of them.
+            PageAction::Speed => (Placement::AboveStart, Vec::new()),
+            PageAction::Sleep => (Placement::AboveCentered, Vec::new()),
             // The sort button, which the menu grows out of.
             PageAction::Sort => (Placement::Over, vec![self.sort_button]),
             _ => (Placement::BelowStart, Vec::new()),
@@ -1314,10 +1391,23 @@ impl PlaylistPage {
 
     /// The player half: texts, buttons' states, the picture.
     pub fn set_player(&mut self, ui: &mut Ui, m: &PlayerModel<'_>) {
+        self.loading = m.loading && !m.open_page;
+        // While the ring turns it takes the placeholder glyph's place; the note's text stays,
+        // under the ring.
+        let ring_only = self.loading && m.video.is_none();
+        ui.set_visible(self.note_icon, !ring_only);
+        let lift = if ring_only && m.note.is_some() { RING_LIFT } else { 0.0 };
+        let mut style = ui.style(self.ring_overlay);
+        if style.padding.bottom != length(lift) {
+            style.padding.bottom = length(lift);
+            ui.set_style(self.ring_overlay, style);
+        }
         ui.set_text(self.title, m.title);
         ui.set_text(self.site, m.site);
         ui.set_text(self.elapsed, &format_time(m.elapsed));
-        let remaining = if m.duration > 0.0 {
+        let remaining = if m.live {
+            tr("Live").to_owned()
+        } else if m.duration > 0.0 {
             format!("−{}", format_time(m.duration - m.elapsed))
         } else {
             String::new()
@@ -1325,7 +1415,9 @@ impl PlaylistPage {
         ui.set_text(self.remaining, &remaining);
         let scrubbing = ui.dragging() == Some(self.scrubber)
             || self.scrubbed_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
-        if !scrubbing && m.duration > 0.0 {
+        if m.live {
+            ui.set_value(self.scrubber, 1.0);
+        } else if !scrubbing && m.duration > 0.0 {
             ui.set_value(self.scrubber, (m.elapsed / m.duration).clamp(0.0, 1.0) as f32);
         }
         ui.set_icon(self.play_icon, if m.playing { Icon::Pause } else { Icon::Play });
@@ -1381,7 +1473,7 @@ impl PlaylistPage {
                     self.video_note,
                     note.unwrap_or(if self.list_empty { tr("No Videos") } else { tr("Choose a video") }),
                 );
-                ui.set_visible(self.open_page_button, m.open_page);
+                ui.set_visible(self.failure_buttons, m.open_page);
                 if let Some(parent) = ui.parent(self.video_note) {
                     ui.set_visible(parent, true);
                 }
@@ -1399,6 +1491,22 @@ impl PlaylistPage {
         if !self.open {
             return;
         }
+        // The volume pill takes the room its side of the row has (the speed button and the gaps
+        // before and after it excluded: glass closer than that to the sleep button flows into it), never more than VOLUME_WIDTH or less than its minimum:
+        // in a narrow window it must not reach the sleep button.
+        let row_width = ui.frame(self.bottom).size.x;
+        if row_width > 1.0 {
+            let side = (row_width - BOTTOM_BUTTON) / 2.0;
+            let room = side - (BOTTOM_BUTTON + 14.0) - VOLUME_GAP - VOLUME_GAP;
+            let wanted = room.clamp(VOLUME_MIN_WIDTH, VOLUME_WIDTH).floor();
+            let mut style = ui.style(self.volume_capsule);
+            if style.size.width != length(wanted) {
+                style.size.width = length(wanted);
+                ui.set_style(self.volume_capsule, style);
+            }
+        }
+        let loading = self.loading;
+        self.spinner.update(ui, config, loading, dt);
         if config.glass.reduce_motion {
             self.search_width.snap(self.search_width.target);
         } else {
@@ -1471,6 +1579,27 @@ mod tests {
         assert_eq!(PageAction::from_id(ActionId(BASE - 1)), None);
         assert_eq!(PageAction::from_id(ActionId(ROW_BASE + 5)), None);
         assert!(MENU_BASE > ROW_BASE + ROW_KINDS * (MAX_ROWS as u32 - 1) + 4);
+    }
+
+    #[test]
+    fn loading_ring_is_centred_over_the_video_area() {
+        for (w, h) in [(1440.0, 900.0), (900.0, 700.0), (1100.0, 500.0)] {
+            let mut config = Config::default();
+            config.glass.reduce_motion = true;
+            let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+            ui.set_viewport(Vec2::new(w, h), 1.0);
+            let mut page = PlaylistPage::build(&mut ui, &config);
+            let rect = Frame { origin: Vec2::new(50.0, 20.0), size: Vec2::new(w - 100.0, h - 40.0) };
+            page.open(&mut ui, &config, rect, 0.0);
+            page.loading = true;
+            page.animate(&mut ui, &config, 0.016);
+            ui.layout();
+            let video = page.video_frame(&ui);
+            let ring = page.spinner_frame(&ui);
+            assert!(ring.size.x > 1.0, "the ring is laid out at {w}x{h}");
+            let d = (video.origin + video.size / 2.0) - (ring.origin + ring.size / 2.0);
+            assert!(d.length() < 0.6, "{w}x{h}: ring {ring:?} video {video:?}");
+        }
     }
 
     #[test]

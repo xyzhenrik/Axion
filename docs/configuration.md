@@ -105,10 +105,12 @@ ask_where_to_save = false
 | `tabs` | Freezing, unloading, memory budget, session restore, closing old tabs. |
 | `media` | The video player, trusted sites, Picture in Picture, desktop integration. |
 | `playlist` | The Playlist. |
+| `print`, `screenshot` | Print / Save as PDF and the screenshot tool: paper, margins, formats, folders. |
 | `downloads`, `data` | Download behaviour, what "Clear Browsing Data" clears. |
 | `passwords` | Saving, filling, generator, clipboard. |
 | `accounts` | Profile picture size and limit. |
 | `import` | Limits of the import from other browsers (history entries, bookmarks, file sizes). |
+| `extensions` | Chrome extensions: on or off (`enabled`), the Chrome Web Store (`web_store`), automatic updates (`auto_update`, `update_interval_hours`, `timeout_seconds`), user scripts (`allow_user_scripts`), the request APIs (`block_request_apis`) and the popup's size limits (`popup_*`). `show_in_address_bar` is gone (old files that set it still load). See [Chrome extensions](features/extensions.md). |
 | `hardware` | Acceleration, page frames, graphics card. |
 | `devtools`, `find`, `clipboard`, `toast`, `sidebar`, `ui` | Smaller options. |
 | `updates` | Update source and schedule. |
@@ -132,13 +134,37 @@ ask_where_to_save = false
 | `tabs.max_frame_rate_cap` | Following the display, pages draw at most this many frames per second (0: no cap). | `120` |
 | `media.skip_seconds` | How far the skip buttons jump. | `10` |
 | `media.playback_speeds` | The speeds the speed button cycles through. | `[1.0, 1.25, 1.5, 2.0, 0.5, 0.75]` |
+| `media.pip_lock_aspect` | The Picture in Picture window keeps the video's shape when resized. | `true` |
+| `media.pip_min_width` | Narrowest the Picture in Picture window can be made, in pixels. | `272` |
+| `media.pip_max_width` | Widest it can be made, in pixels. | `1280` |
+| `media.pip_max_screen_fraction` | It never grows beyond this share of its monitor, either way (0.1 to 1). | `0.9` |
+| `media.pip_default_width` | Size of a first Picture in Picture window: the video fits a square of this side. | `480` |
+| `window.restore_pip_size` | Open Picture in Picture as big as you last made it. | `true` |
 | `passwords.generator_length` | Length of generated passwords. | `20` |
 | `passwords.generator_symbols` | Generated passwords include symbols. | `true` |
 | `find.match_case` | Find on page matches upper and lower case exactly. | `false` |
 | `privacy.prompt_unlock_on_open` | Show the password card by itself when locked private tabs open. | `true` |
+| `permissions.screen_picker` | Who picks what `getDisplayMedia()` shares: `auto` (Axion's own picker on X11, the desktop's portal dialog on Wayland), `own` (Axion's picker wherever it can list sources), `system` (Chromium and the desktop decide). | `"auto"` |
+| `permissions.screen_picker_max_sources` | Most screens and windows the picker lists (screens first). | `12` |
+| `permissions.screen_picker_thumbnail_width` | Width of the picker's thumbnails in logical pixels. | `160` |
 | `permissions.stop_reload_after_ms` | After **Stop** in the recording popover, a page that still records this long after is reloaded. | `1500` |
 | `ui.tooltip_delay_ms` | How long before a tooltip appears. | `700` |
 | `toast.duration_seconds` | How long short notices stay. | `2.0` |
+| `print.paper` | Paper of **Save as PDF**: `a4`, `a3`, `a5`, `letter`, `legal`. The dialog keeps its last choices in `print.*`. | `a4` |
+| `print.landscape`, `print.backgrounds`, `print.header_footer` | Landscape, background colours and images, title / address / page numbers. | `false` |
+| `print.margins` | `none`, `narrow`, `default`, `wide`. | `default` |
+| `print.margin_narrow_inches`, `print.margin_default_inches`, `print.margin_wide_inches` | Width of the margin presets. | `0.2`, `0.4`, `1.0` |
+| `print.scale_percent` | Content scale in percent (25 to 200). | `100` |
+| `print.directory` | Folder for PDFs when **Ask where to save each file** is off (empty: the download folder). | empty |
+| `print.open_after_saving` | Open the PDF in a tab once it is saved. | `false` |
+| `screenshot.format` | `png` or `jpeg`. | `png` |
+| `screenshot.jpeg_quality` | JPEG quality, 1 to 100. | `90` |
+| `screenshot.after_capture` | `ask` (show it with Copy / Save), `copy` or `save`. | `ask` |
+| `screenshot.directory` | Folder for screenshots when **Ask where to save each file** is off (empty: the download folder). | empty |
+| `screenshot.full_page_max_height` | A full page screenshot stops at this height (CSS pixels). | `16000` |
+| `screenshot.scroll_settle_ms` | A full page screenshot scrolls a screen at a time and waits this long after each scroll (ms). | `250` |
+| `screenshot.dim_opacity` | How dark the page gets around the selection (0 to 1). | `0.45` |
+| `screenshot.min_selection` | Smaller drags are ignored (logical pixels). | `8` |
 
 ## `keymap.toml`
 
@@ -146,7 +172,7 @@ Shortcuts, one line per action. See [Keyboard shortcuts](keyboard-shortcuts.md) 
 rules.
 
 ```toml
-focus_address_bar = ["Alt+D", "Ctrl+K"]
+focus_address_bar = ["Alt+D", "Ctrl+E"]
 tab_overview = []            # no key
 ```
 

@@ -413,13 +413,16 @@ dependencies = [
  "axion-compositor",
  "axion-config",
  "axion-engine",
+ "axion-extensions",
  "axion-i18n",
  "axion-import",
  "axion-media",
  "axion-physics",
+ "axion-reader",
  "axion-shields",
  "axion-store",
  "axion-tabs",
+ "axion-translate",
  "axion-ui",
  "axion-update",
  "axion-vault",
@@ -430,9 +433,12 @@ dependencies = [
  "pollster",
  "rustix 1.1.5",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "wayland-backend",
+ "wayland-client",
  "wgpu",
  "winit",
  "wl-clipboard-rs",
@@ -472,12 +478,31 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "axion-media",
+ "base64 0.22.1",
  "cef",
  "glam",
  "libc",
+ "serde_json",
  "thiserror 2.0.21",
  "tracing",
+ "ureq",
  "wgpu",
+]
+
+[[package]]
+name = "axion-extensions"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "ureq",
 ]
 
 [[package]]
@@ -534,6 +559,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "axion-reader"
+version = "0.1.0"
+dependencies = [
+ "axion-config",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "axion-shields"
 version = "0.1.0"
 dependencies = [
@@ -563,6 +597,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "axion-translate"
+version = "0.1.0"
+dependencies = [
+ "axion-config",
+ "axion-engine",
+ "axion-i18n",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "ureq",
+]
+
+[[package]]
 name = "axion-ui"
 version = "0.1.0"
 dependencies = [
@@ -572,6 +622,7 @@ dependencies = [
  "axion-physics",
  "glam",
  "glyphon",
+ "image",
  "pollster",
  "taffy",
  "wgpu",

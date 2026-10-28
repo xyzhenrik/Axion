@@ -384,6 +384,11 @@ impl Theme {
         }
     }
 
+    /// The share of the drop shadow a glass button casts (see `Glass::button_shadow`).
+    pub fn glass_button_shadow(&self) -> f32 {
+        self.config.glass.button_shadow.clamp(0.0, 1.0)
+    }
+
     /// Glass parameters for `level`, in physical pixels at `scale`.
     pub fn glass(&self, level: GlassLevel, scale: f32) -> GlassParams {
         let glass = &self.config.glass;

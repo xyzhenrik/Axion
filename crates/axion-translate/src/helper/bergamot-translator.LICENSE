@@ -1,0 +1,14 @@
+bergamot-translator.js is the JavaScript glue of the Bergamot translation engine as shipped
+with Firefox (https://github.com/mozilla/translations, built from
+https://github.com/browsermt/bergamot-translator). It is included here unmodified, as a
+separate file, under the Mozilla Public License, v. 2.0:
+
+    This Source Code Form is subject to the terms of the Mozilla Public
+    License, v. 2.0. If a copy of the MPL was not distributed with this
+    file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+The rest of Axion is MIT-licensed; the MPL applies to this file only. The engine's
+WebAssembly binary (release v0.6.0) and the translation models are not part of this
+repository: Axion downloads them from Mozilla's Remote Settings on the user's request.
+The models are published by Mozilla (https://github.com/mozilla/firefox-translations-models,
+licensed MPL-2.0 as a repository; trained on open data).

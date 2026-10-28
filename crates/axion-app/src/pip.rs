@@ -2,10 +2,23 @@
 //! It is a plain window of the window manager's (its corners and shadow, if it draws any for
 //! a window without a title bar), just without the title bar: the video fills it, with no
 //! black bars, shape, margin or transparency of ours. The window takes the video's aspect and
-//! is locked to it (`media.pip_lock_aspect`): on X11 the window manager is told (WM_NORMAL_HINTS aspect),
-//! everywhere the window is snapped to the aspect while it is resized (dominant axis, rate-limited,
-//! never below the minimum size). While the aspects differ in between the video covers the window
-//! (a sliver cropped) rather than being letterboxed.
+//! is locked to it (`media.pip_lock_aspect`).
+//!
+//! Resizing: the window manager (or compositor) runs the drag (`drag_resize_window`, any edge or
+//! corner) and the window follows the pointer *continuously*: every new size it reports is
+//! answered at once with the size of the video's aspect that the pointer asks for (an edge: that
+//! side drives, the other follows; a corner: the side the pointer moved further, relative to the
+//! size when the drag began), within `media.pip_min_width` .. `pip_max_width` / the monitor.
+//! There is no delayed snap-back. On X11 the window manager is also told the aspect and the
+//! size limits (WM_NORMAL_HINTS), so it already hands out right-shaped sizes; xdg-toplevel
+//! (Wayland) has no aspect hint, so there the immediate answer, plus the min/max size, is
+//! the constraint. While the aspects differ in between the video covers the window (a sliver
+//! cropped) rather than being letterboxed.
+//!
+//! The size is remembered (`window.toml`, `window.restore_pip_size`): as an area, so the next
+//! video, of whatever shape, appears as big. A video of another aspect in the open window
+//! re-fits the window once, keeping its area, centred where it was and on screen, animated by
+//! `motion.smooth` (Reduce Motion: at once).
 //! Dragging the video moves the window, its thin edge band resizes it (never the controls: they keep clear of it). Glass controls (close, back to
 //! the tab, ±10 s, play/pause, progress) show while the pointer is over it (Safari, iPadOS 26).
 //!
@@ -24,6 +37,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::drip;
 use crate::player::volume_actions;
 use anyhow::{Context as _, Result};
 use axion_compositor::{Compositor, Icon, Rect as Frame, Scene};
@@ -36,15 +50,12 @@ use axion_ui::{
     ActionId, Align, Background, CAPSULE, GlassLevel, Paint, TextStyle, Theme, Ui, UiEvent, UiInput, Widget,
 };
 use glam::Vec2;
-use winit::dpi::{LogicalSize, PhysicalSize};
+use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{CursorIcon, ResizeDirection, Window, WindowId, WindowLevel};
 
 const ACTION_BASE: u32 = 9700;
-/// The window's width (logical px); the height follows the video.
-const WIDTH: f32 = 480.0;
-const MAX_HEIGHT: f32 = 480.0;
 /// After scrubbing, the player's reports still carry the old time for a moment; ignore them.
 const SCRUB_SETTLE: Duration = Duration::from_millis(600);
 
@@ -124,6 +135,7 @@ fn circle(ui: &mut Ui, parent: NodeId, control: PipControl, icon: Icon, text: Op
             .with_action(control.id())
             .with_radius(CAPSULE)
             .with_background(Background::Glass(GlassLevel::Thick))
+            .with_glass_density(crate::player::CONTROL_DENSITY)
             .pressed_whole()
             .without_hover_fill(),
         Style {
@@ -308,6 +320,36 @@ fn edge_at(size: Vec2, border: f32, p: Vec2) -> Option<ResizeDirection> {
     })
 }
 
+/// A resize in progress: what the size is measured against. Begins when the user grabs an
+/// edge (`direction` known) or, for a resize the window manager started itself (Alt + right
+/// drag, tiling), at its first new size.
+#[derive(Clone, Copy, Debug)]
+struct ResizeDrag {
+    direction: Option<ResizeDirection>,
+    /// The window's size (physical px) when the drag began.
+    start: Vec2,
+    /// When a new size last arrived.
+    last_size_at: Instant,
+    /// At least one new size arrived (the window manager has the pointer).
+    moved: bool,
+    /// The user's doing: its end size is remembered. Not so for a window manager's answer to
+    /// a re-fit (it clamped the size), which is only brought to the aspect.
+    user: bool,
+}
+
+/// The window re-fitting itself to another video's aspect.
+struct Refit {
+    from: Vec2,
+    to: Vec2,
+    /// The window's centre (physical px, screen) where it can be placed (not on Wayland).
+    centre: Option<Vec2>,
+    /// 0 → 1.
+    progress: Animated<f32>,
+    /// The size limits and the aspect hint were updated for it (the first frame only does
+    /// that, so the window manager knows them before it is asked for the new size).
+    armed: bool,
+}
+
 /// The OS window and its surface: only while PiP is on. Fields drop in order, so the surface
 /// goes before its window.
 struct Output {
@@ -400,9 +442,17 @@ pub struct PipWindow {
     compositor: Option<(Compositor, wgpu::TextureFormat)>,
     ui: Ui,
     picture: NodeId,
+    /// Black ground and the cover picture over `picture` while the video is only sound.
+    cover_ground: NodeId,
+    cover_image: NodeId,
+    /// The cover to show then (set by the browser each frame).
+    pub cover: Option<crate::favicons::SiteIcon>,
     controls: NodeId,
     buttons: [Button; 5],
     play_icon: NodeId,
+    /// The loading ring over the middle of the picture (always shown while loading, also when
+    /// the controls are hidden).
+    spinner: crate::spinner::Spinner,
     bar: NodeId,
     progress: NodeId,
     /// The volume: a capsule with the speaker (mute) and a slider that opens when the pointer
@@ -434,18 +484,21 @@ pub struct PipWindow {
     pointer: Option<Vec2>,
     /// The video's aspect (width / height) the window keeps.
     aspect: f32,
-    /// The window's size (logical px) when the last PiP ended: the next one opens as wide.
-    last_size: Option<Vec2>,
-    /// When to bring the window back to the video's aspect (after a resize settled, or when
-    /// the video's aspect changed).
-    fit_at: Option<Instant>,
-    /// The window's size when it last had the video's aspect: tells which side the user
-    /// dragged.
-    fitted: Option<PhysicalSize<u32>>,
-    /// When the window was last brought to the video's aspect (rate limit while resizing).
-    last_fit: Option<Instant>,
-    /// The aspect last told to the window manager (X11 size hint) and the lock state.
-    hinted: Option<Option<f32>>,
+    /// The size (logical px) the user last made the window: the next one has the same area.
+    remembered: Option<Vec2>,
+    /// A size the user just settled on, for the browser to persist (`take_user_size`).
+    user_size: Option<Vec2>,
+    /// A resize in progress.
+    drag: Option<ResizeDrag>,
+    /// An aspect change being animated.
+    refit: Option<Refit>,
+    /// When the last re-fit ended.
+    refit_ended: Option<Instant>,
+    /// The size (physical px) the window is meant to have: what the last answer asked for.
+    settled: Option<PhysicalSize<u32>>,
+    /// What was last told to the window manager: aspect, size limits (as whole logical px),
+    /// and whether a re-fit is under way.
+    hinted: Option<(Option<f32>, [i32; 4], bool)>,
     /// The size the window had when its aspect was last corrected: not asked again if the
     /// window manager keeps it there (tiling, size limits).
     asked_at: Option<PhysicalSize<u32>>,
@@ -472,10 +525,31 @@ impl PipWindow {
                 ..Default::default()
             },
         );
-        let controls = ui.add(
+        let cover_ground = ui.add(
             root,
             Widget::container()
-                .with_background(Background::Fill(Paint::Fixed(axion_config::Color::rgb(0x000000)), 0.2)),
+                .with_background(Background::Fill(Paint::Fixed(axion_config::Color::rgb(0x000000)), 1.0)),
+            Style {
+                position: Position::Absolute,
+                size: Size { width: percent(1.0), height: percent(1.0) },
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        let cover_image =
+            ui.add(cover_ground, Widget::image().with_radius(crate::player::COVER_RADIUS), Style::default());
+        ui.set_visible(cover_ground, false);
+        let controls = ui.add(
+            root,
+            Widget::container().with_background(if config.media.controls_scrim > 0.0 {
+                Background::Fill(
+                    Paint::Fixed(axion_config::Color::rgb(0x000000)),
+                    config.media.controls_scrim.clamp(0.0, 1.0),
+                )
+            } else {
+                Background::None
+            }),
             Style {
                 position: Position::Absolute,
                 size: Size { width: percent(1.0), height: percent(1.0) },
@@ -491,11 +565,27 @@ impl PipWindow {
             make(&mut ui, PipControl::SkipForward, Icon::SkipForward, Some("10")),
         ];
         let play_icon = buttons[3].glyph;
+        let ring_overlay = ui.add(
+            root,
+            Widget::container(),
+            Style {
+                position: Position::Absolute,
+                size: Size { width: percent(1.0), height: percent(1.0) },
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        let spinner = crate::spinner::Spinner::build(&mut ui, ring_overlay, SPINNER_SIDE);
         // The progress bar: a glass capsule as tall as a button around the slider, so the
         // whole capsule is the thing to grab (not a thin line).
         let bar = ui.add(
             controls,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(CAPSULE),
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thick))
+                .with_button_tint()
+                .with_glass_density(crate::player::CONTROL_DENSITY)
+                .with_radius(CAPSULE),
             Style {
                 position: Position::Absolute,
                 flex_direction: FlexDirection::Row,
@@ -523,6 +613,8 @@ impl PipWindow {
             controls,
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thick))
+                .with_button_tint()
+                .with_glass_density(crate::player::CONTROL_DENSITY)
                 .with_radius(CAPSULE)
                 .with_clip(),
             Style { position: Position::Absolute, ..Default::default() },
@@ -554,9 +646,13 @@ impl PipWindow {
             compositor: None,
             ui,
             picture,
+            cover_ground,
+            cover_image,
+            cover: None,
             controls,
             buttons,
             play_icon,
+            spinner,
             bar,
             progress,
             volume_capsule,
@@ -576,10 +672,12 @@ impl PipWindow {
             hovered: false,
             pointer: None,
             aspect: 16.0 / 9.0,
-            last_size: None,
-            fit_at: None,
-            fitted: None,
-            last_fit: None,
+            remembered: None,
+            user_size: None,
+            drag: None,
+            refit: None,
+            refit_ended: None,
+            settled: None,
             hinted: None,
             asked_at: None,
             last_frame: Instant::now(),
@@ -606,37 +704,50 @@ impl PipWindow {
     /// Starts PiP for `player` of `view` (or switches it to that video). The window opens with
     /// the next [`PipWindow::open`].
     pub fn show(&mut self, view: ViewId, player: Player) {
-        self.aspect = player.aspect().max(0.2);
+        // An open window follows the new video's aspect with a re-fit (see `render`).
+        if self.output.is_none() {
+            self.aspect = player.aspect().max(0.2);
+        }
         self.view = Some(view);
         self.player = Some(player);
         self.takeover = false;
-        // Another video in the open window: to its aspect right away.
-        self.fit_at = Some(Instant::now());
-        self.asked_at = None;
     }
 
-    /// Opens the window for the running PiP, sized to the video: as wide as the last one (or
-    /// the default width) at the video's aspect.
+    /// The size the user last made the window (logical px), from `window.toml`.
+    pub fn set_remembered(&mut self, size: Option<Vec2>) {
+        self.remembered = size.filter(|s| s.x >= 1.0 && s.y >= 1.0);
+    }
+
+    /// A size the user settled on since the last call, to be remembered.
+    pub fn take_user_size(&mut self) -> Option<Vec2> {
+        self.user_size.take()
+    }
+
+    /// Opens the window for the running PiP, sized to the video: as big (in area) as the
+    /// user last made it, else the default width.
     pub fn open(
         &mut self,
         event_loop: &ActiveEventLoop,
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
+        config: &Config,
     ) -> Result<()> {
         if !self.needs_window() {
             return Ok(());
         }
-        let min = self.min_size();
-        let size = match self.last_size {
-            Some(last) => Vec2::new(last.x, last.x / self.aspect),
+        self.lock_aspect = config.media.pip_lock_aspect;
+        let monitor = event_loop.primary_monitor().or_else(|| event_loop.available_monitors().next());
+        let (min, max) = self.limits(config, monitor.as_ref());
+        let size = match self.remembered {
+            Some(r) => size_for_area(r.x * r.y, self.aspect),
             None => {
-                let height = (WIDTH / self.aspect).min(MAX_HEIGHT);
+                // No size remembered: the video fits a square of the default width.
+                let side = config.media.pip_default_width.max(1.0);
+                let height = (side / self.aspect).min(side);
                 Vec2::new(height * self.aspect, height)
             }
         };
-        // Tall videos: not taller than the default's maximum, but never below the minimum.
-        let size = if size.y > MAX_HEIGHT { size * (MAX_HEIGHT / size.y) } else { size };
-        let size = if self.lock_aspect { fit_minimum(size, self.aspect, min) } else { size };
+        let size = if self.lock_aspect { clamp_size(size, self.aspect, min, max) } else { size.max(min) };
         let output = Output::open(
             event_loop,
             instance,
@@ -651,10 +762,10 @@ impl PipWindow {
             self.compositor = Some((compositor, format));
         }
         self.ui.set_viewport(output.logical_size(), output.scale());
-        self.fitted = Some(output.window.inner_size());
-        self.fit_at = None;
+        self.settled = Some(output.window.inner_size());
+        self.drag = None;
+        self.refit = None;
         self.asked_at = None;
-        self.last_fit = None;
         self.hinted = None;
         self.last_frame = Instant::now();
         self.output = Some(output);
@@ -672,13 +783,13 @@ impl PipWindow {
         self.ui.handle(UiInput::PointerLeave);
         self.controls_opacity = Animated::new(0.0, Spring::SNAPPY);
         self.volume_open = Animated::new(0.0, Spring::SNAPPY);
+        self.end_drag();
+        self.refit = None;
         if let Some(output) = self.output.take() {
-            self.last_size = Some(output.logical_size());
             output.window.set_visible(false);
             // The surface first, then the window (field order).
             drop(output);
         }
-        self.fit_at = None;
     }
 
     /// Resizes the open window (a capture aid standing in for the user's resize).
@@ -687,6 +798,53 @@ impl PipWindow {
         if let Some(size) = output.window.request_inner_size(size) {
             self.window_event(WindowEvent::Resized(size), config);
         }
+    }
+
+    /// Capture aid: the grab of an edge or corner (`direction` like "se"), as pressing it.
+    pub fn grab_edge(&mut self, direction: &str) {
+        self.begin_drag(match direction {
+            "n" => Some(ResizeDirection::North),
+            "s" => Some(ResizeDirection::South),
+            "e" => Some(ResizeDirection::East),
+            "w" => Some(ResizeDirection::West),
+            "ne" => Some(ResizeDirection::NorthEast),
+            "nw" => Some(ResizeDirection::NorthWest),
+            "se" => Some(ResizeDirection::SouthEast),
+            "sw" => Some(ResizeDirection::SouthWest),
+            _ => None,
+        });
+    }
+
+    /// Capture aid: the pointer of a grabbed edge is `dx`, `dy` (logical px) from where it
+    /// was grabbed: the window manager's answer is the start size changed by that, on the sides
+    /// the grabbed edge moves.
+    pub fn pull_edge(&mut self, dx: f64, dy: f64, config: &Config) {
+        let Some(drag) = self.drag else { return };
+        let Some(output) = &self.output else { return };
+        use ResizeDirection::*;
+        let scale = f64::from(output.scale());
+        let (sx, sy) = match drag.direction {
+            Some(East) => (1.0, 0.0),
+            Some(West) => (-1.0, 0.0),
+            Some(South) => (0.0, 1.0),
+            Some(North) => (0.0, -1.0),
+            Some(SouthEast) => (1.0, 1.0),
+            Some(SouthWest) => (-1.0, 1.0),
+            Some(NorthEast) => (1.0, -1.0),
+            Some(NorthWest) => (-1.0, -1.0),
+            None => (0.0, 0.0),
+        };
+        let raw = Vec2::new(
+            (f64::from(drag.start.x) + dx * sx * scale).max(1.0) as f32,
+            (f64::from(drag.start.y) + dy * sy * scale).max(1.0) as f32,
+        );
+        tracing::info!(?raw, "PiP resize drag: the window manager asks for");
+        self.request_size(LogicalSize::new(f64::from(raw.x) / scale, f64::from(raw.y) / scale), config);
+    }
+
+    /// Capture aid: lets go of the grabbed edge.
+    pub fn release_edge(&mut self) {
+        self.end_drag();
     }
 
     /// The window has a new size (physical px): the surface and the controls follow.
@@ -788,16 +946,7 @@ impl PipWindow {
             }
             WindowEvent::Resized(size) => {
                 self.resized(size);
-                // Back to the video's aspect while the user resizes (rate-limited) and once
-                // they stop.
-                let now = Instant::now();
-                let live = config.media.pip_aspect_live_seconds.max(0.0);
-                self.fit_at = Some(if live > 0.0 {
-                    let next = self.last_fit.map_or(now, |t| t + Duration::from_secs_f32(live));
-                    next.max(now)
-                } else {
-                    now + Duration::from_secs_f32(config.media.pip_aspect_settle_seconds.max(0.0))
-                });
+                self.size_arrived(size, config);
             }
             WindowEvent::CursorEntered { .. } => self.hovered = true,
             // The button-up may go to another window (or the window manager's move/resize
@@ -814,6 +963,10 @@ impl PipWindow {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
+                // The pointer is ours again: the window manager's resize grab is over.
+                if self.drag.is_some_and(|d| d.moved && d.direction.is_some()) {
+                    self.end_drag();
+                }
                 let scale = self.output.as_ref()?.scale();
                 return self.pointer_moved(Vec2::new(position.x as f32, position.y as f32) / scale, config);
             }
@@ -854,6 +1007,7 @@ impl PipWindow {
             if let Press::Resize(direction) = press {
                 // The window manager resizes it (there is no frame of its own to grab).
                 // Only in the narrow edge band: the controls never reach it.
+                self.begin_drag(Some(direction));
                 if !self.synthetic
                     && let Err(e) = window.drag_resize_window(direction)
                 {
@@ -942,19 +1096,36 @@ impl PipWindow {
             // follows.
             if (aspect / self.aspect - 1.0).abs() > ASPECT_TOLERANCE {
                 self.aspect = aspect;
-                self.fit_at = Some(now);
-                self.asked_at = None;
+                // Once, cleanly, unless the user is dragging an edge right now.
+                if self.lock_aspect && self.drag.is_none() {
+                    self.start_refit(config);
+                }
             }
         }
         self.lock_aspect = config.media.pip_lock_aspect;
-        self.update_hints();
-        if self.lock_aspect && self.fit_at.is_some_and(|at| at <= now) {
-            self.fit_at = None;
-            self.last_fit = Some(now);
-            self.fit_window();
+        let idle = Duration::from_secs_f32(config.media.pip_resize_idle_seconds.max(0.0));
+        // (A grabbed edge ends with the pointer coming back, not with a timer: the user may
+        // hold still mid-drag.)
+        if self.drag.is_some_and(|d| d.moved && d.direction.is_none() && d.last_size_at.elapsed() >= idle) {
+            self.end_drag();
         }
+        self.update_hints(config);
+        self.step_refit(dt, config);
         let Some(output) = &self.output else { return };
         let target_size = Vec2::new(output.config.width as f32, output.config.height as f32);
+        // Sound without a picture: the cover (artwork) on black.
+        let art = self.cover.clone().filter(|_| self.player.as_ref().is_some_and(Player::audio_only));
+        self.ui.set_visible(self.cover_ground, art.is_some());
+        if let Some(art) = art {
+            let side = output.logical_size().min_element() * config.media.cover_size.clamp(0.1, 1.0);
+            let mut style = self.ui.style(self.cover_image);
+            style.size = Size { width: length(side), height: length(side) };
+            if style != self.ui.style(self.cover_image) {
+                self.ui.set_style(self.cover_image, style);
+            }
+            self.ui.set_image_crop(self.cover_image, Some(crate::now_playing::square_crop(art.1)));
+            self.ui.set_image(self.cover_image, Some(art));
+        }
         if let Some((image, uv)) = picture {
             let (w, h) = image.1;
             // The video covers the window: while the window's aspect differs (during a resize,
@@ -969,7 +1140,10 @@ impl PipWindow {
             // Not while the user scrubs (or a moment after): the reports still carry the old time.
             let scrubbing = self.ui.dragging() == Some(self.progress)
                 || self.scrubbed_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
-            if !scrubbing && player.duration > 0.0 {
+            if player.live {
+                // A live stream has no end to measure against: the timeline is always full.
+                self.ui.set_value(self.progress, 1.0);
+            } else if !scrubbing && player.duration > 0.0 {
                 self.ui.set_value(self.progress, (player.time / player.duration) as f32);
             }
         }
@@ -1000,6 +1174,8 @@ impl PipWindow {
         self.controls_opacity.step(dt);
         self.ui.set_opacity(self.controls, self.controls_opacity.value.clamp(0.0, 1.0));
         self.ui.set_visible(self.controls, self.controls_opacity.value > 0.01);
+        let loading = self.player.as_ref().is_some_and(|p| p.loading && !p.paused);
+        self.spinner.update(&mut self.ui, config, loading, dt);
         self.apply_layout();
         self.place_volume();
         self.ui.animate(dt);
@@ -1038,49 +1214,210 @@ impl PipWindow {
         }
     }
 
-    /// Tells the window manager the aspect (X11 size hint) and the smallest size (for the
-    /// video's aspect) when they changed.
-    fn update_hints(&mut self) {
+    /// The smallest and largest window (logical px) for the video's aspect: the largest is
+    /// bounded by `media.pip_max_width` and `pip_max_screen_fraction` of `monitor`, and is never
+    /// smaller than the smallest.
+    fn limits(&self, config: &Config, monitor: Option<&winit::monitor::MonitorHandle>) -> (Vec2, Vec2) {
+        let min = self.min_size();
+        let m = &config.media;
+        let screen = monitor.map(|h| {
+            let size = h.size();
+            Vec2::new(size.width as f32, size.height as f32) / (h.scale_factor() as f32).max(0.1)
+        });
+        let bound = box_limit(m.pip_max_width, m.pip_max_screen_fraction, screen, min);
+        let max = if self.lock_aspect { max_window(self.aspect, bound, min) } else { bound.max(min) };
+        (min, max)
+    }
+
+    fn current_limits(&self, config: &Config) -> (Vec2, Vec2) {
+        let monitor = self.output.as_ref().and_then(|o| o.window.current_monitor());
+        self.limits(config, monitor.as_ref())
+    }
+
+    /// Tells the window manager the aspect (X11 size hint) and the size limits when they
+    /// changed. During a re-fit the aspect and the minimum are left out, so the window manager
+    /// does not bend the animation's in-between sizes.
+    fn update_hints(&mut self, config: &Config) {
         let Some(output) = &self.output else { return };
-        let hint = self.lock_aspect.then_some(self.aspect);
-        let key = hint.map(|a| (a * 1000.0).round() / 1000.0);
+        let refitting = self.refit.is_some();
+        let hint = (self.lock_aspect && !refitting).then_some(self.aspect);
+        let (min, max) = self.current_limits(config);
+        let key = (
+            hint.map(|a| (a * 1000.0).round() / 1000.0),
+            [min.x.round() as i32, min.y.round() as i32, max.x.round() as i32, max.y.round() as i32],
+            refitting,
+        );
         if self.hinted == Some(key) {
             return;
         }
         self.hinted = Some(key);
-        let min = self.min_size();
-        output.window.set_min_inner_size(Some(LogicalSize::new(min.x, min.y)));
+        output.window.set_min_inner_size((!refitting).then(|| LogicalSize::new(min.x, min.y)));
+        output.window.set_max_inner_size(Some(LogicalSize::new(max.x, max.y)));
         #[cfg(target_os = "linux")]
-        set_x11_aspect(&output.window, key);
+        set_x11_aspect(&output.window, key.0);
     }
 
-    /// Resizes the window to the video's aspect, keeping the side the user dragged.
-    fn fit_window(&mut self) {
+    /// A drag of the window's edge begins (`direction` known), measured from its size now.
+    fn begin_drag(&mut self, direction: Option<ResizeDirection>) {
         let Some(output) = &self.output else { return };
+        if self.refit.is_some() {
+            return;
+        }
         let size = output.window.inner_size();
-        if size.width == 0 || size.height == 0 || self.asked_at == Some(size) {
+        self.asked_at = None;
+        self.drag = Some(ResizeDrag {
+            direction,
+            start: Vec2::new(size.width as f32, size.height as f32),
+            last_size_at: Instant::now(),
+            moved: false,
+            user: true,
+        });
+    }
+
+    /// The resize is over: the size it ended at is what the user chose.
+    fn end_drag(&mut self) {
+        let Some(drag) = self.drag.take() else { return };
+        if !drag.moved || !drag.user {
+            return;
+        }
+        if let Some(output) = &self.output {
+            let size = output.logical_size();
+            self.remembered = Some(size);
+            self.user_size = Some(size);
+        }
+    }
+
+    /// The window has a new size from outside (the user dragging an edge, a tiling window
+    /// manager, ...): answered at once, with the size of the video's aspect the pointer asks
+    /// for. No delay, no rate limit: the window follows the pointer.
+    fn size_arrived(&mut self, size: PhysicalSize<u32>, config: &Config) {
+        if self.refit.is_some() || size.width == 0 || size.height == 0 {
             return;
         }
         let current = Vec2::new(size.width as f32, size.height as f32);
-        let reference = self.fitted.map_or(current, |f| Vec2::new(f.width as f32, f.height as f32));
-        let scale = output.scale();
-        let wanted = snap_aspect(current, reference, self.aspect, self.min_size() * scale).round();
-        let wanted = PhysicalSize::new(wanted.x.max(1.0) as u32, wanted.y.max(1.0) as u32);
-        self.fitted = Some(wanted);
-        if (wanted.width.abs_diff(size.width)).max(wanted.height.abs_diff(size.height)) <= 1 {
+        let settled = self.settled.map_or(current, |s| Vec2::new(s.width as f32, s.height as f32));
+        if self.drag.is_none() {
+            // Nothing new: the size we meant to have, or a first configure.
+            if (current - settled).abs().max_element() <= 1.0 {
+                self.settled = Some(size);
+                return;
+            }
+            // Right after a re-fit this is the window manager clamping the new size, not the user.
+            let grace = Duration::from_secs_f32(config.media.pip_resize_idle_seconds.max(0.0));
+            let user = self.refit_ended.is_none_or(|t| t.elapsed() > grace);
+            self.drag = Some(ResizeDrag {
+                direction: None,
+                start: settled,
+                last_size_at: Instant::now(),
+                moved: false,
+                user,
+            });
+        }
+        let Some(drag) = &mut self.drag else { return };
+        drag.last_size_at = Instant::now();
+        drag.moved = true;
+        let drag = *drag;
+        if !self.lock_aspect {
+            self.settled = Some(size);
             return;
         }
-        // Not asked again if the window manager leaves it at this size.
+        let Some(output) = &self.output else { return };
+        let scale = output.scale();
+        let (min, max) = self.current_limits(config);
+        let wanted =
+            resize_fit(current, drag.start, drag.direction, self.aspect, min * scale, max * scale).round();
+        let wanted = PhysicalSize::new(wanted.x.max(1.0) as u32, wanted.y.max(1.0) as u32);
+        self.settled = Some(wanted);
+        if wanted.width.abs_diff(size.width).max(wanted.height.abs_diff(size.height)) <= 1 {
+            return;
+        }
+        // Not asked again if the window manager keeps this very size (tiling, size limits).
+        if self.asked_at == Some(size) {
+            return;
+        }
         self.asked_at = Some(size);
-        tracing::debug!(from = ?size, to = ?wanted, "PiP window to the video's aspect");
+        tracing::debug!(from = ?size, to = ?wanted, "PiP window follows the pointer at the video's aspect");
         if let Some(granted) = output.window.request_inner_size(wanted) {
             // Applied right away (Wayland: the window is as big as what it draws): no
             // `Resized` follows for it.
-            self.fitted = Some(granted);
+            self.settled = Some(granted);
             self.resized(granted);
         }
     }
+
+    /// Another video's aspect: the window takes it once, keeping its area, centred where it
+    /// was, and on screen (placing it needs a platform that allows it; Wayland leaves that to
+    /// the compositor, which keeps the corner).
+    fn start_refit(&mut self, config: &Config) {
+        let Some(output) = &self.output else { return };
+        let from = output.logical_size();
+        let (min, max) = self.current_limits(config);
+        let to = clamp_size(size_for_area(from.x * from.y, self.aspect), self.aspect, min, max);
+        let centre = output.window.outer_position().ok().map(|p| {
+            let size = output.window.outer_size();
+            Vec2::new(p.x as f32 + size.width as f32 / 2.0, p.y as f32 + size.height as f32 / 2.0)
+        });
+        tracing::debug!(?from, ?to, "PiP window re-fits to the new video's aspect");
+        let mut progress = Animated::new(0.0, drip::spring(config, config.motion.smooth));
+        progress.target = 1.0;
+        self.drag = None;
+        self.refit = Some(Refit { from, to, centre, progress, armed: false });
+    }
+
+    /// One frame of the re-fit: the window's size (and place) in between.
+    fn step_refit(&mut self, dt: f32, config: &Config) {
+        let Some(refit) = &mut self.refit else { return };
+        if !refit.armed {
+            refit.armed = true;
+            return;
+        }
+        let reduce = config.glass.reduce_motion;
+        if reduce {
+            refit.progress.snap(1.0);
+        } else {
+            refit.progress.step(dt);
+        }
+        let done = reduce || refit.progress.is_settled(0.002);
+        let t = if done { 1.0 } else { refit.progress.value };
+        let (from, to, centre) = (refit.from, refit.to, refit.centre);
+        let size = from + (to - from) * t;
+        let Some(output) = &self.output else { return };
+        let scale = output.scale();
+        let physical = PhysicalSize::new(
+            (size.x * scale).round().max(1.0) as u32,
+            (size.y * scale).round().max(1.0) as u32,
+        );
+        // The place keeps the centre, kept on the monitor.
+        if let Some(centre) = centre {
+            let mut origin = centre - Vec2::new(physical.width as f32, physical.height as f32) / 2.0;
+            if let Some(m) = output.window.current_monitor() {
+                let (mp, ms) = (m.position(), m.size());
+                let low = Vec2::new(mp.x as f32, mp.y as f32);
+                let high = (low + Vec2::new(ms.width as f32, ms.height as f32)
+                    - Vec2::new(physical.width as f32, physical.height as f32))
+                .max(low);
+                origin = origin.clamp(low, high);
+            }
+            output
+                .window
+                .set_outer_position(PhysicalPosition::new(origin.x.round() as i32, origin.y.round() as i32));
+        }
+        if let Some(granted) = output.window.request_inner_size(physical) {
+            self.resized(granted);
+        }
+        self.settled = Some(physical);
+        if done {
+            self.refit = None;
+            self.refit_ended = Some(Instant::now());
+            // The aspect hint and the minimum size come back.
+            self.hinted = None;
+            self.asked_at = None;
+        }
+    }
 }
+
+/// Side (logical px) of the loading ring's disc.
+const SPINNER_SIDE: f32 = 52.0;
 
 /// Aspects closer than this (relative) count as the same.
 const ASPECT_TOLERANCE: f32 = 0.005;
@@ -1094,32 +1431,77 @@ fn min_window(aspect: f32, min_width: f32, min_height: f32) -> Vec2 {
     Vec2::new(width, width / aspect)
 }
 
-/// `size` grown (keeping `aspect`) until it is no smaller than `min`.
-fn fit_minimum(size: Vec2, aspect: f32, min: Vec2) -> Vec2 {
-    let floor = min_window(aspect, min.x, min.y);
-    if size.x < floor.x || size.y < floor.y { floor.max(size) } else { size }
+/// The box the window must stay in: `max_width` wide at most and `fraction` of the monitor's
+/// size either way (no monitor known: only the width limits), never smaller than `min`.
+fn box_limit(max_width: f32, fraction: f32, monitor: Option<Vec2>, min: Vec2) -> Vec2 {
+    let fraction = fraction.clamp(0.1, 1.0);
+    let mut bound = Vec2::new(max_width, f32::MAX);
+    if let Some(screen) = monitor {
+        bound = bound.min(screen * fraction);
+    }
+    bound.max(min)
 }
 
-/// The size of aspect `aspect` (width / height) for a window that is now `current` and last
-/// had the aspect at `reference`: the side the user changed more (the dominant axis of the
-/// drag) is kept, the other follows. Never smaller than `min` (the minimum rules win: the
-/// result grows with the aspect kept).
-fn snap_aspect(current: Vec2, reference: Vec2, aspect: f32, min: Vec2) -> Vec2 {
+/// The largest window of aspect `aspect` that fits `bound`, and is no smaller than `min`.
+fn max_window(aspect: f32, bound: Vec2, min: Vec2) -> Vec2 {
+    let aspect = aspect.max(0.01);
+    let width = bound.x.min(bound.y * aspect);
+    let size = Vec2::new(width, width / aspect);
+    size.max(min_window(aspect, min.x, min.y))
+}
+
+/// `size` scaled (keeping `aspect`) into `min` .. `max` (the minimum wins where they clash).
+fn clamp_size(size: Vec2, aspect: f32, min: Vec2, max: Vec2) -> Vec2 {
+    if size.x <= 0.0 || size.y <= 0.0 {
+        return min_window(aspect, min.x, min.y);
+    }
+    let shrink = (max.x / size.x).min(max.y / size.y).min(1.0);
+    let size = size * shrink;
+    let floor = min_window(aspect, min.x, min.y);
+    let grow = (floor.x / size.x).max(floor.y / size.y).max(1.0);
+    size * grow
+}
+
+/// The window of aspect `aspect` (width / height) with the given area.
+fn size_for_area(area: f32, aspect: f32) -> Vec2 {
+    let aspect = aspect.max(0.01);
+    let width = (area.max(1.0) * aspect).sqrt();
+    Vec2::new(width, width / aspect)
+}
+
+/// The size of aspect `aspect` (width / height) the pointer asks for when the window manager
+/// reports `current` for a resize that began at `start`: an edge drag's side drives and the
+/// other follows (`direction` North/South: the height, East/West: the width); at a corner (or
+/// with no direction) the side that changed more, relative to `start`, drives. Within
+/// `min` .. `max`.
+fn resize_fit(
+    current: Vec2,
+    start: Vec2,
+    direction: Option<ResizeDirection>,
+    aspect: f32,
+    min: Vec2,
+    max: Vec2,
+) -> Vec2 {
     if aspect <= 0.0 || current.x <= 0.0 || current.y <= 0.0 {
         return current;
     }
     let changed = |now: f32, before: f32| if before > 0.0 { (now / before - 1.0).abs() } else { 0.0 };
-    let snapped = if changed(current.y, reference.y) > changed(current.x, reference.x) {
+    let height_drives = match direction {
+        Some(ResizeDirection::North | ResizeDirection::South) => true,
+        Some(ResizeDirection::East | ResizeDirection::West) => false,
+        _ => changed(current.y, start.y) > changed(current.x, start.x),
+    };
+    let size = if height_drives {
         Vec2::new(current.y * aspect, current.y)
     } else {
         Vec2::new(current.x, current.x / aspect)
     };
-    fit_minimum(snapped, aspect, min)
+    clamp_size(size, aspect, min, max)
 }
 
 /// Sets (or clears) the aspect-ratio size hint of an X11 window: the window manager then only
 /// resizes it with that aspect. Wayland has no such thing (xdg-toplevel cannot lock an aspect,
-/// and KWin's scripting API has no aspect property), so there only the snapping works.
+/// and KWin's scripting API has no aspect property), so there the window answers every new size at once instead.
 #[cfg(target_os = "linux")]
 fn set_x11_aspect(window: &Window, aspect: Option<f32>) {
     use winit::raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
@@ -1230,55 +1612,111 @@ mod tests {
         assert_eq!(c, Frame { origin: Vec2::new(0.375, 0.25), size: Vec2::new(0.25, 0.5) });
     }
 
+    const FAR: Vec2 = Vec2::splat(100_000.0);
+
     #[test]
-    fn resizing_keeps_the_dragged_side() {
+    fn an_edge_drives_its_own_axis() {
         let start = Vec2::new(480.0, 270.0);
-        let min = Vec2::ZERO;
-        // Wider: the width stays, the height follows.
-        assert_eq!(snap_aspect(Vec2::new(640.0, 280.0), start, 16.0 / 9.0, min), Vec2::new(640.0, 360.0));
-        // Taller: the height stays.
-        assert_eq!(snap_aspect(Vec2::new(490.0, 360.0), start, 16.0 / 9.0, min), Vec2::new(640.0, 360.0));
-        // A new video's aspect, same size: the width stays.
-        assert_eq!(snap_aspect(start, start, 4.0 / 3.0, min), Vec2::new(480.0, 360.0));
-        // Already at the aspect: unchanged.
-        assert_eq!(snap_aspect(start, start, 16.0 / 9.0, min), start);
+        let a = 16.0 / 9.0;
+        // East/west: the width is the pointer's, the height follows.
+        for d in [ResizeDirection::East, ResizeDirection::West] {
+            let out = resize_fit(Vec2::new(640.0, 270.0), start, Some(d), a, Vec2::ZERO, FAR);
+            assert_eq!(out, Vec2::new(640.0, 360.0));
+        }
+        // North/south: the height is the pointer's, even if the width also changed.
+        for d in [ResizeDirection::North, ResizeDirection::South] {
+            let out = resize_fit(Vec2::new(500.0, 360.0), start, Some(d), a, Vec2::ZERO, FAR);
+            assert_eq!(out, Vec2::new(640.0, 360.0));
+        }
     }
 
     #[test]
-    fn snapping_never_goes_below_the_minimum() {
+    fn a_corner_follows_the_side_the_pointer_moved_further() {
+        let start = Vec2::new(480.0, 270.0);
+        let a = 16.0 / 9.0;
+        let se = Some(ResizeDirection::SouthEast);
+        // Mostly wider (+25 % vs. +10 % height): the width wins.
+        assert_eq!(resize_fit(Vec2::new(600.0, 297.0), start, se, a, Vec2::ZERO, FAR).x, 600.0);
+        // Mostly taller: the height wins.
+        assert_eq!(resize_fit(Vec2::new(500.0, 400.0), start, se, a, Vec2::ZERO, FAR).y, 400.0);
+        // Already at the aspect: unchanged, and the result is stable when fed back.
+        assert_eq!(resize_fit(start, start, se, a, Vec2::ZERO, FAR), start);
+        let out = resize_fit(Vec2::new(600.0, 297.0), start, se, a, Vec2::ZERO, FAR);
+        assert_eq!(resize_fit(out, start, se, a, Vec2::ZERO, FAR), out);
+    }
+
+    #[test]
+    fn dragging_is_linear_and_continuous() {
+        // Pulling an east edge steadily: the answer grows steadily, with no jump and never
+        // off the aspect.
+        let start = Vec2::new(480.0, 270.0);
+        let a = 16.0 / 9.0;
+        let mut last = start;
+        for i in 1..=200 {
+            let pulled = Vec2::new(480.0 + i as f32 * 2.0, 270.0);
+            let out = resize_fit(pulled, start, Some(ResizeDirection::East), a, Vec2::ZERO, FAR);
+            assert!((out.x - last.x - 2.0).abs() < 1e-3, "step {i}: {last:?} -> {out:?}");
+            assert!((out.x / out.y - a).abs() < 1e-4);
+            last = out;
+        }
+        // A corner drag with a drifting pointer: the size is a continuous function of it.
+        let mut prev = start;
+        for i in 1..=200 {
+            let p = Vec2::new(480.0 + i as f32 * 1.5, 270.0 + i as f32 * 0.5);
+            let out = resize_fit(p, start, Some(ResizeDirection::SouthEast), a, Vec2::ZERO, FAR);
+            assert!((out - prev).length() < 4.0, "step {i}: jump {prev:?} -> {out:?}");
+            prev = out;
+        }
+    }
+
+    #[test]
+    fn the_size_stays_within_the_limits_at_the_aspect() {
         let z = sizing();
         let m = Config::default().media;
+        let screen = Some(Vec2::new(1920.0, 1080.0));
         for aspect in [21.0 / 9.0, 16.0 / 9.0, 1.0, 9.0 / 16.0, 1.0 / 3.0, 4.0] {
             let min = min_window(aspect, m.pip_min_width, z.min_height());
-            assert!(min.x >= m.pip_min_width - 0.01 && min.y >= z.min_height() - 0.01, "{aspect}: {min:?}");
-            assert!((min.x / min.y - aspect).abs() < 1e-3, "{aspect}: {min:?}");
-            // A drag far below the minimum from either side lands on the minimum, aspect kept.
+            let bound = box_limit(m.pip_max_width, m.pip_max_screen_fraction, screen, min);
+            let max = max_window(aspect, bound, min);
+            assert!(max.x >= min.x - 0.01 && max.y >= min.y - 0.01, "{aspect}: {min:?} {max:?}");
+            assert!(max.x <= m.pip_max_width + 0.01 || max.x <= min.x + 0.01);
+            assert!((max.x / max.y - aspect).abs() < 1e-3);
             let start = min * 2.0;
-            for current in [Vec2::new(10.0, start.y), Vec2::new(start.x, 10.0), Vec2::new(1.0, 1.0)] {
-                let out = snap_aspect(current, start, aspect, min);
-                assert!(out.x >= min.x - 0.01 && out.y >= min.y - 0.01, "{aspect}: {out:?}");
-                assert!((out.x / out.y - aspect).abs() < 1e-3, "{aspect}: {out:?}");
+            let dirs = [None, Some(ResizeDirection::East), Some(ResizeDirection::North)];
+            for current in
+                [Vec2::new(10.0, start.y), Vec2::new(start.x, 10.0), Vec2::ONE, Vec2::splat(9000.0)]
+            {
+                for d in dirs {
+                    let out = resize_fit(current, start, d, aspect, min, max);
+                    assert!(out.x >= min.x - 0.01 && out.y >= min.y - 0.01, "{aspect} {d:?}: {out:?}");
+                    assert!(out.x <= max.x + 0.01 && out.y <= max.y + 0.01, "{aspect} {d:?}: {out:?}");
+                    assert!((out.x / out.y - aspect).abs() < 1e-3, "{aspect}: {out:?}");
+                }
             }
         }
         // 21:9 is limited by the width, 9:16 by the controls' height, never letterboxed.
         assert_eq!(min_window(21.0 / 9.0, 272.0, 100.0).x, 272.0);
         assert!(min_window(9.0 / 16.0, 272.0, 100.0).y > 272.0);
         assert!(min_window(4.0, 272.0, 100.0).y >= 100.0 - 0.01);
+        // The screen bounds the window even where `pip_max_width` allows more.
+        let small = box_limit(1280.0, 0.9, Some(Vec2::new(800.0, 600.0)), Vec2::new(272.0, 153.0));
+        assert_eq!(small, Vec2::new(720.0, 540.0));
     }
 
     #[test]
-    fn the_dominant_axis_decides_for_corner_drags() {
-        let start = Vec2::new(480.0, 270.0);
-        let a = 16.0 / 9.0;
-        // Mostly wider (+25 % vs. +10 % height): the width wins.
-        let out = snap_aspect(Vec2::new(600.0, 297.0), start, a, Vec2::ZERO);
-        assert_eq!(out.x, 600.0);
-        // Mostly taller: the height wins.
-        let out = snap_aspect(Vec2::new(500.0, 400.0), start, a, Vec2::ZERO);
-        assert_eq!(out.y, 400.0);
-        // The snapped size, used as the next reference, stays put (no feedback loop).
-        let snapped = snap_aspect(Vec2::new(600.0, 297.0), start, a, Vec2::ZERO);
-        assert_eq!(snap_aspect(snapped, snapped, a, Vec2::ZERO), snapped);
+    fn another_aspect_keeps_the_area() {
+        let from = Vec2::new(480.0, 270.0);
+        let area = from.x * from.y;
+        for aspect in [4.0 / 3.0, 1.0, 9.0 / 16.0, 21.0 / 9.0] {
+            let to = size_for_area(area, aspect);
+            assert!((to.x * to.y - area).abs() < 1.0, "{aspect}: {to:?}");
+            assert!((to.x / to.y - aspect).abs() < 1e-4);
+        }
+        assert_eq!(size_for_area(area, 16.0 / 9.0).round(), from);
+        // Clamped into the box, aspect kept.
+        let big =
+            clamp_size(Vec2::new(3000.0, 1500.0), 2.0, Vec2::new(272.0, 136.0), Vec2::new(1000.0, 900.0));
+        assert_eq!(big, Vec2::new(1000.0, 500.0));
     }
 
     #[test]

@@ -33,6 +33,9 @@ struct Shape {
     tint_opacity: f32,
     // Brightening inside the shape (0–1, a pressed lens).
     glow: f32,
+    // How much of the pass's drop shadow the shape casts (0-1).
+    shadow: f32,
+    pad: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -154,6 +157,21 @@ fn sample3(tex: texture_2d<f32>, uv_r: vec2f, uv_g: vec2f, uv_b: vec2f) -> vec3f
 const SHADOW_OFFSET: vec2f = vec2f(0.0, 8.0);
 const SHADOW_REACH: f32 = 28.0;
 
+// The drop shadow's strength (0-1) at `q`: the strongest of what the shapes that cast one
+// throw there. Buttons cast none (`Shape::shadow` = 0).
+fn shadow_at(q: vec2f) -> f32 {
+    var m = 0.0;
+    for (var i = 0u; i < params.shape_count; i++) {
+        let s = shapes[i];
+        if (s.shadow <= 0.0 || shape_bound(s, q) >= SHADOW_REACH) {
+            continue;
+        }
+        let ds = shape_sdf(s, q);
+        m = max(m, s.shadow * (1.0 - smoothstep(-6.0, SHADOW_REACH, ds)));
+    }
+    return m;
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
     let p = in.pos.xy;
@@ -175,8 +193,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // the anti-aliased edge), so it isn't evaluated deeper inside.
     var outside = base;
     if (d > -1.0) {
-        let ds = scene(p - SHADOW_OFFSET);
-        let shadow = params.shadow * (1.0 - smoothstep(-6.0, SHADOW_REACH, ds));
+        let shadow = params.shadow * shadow_at(p - SHADOW_OFFSET);
         outside = base * (1.0 - 0.5 * shadow);
     }
     if (d >= 1.0) {

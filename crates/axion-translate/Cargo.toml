@@ -1,0 +1,24 @@
+[package]
+name = "axion-translate"
+description = "Axion's page translation: the Translator trait, local Bergamot models, an optional LibreTranslate endpoint, and the page script"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+axion-config.workspace = true
+axion-engine.workspace = true
+axion-i18n.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+thiserror.workspace = true
+tracing.workspace = true
+ureq = "3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -5,10 +5,13 @@
 
 use std::time::Instant;
 
-use axion_physics::{Animated, Spring, rubber_band};
+use axion_physics::{Animated, DECELERATION_FAST, Spring, project, rubber_band};
 
 /// How far (in units of the travel) the knob can be pulled past an end.
 const OVERPULL: f32 = 0.18;
+/// A pointer that has not moved for this long (s) before release hands no velocity on.
+const MIN_SAMPLE_DT: f32 = 0.002;
+const STALE_VELOCITY: f32 = 0.08;
 /// Pointer movement (logical px) that turns a press into a drag.
 const DRAG_SLOP: f32 = 3.0;
 /// The lens frosts back once the knob is this close (in units of the travel) to its place.
@@ -24,6 +27,12 @@ pub(crate) struct Knob {
     drag: Option<Drag>,
     /// Smoothed speed along the travel (units per second), for the squash.
     pub speed: f32,
+    /// How far the pointer is beyond the travel's ends (units of the travel, unbanded; 0 inside
+    /// it): the glass is pulled by that much, and stretches with it on the drag curve.
+    pub over: f32,
+    /// Where the knob would come to rest if flung with the release velocity (travel units),
+    /// set by `release`: `position + project(velocity, fast deceleration)`.
+    pub projected: f32,
 }
 
 struct Drag {
@@ -35,7 +44,14 @@ struct Drag {
 
 impl Knob {
     pub fn new(pos: f32, spring: Spring) -> Self {
-        Self { pos: Animated::new(pos, spring), lens: Animated::new(0.0, spring), drag: None, speed: 0.0 }
+        Self {
+            pos: Animated::new(pos, spring),
+            lens: Animated::new(0.0, spring),
+            drag: None,
+            speed: 0.0,
+            over: 0.0,
+            projected: pos,
+        }
     }
 
     /// Pointer down at `x` (logical px): the knob swells into the lens.
@@ -55,6 +71,7 @@ impl Knob {
             return;
         }
         let raw = drag.start_pos + (x - drag.start_x) / travel.max(1.0);
+        self.over = if raw < 0.0 { -raw } else { (raw - 1.0).max(0.0) };
         let pos = if raw < 0.0 {
             rubber_band(raw, OVERPULL)
         } else if raw > 1.0 {
@@ -64,17 +81,25 @@ impl Knob {
         };
         let now = Instant::now();
         let dt = now.duration_since(drag.last.1).as_secs_f32();
-        if dt > 0.0 {
+        // Events closer than this are batched input, not motion: they carry no usable speed.
+        if dt >= MIN_SAMPLE_DT {
             let v = (x - drag.last.0) / travel.max(1.0) / dt;
             self.speed += (v - self.speed) * VELOCITY_SMOOTHING;
+            drag.last = (x, now);
         }
-        drag.last = (x, now);
         self.pos.snap(pos);
     }
 
     /// Pointer up. Returns whether it was a drag (then the knob's side decides), not a tap.
     pub fn release(&mut self, target: f32) -> bool {
-        let moved = self.drag.take().is_some_and(|d| d.moved);
+        let drag = self.drag.take();
+        let moved = drag.as_ref().is_some_and(|d| d.moved);
+        // Velocity handoff: the spring starts with the pointer's release velocity (as
+        // UIKit/SwiftUI springs do), unless the pointer had stopped before letting go.
+        let fresh = drag.as_ref().is_some_and(|d| d.last.1.elapsed().as_secs_f32() < STALE_VELOCITY);
+        let v = if moved && fresh { self.speed } else { 0.0 };
+        self.pos.velocity = v;
+        self.projected = self.pos.value + project(v, DECELERATION_FAST);
         self.pos.target = target;
         moved
     }
@@ -90,6 +115,7 @@ impl Knob {
         self.pos.step(dt);
         if self.drag.is_none() {
             self.speed *= 1.0 - VELOCITY_SMOOTHING;
+            self.over *= 1.0 - VELOCITY_SMOOTHING;
             if (self.pos.value - self.pos.target).abs() < REFROST_DISTANCE {
                 self.lens.target = 0.0;
             }
@@ -140,5 +166,44 @@ mod tests {
         k.drag_to(-200.0, 20.0);
         assert!(k.pos.value < 0.0 && k.pos.value > -OVERPULL);
         assert!(k.release(0.0), "a drag");
+    }
+
+    #[test]
+    fn release_hands_the_pointer_velocity_to_the_spring() {
+        let mut k = knob();
+        k.press(0.0);
+        for i in 1..=6 {
+            k.drag_to(i as f32 * 2.0, 40.0);
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+        let speed = k.speed;
+        assert!(speed > 0.5, "moving right: {speed}");
+        assert!(k.release(1.0));
+        assert_eq!(k.pos.velocity, speed, "spring starts with the release velocity");
+        assert!(k.projected > k.pos.value, "a rightward fling projects further right");
+    }
+
+    #[test]
+    fn default_switch_spring_settles_quickly() {
+        let spec = axion_config::Config::default().motion.switch;
+        let mut k = Knob::new(0.0, Spring::new(spec.response, spec.damping));
+        k.press(0.0);
+        k.release(1.0);
+        let mut t = 0.0;
+        let mut peak: f32 = 0.0;
+        let mut visible = None;
+        while !k.is_settled() && t < 2.0 {
+            k.step(1.0 / 240.0);
+            peak = peak.max(k.pos.value);
+            if (k.pos.value - 1.0).abs() > 0.02 {
+                visible = None;
+            } else if visible.is_none() {
+                visible = Some(t);
+            }
+            t += 1.0 / 240.0;
+        }
+        assert!(visible.is_some_and(|v| v < 0.2), "visually settled at {visible:?}");
+        assert!(t < 0.4, "fully settled after {t} s");
+        assert!(peak < 1.08, "overshoot {peak}");
     }
 }

@@ -60,6 +60,8 @@ pub enum Art {
 }
 
 pub struct NowPlayingCard {
+    /// The lift applied now (logical px).
+    lift: std::cell::Cell<f32>,
     holder: NodeId,
     root: NodeId,
     art: NodeId,
@@ -72,6 +74,9 @@ pub struct NowPlayingCard {
     elapsed: NodeId,
     remaining: NodeId,
     scrubber: NodeId,
+    /// The three buttons: previous, play/pause, next (read by tests of the click path).
+    #[cfg_attr(not(test), allow(dead_code))]
+    buttons: [NodeId; 3],
     next: NodeId,
     play_icon: NodeId,
     /// 0 hidden, 1 shown.
@@ -108,7 +113,7 @@ fn card_height(art: f32) -> f32 {
 }
 
 /// The crop (uv) of a `size` picture that fills a square.
-fn square_crop(size: (u32, u32)) -> Frame {
+pub(crate) fn square_crop(size: (u32, u32)) -> Frame {
     let (w, h) = (size.0.max(1) as f32, size.1.max(1) as f32);
     let visible = Vec2::new((h / w).min(1.0), (w / h).min(1.0));
     Frame { origin: (Vec2::ONE - visible) / 2.0, size: visible }
@@ -283,11 +288,12 @@ impl NowPlayingCard {
                 ..centered_row(BUTTON_GAP)
             },
         );
-        control(ui, controls, ChromeAction::NowPlayingPrevious, Icon::Previous, 22.0);
-        let (_, play_icon) = control(ui, controls, ChromeAction::NowPlayingToggle, Icon::Pause, 28.0);
+        let (previous, _) = control(ui, controls, ChromeAction::NowPlayingPrevious, Icon::Previous, 22.0);
+        let (toggle, play_icon) = control(ui, controls, ChromeAction::NowPlayingToggle, Icon::Pause, 28.0);
         let (next, _) = control(ui, controls, ChromeAction::NowPlayingNext, Icon::Next, 22.0);
         ui.set_visible(holder, false);
         Self {
+            lift: std::cell::Cell::new(0.0),
             holder,
             root,
             art,
@@ -300,6 +306,7 @@ impl NowPlayingCard {
             elapsed,
             remaining,
             scrubber,
+            buttons: [previous, toggle, next],
             next,
             play_icon,
             present: Animated::new(0.0, Spring::SMOOTH),
@@ -312,6 +319,18 @@ impl NowPlayingCard {
             scrubbed_at: None,
             duration: 0.0,
         }
+    }
+
+    /// The title line (for tests of the click path).
+    #[cfg(test)]
+    pub(crate) fn title_node(&self) -> NodeId {
+        self.title
+    }
+
+    /// The previous, play/pause and next buttons (for tests of the click path).
+    #[cfg(test)]
+    pub(crate) fn buttons(&self) -> [NodeId; 3] {
+        self.buttons
     }
 
     pub fn scrubber(&self) -> NodeId {
@@ -369,7 +388,8 @@ impl NowPlayingCard {
                 );
             }
         } else {
-            ui.set_value(self.scrubber, 0.0);
+            // Live: the timeline is full (there is no end to measure against).
+            ui.set_value(self.scrubber, if now.live { 1.0 } else { 0.0 });
             ui.set_text(self.elapsed, &axion_media::format_time(now.time));
             ui.set_text(self.remaining, if now.live { tr("Live") } else { "\u{2212}:\u{2212}\u{2212}" });
         }
@@ -402,8 +422,19 @@ impl NowPlayingCard {
         ui.set_visible(self.placeholder, placeholder);
     }
 
+    /// Where the card rests with no lift (logical px); `None` while it is away.
+    pub fn rest_frame(&self, ui: &Ui) -> Option<Frame> {
+        if !ui.is_visible(self.root) {
+            return None;
+        }
+        let mut frame = ui.frame(self.root);
+        frame.origin.y += self.lift.get();
+        (frame.size.x > 1.0).then_some(frame)
+    }
+
     /// Lifts the card by `lift` px (the account menu is opening below it).
     pub fn set_lift(&self, ui: &mut Ui, lift: f32) {
+        self.lift.set(lift.max(0.0));
         let mut style = ui.style(self.root);
         let bottom = length(lift.max(0.0));
         if style.inset.bottom != bottom {

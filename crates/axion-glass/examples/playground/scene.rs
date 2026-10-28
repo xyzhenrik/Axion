@@ -74,6 +74,7 @@ impl Element {
             merge: None,
             glow: 0.0,
             join_only: false,
+            shadow: 1.0,
         }
     }
 }

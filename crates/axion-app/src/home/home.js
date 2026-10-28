@@ -828,6 +828,16 @@
     translateDom();
     // Axion's accent colour, live (controls, focus rings, selection).
     if (state.accent) document.documentElement.style.setProperty("--accent", state.accent);
+    // The default ground is the app's own chrome palette (live), not a duplicate.
+    const g = state.ground;
+    if (g) {
+      const root = document.documentElement.style;
+      root.setProperty("--ax-ground-light", g.light);
+      root.setProperty("--ax-ground-dark", g.dark);
+      root.setProperty("--ax-surface-light", g.lightSurface);
+      root.setProperty("--ax-surface-dark", g.darkSurface);
+    }
+    document.body.classList.toggle("chrome-ground", !!(g && g.enabled));
     document.body.classList.toggle("private", state.private);
     document.body.classList.toggle("flat", !!state.flat);
     // Flat style (`glass.style = "flat"`): the served HTML already carries the flag for the
@@ -837,8 +847,13 @@
     if (state.private) {
       // The window around the page takes the page's theme colour: black, like the page.
       document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => {
-        meta.setAttribute("content", "#000000");
+        meta.setAttribute("content", g && g.enabled ? g.dark : "#000000");
         meta.removeAttribute("media");
+      });
+    } else if (g && g.enabled) {
+      document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => {
+        const dark = (meta.getAttribute("media") || "").includes("dark");
+        meta.setAttribute("content", dark ? g.dark : g.light);
       });
     }
     $("gear").hidden = state.private;

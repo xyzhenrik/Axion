@@ -18,7 +18,22 @@ pub(super) struct PermissionsUi {
     stops: Vec<(ViewId, Vec<PermissionKind>, Instant)>,
     /// The `[permissions]` defaults last handed to the engine.
     applied: Option<axion_config::Permissions>,
+    /// Screen picks waiting for the user, by the id of the request that shows them.
+    picks: std::collections::HashMap<PermissionId, PendingPick>,
+    /// Whether the engine's own screen picker was last switched on.
+    own_picker: Option<bool>,
 }
+
+/// A page's `getDisplayMedia()` waiting in the screen picker.
+struct PendingPick {
+    token: u64,
+    /// Chromium's source ids, in the order of the picker's cards.
+    ids: Vec<String>,
+    data: crate::permission_prompt::PickerData,
+}
+
+/// Picks get request ids of their own, far above the engine's counter.
+const PICK_ID_BASE: u64 = 1 << 62;
 
 impl PermissionsUi {
     pub fn build(ui: &mut Ui, bar: axion_ui::taffy::NodeId, store: Option<&axion_store::Store>) -> Self {
@@ -36,6 +51,8 @@ impl PermissionsUi {
             capture: crate::permission_prompt::CapturePopover::build(ui, bar),
             stops: Vec::new(),
             applied: None,
+            picks: std::collections::HashMap::new(),
+            own_picker: None,
         }
     }
 }
@@ -52,6 +69,15 @@ impl Browser {
 
     /// Hands changed `[permissions]` defaults to the engine.
     pub(super) fn apply_permission_defaults(&mut self) {
+        let own = match self.config.permissions.screen_picker {
+            axion_config::ScreenPicker::Auto => !self.engine.screen_share_has_picker(),
+            axion_config::ScreenPicker::Own => true,
+            axion_config::ScreenPicker::System => false,
+        };
+        if self.permissions.own_picker != Some(own) {
+            self.engine.set_screen_picker(own);
+            self.permissions.own_picker = Some(own);
+        }
         if self.permissions.applied.as_ref() == Some(&self.config.permissions) {
             return;
         }
@@ -92,6 +118,64 @@ impl Browser {
         }
     }
 
+    /// The page called `getDisplayMedia()` and the engine's own picker is on: lists what can
+    /// be shared and puts it to the user as a prompt of its own.
+    pub(super) fn screen_pick_requested(&mut self, view: ViewId, token: u64, origin: String, audio: bool) {
+        let refuse = |this: &mut Self| this.engine.answer_screen_pick(view, token, None);
+        let Some(private) = find_tab(&self.tabs, &self.parked, view).map(|t| t.private) else {
+            refuse(self);
+            return;
+        };
+        if Group::ScreenSharing.default_of(&self.config).blocks() {
+            tracing::info!(?view, %origin, "screen sharing is blocked by default");
+            refuse(self);
+            return;
+        }
+        let settings = &self.config.permissions;
+        let width = settings.screen_picker_thumbnail_width.max(32);
+        let found = crate::platform::screens::list(
+            settings.screen_picker_max_sources as usize,
+            width,
+            std::process::id(),
+        );
+        let sources: Vec<crate::permission_prompt::PickerSource> = found
+            .iter()
+            .take(crate::permission_prompt::MAX_SOURCES)
+            .map(|s| crate::permission_prompt::PickerSource {
+                name: s.name.clone(),
+                screen: s.kind == crate::platform::screens::SourceKind::Screen,
+                image: s.thumbnail.as_ref().and_then(|t| {
+                    image::RgbaImage::from_raw(t.width, t.height, t.rgba.clone())
+                        .map(|picture| self.avatars.upload(&picture))
+                }),
+            })
+            .collect();
+        let ids = found.into_iter().take(sources.len()).map(|s| s.id).collect();
+        let (tw, th) = (width as f32, (width * 9 / 16) as f32);
+        let data = crate::permission_prompt::PickerData { sources, audio_asked: audio, thumbnail: (tw, th) };
+        let id = PermissionId(PICK_ID_BASE + token);
+        let mut kinds = vec![PermissionKind::ScreenShare];
+        if audio {
+            kinds.push(PermissionKind::ScreenAudio);
+        }
+        tracing::info!(?view, %origin, audio, count = data.sources.len(), "screen picker");
+        self.permissions.picks.insert(id, PendingPick { token, ids, data });
+        let request = Request { view, id, origin, kinds, private };
+        if let Some(old) = self.permissions.model.enqueue(request) {
+            self.drop_request(&old);
+        }
+        self.sync_permission_prompt();
+    }
+
+    /// A request that will not be answered by the user any more: a screen pick is refused, the
+    /// engine's own requests are dismissed.
+    fn drop_request(&mut self, request: &Request) {
+        match self.permissions.picks.remove(&request.id) {
+            Some(pick) => self.engine.answer_screen_pick(request.view, pick.token, None),
+            None => self.engine.answer_permission(request.view, request.id, PermissionAnswer::Dismiss),
+        }
+    }
+
     /// Chromium withdrew a request (the page navigated or closed).
     pub(super) fn permission_cancelled(&mut self, view: ViewId, id: PermissionId) {
         self.permissions.model.take(view, id);
@@ -101,13 +185,15 @@ impl Browser {
     /// The tab is on a new address: leaving a site dismisses its waiting requests.
     pub(super) fn permissions_navigated(&mut self, view: ViewId, url: &str) {
         for request in self.permissions.model.navigated(view, url) {
-            self.engine.answer_permission(request.view, request.id, PermissionAnswer::Dismiss);
+            self.drop_request(&request);
         }
         self.sync_permission_prompt();
     }
 
     pub(super) fn permissions_closed(&mut self, view: ViewId) {
-        self.permissions.model.closed(view);
+        for request in self.permissions.model.closed(view) {
+            self.permissions.picks.remove(&request.id);
+        }
         self.permissions.stops.retain(|(v, ..)| *v != view);
         self.sync_permission_prompt();
     }
@@ -133,7 +219,8 @@ impl Browser {
                 // One prompt under the address field at a time.
                 self.passwords.hide_prompt(Some(request.view), true);
                 let picker = self.engine.screen_share_has_picker();
-                self.permissions.prompt.show(&mut self.ui, &self.config, &request, picker);
+                let sources = self.permissions.picks.get(&request.id).map(|p| p.data.clone());
+                self.permissions.prompt.show(&mut self.ui, &self.config, &request, picker, sources);
             }
             Some(_) => {}
             None => self.permissions.prompt.hide(),
@@ -147,6 +234,29 @@ impl Browser {
             self.permissions.prompt.hide();
             return;
         };
+        // The screen picker: the answer is the picked source (or a refusal).
+        if let Some(pick) = self.permissions.picks.remove(&id) {
+            let chosen = match choice {
+                Choice::Allow | Choice::AllowWhileVisiting => {
+                    self.permissions.prompt.picked().and_then(|(i, audio)| {
+                        pick.ids.get(i).map(|id| axion_engine::ScreenPick { id: id.clone(), audio })
+                    })
+                }
+                Choice::Block | Choice::Dismiss => None,
+            };
+            tracing::info!(?view, origin = %request.origin, shared = chosen.is_some(), "screen pick answered");
+            if let Some(shared) = &chosen {
+                let mut kinds = vec![PermissionKind::ScreenShare];
+                if shared.audio {
+                    kinds.push(PermissionKind::ScreenAudio);
+                }
+                self.permissions.model.grant(view, &kinds);
+            }
+            self.engine.answer_screen_pick(view, pick.token, chosen);
+            self.permissions.prompt.hide();
+            self.sync_permission_prompt();
+            return;
+        }
         let answer = match choice {
             Choice::Allow | Choice::AllowWhileVisiting => PermissionAnswer::Allow,
             Choice::Block => PermissionAnswer::Deny,

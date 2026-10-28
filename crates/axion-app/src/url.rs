@@ -52,7 +52,7 @@ fn looks_like_host(input: &str) -> bool {
 }
 
 /// Percent-encodes a search query (spaces become `+`).
-fn encode_query(query: &str) -> String {
+pub(crate) fn encode_query(query: &str) -> String {
     let mut out = String::with_capacity(query.len() * 3);
     for byte in query.bytes() {
         match byte {

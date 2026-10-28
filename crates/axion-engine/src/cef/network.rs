@@ -15,7 +15,8 @@ use crate::{
 /// State shared by every view's network hooks.
 #[derive(Default)]
 pub(super) struct Network {
-    /// Refuse the Chrome Web Store (extensions are off; see `cef::extension_switches`).
+    /// Refuse the Chrome Web Store (`extensions.web_store` is off). Its own install dialog crashes in
+    /// off-screen mode; when the store is open, Axion's page script takes the install over.
     pub block_web_store: std::sync::atomic::AtomicBool,
     pub policy: RwLock<Option<Arc<dyn RequestPolicy>>>,
     /// Events raised off the main thread, tagged with the CEF browser like [`super::Shared`]'s.
@@ -150,6 +151,41 @@ wrap_resource_request_handler! {
     }
 
     impl ResourceRequestHandler {
+        fn resource_handler(
+            &self,
+            browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+        ) -> Option<ResourceHandler> {
+            // A media view reads its stream's manifests and segments from hosters whose CORS
+            // headers never name `axion://media`: they come through the proxy instead (see
+            // `mediaproxy`). Plain files (`<video src>`) come through it too: the view's origin is
+            // cross-site to every host, so Chromium would not send the host's cookies itself.
+            self.net.media_view(self.view)?;
+            let request = request?;
+            let url = CefString::from(&request.url()).to_string();
+            let web = url.starts_with("http://") || url.starts_with("https://");
+            let get = CefString::from(&request.method()).to_string().eq_ignore_ascii_case("GET");
+            if !web || !get || !matches!(
+                    resource_kind(request.resource_type()),
+                    ResourceKind::Xhr | ResourceKind::Other | ResourceKind::Media
+                )
+            {
+                return None;
+            }
+            let referer = CefString::from(&request.referrer_url()).to_string();
+            let range = CefString::from(&request.header_by_name(Some(&"Range".into()))).to_string();
+            // The cookies the profile holds for the stream's host, when Shields allow them there.
+            let page_url = self.net.media_view(self.view).map(|m| m.page_url).unwrap_or_default();
+            let allowed = self.net.policy().is_none_or(|p| p.allow_cookies(&url, &page_url));
+            let cookies = browser
+                .filter(|_| allowed)
+                .and_then(|b| b.host())
+                .and_then(|h| h.request_context())
+                .and_then(|c| c.cookie_manager(None));
+            Some(super::mediaproxy::handler(url, referer, Some(range).filter(|r| !r.is_empty()), cookies))
+        }
+
         fn on_resource_response(
             &self,
             browser: Option<&mut Browser>,
@@ -284,6 +320,33 @@ wrap_request_handler! {
     }
 
     impl RequestHandler {
+        fn on_render_process_terminated(
+            &self,
+            browser: Option<&mut Browser>,
+            status: TerminationStatus,
+            error_code: ::std::os::raw::c_int,
+            error_string: Option<&CefString>,
+        ) {
+            let detail = error_string.map(ToString::to_string).unwrap_or_default();
+            let reason = format!("{:?}, code {error_code} {detail}", status.as_ref());
+            tracing::error!(view = ?self.view, %reason, "the page's renderer process ended");
+            self.net.emit(browser.map(|b| &*b), EngineEvent::RendererGone { view: self.view, reason });
+        }
+
+        fn on_render_process_unresponsive(
+            &self,
+            _browser: Option<&mut Browser>,
+            _callback: Option<&mut UnresponsiveProcessCallback>,
+        ) -> ::std::os::raw::c_int {
+            // Chromium waits for it to recover (the tab can be closed meanwhile); we only log.
+            tracing::warn!(view = ?self.view, "the page's renderer process does not respond");
+            0
+        }
+
+        fn on_render_process_responsive(&self, _browser: Option<&mut Browser>) {
+            tracing::info!(view = ?self.view, "the page's renderer process responds again");
+        }
+
         fn on_before_browse(
             &self,
             browser: Option<&mut Browser>,
@@ -309,7 +372,7 @@ wrap_request_handler! {
             if self.net.block_web_store.load(std::sync::atomic::Ordering::Relaxed) {
                 let to = CefString::from(&request.url()).to_string();
                 if is_web_store_url(&to) {
-                    tracing::info!(%to, "the Chrome Web Store is not available: extensions are not supported");
+                    tracing::info!(%to, "the Chrome Web Store is switched off (extensions.web_store)");
                     if frame.is_main() == 1 {
                         frame.load_url(Some(&EXTENSIONS_NOTICE.into()));
                     }
@@ -374,10 +437,10 @@ wrap_request_handler! {
     }
 }
 
-/// Shown instead of the Chrome Web Store while extensions are not supported.
-const EXTENSIONS_NOTICE: &str = "data:text/html;charset=utf-8,<!doctype html><meta name=color-scheme content='light dark'><title>Extensions</title><body style='font:16px system-ui;max-width:32em;margin:20vh auto;padding:0 1em;line-height:1.5'><h1>Extensions are not supported yet</h1><p>Axion does not load Chrome extensions, so the Chrome Web Store cannot install them.</p>";
+/// Shown instead of the Chrome Web Store while installing from it is switched off.
+const EXTENSIONS_NOTICE: &str = "data:text/html;charset=utf-8,<!doctype html><meta name=color-scheme content='light dark'><title>Extensions</title><body style='font:16px system-ui;max-width:32em;margin:20vh auto;padding:0 1em;line-height:1.5'><h1>The Chrome Web Store is switched off</h1><p>Installing extensions from the Chrome Web Store is off in Axion's settings (extensions.web_store). You can still install an unpacked folder or a .crx file with the extensions button in the toolbar.</p>";
 
-/// The Chrome Web Store: `chrome.webstorePrivate` (the install API) is offered to its pages.
+/// The Chrome Web Store (whose pages get `chrome.webstorePrivate`, the install API).
 fn is_web_store_url(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) else {
         return false;

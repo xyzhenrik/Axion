@@ -50,6 +50,7 @@ impl Browser {
             search_engine: page_menu::search_engine_name(&self.config.general.search_url),
             devtools: self.config.devtools.enabled,
             label_chars: self.config.ui.page_context_menu_label_chars as usize,
+            share: self.config.ui.page_context_menu_share,
         };
         let items = page_menu::items(&params, &info, &self.keymap);
         if items.is_empty() {
@@ -149,10 +150,17 @@ impl Browser {
                     self.open_page_link(view, &url, true);
                 }
             }
+            PageCommand::ShareSelection => {
+                let limit = self.config.ui.page_context_menu_query_chars as usize;
+                let text: String = selection.trim().chars().take(limit.max(1)).collect();
+                downloads::open_uri(&page_menu::share_url(&text, params.page_url.trim()));
+            }
             PageCommand::Back => self.run(Action::Back),
             PageCommand::Forward => self.run(Action::Forward),
             PageCommand::Reload => self.run(Action::Reload),
             PageCommand::SavePage => self.save_to_downloads(view, params.page_url.trim()),
+            PageCommand::Print => self.run(Action::Print),
+            PageCommand::Screenshot => self.run(Action::Screenshot),
             PageCommand::Inspect => {
                 if self.config.devtools.enabled {
                     // The click in the page's own coordinates (logical px, like the engine's).

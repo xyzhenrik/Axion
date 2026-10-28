@@ -63,6 +63,14 @@ pub enum MenuAction {
     /// Chromium's developer tools for the page.
     DevTools,
     FindOnPage,
+    /// Reader view on or off for the page.
+    Reader,
+    /// The Aa options (text size, font, theme) while in Reader view.
+    ReaderOptions,
+    /// Print / Save as PDF.
+    Print,
+    /// The screenshot tool.
+    Screenshot,
     Settings,
     /// Opens Settings > About & Updates and looks for a new version.
     CheckForUpdates,
@@ -74,6 +82,8 @@ pub enum MenuAction {
     LockAccount,
     /// A tab's context menu (see `context_menu`).
     Tab(crate::context_menu::TabCommand),
+    /// A tab group header's context menu.
+    Group(crate::context_menu::GroupCommand),
     /// A bookmark's context menu, or the bookmarks bar's overflow menu.
     Bookmark(crate::context_menu::BookmarkCommand),
     /// The Playlist page's menus and the page menu's Playlist rows.
@@ -95,10 +105,13 @@ pub enum Placement {
     /// sidebar, whose glass is another material than the menu's and so can't be bridged to
     /// it). It grows upward from the button's bottom edge when it doesn't fit below.
     Over,
-    /// Like `Over`, but centred on the anchor's centre line (not left-aligned) and always
-    /// growing upward from the anchor's bottom edge: for a button under a row of controls
-    /// (the Playlist's sleep timer under the play button).
-    OverCentered,
+    /// Above the button, left-aligned with it, as wide as a menu, never over it: for a button in
+    /// a row of controls along the bottom (the Playlist's speed), so the menu leaves the controls
+    /// beside the button alone. Flips below the button when there is no room above, else is
+    /// pushed down as far as it must.
+    AboveStart,
+    /// Like `AboveStart`, centred on the anchor's centre line (the Playlist's sleep timer).
+    AboveCentered,
 }
 
 /// A compact button in a row of buttons (the zoom submenu's − 100% +).
@@ -273,15 +286,29 @@ pub fn target_frame(placement: Placement, anchor: Frame, window: Vec2, width: f3
             };
             Frame::new(left, top, width, height)
         }
-        Placement::OverCentered => {
-            let left = (anchor.origin.x + anchor.size.x / 2.0 - width / 2.0).clamp(WINDOW_MARGIN, max_left);
-            let top = (anchor.origin.y + anchor.size.y - height)
-                .clamp(WINDOW_MARGIN, (window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN));
-            Frame::new(left, top, width, height)
-        }
         Placement::Above => {
             let left = anchor.origin.x.clamp(WINDOW_MARGIN, max_left);
             let top = (anchor.origin.y - GAP_TO_ANCHOR - height).max(WINDOW_MARGIN);
+            Frame::new(left, top, width, height)
+        }
+        Placement::AboveStart | Placement::AboveCentered => {
+            let left = if placement == Placement::AboveStart {
+                anchor.origin.x
+            } else {
+                anchor.origin.x + anchor.size.x / 2.0 - width / 2.0
+            }
+            .clamp(WINDOW_MARGIN, max_left);
+            let above = anchor.origin.y - GAP_TO_ANCHOR - height;
+            let below = anchor.origin.y + anchor.size.y + GAP_TO_ANCHOR;
+            let max_top = (window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN);
+            let top = if above >= WINDOW_MARGIN {
+                above
+            } else if below <= max_top {
+                below
+            } else {
+                // Neither side has room: as far from the anchor's row as the window allows.
+                max_top.min(above.max(WINDOW_MARGIN))
+            };
             Frame::new(left, top, width, height)
         }
     }
@@ -327,6 +354,8 @@ pub struct Menu {
     window: Vec2,
     /// The menu is at least this wide (logical px; for rows with long labels).
     min_width: f32,
+    /// See [`Menu::set_covered_if_under`].
+    cover_if_under: Vec<NodeId>,
 }
 
 impl Menu {
@@ -354,6 +383,7 @@ impl Menu {
             open_sub: None,
             window: Vec2::ZERO,
             min_width: 0.0,
+            cover_if_under: Vec::new(),
         }
     }
 
@@ -389,7 +419,16 @@ impl Menu {
 
     /// See [`Popover::set_covered_nodes`].
     pub fn set_covered_nodes(&mut self, ui: &mut Ui, nodes: Vec<NodeId>) {
+        self.cover_if_under.clear();
         self.popover.set_covered_nodes(ui, nodes);
+    }
+
+    /// Glass controls whose content would show through (or over) the menu where the menu lies on
+    /// them: the ones the next `open` finds under its target fade out as the menu grows, the
+    /// others stay as they are, and the anchor itself is left alone. For a menu above a row of
+    /// controls, where which ones it reaches depends on its size and the window.
+    pub fn set_covered_if_under(&mut self, nodes: Vec<NodeId>) {
+        self.cover_if_under = nodes;
     }
 
     /// Opens next to `anchor` (logical px, see [`Placement`]), kept inside the window.
@@ -424,11 +463,27 @@ impl Menu {
         let width = match self.placement {
             Placement::Below | Placement::BelowStart => WIDTH,
             // As wide as the row it covers, so none of the row pokes out at the sides.
-            Placement::Over | Placement::OverCentered => anchor.size.x.max(WIDTH),
-            Placement::Above => anchor.size.x.max(WIDTH * 0.75),
+            Placement::Over => anchor.size.x.max(WIDTH),
+            Placement::Above | Placement::AboveStart | Placement::AboveCentered => {
+                anchor.size.x.max(WIDTH * 0.75)
+            }
         }
         .max(self.min_width);
         let target = target_frame(self.placement, anchor, window, width, height);
+        if !self.cover_if_under.is_empty() {
+            let under = std::mem::take(&mut self.cover_if_under)
+                .into_iter()
+                .filter(|&n| {
+                    let f = ui.frame(n);
+                    let touches = f.origin.x < target.origin.x + target.size.x
+                        && target.origin.x < f.origin.x + f.size.x
+                        && f.origin.y < target.origin.y + target.size.y
+                        && target.origin.y < f.origin.y + f.size.y;
+                    touches && f != anchor
+                })
+                .collect();
+            self.popover.set_covered_nodes(ui, under);
+        }
         self.popover.open(ui, config, anchor, target);
     }
 
@@ -754,4 +809,35 @@ pub fn place(ui: &mut Ui, node: NodeId, parent: NodeId, target: Frame) {
     style.inset = Rect { left: length(origin.x), right: auto(), top: length(origin.y), bottom: auto() };
     style.size = Size { width: length(target.size.x), height: length(target.size.y) };
     ui.set_style(node, style);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WINDOW: Vec2 = Vec2::new(1000.0, 800.0);
+
+    #[test]
+    fn a_menu_above_a_button_clears_it_and_the_controls_beside_it() {
+        // A speed button at the bottom with a volume capsule 24 px to its right.
+        let button = Frame::new(100.0, 700.0, 56.0, 42.0);
+        for placement in [Placement::AboveStart, Placement::AboveCentered] {
+            let t = target_frame(placement, button, WINDOW, 210.0, 270.0);
+            assert!(t.origin.y + t.size.y <= button.origin.y, "{placement:?} lies on the button");
+            assert!(t.origin.x >= WINDOW_MARGIN && t.origin.x + t.size.x <= WINDOW.x - WINDOW_MARGIN);
+        }
+        let start = target_frame(Placement::AboveStart, button, WINDOW, 210.0, 270.0);
+        assert_eq!(start.origin.x, button.origin.x);
+    }
+
+    #[test]
+    fn a_menu_above_a_button_flips_below_when_there_is_no_room_above() {
+        let button = Frame::new(100.0, 40.0, 56.0, 42.0);
+        let t = target_frame(Placement::AboveStart, button, WINDOW, 210.0, 270.0);
+        assert!(t.origin.y >= button.origin.y + button.size.y);
+        // No room on either side: kept inside the window.
+        let anchor = Frame::new(100.0, 200.0, 56.0, 42.0);
+        let tall = target_frame(Placement::AboveStart, anchor, Vec2::new(1000.0, 300.0), 210.0, 270.0);
+        assert!(tall.origin.y >= WINDOW_MARGIN);
+    }
 }

@@ -466,7 +466,12 @@ impl Browser {
     }
 
     /// Copies the part `uv` of `texture` to the CPU, scaled so its long side is `max_px`.
-    fn read_texture(&self, texture: &wgpu::Texture, uv: Rect, max_px: u32) -> Option<image::RgbaImage> {
+    pub(super) fn read_texture(
+        &self,
+        texture: &wgpu::Texture,
+        uv: Rect,
+        max_px: u32,
+    ) -> Option<image::RgbaImage> {
         let (tw, th) = (texture.width(), texture.height());
         let x0 = ((uv.origin.x * tw as f32).floor() as u32).min(tw.saturating_sub(1));
         let y0 = ((uv.origin.y * th as f32).floor() as u32).min(th.saturating_sub(1));
@@ -931,6 +936,8 @@ impl Browser {
             site: &site,
             elapsed: current.as_ref().map_or(0.0, |i| i.position),
             duration: current.as_ref().map_or(0.0, |i| i.duration),
+            live: false,
+            loading: self.playlist.resolving.is_some(),
             playing: false,
             shuffle: self.playlist.shuffle,
             repeat: self.playlist.repeat,
@@ -993,11 +1000,31 @@ impl Browser {
                 aspect,
             }
         });
+        // Sound without a picture (music, a podcast, a "video" that is only its audio track): the
+        // area shows the item's cover instead of black.
+        let audio_only = player.as_ref().is_some_and(|p| p.audio_only() && p.is_playing());
+        let mut cover_pending = false;
+        let picture = if audio_only {
+            let cover = self.playlist_ui.thumbs.get(item.id, &item.thumbnail, &mut cover_pending);
+            cover.map(|(view, size)| VideoPicture {
+                view,
+                size,
+                uv: Rect { origin: Vec2::ZERO, size: Vec2::ONE },
+                aspect: size.0 as f32 / size.1.max(1) as f32,
+            })
+        } else {
+            picture
+        };
+        if cover_pending {
+            self.playlist.dirty = true;
+        }
         let (elapsed, duration, playing) =
             player.as_ref().map_or((item.position, item.duration, false), |p| {
-                (p.time, p.duration.max(item.duration), p.is_playing())
+                (p.time, if p.live { 0.0 } else { p.duration.max(item.duration) }, p.is_playing())
             });
-        let note = if picture.is_none() || (player.is_none() && opened.elapsed() < Duration::from_secs(1)) {
+        let note = if audio_only && picture.is_none() {
+            Some(tr("Audio only"))
+        } else if picture.is_none() || (player.is_none() && opened.elapsed() < Duration::from_secs(1)) {
             Some(tr("Loading…"))
         } else {
             None
@@ -1007,6 +1034,8 @@ impl Browser {
             site: &display_host(&item.page_url),
             elapsed,
             duration,
+            live: player.as_ref().is_some_and(|p| p.live),
+            loading: !audio_only && player.as_ref().is_none_or(|p| p.loading),
             playing,
             shuffle: self.playlist.shuffle,
             repeat: self.playlist.repeat,
@@ -1115,6 +1144,10 @@ impl Browser {
 
     /// Saves where `player` is in item `id`.
     fn save_item_progress(&mut self, id: i64, player: &axion_media::Player) {
+        // A live stream has no position to come back to (and is never "watched").
+        if player.live {
+            return;
+        }
         let (position, watched) = playlist::progress(player.time, player.duration, &self.config.playlist);
         tracing::debug!(item = id, media_time = player.time, position, watched, "Playlist position saved");
         let watched = watched || self.playlist.item(id).is_some_and(|i| i.watched);
@@ -1200,7 +1233,7 @@ impl Browser {
     }
 
     /// A command to the page's player.
-    fn playlist_media(&mut self, action: MediaAction) {
+    pub(super) fn playlist_media(&mut self, action: MediaAction) {
         let Some(pb) = &self.playlist.playback else { return };
         let Some(id) = pb.player().map(|p| p.id.clone()) else { return };
         let view = pb.view;
@@ -1218,6 +1251,10 @@ impl Browser {
             return Target::Local(path);
         }
         if let Some(source) = MediaSource::from_json(&item.source) {
+            // A live channel's address is signed for minutes: look at the page again.
+            if source.live && item.page_url.starts_with("http") {
+                return Target::Find;
+            }
             return if source.playable() {
                 Target::Source(source)
             } else {
@@ -1405,6 +1442,9 @@ impl Browser {
         let now = Instant::now();
         match found {
             Capture::Found(source) => {
+                let was_live = MediaSource::from_json(&item.source).is_some_and(|s| s.live);
+                let seen_live = r.media.as_ref().and_then(|m| m.primary()).is_some_and(|p| p.live);
+                let source = source.with_live(was_live || seen_live);
                 self.set_item_source(id, &source);
                 self.cancel_resolve();
                 self.playlist_open_source(&item, source, true);
@@ -1453,6 +1493,34 @@ impl Browser {
         }
     }
 
+    /// Capture aid (`--open=playlist-fail[:code]`): opens the page and shows the failure state of
+    /// the first item (a made-up one when the list is empty).
+    pub(super) fn capture_playlist_failure(&mut self, code: &str) {
+        self.open_playlist();
+        if self.playlist.items.is_empty()
+            && let Some(store) = &self.store
+        {
+            let c = Candidate {
+                player: "capture:1".into(),
+                title: "A video that does not play".into(),
+                page_url: "https://example.com/watch".into(),
+                media_url: Some("https://example.com/video.mp4".into()),
+                source: playlist::classify("https://example.com/video.mp4"),
+                thumb_url: None,
+                duration: 125.0,
+                position: 0.0,
+                rect: (0.0, 0.0, 1.0, 1.0),
+                dpr: 1.0,
+                capture: Capture::Nothing,
+            };
+            playlist::add(store, &self.config, &c, 1);
+            self.playlist.reload(self.store.as_ref(), &self.config);
+        }
+        if let Some(id) = self.playlist.items.first().map(|i| i.id) {
+            self.playlist_fail(id, playlist::failure_text(code));
+        }
+    }
+
     /// The item can't play in the player area; it says why, with a button to open the page.
     pub(super) fn playlist_fail(&mut self, item: i64, message: &str) {
         self.cancel_resolve();
@@ -1469,7 +1537,8 @@ impl Browser {
         let item = self.playlist.item(id).cloned();
         match item {
             // A saved link may have expired (signed addresses): look at the page once more.
-            Some(item) if !fresh && !local => {
+            // (A video that can't be decoded won't be any better from a fresh address.)
+            Some(item) if !fresh && !local && code != "codec" => {
                 self.playlist.failure = None;
                 self.playlist_resolve_start(&item);
             }
@@ -1508,6 +1577,32 @@ impl Browser {
     /// Whether `view` is the Playlist's playback view.
     pub(super) fn is_playback_view(&self, view: ViewId) -> bool {
         self.playlist.playback.as_ref().is_some_and(|p| p.view == view)
+    }
+
+    /// The cover Axion's fullscreen player and PiP show for sound without a picture: the
+    /// Playlist item's thumbnail, else the Now Playing artwork, else the site's icon.
+    pub(super) fn audio_cover(&mut self, view: ViewId) -> Option<Thumb> {
+        if let Some(item) = self
+            .playlist
+            .playback
+            .as_ref()
+            .filter(|p| p.view == view)
+            .and_then(|p| self.playlist.item(p.item))
+            .cloned()
+        {
+            // The thumbnail cache is refilled by the page, which is not open in fullscreen.
+            self.playlist_ui.thumbs.refill(1);
+            let mut pending = false;
+            let cover = self.playlist_ui.thumbs.get(item.id, &item.thumbnail, &mut pending);
+            return cover.or_else(|| self.favicons.get(&item.page_url));
+        }
+        if self.now_playing == Some(view)
+            && let Some(art) = self.now_art.image()
+        {
+            return Some(art);
+        }
+        let url = find_tab(&self.tabs, &self.parked, view)?.url.clone();
+        self.favicons.get(&url)
     }
 
     /// The media state Axion's players (fullscreen, PiP) use for a view: a tab's, or the
@@ -1599,7 +1694,7 @@ impl Browser {
                     })
                     .collect();
                 let window = self.logical_size();
-                let at = self.playlist_ui.page.menu_at(&self.ui, PageAction::Sort);
+                let at = self.playlist_ui.page.menu_at(PageAction::Sort);
                 self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items, at);
             }
             PageAction::Search => {
@@ -1609,6 +1704,11 @@ impl Browser {
             }
             PageAction::PictureInPicture => self.playlist_picture_in_picture(),
             PageAction::Fullscreen => self.playlist_set_fullscreen(true),
+            PageAction::Retry => {
+                if let Some(id) = self.playlist.failure.as_ref().map(|f| f.item) {
+                    self.playlist_play(id);
+                }
+            }
             PageAction::OpenPage => {
                 if let Some(id) = self.playlist.failure.as_ref().map(|f| f.item) {
                     self.playlist_open_in_tab(id, false);
@@ -1662,7 +1762,7 @@ impl Browser {
                     })
                     .collect();
                 let window = self.logical_size();
-                let at = self.playlist_ui.page.menu_at(&self.ui, PageAction::Speed);
+                let at = self.playlist_ui.page.menu_at(PageAction::Speed);
                 self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items, at);
             }
             PageAction::Sleep => {
@@ -1683,7 +1783,7 @@ impl Browser {
                 end.checked = sleep == Sleep::EndOfVideo;
                 items.push(end);
                 let window = self.logical_size();
-                let at = self.playlist_ui.page.menu_at(&self.ui, PageAction::Sleep);
+                let at = self.playlist_ui.page.menu_at(PageAction::Sleep);
                 self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items, at);
             }
             PageAction::SelectAll => {

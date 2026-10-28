@@ -22,6 +22,7 @@ Pages, in the order of the list:
 [Liquid Glass](#liquid-glass) -
 [Tabs & Memory](#tabs--memory) -
 [Media](#media) -
+[Reading & Translation](#reading--translation) -
 [Keyboard](#keyboard) -
 [Shields](#shields) -
 [Privacy](#privacy) -
@@ -78,6 +79,7 @@ What the start page shows. The same switches are in the gear on the page itself.
 | Background picker | Choose **None**, one of your backgrounds, or add one. Click the cross on a card to remove it. | None | `home.background` |
 | **Dim** | Darkens the background so text stays readable. Shown once a background is selected (search lists it as "Dim background image"). 0 to 80 %. | 20 % | `home.background_dim` |
 | **Blur** | Blurs the background. Shown once a background is selected ("Blur background image" in search). Off to 30 px. | Off | `home.background_blur` |
+| **Chrome colour as default background** | Without a background image the start page uses the neutral grey of the window around the page (light or dark) instead of plain white or black. Private tabs stay dark. | On | `home.glass_ground` |
 | **Live wallpapers (animated images and videos)** | Lets animated images (GIF, WebP) and videos (WebM, MP4) play, muted and looping. Off: they show a still frame. | On | `home.live_wallpapers` |
 | **Play live wallpapers with Reduce Motion** | Keeps live wallpapers playing while **Reduce motion** is on. Off: they show a still frame then. | On | `home.live_wallpapers_ignore_reduce_motion` |
 | **Add from file** (**Add**) | Type a path such as `~/Pictures/sea.jpg` and press **Add**. The file is copied into your account. MP4 needs H.264 support. | - | - |
@@ -115,11 +117,16 @@ Fine-tune the glass material. These settings only matter with **Glass** set to *
 |---|---|---|---|
 | **Reduce transparency** | Replaces glass with opaque surfaces. | Off | `glass.reduce_transparency` |
 | **Reduce motion** | Replaces springs and stretching with short fades. | Off | `glass.reduce_motion` |
+| Motion springs | Apple's presets, `response` = SwiftUI duration, `damping` = damping fraction (`bounce` = 1 - damping): `snappy` 0.5 / 0.85 (bounce 0.15), `smooth` 0.5 / 1.0, `bouncy` 0.5 / 0.7, `interactive` 0.15 / 0.86 (following the pointer). `liquid`, `drain*`, `fling`, `tab_close`, `switch` are Axion's own (see docs/physics.md). `speed` scales every response. | see left | `motion.*` |
+| Switch animation | The spring of a switch's knob (travel, and swelling into a glass lens while held) and of segmented controls: `response` is the period in seconds, `damping` the damping ratio. The default settles in about 0.2 s with a small bounce. Edit in `config.toml`; Reduce motion snaps it. | `response` 0.18, `damping` 0.80 | `motion.switch` |
 | **Refraction** | How strongly the glass bends what is behind it. 0 to 100 %. | 55 % | `glass.light.refraction`, `glass.dark.refraction` |
 | **Blur** | How much the backdrop is blurred, as a share of the normal amount for each glass thickness. 0 to 200 %. | 100 % | `glass.light.blur`, `glass.dark.blur` (`thin`, `regular`, `thick`) |
 | **Colour dispersion** | Colour fringes along the glass rim. 0 to 40 %. | 12 % (10 % in dark mode) | `glass.light.dispersion`, `glass.dark.dispersion` |
 | **Squash when moving** | How far glass stretches along the direction you drag it. 0 to 20 %. | 8 % | `glass.squash` |
+| **Drag stretch (maximum)** | The most a glass control (a held button, a switch or slider knob) stretches when you pull it far from where it rests; the icon or label stays in place and stretches the same way. 0 to 20 %. Off with Reduce motion and in flat mode. | 8 % | `glass.drag_stretch_max` |
+| Rubber-band constant | Advanced, `config.toml` only. The drag curve is UIScrollView's rubber band `(1 - 1/(x·c/d + 1))·d` over the control's size `d`; the maximum stays **Drag stretch (maximum)**. Smaller `c` is stiffer. | 0.55 (Apple's) | `glass.rubber_band_c` (`glass.drag_resistance` is deprecated: still accepted, ignored) |
 | **Merge distance** | How close two glass shapes must be before they flow together. 0 to 40 px. | 20 px | `glass.merge_distance` |
+| Button shadow | Share of the glass drop shadow that a glass button casts. 0 (the default) means buttons are pure refractive glass with nothing dark around them; panels, sheets and popovers keep their shadow. Edit in `config.toml`. | 0 | `glass.button_shadow` |
 
 ## Tabs & Memory
 
@@ -131,6 +138,17 @@ How tabs look and how Axion saves memory. See [Tabs and memory](features/tabs-an
 | **Colour in tab bar** | Tints the window around the page with a colour taken from the page, like Safari. | Off | `appearance.tint_from_page` |
 | **Page colour** (**Extreme** / **Dominant**) | Shown when **Colour in tab bar** is on. **Extreme** takes the darkest or lightest prominent colour. **Dominant** takes the main colour, evened out. Turning the colour on switches from neutral to **Extreme**. | Neutral (page colour off) | `appearance.tint_mode` (`neutral`, `extreme`, `dominant`) |
 | **Open new tabs in background** | Tabs opened from links do not take over the screen. | On | `tabs.open_links_in_background` |
+| **Animate closing tabs** | A closed tab shrinks and fades away (tab bar, sidebar and tab overview) while the tabs beside it slide into the gap. With **Reduce motion** or the flat glass style only a short fade stays. The spring is `motion.tab_close`. | On | `tabs.close_animation` |
+| **Keep tab widths while closing** | After closing a tab with the pointer in the tab bar, the other tabs keep their widths until the pointer leaves the bar, so the next close button stays under it. | On | `tabs.keep_widths_while_closing` |
+| **Middle click closes tabs** | A middle click on a tab (bar, sidebar or tab overview) closes it. | On | `tabs.middle_click_closes_tab` |
+| **New tabs join the group they open from** | A tab opened from a tab of a tab group (a link, **New Tab to the Right**) joins that group. | On | `tabs.new_tab_joins_group` |
+| **Show tab group names in the tab bar** | Tab groups get a coloured chip with their name in front of their tabs. Off: only a colour line under the tabs. | On | `tabs.group_chips_in_bar` |
+| **Show a speaker on tabs playing sound** | Tabs that play sound, or are muted, show a speaker in the tab bar and the sidebar. Click it to mute or unmute. | On | `tabs.show_audio_indicator` |
+| **Remember muted sites** | **Mute Site** in a tab's menu is remembered: tabs of that site start muted. | On | `tabs.remember_site_mute` |
+| Closed tabs remembered | How many closed tabs **Reopen Closed Tab** and the tab search remember. | 25 | `tabs.closed_tabs_remembered` |
+| History results in the tab search | At most this many history entries in the tab search (0: none). | 8 | `tabs.tab_search_history_results` |
+| **Drag tabs out as links** | Dragging a tab out of the window into another app drops its address there (a text field gets the link). | On | `tabs.drag_out_links` (`tabs.drag_out_distance`: how far outside the window counts as out, default 12 px) |
+| **Show a preview while dragging a tab out** | The dragged tab shows as a small card (a snapshot of the page with the site icon and title; just icon, title and host when there is no snapshot) beside the pointer, like in Firefox. Wayland (native) and X11. | On | `tabs.drag_out_image` (`tabs.drag_out_image_width`: card width, default 200 logical px; `tabs.drag_out_image_opacity`: default 0.9) |
 | **Close tabs** | Closes tabs you have not looked at for a while: **Manually** (never), **After a Day**, **After a Week**, **After a Month**. Pinned tabs and tabs playing media stay. | Manually | `tabs.close_after_days` (0, 1, 7, 30) |
 | **Bookmarks bar** | When the bookmarks bar shows: **Always**, **On Home Page**, **Never**. | Always | `layout.bookmarks_bar` (`always`, `home`, `never`) |
 
@@ -177,6 +195,12 @@ a site. Changes apply to pages loaded next.
 | Setting | What it does | Default | Config key |
 |---|---|---|---|
 | Trusted sites list | Sites that keep their own player. | YouTube, Twitch, Vimeo, Dailymotion, Netflix, Disney+, Prime Video, Crunchyroll, Spotify, SoundCloud | `media.trusted_player_sites` |
+| Ignored media sites | Sites whose video/audio elements are calls or chats (Discord…), not media: no player, no Now Playing, no Playlist entry. Camera, microphone and call streams are skipped everywhere. | Discord | `media.ignored_media_sites` |
+| Loading indicator | A turning ring on the players while a video loads or buffers. | On | `media.loading_indicator` |
+| Picture-in-Picture veil | Opacity of a black veil over the whole Picture-in-Picture picture while its controls show. 0 (the default): none; the controls stay legible through their own glass tint. Edit in `config.toml`. | 0 | `media.controls_scrim` |
+| Cover size | Side of the cover picture (the item's artwork or thumbnail) the fullscreen player and Picture-in-Picture show for sound without a picture, as a share of the shorter side. Edit in `config.toml`. | 0.55 | `media.cover_size` |
+| Ring speed | Seconds per turn of that ring. | 0.9 | `media.loading_spin_seconds` |
+| Keep paused player | How long a paused player that left the page keeps the Now Playing card. | 30 s | `media.now_playing_keep_seconds` |
 
 ### Playback
 
@@ -185,10 +209,76 @@ a site. Changes apply to pages loaded next.
 | **Hardware video decoding (after restart)** | Decodes video on the graphics card (VA-API). The same switch is on the Hardware page. | On | `media.hardware_decoding` |
 | **Desktop media controls and media keys (after restart)** | Shows what is playing in your desktop's media widgets and reacts to your keyboard's media keys (MPRIS). | On | `media.desktop_integration` |
 
+## Reading & Translation
+
+Reader View and page translation. See [Reading and translation](features/reading-and-translation.md).
+
+### Reader View
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| **Reader View in the page menu** | Offers Reader View in the page menu (≡) on pages that have an article. Off: the Reader row is dimmed and the shortcut does nothing. The key kept its old name from when this was an Aa button in the address field. | On | `reader.button` |
+| **Remember Reader View's look for each site** | Reader Options' choices belong to the site you are on (kept in the profile). Off: they are the same everywhere and saved in `config.toml`. | On | `reader.remember_per_site` |
+| **Font** | Serif, Sans or Mono. | Serif | `reader.font` |
+| **Theme** | Auto (light or dark like Axion), Light, Sepia or Dark. | Auto | `reader.theme` |
+| *(Reader Options)* Text size | Size of the text in pixels. | 20 | `reader.font_size` |
+| *(Reader Options)* Column width | Width of the text column in pixels. | 680 | `reader.width` |
+| *(file only)* Line height | Multiple of the text size. | 1.6 | `reader.line_height` |
+| *(file only)* Article threshold | A page counts as readable with at least this many characters of text. | 600 | `reader.min_chars` |
+| *(file only)* Check delay | Milliseconds after loading before a page is checked for an article. | 700 | `reader.detect_delay_ms` |
+| *(file only)* Reader Options limits | Smallest, largest and step of text size and column width. | 14 / 36 / 2 and 480 / 1000 / 80 | `reader.min_font_size`, `reader.max_font_size`, `reader.font_step`, `reader.min_width`, `reader.max_width`, `reader.width_step` |
+
+### Translation
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| **Offer to translate pages in other languages** | Shows the Translate button when a page is in a language other than the target and can be translated. | On | `translation.offer` |
+| **Open the offer by itself** | The offer opens once when such a page has loaded. | On | `translation.prompt` |
+| **Translate text that appears later** | New text on a translated page (feeds, comments) is translated too. | On | `translation.translate_changes` |
+| **Translate pages into** | The target language: Interface (Axion's own language), English, German, French or Spanish. Any other code from the list below can be set in the file. | Interface | `translation.target_language` (empty = interface) |
+| **Translate** | Where translating runs: **On this computer** (Bergamot models, nothing leaves the computer) or **Your server** (a LibreTranslate-compatible server; page text is sent to it). | On this computer | `translation.backend` (`local` or `endpoint`) |
+| **Downloaded language data** | Deletes the models downloaded for local translation. | - | - |
+| *(file only)* Server address | LibreTranslate-compatible endpoint, for example `http://localhost:5000/translate`. Only used with `backend = "endpoint"`; empty by default. | empty | `translation.endpoint_url` |
+| *(file only)* Server API key | Sent with each request when set. | empty | `translation.endpoint_api_key` |
+| *(file only)* Server timeout | Seconds one request may take. | 30 | `translation.endpoint_timeout_seconds` |
+| *(Translate popover)* Never for this site | Sites (and their subdomains) that are never offered. | none | `translation.never_sites` |
+| *(file only)* Known languages | Languages you read: pages in them are not offered. | none | `translation.known_languages` |
+| *(file only)* Batch size | At most this many characters and pieces of text are translated per request. | 4000 / 60 | `translation.batch_chars`, `translation.batch_pieces` |
+| *(file only)* Language detection | Pages without a declared language are guessed from at least this many characters. | 120 | `translation.detect_min_chars` |
+| *(file only)* Engine idle time | The hidden page that runs the local engine closes after this many seconds without work, which frees the models' memory. | 120 | `translation.engine_idle_seconds` |
+| *(file only)* Translation scope | `visible` (default): the part of the page you see plus the margin below is translated first, the rest while you scroll. `page`: the visible part first, then the whole page in the background. | `visible` | `translation.scope` |
+| *(file only)* Viewport margin | With `visible`: how many screens above and below the window are translated ahead of scrolling. | 1.0 | `translation.viewport_margin` |
+| *(file only)* First request size | The first request carries at most this many pieces of text, so the first translation appears quickly. | 12 | `translation.first_pieces` |
+| *(file only)* Requests in flight | Requests a page keeps waiting for the engine at once. | 2 | `translation.inflight_batches` |
+| *(file only)* Engine workers | Translation threads working in parallel (0: half the processor cores, at most 4). Each holds its own copy of the model in memory. | 0 | `translation.engine_workers` |
+| *(file only)* Warm up the engine | Starts the engine and loads the model while the offer is showing, so the first translation doesn't wait for them. | On | `translation.prewarm` |
+| *(file only)* Model sources | Where the model list and the files come from (Mozilla Remote Settings). | Mozilla's servers | `translation.models_records_url`, `translation.models_attachments_url` |
+
+Local translation covers English, German, French, Spanish, Italian, Portuguese, Dutch, Polish,
+Russian, Ukrainian, Czech, Swedish, Danish, Norwegian, Finnish, Hungarian, Romanian, Bulgarian,
+Greek, Turkish, Arabic, Japanese and Korean. Pairs without English go through English.
+
 ## Keyboard
 
 A searchable list of all shortcuts, grouped by area. To change one, edit `keymap.toml`; edits
 apply immediately. See [Keyboard shortcuts](keyboard-shortcuts.md).
+
+### Command palette and page zoom
+
+Both are controlled in `config.toml` only (no Settings page yet).
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| Command palette (**Ctrl+K**) | A search sheet over every browser action with its shortcut; Up/Down choose, Enter runs, Esc closes. New actions appear in it by themselves. | - | keymap action `command_palette` |
+| Palette rows | How many commands are listed at once. | 8 | `command_palette.max_rows` |
+| Palette shortcuts | Shows each command's shortcut. | On | `command_palette.show_shortcuts` |
+| Palette width | Width of the sheet in logical pixels (shrinks with the window). | 560 | `command_palette.width` |
+| Default zoom | Zoom of sites without a zoom of their own (percent). | 100 | `zoom.default_percent` |
+| Zoom step | One **Ctrl +** / **Ctrl -** step, in Chromium zoom levels (each level is 1.2x; 0.5 gives 100, 110, 120, 131 ...). | 0.5 | `zoom.step` |
+| Zoom limits | Smallest and largest zoom (percent). | 25 / 500 | `zoom.min_percent`, `zoom.max_percent` |
+| Remember zoom per site | Zoom set with **Ctrl +/-/0** is remembered for the site (all its pages and tabs; not in private tabs). Off: it belongs to the tab and resets when the next page loads. | On | `zoom.remember_per_site` |
+| Zoom indicator | Shows the zoom in the address field while it is not the default; a click resets it. | On | `zoom.show_indicator` |
+| Share selected text | The page menu's **Share...** row for selected text opens a new e-mail with the text and the page's address. | On | `ui.page_context_menu_share` |
 
 ## Shields
 
@@ -210,6 +300,24 @@ Blocking of ads, trackers, popups and redirects. See [Shields](features/shields.
 |---|---|---|---|
 | **Lock private tabs with the account password** | Private tabs ask for the account password before they open. Needs an account password; the page offers to create one. | On | `privacy.lock_private_tabs` |
 | **Browsing history** (**Clear History…**) | Deletes your whole browsing history. Click again to confirm. For a time range, use **Clear Browsing Data…** | - | - |
+
+### Extensions
+
+Chrome extensions (Manifest V3). They are installed from the Chrome Web Store, or from the
+extensions button in the toolbar; see [Chrome extensions](features/extensions.md).
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| **Chrome extensions (after restart)** | Runs Chromium's extension system and shows the extensions button. Off: no extension loads. | On | `extensions.enabled` |
+| **Install from the Chrome Web Store (after restart)** | "Add to Chrome" on the Chrome Web Store installs the extension, after Axion shows what it can do and you say yes. Off: the store is not opened. | On | `extensions.web_store` |
+| **Update Web Store extensions automatically** | Looks for newer versions in the background and downloads them. They run after the next restart. An update that asks for more permissions waits for your yes. | On | `extensions.auto_update` |
+
+Config file only: `extensions.update_interval_hours` (24), `extensions.timeout_seconds` (60),
+`extensions.allow_user_scripts` (on), `extensions.block_request_apis` (on) and the popup's size
+limits and timing: `extensions.popup_min_size` (25), `extensions.popup_max_width` (800),
+`extensions.popup_max_height` (600), `extensions.popup_measure_ms` (150) and
+`extensions.popup_load_timeout_ms` (3000). See
+[Chrome extensions](features/extensions.md#how-it-works).
 
 ### Site Permissions
 
@@ -247,6 +355,27 @@ listed here.
 | **Ask where to save each file** | Shows a file chooser for each download. Off: saves straight into the download location. | On | `downloads.ask_where_to_save` |
 | **Open “safe” files after downloading** | Opens pictures, movies, sounds, PDF and text documents when they finish. | Off | `downloads.open_safe_files` |
 | **Remove download list items** | When finished downloads leave the list: **Manually**, **After One Day**, **When Axion Quits**. | Manually | `downloads.remove_list_items` (`manually`, `after_one_day`, `on_quit`) |
+
+### Print and screenshots
+
+Choices in the **Print or Save as PDF** dialog (Ctrl+P, or **Print or Save as PDF…** in the page menu) and in the
+screenshot tool (Ctrl+Shift+S, or **Screenshot…**). The dialog remembers its last choices; the rest are config
+file keys (see [Configuration](configuration.md)). Both save the way downloads do: with a file chooser when
+**Ask where to save each file** is on, else straight into their folder.
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| **Paper** (dialog) | A4, A3, A5, Letter or Legal. | A4 | `print.paper` (`a4`, `a3`, `a5`, `letter`, `legal`) |
+| **Orientation** (dialog) | Portrait or landscape. | Portrait | `print.landscape` |
+| **Margins** (dialog) | None, Narrow, Default or Wide. | Default | `print.margins` (`none`, `narrow`, `default`, `wide`) |
+| **Scale** (dialog) | Content scale in steps of 10%. | 100% | `print.scale_percent` |
+| **Backgrounds** (dialog) | Print background colours and images. | Off | `print.backgrounds` |
+| **Header and footer** (dialog) | Title, date, address and page numbers. | Off | `print.header_footer` |
+| PDF folder | Where PDFs go when not asking. | The download location | `print.directory` |
+| Open PDF after saving | Shows the PDF in a tab. | Off | `print.open_after_saving` |
+| Screenshot format | PNG or JPEG. | PNG | `screenshot.format` (`png`, `jpeg`) |
+| After taking a screenshot | Show it with **Copy** and **Save**, or copy / save at once. | Show | `screenshot.after_capture` (`ask`, `copy`, `save`) |
+| Screenshot folder | Where screenshots go when not asking. | The download location | `screenshot.directory` |
 
 ### Import from another browser
 

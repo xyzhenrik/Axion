@@ -13,6 +13,7 @@ use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, Shadow, TextSty
 use glam::Vec2;
 
 use crate::favicons::{Favicons, favicon_node};
+use crate::tabclose::{Dying, Kind, Slide, slide_spring};
 use crate::tabs::Tabs;
 use crate::url::display_host;
 
@@ -46,6 +47,7 @@ const MAX_COLUMNS: usize = 4;
 const THUMB_ASPECT: f32 = 0.625;
 const THUMB_RADIUS: f32 = 12.0;
 const LABEL_HEIGHT: f32 = 32.0;
+const GROUP_HEADER_HEIGHT: f32 = 32.0;
 const LABEL_GAP: f32 = 12.0;
 const TOOLBAR_BOTTOM: f32 = 32.0;
 /// Width of the top bar's right group (three circles), mirrored on the left so the segmented
@@ -107,6 +109,8 @@ impl OverviewAction {
 struct Card {
     tab: usize,
     view: ViewId,
+    /// The whole card (thumbnail and title).
+    node: NodeId,
     image: NodeId,
 }
 
@@ -139,6 +143,9 @@ pub struct Overview {
     ghost_size: Animated<Vec2>,
     /// Which tab the ghost shows (the active tab when opening, the chosen one when closing).
     ghost_view: Option<ViewId>,
+    /// Cards of closed tabs, shrinking away, and the other cards sliding into the gap.
+    dying: Vec<Dying>,
+    slide: Slide<ViewId>,
     scroll: f32,
     content_height: f32,
     window: Vec2,
@@ -201,6 +208,44 @@ fn segment(ui: &mut Ui, parent: NodeId, text: &str) -> (NodeId, NodeId) {
     );
     let label = ui.add_label(node, text, TextStyle::Callout, Style::default());
     (node, label)
+}
+
+/// A tab group's header across the grid: its colour, name and tab count. A click folds the
+/// group's cards away, or brings them back.
+fn group_header(ui: &mut Ui, grid: NodeId, group: &crate::tabs::TabGroup, count: usize) {
+    let header = ui.add(
+        grid,
+        Widget::container()
+            .with_action(crate::chrome::ChromeAction::ToggleTabGroup(group.id).id())
+            .without_feedback(),
+        Style {
+            size: Size { width: percent(1.0), height: length(GROUP_HEADER_HEIGHT) },
+            flex_shrink: 0.0,
+            ..row_style(10.0)
+        },
+    );
+    let chevron = if group.collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
+    ui.add(
+        header,
+        Widget::icon(chevron, 14.0).with_icon_weight(IconWeight::Bold).with_paint(Paint::Secondary),
+        Style::default(),
+    );
+    ui.add(
+        header,
+        Widget::container()
+            .with_background(Background::Fill(Paint::Fixed(group.color.color()), 1.0))
+            .with_radius(CAPSULE),
+        Style {
+            size: Size { width: length(12.0), height: length(12.0) },
+            flex_shrink: 0.0,
+            ..Default::default()
+        },
+    );
+    ui.add_label(header, &crate::chrome::group_title(group), TextStyle::Title2, Style::default());
+    let counter = ui.add_label(header, &count.to_string(), TextStyle::Body, Style::default());
+    if let Some(w) = ui.widget_mut(counter) {
+        w.set_paint(Paint::Secondary);
+    }
 }
 
 fn insets(left: f32, right: f32, top: f32, bottom: f32) -> Rect<LengthPercentageAuto> {
@@ -378,6 +423,8 @@ impl Overview {
             ghost_origin: Animated::new(Vec2::ZERO, Spring::SMOOTH),
             ghost_size: Animated::new(Vec2::ONE, Spring::SMOOTH),
             ghost_view: None,
+            dying: Vec::new(),
+            slide: Slide::default(),
             scroll: 0.0,
             content_height: 0.0,
             window: Vec2::ONE,
@@ -441,6 +488,68 @@ impl Overview {
         ui.blur()
     }
 
+    /// A tab is about to be closed: its card leaves the grid as a ghost that shrinks away, and
+    /// the cards are noted where they are drawn, to slide into the gap once the grid is rebuilt
+    /// (call before `rebuild`). Nothing happens while the overview is not shown.
+    pub fn begin_close(&mut self, ui: &mut Ui, view: ViewId, config: &Config) {
+        if !self.is_open() || self.phase == Phase::Closing {
+            return;
+        }
+        let drawn = |ui: &Ui, node: NodeId| {
+            ui.widget(node).and_then(|w| w.visual_frame).unwrap_or_else(|| ui.frame(node))
+        };
+        self.slide
+            .remember(self.cards.iter().map(|c| (c.view, drawn(ui, c.node).origin)), slide_spring(config));
+        let Some(at) = self.cards.iter().position(|c| c.view == view) else { return };
+        let card = self.cards.remove(at);
+        let frame = drawn(ui, card.node);
+        let visible = frame.size.x > 0.0
+            && frame.origin.y + frame.size.y > 0.0
+            && frame.origin.y < self.window.y
+            && frame.origin.x < self.window.x;
+        let Some(grid) = ui.parent(card.node) else { return };
+        let rest: Vec<NodeId> = ui.children(grid).into_iter().filter(|&n| n != card.node).collect();
+        ui.set_children(grid, &rest);
+        if !visible {
+            ui.remove(card.node);
+            return;
+        }
+        let mut shown = ui.children(self.root);
+        shown.push(card.node);
+        ui.set_children(self.root, &shown);
+        let mut ghost = Dying::new(ui, card.node, frame, Kind::Card, config);
+        ghost.image = Some((card.image, card.view));
+        self.dying.push(ghost);
+    }
+
+    /// After layout, every frame: the cards slide to their places, the cards of closed tabs
+    /// shrink away.
+    pub fn animate_cards(&mut self, ui: &mut Ui, config: &Config, dt: f32) {
+        if !self.is_open() {
+            for ghost in self.dying.drain(..) {
+                ui.remove(ghost.node);
+            }
+            self.slide.clear();
+            return;
+        }
+        if !self.slide.is_idle() {
+            let nodes: Vec<(ViewId, NodeId)> = self.cards.iter().map(|c| (c.view, c.node)).collect();
+            if self.slide.animate(ui, &nodes, slide_spring(config), config.glass.reduce_motion, dt) {
+                self.slide.clear();
+            }
+        }
+        for ghost in &mut self.dying {
+            ghost.step(ui, dt);
+        }
+        self.dying.retain(|ghost| {
+            let gone = ghost.is_gone();
+            if gone {
+                ui.remove(ghost.node);
+            }
+            !gone
+        });
+    }
+
     /// Swaps the segmented control for the search field (and back). Returns the events of
     /// focusing it.
     pub fn toggle_search(&mut self, ui: &mut Ui) -> Vec<UiEvent> {
@@ -482,7 +591,10 @@ impl Overview {
         };
         ui.set_style(self.grid, grid_style);
 
-        let mut count: usize = 0;
+        // Cards in sections: a header before each tab group's cards. `rows` counts the card
+        // rows of the finished sections, `section` the cards of the open one.
+        let (mut rows, mut section, mut headers, mut breaks) = (0usize, 0usize, 0usize, 0usize);
+        let mut last_group: Option<u32> = None;
         for (i, tab) in tabs.all().iter().enumerate() {
             let label = tab.label();
             if !query.is_empty()
@@ -491,7 +603,32 @@ impl Overview {
             {
                 continue;
             }
-            count += 1;
+            if tab.group != last_group {
+                last_group = tab.group;
+                rows += section.div_ceil(columns.max(1));
+                section = 0;
+                if let Some(group) = tab.group.and_then(|id| tabs.group(id)) {
+                    group_header(ui, self.grid, group, tabs.group_range(group.id).map_or(0, |r| r.len()));
+                    headers += 1;
+                } else {
+                    // Tabs without a group after a group's: they start a line of their own.
+                    ui.add(
+                        self.grid,
+                        Widget::container(),
+                        Style {
+                            size: Size { width: percent(1.0), height: length(0.0) },
+                            flex_shrink: 0.0,
+                            ..Default::default()
+                        },
+                    );
+                    breaks += 1;
+                }
+            }
+            // Folded away in a collapsed group (its header unfolds it).
+            if !tabs.is_shown(i) {
+                continue;
+            }
+            section += 1;
             let active = i == tabs.active_index();
             let card = ui.add(
                 self.grid,
@@ -613,7 +750,7 @@ impl Overview {
                 },
             );
             let _ = text;
-            self.cards.push(Card { tab: i, view: tab.view, image });
+            self.cards.push(Card { tab: i, view: tab.view, node: card, image });
         }
         // The zooming page belongs to the other group now (switched to/from Private while
         // opening): end the zoom instead of flying a card that isn't in the grid.
@@ -622,9 +759,11 @@ impl Overview {
             self.ghost_size.snap(self.ghost_size.target);
             self.ghost_view = None;
         }
-        let rows = count.div_ceil(columns.max(1));
-        self.content_height =
-            rows as f32 * (thumb_height + LABEL_GAP + LABEL_HEIGHT) + rows.saturating_sub(1) as f32 * ROW_GAP;
+        rows += section.div_ceil(columns.max(1));
+        let lines = rows + headers + breaks;
+        self.content_height = rows as f32 * (thumb_height + LABEL_GAP + LABEL_HEIGHT)
+            + headers as f32 * GROUP_HEADER_HEIGHT
+            + lines.saturating_sub(1) as f32 * ROW_GAP;
     }
 
     /// Opens the overview, zooming the current page (`page`, logical) into its card.
@@ -747,6 +886,9 @@ impl Overview {
             // The card being zoomed is shown by the ghost instead.
             let hidden = zooming && Some(card.view) == ghost_view;
             ui.set_opacity(card.image, if hidden { 0.0 } else { 1.0 });
+        }
+        for (image, view) in self.dying.iter().filter_map(|g| g.image) {
+            ui.set_image(image, frame_of(view));
         }
         ui.set_visible(self.ghost, zooming);
         if zooming {

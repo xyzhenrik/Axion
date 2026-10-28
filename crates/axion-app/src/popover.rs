@@ -50,9 +50,23 @@ pub struct Popover {
     detach: bool,
     /// Where it opens to (logical px).
     target: Frame,
+    /// Never joined to its anchor's glass: no bridge, a card of its own from the start.
+    unjoined: bool,
 }
 
 impl Popover {
+    /// Stays a card of its own: it flows out of its anchor but is never merged with the anchor's
+    /// glass by a bridge.
+    pub fn unjoined(mut self) -> Self {
+        self.unjoined = true;
+        self
+    }
+
+    /// Where it opens to (logical px).
+    pub fn target(&self) -> Frame {
+        self.target
+    }
+
     /// Floats free of its anchor once open (joined only while it flows out and back in).
     pub fn detached(mut self) -> Self {
         self.detach = true;
@@ -78,6 +92,7 @@ impl Popover {
             Widget::container().with_background(Background::Glass(LEVEL)).as_join(),
             Style { position: Position::Absolute, ..Default::default() },
         );
+        ui.claim_space(root);
         ui.set_visible(bridge, false);
         ui.set_visible(root, false);
         Self {
@@ -92,6 +107,7 @@ impl Popover {
             covered: Vec::new(),
             detach: false,
             target: Frame::default(),
+            unjoined: false,
         }
     }
 
@@ -115,6 +131,11 @@ impl Popover {
         (self.drip.phase() != Phase::Closed).then(|| self.drip.frame().origin.y)
     }
 
+    /// The glass's frame as it is drawn now (`None` while closed).
+    pub fn frame(&self) -> Option<Frame> {
+        (self.drip.phase() != Phase::Closed).then(|| self.drip.frame())
+    }
+
     /// Open or opening.
     pub fn is_open(&self) -> bool {
         matches!(self.drip.phase(), Phase::Opening | Phase::Open)
@@ -133,6 +154,7 @@ impl Popover {
     /// it is closing it turns around.
     pub fn open(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, target: Frame) {
         self.target = target;
+        ui.set_claim_target(self.root, Some(target));
         crate::menu::place(ui, self.root, self.parent, target);
         ui.set_visible(self.root, true);
         self.find_join(ui, anchor);
@@ -150,6 +172,7 @@ impl Popover {
         if !self.is_open() {
             return;
         }
+        ui.set_claim_target(self.root, Some(target));
         crate::menu::place(ui, self.root, self.parent, target);
         self.drip.retarget(target);
     }
@@ -157,6 +180,7 @@ impl Popover {
     /// Flows back into `anchor` instead (a submenu, when its whole menu closes).
     pub fn close_into(&mut self, ui: &mut Ui, config: &Config, anchor: Frame) {
         if self.drip.phase() != Phase::Closed {
+            ui.set_claim_target(self.root, None);
             self.drip.close_into(config, anchor);
             self.animate(ui, 0.0);
         }
@@ -169,6 +193,7 @@ impl Popover {
 
     /// Flows back into the anchor.
     pub fn close(&mut self, ui: &mut Ui, config: &Config) {
+        ui.set_claim_target(self.root, None);
         self.drip.close(config);
         self.animate(ui, 0.0);
     }
@@ -193,7 +218,7 @@ impl Popover {
         // Flat mode fades the card in and out instead (1 otherwise: nothing changes).
         ui.set_opacity(self.root, self.drip.fade());
         // Flat mode has no bridges: the card is just a card.
-        let mut bridge = self.join.filter(|_| !ui.theme().flat()).and_then(|(join, r)| {
+        let mut bridge = self.join.filter(|_| !ui.theme().flat() && !self.unjoined).and_then(|(join, r)| {
             bridge_frame_reaching(join, r, frame, self.radius, self.bridge_depth, self.bridge_into_join)
         });
         if self.detach {

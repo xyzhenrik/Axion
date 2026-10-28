@@ -1,0 +1,16 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<gupdate xmlns='http://www.google.com/update2/response' protocol='2.0' server='prod'>
+  <daystart elapsed_days='7000' elapsed_seconds='3600'/>
+  <app appid='dhdgffkkebhmkfjojejmpbldmpobfkfo' cohort='1::' cohortname='' status='ok'>
+    <updatecheck codebase='https://clients2.googleusercontent.com/crx/blobs/AAAA/DHDG_5_5_1_0.crx?x=1&amp;y=2' fp='1.0123' hash_sha256='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' protected='0' size='1718930' status='ok' version='5.5.1'/>
+  </app>
+  <app appid='cjpalhdlnbpafiamejdnhcphjbkeiagm' cohort='1::' cohortname='' status='ok'>
+    <updatecheck status='noupdate'/>
+  </app>
+  <app appid='gcbommkclmclpchllfjekcdonpmejbdp' status='ok'>
+    <updatecheck codebase='https://evil.example.org/x.crx' status='ok' version='2.0'/>
+  </app>
+  <app appid='not-an-id' status='ok'>
+    <updatecheck codebase='https://clients2.google.com/x.crx' status='ok' version='2.0'/>
+  </app>
+</gupdate>

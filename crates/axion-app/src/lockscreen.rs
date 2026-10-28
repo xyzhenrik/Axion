@@ -43,7 +43,7 @@ fn capsule_button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, pri
     let background = if primary {
         Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
     } else {
-        Background::Fill(Paint::Label, 0.08)
+        Background::Glass(GlassLevel::Thin)
     };
     let button = ui.add(
         parent,
@@ -199,6 +199,7 @@ impl LockScreen {
         );
         capsule_button(ui, buttons, CANCEL, tr("Cancel"), false);
         capsule_button(ui, buttons, UNLOCK, tr("Unlock"), true);
+        ui.claim_space(alert);
         ui.set_visible(alert_layer, false);
         ui.set_visible(root, false);
         Self {
