@@ -174,6 +174,21 @@ pub const INDEX: &[Entry] = &[
     ),
     control(
         C::General,
+        S::HomeGlassGround,
+        &[
+            "start page",
+            "background",
+            "default",
+            "ground",
+            "grey",
+            "gray",
+            "startseite",
+            "hintergrund",
+            "grau",
+        ],
+    ),
+    control(
+        C::General,
         S::HomeLive,
         &[
             "start page",

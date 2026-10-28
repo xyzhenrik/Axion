@@ -79,6 +79,7 @@ What the start page shows. The same switches are in the gear on the page itself.
 | Background picker | Choose **None**, one of your backgrounds, or add one. Click the cross on a card to remove it. | None | `home.background` |
 | **Dim** | Darkens the background so text stays readable. Shown once a background is selected (search lists it as "Dim background image"). 0 to 80 %. | 20 % | `home.background_dim` |
 | **Blur** | Blurs the background. Shown once a background is selected ("Blur background image" in search). Off to 30 px. | Off | `home.background_blur` |
+| **Chrome colour as default background** | Without a background image the start page uses the neutral grey of the window around the page (light or dark) instead of plain white or black. Private tabs stay dark. | On | `home.glass_ground` |
 | **Live wallpapers (animated images and videos)** | Lets animated images (GIF, WebP) and videos (WebM, MP4) play, muted and looping. Off: they show a still frame. | On | `home.live_wallpapers` |
 | **Play live wallpapers with Reduce Motion** | Keeps live wallpapers playing while **Reduce motion** is on. Off: they show a still frame then. | On | `home.live_wallpapers_ignore_reduce_motion` |
 | **Add from file** (**Add**) | Type a path such as `~/Pictures/sea.jpg` and press **Add**. The file is copied into your account. MP4 needs H.264 support. | - | - |
