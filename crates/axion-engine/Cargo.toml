@@ -14,6 +14,7 @@ cef.workspace = true
 glam.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+ureq = "3"
 wgpu.workspace = true
 
 [lints]

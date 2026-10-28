@@ -59,6 +59,15 @@ pub fn init(event_loop: &ActiveEventLoop, window: &Arc<Window>, choice: &Adapter
         required_features: adapter.features() & wanted,
         ..Default::default()
     }))?;
+    // wgpu's default handler panics on the first GPU error (a validation error in one frame, an
+    // out-of-memory); a panic in the render path kills the browser with every open tab. Log it
+    // instead: the frame is wrong at worst, and the next one is drawn again.
+    device.on_uncaptured_error(Arc::new(|error: wgpu::Error| {
+        tracing::error!(%error, "GPU error (frame skipped or wrong; not fatal)");
+    }));
+    device.set_device_lost_callback(|reason, message| {
+        tracing::error!(?reason, %message, "GPU device lost: the window can no longer draw");
+    });
     Ok((instance, surface, adapter, device, queue))
 }
 
