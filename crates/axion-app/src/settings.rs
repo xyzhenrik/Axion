@@ -210,6 +210,10 @@ enum Setting {
     RestoreSession,
     OpenInBackground,
     MiddleClickClosesTab,
+    NewTabJoinsGroup,
+    GroupChipsInBar,
+    ShowAudioIndicator,
+    RememberSiteMute,
     DragOutLinks,
     HomeButton,
     OwnFullscreenControls,
@@ -227,6 +231,7 @@ enum Setting {
     ClearCacheItem,
     ClearDownloadsItem,
     OfferToSavePasswords,
+    ExtensionsEnabled,
     AutofillPasswords,
     ClearClipboardAfter,
     PlaylistQuickAction,
@@ -286,6 +291,10 @@ impl Setting {
             Setting::RestoreSession => tr_mark("Reopen last session's tabs at start"),
             Setting::OpenInBackground => tr_mark("Open new tabs in background"),
             Setting::MiddleClickClosesTab => tr_mark("Middle click closes tabs"),
+            Setting::NewTabJoinsGroup => tr_mark("New tabs join the group they open from"),
+            Setting::GroupChipsInBar => tr_mark("Show tab group names in the tab bar"),
+            Setting::ShowAudioIndicator => tr_mark("Show a speaker on tabs playing sound"),
+            Setting::RememberSiteMute => tr_mark("Remember muted sites"),
             Setting::DragOutLinks => tr_mark("Drag tabs out as links"),
             Setting::HomeButton => tr_mark("Show home button"),
             Setting::OwnFullscreenControls => tr_mark("Axion's player in fullscreen"),
@@ -303,6 +312,7 @@ impl Setting {
             Setting::ClearCacheItem => tr_mark("Cached images and files"),
             Setting::ClearDownloadsItem => tr_mark("Downloads list"),
             Setting::OfferToSavePasswords => tr_mark("Offer to save passwords"),
+            Setting::ExtensionsEnabled => tr_mark("Chrome extensions (after restart)"),
             Setting::AutofillPasswords => tr_mark("Offer to fill saved passwords"),
             Setting::ClearClipboardAfter => tr_mark("Clear clipboard after copying"),
             Setting::PlaylistQuickAction => tr_mark("Playlist button in the address field"),
@@ -346,6 +356,10 @@ impl Setting {
                 | Setting::RestoreSession
                 | Setting::OpenInBackground
                 | Setting::MiddleClickClosesTab
+                | Setting::NewTabJoinsGroup
+                | Setting::GroupChipsInBar
+                | Setting::ShowAudioIndicator
+                | Setting::RememberSiteMute
                 | Setting::DragOutLinks
                 | Setting::OwnFullscreenControls
                 | Setting::HardwareDecoding
@@ -361,6 +375,7 @@ impl Setting {
                 | Setting::ClearCacheItem
                 | Setting::ClearDownloadsItem
                 | Setting::OfferToSavePasswords
+                | Setting::ExtensionsEnabled
                 | Setting::AutofillPasswords
                 | Setting::PlaylistQuickAction
                 | Setting::PlaylistAutoDownload
@@ -476,6 +491,10 @@ impl Setting {
             Setting::RestoreSession => return c.tabs.restore_session as u8 as f32,
             Setting::OpenInBackground => return c.tabs.open_links_in_background as u8 as f32,
             Setting::MiddleClickClosesTab => return c.tabs.middle_click_closes_tab as u8 as f32,
+            Setting::NewTabJoinsGroup => return c.tabs.new_tab_joins_group as u8 as f32,
+            Setting::GroupChipsInBar => return c.tabs.group_chips_in_bar as u8 as f32,
+            Setting::ShowAudioIndicator => return c.tabs.show_audio_indicator as u8 as f32,
+            Setting::RememberSiteMute => return c.tabs.remember_site_mute as u8 as f32,
             Setting::DragOutLinks => return c.tabs.drag_out_links as u8 as f32,
             Setting::HomeButton => return c.layout.home_button as u8 as f32,
             Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
@@ -492,6 +511,7 @@ impl Setting {
             Setting::ClearCacheItem => return c.data.clear_cache as u8 as f32,
             Setting::ClearDownloadsItem => return c.data.clear_downloads as u8 as f32,
             Setting::OfferToSavePasswords => return c.passwords.offer_to_save as u8 as f32,
+            Setting::ExtensionsEnabled => return c.extensions.enabled as u8 as f32,
             Setting::AutofillPasswords => return c.passwords.autofill as u8 as f32,
             Setting::PlaylistQuickAction => return c.playlist.quick_action as u8 as f32,
             Setting::PlaylistAutoDownload => return c.playlist.auto_download as u8 as f32,
@@ -559,6 +579,10 @@ impl Setting {
             Setting::RestoreSession => c.tabs.restore_session = on,
             Setting::OpenInBackground => c.tabs.open_links_in_background = on,
             Setting::MiddleClickClosesTab => c.tabs.middle_click_closes_tab = on,
+            Setting::NewTabJoinsGroup => c.tabs.new_tab_joins_group = on,
+            Setting::GroupChipsInBar => c.tabs.group_chips_in_bar = on,
+            Setting::ShowAudioIndicator => c.tabs.show_audio_indicator = on,
+            Setting::RememberSiteMute => c.tabs.remember_site_mute = on,
             Setting::DragOutLinks => c.tabs.drag_out_links = on,
             Setting::HomeButton => c.layout.home_button = on,
             Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
@@ -575,6 +599,7 @@ impl Setting {
             Setting::ClearCacheItem => c.data.clear_cache = on,
             Setting::ClearDownloadsItem => c.data.clear_downloads = on,
             Setting::OfferToSavePasswords => c.passwords.offer_to_save = on,
+            Setting::ExtensionsEnabled => c.extensions.enabled = on,
             Setting::AutofillPasswords => c.passwords.autofill = on,
             Setting::PlaylistQuickAction => c.playlist.quick_action = on,
             Setting::PlaylistAutoDownload => c.playlist.auto_download = on,
@@ -1926,6 +1951,10 @@ impl SettingsSheet {
                 }
                 self.control(ui, config, Setting::OpenInBackground);
                 self.control(ui, config, Setting::MiddleClickClosesTab);
+                self.control(ui, config, Setting::NewTabJoinsGroup);
+                self.control(ui, config, Setting::GroupChipsInBar);
+                self.control(ui, config, Setting::ShowAudioIndicator);
+                self.control(ui, config, Setting::RememberSiteMute);
                 self.control(ui, config, Setting::DragOutLinks);
                 let row_node = self.row(ui, tr("Close tabs"));
                 let options: Vec<(&str, ActionId)> = CLOSE_AFTER
@@ -2115,15 +2144,10 @@ impl SettingsSheet {
                 }
                 self.site_permissions_section(ui, config);
                 self.section(ui, tr("Extensions"));
-                let row_node = self.row(ui, tr("Chrome extensions"));
-                let state =
-                    ui.add_label(row_node, tr("Not supported yet"), TextStyle::Callout, Style::default());
-                if let Some(w) = ui.widget_mut(state) {
-                    w.set_paint(Paint::Secondary);
-                }
+                self.control(ui, config, Setting::ExtensionsEnabled);
                 self.note(
                     ui,
-                    tr("Chrome extensions are not supported yet; the Chrome Web Store cannot install them."),
+                    tr("Manifest V3 extensions are installed from the extensions button in the toolbar (an unpacked folder or a .crx file). Each extension's permissions are listed there. The Chrome Web Store cannot install them."),
                 );
             }
             Category::Passwords => {
@@ -4080,6 +4104,7 @@ fn shortcut_actions() -> Vec<KeyAction> {
         NewTab,
         CloseTab,
         ReopenClosedTab,
+        SearchTabs,
         NextTab,
         PreviousTab,
         PinTab,
@@ -4103,6 +4128,7 @@ fn shortcut_actions() -> Vec<KeyAction> {
         OpenPasswords,
         ToggleSidebar,
         OpenSettings,
+        CommandPalette,
         ToggleFullscreen,
         Quit,
         Lock,
@@ -4124,24 +4150,24 @@ fn shortcut_actions() -> Vec<KeyAction> {
 
 /// The heading a shortcut is listed under on the Keyboard page; consecutive actions in
 /// `shortcut_actions` with the same heading share one section.
-fn shortcut_group(action: KeyAction) -> &'static str {
+pub(crate) fn shortcut_group(action: KeyAction) -> &'static str {
     use KeyAction::*;
     match action {
-        NewTab | CloseTab | ReopenClosedTab | NextTab | PreviousTab | PinTab | TabOverview | SelectTab(_)
-        | SelectLastTab => tr("Tabs"),
+        NewTab | CloseTab | ReopenClosedTab | SearchTabs | NextTab | PreviousTab | PinTab | TabOverview
+        | SelectTab(_) | SelectLastTab => tr("Tabs"),
         FocusAddressBar | Back | Forward | Reload | HardReload => tr("Navigation"),
         Find | FindNext | FindPrevious | ZoomIn | ZoomOut | ZoomReset | Paste | PastePlainText => tr("Page"),
         BookmarkPage | ShowBookmarks | ShowHistory | OpenPlaylist | PlaylistAdd | OpenPasswords
         | ToggleSidebar => tr("Panels"),
         Lock => tr("Privacy"),
         DevTools | DevToolsConsole | ViewSource => tr("Developer"),
-        OpenSettings | ToggleFullscreen | Quit => tr("Window"),
+        OpenSettings | CommandPalette | ToggleFullscreen | Quit => tr("Window"),
         _ => tr("Media (fullscreen video)"),
     }
 }
 
 /// The name a shortcut is listed under, translated.
-fn shortcut_name(action: KeyAction) -> &'static str {
+pub(crate) fn shortcut_name(action: KeyAction) -> &'static str {
     tr(shortcut_source_name(action))
 }
 
@@ -4152,6 +4178,7 @@ fn shortcut_source_name(action: KeyAction) -> &'static str {
         NewTab => tr_mark("New tab"),
         CloseTab => tr_mark("Close tab"),
         ReopenClosedTab => tr_mark("Reopen closed tab"),
+        SearchTabs => tr_mark("Search tabs"),
         NextTab => tr_mark("Next tab"),
         PreviousTab => tr_mark("Previous tab"),
         PinTab => tr_mark("Pin tab"),
@@ -4181,6 +4208,7 @@ fn shortcut_source_name(action: KeyAction) -> &'static str {
         OpenPasswords => tr_mark("Open passwords"),
         ToggleSidebar => tr_mark("Toggle sidebar"),
         OpenSettings => tr_mark("Open settings"),
+        CommandPalette => tr_mark("Command palette"),
         ToggleFullscreen => tr_mark("Toggle fullscreen"),
         Quit => tr_mark("Quit"),
         Lock => tr_mark("Lock"),

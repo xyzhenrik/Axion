@@ -34,10 +34,13 @@ use crate::context_menu::ContextMenus;
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
 use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
+use crate::extensions::Extensions;
+use crate::extensions_popover::{ExtensionsAction, ExtensionsPopover};
 use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::filedrop::{DropOutcome, FileDrop};
 use crate::find::{FindAction, FindBar};
 use crate::frame_rate::{self, RefreshWatch};
+use crate::group_sheet::{GroupSheet, GroupSheetAction};
 use crate::home::{HomeAction, HomePage, REFRESH_SCRIPT, is_home_url};
 use crate::import::Importer;
 use crate::input::{self, ClickCounter};
@@ -53,6 +56,7 @@ use crate::now_playing::{Art, ArtStore, first_web_url};
 use crate::onboarding::Onboarding;
 use crate::overview::{Overview, OverviewAction};
 use crate::page_color::{PageTint, TintParams, lightness};
+use crate::palette::CommandPalette;
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
 use crate::perf_log::{FrameOutcome, PerfLog};
 use crate::pip::{PipControl, PipOutcome, PipWindow};
@@ -69,8 +73,9 @@ use crate::settings::{AccountInfo, Category, Outcome, SettingsAction, SettingsSh
 use crate::shields::ShieldsState;
 use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
 use crate::suggestions::{SuggestionList, suggest};
+use crate::tab_search::TabSearch;
 use crate::tabdrag::{TabDrag, Target};
-use crate::tabs::{Tab, Tabs, ZOOM_STEP};
+use crate::tabs::{Tab, Tabs};
 use crate::toast::Toast;
 use crate::tooltip::Tooltip;
 use crate::typing_probe;
@@ -79,6 +84,7 @@ use crate::update_alert::{AlertAction, AlertView, Tone, UpdateAlert};
 use crate::url::display_host;
 use crate::url::resolve_input;
 use crate::window_resize::{Debounce, ResizePacer};
+use crate::zoom::{self, SiteZoom};
 
 mod context;
 mod import;
@@ -87,6 +93,7 @@ mod page_context;
 mod permissions;
 mod playlist;
 mod reading;
+mod tabgroups;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
 /// `AXION_RESIZE_LOG`: a resize's timings are logged once no resize came for this long.
@@ -193,8 +200,6 @@ const PANEL_SEARCH_LIMIT: usize = 1000;
 /// The History panel's clear button, and what it says while asking to confirm.
 const CLEAR_HISTORY: &str = tr_mark("Clear History…");
 const CLEAR_HISTORY_CONFIRM: &str = tr_mark("Click Again to Clear");
-/// Chromium's zoom levels are powers of this factor.
-const ZOOM_BASE: f64 = 1.2;
 /// Pixels per wheel notch.
 const LINE_SCROLL: f32 = 100.0;
 /// Slide anchors (see `Browser::slide_anchor`): the frame's right edge or its middle stays on
@@ -257,6 +262,13 @@ pub struct Browser {
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
     downloads_popover: DownloadsPopover,
+    /// Chrome extensions: the installed list, and the popover of the toolbar's puzzle piece.
+    extensions: Extensions,
+    extensions_popover: ExtensionsPopover,
+    /// The extension whose details the popover shows (else the list).
+    extensions_details: Option<String>,
+    /// The details' Remove button was clicked once.
+    extensions_confirm_remove: bool,
     /// Site permissions: the prompt, the recording indicator's popover and the decisions.
     permissions: permissions::PermissionsUi,
     toast: Toast,
@@ -276,6 +288,7 @@ pub struct Browser {
     /// What the sidebar panel's search field held when the list was last built.
     panel_query: String,
     find: FindBar,
+    palette: CommandPalette,
     /// Files dragged over the window from the desktop.
     file_drop: FileDrop,
     /// Starts drags of a tab's link into other apps (see `platform::dragout`); `None` before it
@@ -339,6 +352,8 @@ pub struct Browser {
     importer: Importer,
     /// History and bookmarks; `None` if the database couldn't be opened (browsing still works).
     store: Option<axion_store::Store>,
+    /// Sites' remembered page zoom (see `zoom`).
+    site_zoom: SiteZoom,
     /// Search text the overview's cards were last built for.
     overview_query: String,
     last_frame: Instant,
@@ -351,6 +366,15 @@ pub struct Browser {
     account_id: String,
     account_menu: Menu,
     add_account: AddAccountSheet,
+    /// The sheet that names a tab group, and tab search (Ctrl+Shift+A).
+    group_sheet: GroupSheet,
+    tab_search: TabSearch,
+    /// What tab search last searched for (`None`: not yet).
+    tab_search_query: Option<String>,
+    /// Sites muted by "Mute Site" (hosts).
+    muted_sites: std::collections::HashSet<String>,
+    /// The tab group whose header menu is open.
+    context_group: Option<u32>,
     /// The first-run introduction (see `crate::onboarding`), and the interface language this
     /// run started in (a different one at the end relaunches Axion).
     onboarding: Onboarding,
@@ -650,8 +674,10 @@ impl Browser {
         }
         let store_path = store.as_ref().map(|_| profile.join("axion.sqlite"));
         PrivateLock::drop_old_password(store.as_ref());
+        let muted_sites = tabgroups::load_muted_sites(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
         let downloads = Downloads::new(profile.clone());
+        let extensions = Extensions::new(&profile, store.as_ref());
         let vault_path = profile.join("vault.sqlite");
         let mut engine = CefEngine::new(
             device.clone(),
@@ -679,6 +705,7 @@ impl Browser {
                 hardware_video_decoding: crate::hardware::video_decoding(&config),
                 extra_switches: crate::hardware::chromium_switches(&config.hardware),
                 extensions_enabled: config.extensions.enabled,
+                load_extensions: extensions.load_dirs(),
                 waker: options.waker.clone(),
             },
         )?;
@@ -708,9 +735,11 @@ impl Browser {
         let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
         let reading = reading::ReadingUi::build(&mut ui, chrome.bar_node(), &profile, &config);
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
+        let extensions_popover = ExtensionsPopover::build(&mut ui, chrome.bar_node());
         let permissions = permissions::PermissionsUi::build(&mut ui, chrome.bar_node(), store.as_ref());
         let toast = Toast::build(&mut ui, chrome.bar_node());
         let find = FindBar::build(&mut ui, chrome.bar_node());
+        let palette = CommandPalette::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
         let mut settings = SettingsSheet::build(&mut ui);
         settings.set_hardware(hardware_status.clone());
@@ -752,6 +781,8 @@ impl Browser {
         let playlist_ui =
             playlist::PlaylistUi::build(&mut ui, &config, chrome.bar_node(), device.clone(), queue.clone());
         let add_account = AddAccountSheet::build(&mut ui);
+        let group_sheet = GroupSheet::build(&mut ui);
+        let tab_search = TabSearch::build(&mut ui);
         let onboarding = Onboarding::build(&mut ui);
         let update_alert = UpdateAlert::build(&mut ui);
         let update_check_at = axion_update::auto_check_due(&config.updates, &axion_update::SystemClock)
@@ -795,6 +826,10 @@ impl Browser {
             shields_popover,
             reading,
             downloads_popover,
+            extensions,
+            extensions_popover,
+            extensions_details: None,
+            extensions_confirm_remove: false,
             permissions,
             toast,
             updater: Updater::new(),
@@ -807,6 +842,7 @@ impl Browser {
             tooltip,
             panel_query: String::new(),
             find,
+            palette,
             file_drop: FileDrop::default(),
             drag_out: None,
             drag_out_tried: false,
@@ -844,6 +880,7 @@ impl Browser {
             last_saved_config: None,
             panel_urls: Vec::new(),
             panel: None,
+            site_zoom: SiteZoom::load(store.as_ref()),
             store,
             favicons,
             downloads,
@@ -864,6 +901,11 @@ impl Browser {
             account_id,
             account_menu,
             add_account,
+            group_sheet,
+            tab_search,
+            tab_search_query: None,
+            muted_sites,
+            context_group: None,
             onboarding,
             start_language,
             avatars,
@@ -1010,6 +1052,7 @@ impl Browser {
     fn update_layout(&mut self) {
         self.resize_counters.layouts += 1;
         let size = self.logical_size();
+        self.chrome.set_extensions_button(&mut self.ui, self.config.extensions.enabled);
         self.ui.set_viewport(size, self.scale());
         self.chrome.apply_layout(&mut self.ui, &self.config, size);
         let tabs = if self.is_locked() { &self.no_tabs } else { &self.tabs };
@@ -1161,12 +1204,45 @@ impl Browser {
                 self.engine.run_script(view, REFRESH_SCRIPT, false);
             }
             self.wake(view);
+            self.sync_tab_zoom(view);
             self.engine.set_hidden(view, false);
             self.engine.resize(view, self.view_size());
             self.engine.set_focus(view, true);
         }
         self.chrome.set_editing(&mut self.ui, false);
         self.tabs_changed = true;
+    }
+
+    /// The address field shows the zoom while the page is not at its default.
+    fn update_zoom_indicator(&mut self) {
+        let text = self
+            .tabs
+            .active()
+            .filter(|t| self.config.zoom.show_indicator && !SiteZoom::is_default(&self.config, t.zoom))
+            .map(|t| zoom::label(t.zoom));
+        self.chrome.set_zoom_indicator(&mut self.ui, text);
+    }
+
+    /// Zooms the page to `level` (Chromium zoom level) and remembers it on the tab.
+    fn set_tab_zoom(&mut self, view: ViewId, level: f64) {
+        if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
+            tab.zoom = level;
+        }
+        self.engine.set_zoom_level(view, level);
+    }
+
+    /// Brings a tab's zoom to what its site wants (after it loaded another address, or the
+    /// zoom settings changed).
+    fn sync_tab_zoom(&mut self, view: ViewId) {
+        let Some(tab) = find_tab(&self.tabs, &self.parked, view) else { return };
+        // Pages without a site (files, internal pages) keep the zoom the tab has.
+        if axion_shields::site::host(&tab.url).is_none() {
+            return;
+        }
+        let want = self.site_zoom.level(&self.config, &tab.url);
+        if (want - tab.zoom).abs() > 1e-6 {
+            self.set_tab_zoom(view, want);
+        }
     }
 
     fn active_view(&self) -> Option<ViewId> {
@@ -1253,17 +1329,19 @@ impl Browser {
                 self.update_layout();
             }
             Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
-                if let Some(tab) = self.tabs.active_mut() {
-                    tab.zoom = match action {
-                        Action::ZoomIn => tab.zoom + ZOOM_STEP,
-                        Action::ZoomOut => tab.zoom - ZOOM_STEP,
-                        _ => 0.0,
+                if let Some(tab) = self.tabs.active() {
+                    let level = match action {
+                        Action::ZoomIn => SiteZoom::stepped(&self.config, tab.zoom, 1),
+                        Action::ZoomOut => SiteZoom::stepped(&self.config, tab.zoom, -1),
+                        _ => SiteZoom::default_level(&self.config),
                     };
-                    let (view, zoom) = (tab.view, tab.zoom);
-                    self.engine.set_zoom_level(view, zoom);
+                    let (view, url, persist) = (tab.view, tab.url.clone(), !tab.private);
+                    self.site_zoom.set(self.store.as_ref(), &self.config, &url, level, persist);
+                    self.set_tab_zoom(view, level);
                 }
             }
             Action::ToggleFullscreen => self.set_presentation(!self.chrome.presentation()),
+            Action::SearchTabs => self.toggle_tab_search(),
             Action::TabOverview => {
                 if self.overview.is_open() {
                     self.close_overview(self.tabs.active_index());
@@ -1354,7 +1432,14 @@ impl Browser {
                     self.clipboard_reader.read(view, action == Action::PastePlainText, max);
                 }
             }
-            Action::Quit => {}
+            Action::Quit => self.quit_at = Some(Instant::now()),
+            Action::CommandPalette => {
+                if self.palette.is_open() {
+                    self.close_palette();
+                } else {
+                    self.open_palette();
+                }
+            }
             media if self.playlist_open() => self.playlist_media_key(media),
             media => {
                 if let Some((view, command)) = self.player.key_command(media, &self.config) {
@@ -1480,6 +1565,7 @@ impl Browser {
         self.menu.close(&mut self.ui, &self.config);
         self.shields_popover.close(&mut self.ui, &self.config);
         self.downloads_popover.close(&mut self.ui, &self.config);
+        self.extensions_popover.close(&mut self.ui, &self.config);
         // The actions below the list must fit in the menu.
         let shown = MAX_ITEMS - 3;
         let mut items: Vec<MenuItem> = self
@@ -2290,6 +2376,9 @@ impl Browser {
             return false;
         }
         let size = self.view_size();
+        let saved_groups = self.store.as_ref().and_then(|s| s.session_groups().ok()).unwrap_or_default();
+        // Restored tabs keep their saved groups (a tab next to a grouped one does not join it).
+        self.tabs.inherit_group = false;
         // Tabs not looked at for longer than the setting allows don't come back.
         let max_age = i64::from(self.config.tabs.close_after_days) * DAY_SECONDS;
         let now = unix_now();
@@ -2323,6 +2412,7 @@ impl Browser {
             let mut tab = Tab::new(view, url);
             tab.title.clone_from(title);
             tab.pinned = i < pinned;
+            tab.group = saved_tab.group.filter(|_| i >= pinned);
             if saved_tab.last_viewed > 0 {
                 tab.last_viewed = saved_tab.last_viewed;
             }
@@ -2332,6 +2422,8 @@ impl Browser {
             }
             self.tabs.insert(tab, true);
         }
+        self.tabs.inherit_group = self.config.tabs.new_tab_joins_group;
+        self.restore_groups(saved_groups);
         if kept == 0 {
             return false;
         }
@@ -2355,13 +2447,16 @@ impl Browser {
                 url: t.url.clone(),
                 title: t.title.clone(),
                 last_viewed: t.last_viewed,
+                group: t.group,
             })
             .collect();
+        let groups = Self::session_groups(normal);
         let active = normal.active_index();
         let pinned = normal.pinned_count().to_string();
         if let Some(store) = &mut self.store
             && let Err(e) = store
                 .save_session(&tabs, active)
+                .and_then(|()| store.save_session_groups(&groups))
                 .and_then(|()| store.set_meta(SESSION_PINNED_KEY, Some(&pinned)))
         {
             tracing::warn!("saving the session failed: {e}");
@@ -2861,7 +2956,7 @@ impl Browser {
         }
         let Some(tab) = self.tabs.active() else { return };
         let bookmarked = self.store.as_ref().and_then(|s| s.bookmark_for(&tab.url).ok().flatten()).is_some();
-        let zoom = zoom_label(tab.zoom);
+        let zoom = zoom::label(tab.zoom);
         let items = vec![
             if bookmarked {
                 MenuItem::new(Icon::Bookmark, tr("Remove Bookmark"), MenuAction::RemoveBookmark)
@@ -2915,6 +3010,43 @@ impl Browser {
         let anchor = self.chrome.page_menu_frame(&self.ui);
         let window = self.logical_size();
         self.menu.open(&mut self.ui, &self.config, anchor, window, items);
+    }
+
+    // ---- command palette ----
+
+    fn open_palette(&mut self) {
+        self.menu.close(&mut self.ui, &self.config);
+        self.account_menu.close(&mut self.ui, &self.config);
+        self.suggestions.hide(&mut self.ui, &self.config);
+        let anchor = self.chrome.address_frame(&self.ui);
+        let width = self.logical_size().x;
+        let top = self.page_rect().origin.y;
+        self.palette.open(&mut self.ui, &self.config, &self.keymap, anchor, width, top);
+        let events = self.ui.focus(self.palette.field());
+        self.handle_ui_events(events);
+    }
+
+    fn close_palette(&mut self) {
+        if !self.palette.is_open() {
+            return;
+        }
+        self.palette.close(&mut self.ui, &self.config);
+        if self.ui.focused() == Some(self.palette.field()) {
+            let events = self.ui.blur();
+            self.handle_ui_events(events);
+        }
+        if self.ui.focused().is_none()
+            && let Some(view) = self.active_view()
+        {
+            self.engine.set_focus(view, true);
+        }
+    }
+
+    /// Runs the palette's command at visible row `row` (the selected one for `None`).
+    fn run_palette_command(&mut self, row: Option<usize>) {
+        let Some(action) = self.palette.command_at(row).map(|c| c.action) else { return };
+        self.close_palette();
+        self.run(action);
     }
 
     // ---- find on page ----
@@ -3029,6 +3161,7 @@ impl Browser {
             MenuAction::AccountSettings => return self.open_account_settings(),
             MenuAction::LockAccount => return self.lock_account(),
             MenuAction::Tab(command) => return self.tab_command(command),
+            MenuAction::Group(command) => return self.tab_group_command(command),
             MenuAction::Bookmark(command) => return self.bookmark_command(command),
             MenuAction::Playlist(command) => return self.playlist_command(command),
             MenuAction::Page(command) => return self.page_command(command),
@@ -3062,7 +3195,7 @@ impl Browser {
                     _ => Action::ZoomReset,
                 });
                 // The menu stays open: show the new level.
-                if let Some(zoom) = self.tabs.active().map(|t| zoom_label(t.zoom)) {
+                if let Some(zoom) = self.tabs.active().map(|t| zoom::label(t.zoom)) {
                     self.menu.set_text(&mut self.ui, MenuAction::Zoom, &zoom);
                     self.menu.set_text(&mut self.ui, MenuAction::ZoomReset, &zoom);
                 }
@@ -3099,6 +3232,7 @@ impl Browser {
             | MenuAction::AccountSettings
             | MenuAction::LockAccount
             | MenuAction::Tab(_)
+            | MenuAction::Group(_)
             | MenuAction::Playlist(_)
             | MenuAction::Page(_)
             | MenuAction::Bookmark(_) => {}
@@ -3127,6 +3261,7 @@ impl Browser {
         self.shields_popover.close(&mut self.ui, &self.config);
         self.reading.close_popovers(&mut self.ui, &self.config);
         self.downloads_popover.close(&mut self.ui, &self.config);
+        self.extensions_popover.close(&mut self.ui, &self.config);
         self.permissions.capture.close(&mut self.ui, &self.config);
         self.suggestions.hide(&mut self.ui, &self.config);
         self.passwords.hide_prompt(None, false);
@@ -3157,7 +3292,13 @@ impl Browser {
         let Some(from) = self.group(item.private).index_of(item.view) else { return };
         match crate::private::drop_into(item.private, target.private, self.private_locked()) {
             TabDrop::Reorder => {
-                if self.group_mut(item.private).move_tab(from, target.index) {
+                let tabs = self.group_mut(item.private);
+                let moved = if item.private || tabs.all()[from].pinned {
+                    tabs.move_tab(from, target.index)
+                } else {
+                    tabs.place(from, target.index, target.tab_group).is_some()
+                };
+                if moved {
                     tracing::info!(from, to = target.index, private = item.private, "tab moved");
                 }
             }
@@ -3454,6 +3595,13 @@ impl Browser {
                         self.find_action(action);
                     }
                 }
+                UiEvent::Clicked { action, .. } if CommandPalette::row_action(action).is_some() => {
+                    self.run_palette_command(CommandPalette::row_action(action));
+                }
+                UiEvent::Submitted { node, .. } if node == self.palette.field() => {
+                    self.run_palette_command(None);
+                }
+                UiEvent::Cancelled { node } if node == self.palette.field() => self.close_palette(),
                 UiEvent::Submitted { node, .. } if node == self.find.field() => {
                     // Enter: the next match; Shift+Enter: the previous one. The field keeps
                     // the focus.
@@ -3562,6 +3710,29 @@ impl Browser {
                     let outcome = self.settings.action(&mut self.ui, action, &mut self.config, &self.keymap);
                     self.settings_outcome(outcome);
                 }
+                UiEvent::Submitted { node, .. } if node == self.group_sheet.field() => {
+                    self.group_sheet_action(GroupSheetAction::Save);
+                }
+                UiEvent::Clicked { action, .. } if self.group_sheet.action(action).is_some() => {
+                    let Some(action) = self.group_sheet.action(action) else { continue };
+                    let on_sheet = self.pointer.is_some_and(|p| self.group_sheet.contains(&self.ui, p));
+                    if action == GroupSheetAction::Cancel && on_sheet {
+                        continue;
+                    }
+                    self.group_sheet_action(action);
+                }
+                UiEvent::Submitted { node, .. } if node == self.tab_search.field() => {
+                    self.choose_search_result(None);
+                }
+                UiEvent::Clicked { action, .. }
+                    if TabSearch::is_backdrop(action) || TabSearch::row_of(action).is_some() =>
+                {
+                    if let Some(row) = TabSearch::row_of(action) {
+                        self.choose_search_result(Some(row));
+                    } else if !self.pointer.is_some_and(|p| self.tab_search.contains(&self.ui, p)) {
+                        self.tab_search.close(&mut self.ui);
+                    }
+                }
                 UiEvent::Submitted { node, .. } if node == self.add_account.field() => {
                     self.add_account_action(SheetAction::Create);
                 }
@@ -3623,6 +3794,14 @@ impl Browser {
                             self.show_all_downloads();
                         }
                         None => {}
+                    }
+                }
+                UiEvent::Clicked { action, .. }
+                    if self.permissions.prompt.is_picker()
+                        && self.permissions.prompt.picker_click(&mut self.ui, action) => {}
+                UiEvent::Clicked { action, .. } if self.extensions_popover.action(action).is_some() => {
+                    if let Some(action) = self.extensions_popover.action(action) {
+                        self.extensions_action(action);
                     }
                 }
                 UiEvent::Clicked { action, .. } if self.permissions.prompt.action(action).is_some() => {
@@ -3734,7 +3913,9 @@ impl Browser {
                     Some(ChromeAction::PlaylistButton) => self.toggle_playlist_popover(),
                     Some(ChromeAction::Reader) => self.reader_button_clicked(),
                     Some(ChromeAction::Translate) => self.translate_button_clicked(),
+                    Some(ChromeAction::ZoomIndicator) => self.run(Action::ZoomReset),
                     Some(ChromeAction::DownloadsButton) => self.toggle_downloads_popover(),
+                    Some(ChromeAction::ExtensionsButton) => self.toggle_extensions_popover(),
                     Some(ChromeAction::PanelButton(i, k)) => {
                         self.downloads.row_button(List::Panel, i, k, &mut self.engine);
                         self.show_panel_with(Panel::Downloads, true);
@@ -3756,11 +3937,17 @@ impl Browser {
                     Some(ChromeAction::Private) => self.chrome.toggle_section(&mut self.ui, Section::Private),
                     Some(ChromeAction::Capture) => self.toggle_capture_popover(),
                     Some(ChromeAction::MuteTab) => {
-                        if let Some(tab) = self.tabs.active_mut() {
-                            tab.muted = !tab.muted;
-                            let (view, muted) = (tab.view, tab.muted);
-                            self.engine.set_audio_muted(view, muted);
-                            self.tabs_changed = true;
+                        if let Some(tab) = self.tabs.active() {
+                            let (view, muted) = (tab.view, !tab.muted);
+                            self.set_tab_muted(view, muted);
+                        }
+                    }
+                    Some(ChromeAction::MuteTabAt(i)) => self.toggle_tab_mute_at(false, i),
+                    Some(ChromeAction::MuteOtherTabAt(i)) => self.toggle_tab_mute_at(true, i),
+                    Some(ChromeAction::ToggleTabGroup(id)) => {
+                        self.toggle_tab_group(id);
+                        if self.overview.is_open() {
+                            self.rebuild_overview();
                         }
                     }
                     Some(ChromeAction::NowPlaying) => {
@@ -3990,6 +4177,8 @@ impl Browser {
                         tab.url = url;
                         self.tabs_changed = true;
                     }
+                    self.sync_tab_zoom(view);
+                    self.apply_site_mute(view);
                 }
                 EngineEvent::TitleChanged { view, title } => {
                     if let (Some(store), Some(tab)) = (
@@ -4183,6 +4372,9 @@ impl Browser {
                 EngineEvent::PermissionRequest { view, id, origin, kinds } => {
                     self.permission_requested(view, id, origin, kinds);
                 }
+                EngineEvent::ScreenPickRequested { view, token, origin, audio } => {
+                    self.screen_pick_requested(view, token, origin, audio);
+                }
                 EngineEvent::PermissionCancelled { view, id } => self.permission_cancelled(view, id),
                 EngineEvent::CaptureChanged { view, audio, video } => {
                     self.capture_changed(view, audio, video)
@@ -4211,6 +4403,7 @@ impl Browser {
             }
         }
         self.downloads_pump(downloads_changed);
+        self.extensions_pump();
         self.check_capture_stops();
         self.apply_permission_defaults();
         self.import_pump();
@@ -4506,17 +4699,139 @@ impl Browser {
             || self.shields_popover.is_open()
             || self.reading.popovers_open()
             || self.downloads_popover.is_open()
+            || self.extensions_popover.is_open()
             || self.permissions.prompt.is_open()
             || self.permissions.capture.is_open()
             || self.suggestions.is_visible()
             || self.find.is_open()
+            || self.palette.is_open()
             || self.overview.is_open()
             || self.settings.is_open()
             || self.passwords.is_open()
             || self.add_account.is_open()
+            || self.group_sheet.is_open()
+            || self.tab_search.is_open()
             || self.onboarding.is_open()
             || self.update_alert.is_open()
             || self.lock_screen.is_alert_open()
+    }
+
+    /// Opens or closes the extensions popover (the toolbar's puzzle piece).
+    fn toggle_extensions_popover(&mut self) {
+        if self.extensions_popover.is_open() {
+            self.extensions_popover.close(&mut self.ui, &self.config);
+            return;
+        }
+        self.shields_popover.close(&mut self.ui, &self.config);
+        self.downloads_popover.close(&mut self.ui, &self.config);
+        self.menu.close(&mut self.ui, &self.config);
+        self.extensions_confirm_remove = false;
+        if self.extensions_details.as_ref().is_some_and(|id| self.extensions.get(id).is_none()) {
+            self.extensions_details = None;
+        }
+        self.open_extensions_popover();
+    }
+
+    /// Opens the extensions popover, or refreshes it.
+    fn open_extensions_popover(&mut self) {
+        let icons: Vec<_> = self
+            .extensions
+            .views()
+            .iter()
+            .map(|e| {
+                let path = e.icon.clone();
+                self.avatars.get(&format!("extension:{}", e.id), || path)
+            })
+            .collect();
+        let content = crate::extensions_popover::Content {
+            extensions: self.extensions.views(),
+            icons: &icons,
+            needs_restart: self.extensions.needs_restart(),
+            installing: self.extensions.is_installing(),
+            details: self.extensions_details.as_deref(),
+            confirm_remove: self.extensions_confirm_remove,
+        };
+        let anchor = self.chrome.extensions_frame(&self.ui);
+        let width = self.logical_size().x;
+        self.extensions_popover.open(&mut self.ui, &self.config, anchor, width, &content);
+    }
+
+    fn extensions_action(&mut self, action: ExtensionsAction) {
+        let current = self.extensions_details.clone();
+        let nth = |this: &Self, i: usize| this.extensions.views().get(i).map(|e| e.id.clone());
+        match action {
+            ExtensionsAction::InstallFolder => self.extensions.choose(crate::extensions::Pick::Folder),
+            ExtensionsAction::InstallPackage => self.extensions.choose(crate::extensions::Pick::Package),
+            ExtensionsAction::Relaunch => {
+                let id = self.account_id.clone();
+                self.relaunch_into(&id);
+            }
+            ExtensionsAction::Details(i) => self.extensions_details = nth(self, i),
+            ExtensionsAction::Back => {
+                self.extensions_details = None;
+                self.extensions_confirm_remove = false;
+            }
+            ExtensionsAction::Toggle(i) => {
+                if let Some(id) = nth(self, i) {
+                    let on = self.extensions.get(&id).is_some_and(|e| !e.enabled);
+                    self.extensions.set_enabled(&id, on, self.store.as_ref());
+                }
+            }
+            ExtensionsAction::DetailToggle => {
+                if let Some(id) = current {
+                    let on = self.extensions.get(&id).is_some_and(|e| !e.enabled);
+                    self.extensions.set_enabled(&id, on, self.store.as_ref());
+                }
+            }
+            ExtensionsAction::OpenPopup | ExtensionsAction::OpenOptions => {
+                let page = current.as_deref().and_then(|id| self.extensions.get(id)).and_then(|e| {
+                    let page = if action == ExtensionsAction::OpenPopup { &e.popup } else { &e.options_page };
+                    page.as_ref().map(|p| crate::extensions::page_url(&e.id, p))
+                });
+                if let Some(url) = page {
+                    self.extensions_popover.close(&mut self.ui, &self.config);
+                    if let Err(e) = self.open_tab(&url, true) {
+                        tracing::warn!("opening the extension page failed: {e}");
+                    }
+                    return;
+                }
+            }
+            ExtensionsAction::Remove => {
+                if !self.extensions_confirm_remove {
+                    self.extensions_confirm_remove = true;
+                } else if let Some(id) = current {
+                    self.extensions.remove(&id, self.store.as_ref());
+                    self.extensions_details = None;
+                    self.extensions_confirm_remove = false;
+                }
+            }
+        }
+        self.open_extensions_popover();
+    }
+
+    /// Results of extension installs; keeps an open popover current.
+    fn extensions_pump(&mut self) {
+        use crate::extensions::Event;
+        let events = self.extensions.poll(self.store.as_ref());
+        if events.is_empty() {
+            return;
+        }
+        for event in events {
+            match event {
+                Event::Installed(name) => {
+                    let text = axion_i18n::tr_fmt!("Installed {name}. Relaunch to use it.", name = name);
+                    self.show_toast(Icon::Extensions, &text);
+                }
+                Event::Failed(why) => {
+                    tracing::warn!("installing the extension failed: {why}");
+                    let text = axion_i18n::tr_fmt!("Could not install the extension: {why}", why = why);
+                    self.show_toast(Icon::Info, &text);
+                }
+            }
+        }
+        if self.extensions_popover.is_open() {
+            self.open_extensions_popover();
+        }
     }
 
     fn toggle_downloads_popover(&mut self) {
@@ -4524,6 +4839,7 @@ impl Browser {
             self.downloads_popover.close(&mut self.ui, &self.config);
         } else {
             self.shields_popover.close(&mut self.ui, &self.config);
+            self.extensions_popover.close(&mut self.ui, &self.config);
             self.menu.close(&mut self.ui, &self.config);
             self.open_downloads_popover();
         }
@@ -5429,6 +5745,14 @@ impl Browser {
             return;
         }
         if pressed
+            && self.extensions_popover.is_open()
+            && !self.extensions_popover.contains(&self.ui, p)
+            && !self.chrome.extensions_frame(&self.ui).contains(p)
+        {
+            self.extensions_popover.close(&mut self.ui, &self.config);
+            return;
+        }
+        if pressed
             && self.downloads_popover.is_open()
             && !self.downloads_popover.contains(&self.ui, p)
             && !self.chrome.downloads_frame(&self.ui).contains(p)
@@ -5437,6 +5761,10 @@ impl Browser {
             return;
         }
         if pressed && self.permissions_press(p) {
+            return;
+        }
+        if pressed && self.palette.is_open() && !self.palette.contains(&self.ui, p) {
+            self.close_palette();
             return;
         }
         if pressed && self.shields_popover.is_open() && !self.shields_popover.contains(&self.ui, p) {
@@ -5560,6 +5888,10 @@ impl Browser {
             let _ = self.ui.blur();
             return false;
         }
+        if pressed && self.palette.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.close_palette();
+            return false;
+        }
         // Escape closes Find on Page wherever the focus is (the page after a click on it too).
         if pressed && self.find.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.close_find();
@@ -5616,6 +5948,29 @@ impl Browser {
         }
         if pressed && self.add_account.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.add_account.close(&mut self.ui);
+            return false;
+        }
+        if pressed && self.group_sheet.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.group_sheet.close(&mut self.ui);
+            return false;
+        }
+        if pressed && self.tab_search.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.tab_search.close(&mut self.ui);
+            return false;
+        }
+        if pressed
+            && self.tab_search.is_open()
+            && let Some(Key::Named(name)) = input::key(event)
+            && (name == "Up" || name == "Down")
+        {
+            self.tab_search.move_selection(&mut self.ui, if name == "Up" { -1 } else { 1 });
+            return false;
+        }
+        if pressed
+            && self.extensions_popover.is_open()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            self.extensions_popover.close(&mut self.ui, &self.config);
             return false;
         }
         if pressed
@@ -5684,6 +6039,15 @@ impl Browser {
             if pressed && input::key(event) == Some(Key::Named("Escape".into())) {
                 self.close_overview(self.tabs.active_index());
             }
+            return false;
+        }
+
+        if pressed
+            && self.palette.is_open()
+            && let Some(Key::Named(name)) = input::key(event)
+            && (name == "Up" || name == "Down")
+        {
+            self.palette.move_selection(&mut self.ui, if name == "Up" { -1 } else { 1 });
             return false;
         }
 
@@ -5833,6 +6197,9 @@ impl Browser {
             self.update_layout();
             self.frame_times.layout += ms_since(started);
         }
+        if self.sync_tab_options() {
+            self.tabs_changed = true;
+        }
         let tabs_changed = self.tabs_changed;
         if std::mem::take(&mut self.tabs_changed) {
             self.update_now_playing();
@@ -5896,6 +6263,15 @@ impl Browser {
                 // and closing every popup at once (mid-animation with --lead / frame sequences).
                 "zoom-menu" => self.menu.open_first_submenu(&mut self.ui, &self.config),
                 "zoom-in" => self.menu_action(MenuAction::ZoomIn),
+                // Capture aids: a zoom step as the shortcut does it, and the command palette
+                // (with "palette:TEXT": TEXT typed into it).
+                "zoom-step" => self.run(Action::ZoomIn),
+                "palette" => self.open_palette(),
+                typed if typed.starts_with("palette:") => {
+                    self.open_palette();
+                    let (_, events) = self.ui.handle(UiInput::Text(typed["palette:".len()..].to_owned()));
+                    self.handle_ui_events(events);
+                }
                 "close-popups" => self.close_popups(),
                 "shields" => self.toggle_shields_popover(),
                 // Test aids: answer the permission prompt, open the recording indicator's
@@ -5908,6 +6284,12 @@ impl Browser {
                 "history" => self.show_panel(Panel::History),
                 "downloads" => self.show_panel(Panel::Downloads),
                 "downloads-popover" => self.toggle_downloads_popover(),
+                // Capture aids: the extensions popover, and the details of the first extension.
+                "extensions-popover" => self.toggle_extensions_popover(),
+                "extensions-details" => {
+                    self.extensions_details = self.extensions.views().first().map(|e| e.id.clone());
+                    self.toggle_extensions_popover();
+                }
                 // Test aids: the Share button's toast, and the sidebar list's search text
                 // ("panel-search:TEXT", after "history" / "bookmarks").
                 "share" => self.copy_link(),
@@ -6500,6 +6882,28 @@ impl Browser {
                     }
                 }
                 "account-menu" => self.toggle_account_menu(),
+                // Capture aids for tab groups and tab search: the search card (type into it with
+                // "ui-text:"), the sheet naming a new group for the active tab, and the menus of
+                // the first group's header and of sidebar tab N.
+                "tab-search" => self.toggle_tab_search(),
+                "group-sheet" => {
+                    if let Some(view) = self.active_view() {
+                        self.open_group_sheet(crate::group_sheet::GroupSheetPurpose::New(view));
+                    }
+                }
+                "group-menu" => {
+                    if let Some((id, node, sidebar)) = self.chrome.first_group_header() {
+                        self.open_tab_group_menu(id, node, sidebar);
+                    }
+                }
+                menu if menu.starts_with("tab-menu:") => {
+                    let n = menu["tab-menu:".len()..].parse::<usize>().ok();
+                    if let Some(item) =
+                        n.and_then(|n| self.chrome.tab_items(Surface::Sidebar).get(n).copied())
+                    {
+                        self.open_tab_menu(item);
+                    }
+                }
                 "add-account" => self.open_add_account(),
                 // Capture aid: type "add-account-name:NAME" into the open Add Account sheet.
                 name if name.starts_with("add-account-name:") => {
@@ -6657,13 +7061,19 @@ impl Browser {
         self.sync_page_menu();
         self.context_menus.animate(&mut self.ui, &self.config, dt);
         self.add_account.animate(&mut self.ui, dt);
+        self.group_sheet.animate(&mut self.ui, dt);
+        self.tab_search.animate(&mut self.ui, dt);
+        self.poll_tab_search();
         self.shields_popover.animate(&mut self.ui, dt);
         self.downloads_popover.animate(&mut self.ui, dt);
+        self.extensions_popover.animate(&mut self.ui, dt);
         let width = self.logical_size().x;
         let address = self.chrome.address_frame(&self.ui);
         let top = self.page_rect().origin.y;
         self.find.follow(&mut self.ui, address, width, top);
         self.find.animate(&mut self.ui, dt, &mut self.engine);
+        self.palette.follow(&mut self.ui, address, width, top);
+        self.palette.animate(&mut self.ui, dt);
         self.lock_screen.animate(&mut self.ui, dt);
         self.onboarding.animate(&mut self.ui, &self.config, dt);
         self.settings.animate(&mut self.ui, dt);
@@ -6673,6 +7083,7 @@ impl Browser {
         self.update_player(dt);
         self.update_playlist_buttons();
         self.update_reading();
+        self.update_zoom_indicator();
         self.playlist_ui.popover.animate(&mut self.ui, dt);
         self.reading.animate(&mut self.ui, dt);
         if self.playlist_open() {
@@ -7485,7 +7896,9 @@ fn chrome_allowed_while_locked(action: ChromeAction) -> bool {
             | ChromeAction::Share
             | ChromeAction::NewTab
             | ChromeAction::MuteTab
+            | ChromeAction::MuteTabAt(_)
             | ChromeAction::DownloadsButton
+            | ChromeAction::ExtensionsButton
             | ChromeAction::SelectTab(_)
             | ChromeAction::CloseTab(_)
             | ChromeAction::OpenBookmark(_)
@@ -7549,17 +7962,12 @@ fn bridge_secret() -> String {
     format!("{nanos:x}{:x}", std::process::id())
 }
 
-/// The page zoom as shown in the page menu ("100%").
-fn zoom_label(zoom: f64) -> String {
-    format!("{:.0}%", ZOOM_BASE.powf(zoom) * 100.0)
-}
-
 /// Milliseconds since `started` (frame timings).
 fn ms_since(started: Instant) -> f32 {
     started.elapsed().as_secs_f32() * 1000.0
 }
 
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 

@@ -321,6 +321,10 @@ pub const INDEX: &[Entry] = &[
         S::MiddleClickClosesTab,
         &["middle click", "mittlere maustaste", "close tab", "mouse wheel"],
     ),
+    control(C::Tabs, S::NewTabJoinsGroup, &["group", "tab group", "gruppe", "new tab"]),
+    control(C::Tabs, S::GroupChipsInBar, &["group", "chip", "name", "gruppe", "colour"]),
+    control(C::Tabs, S::ShowAudioIndicator, &["audio", "speaker", "mute", "sound", "lautsprecher", "ton"]),
+    control(C::Tabs, S::RememberSiteMute, &["mute site", "audio", "stumm", "ton"]),
     page(C::Tabs, tr_mark("Close tabs"), &["auto close", "old tabs", "cleanup", "schließen", "aufräumen"]),
     page(
         C::Tabs,
@@ -617,6 +621,11 @@ pub const INDEX: &[Entry] = &[
             "password manager",
             "passwortmanager",
         ],
+    ),
+    control(
+        C::Privacy,
+        S::ExtensionsEnabled,
+        &["extension", "extensions", "erweiterung", "erweiterungen", "chrome", "add-on", "addon", "plugin"],
     ),
     control(
         C::Passwords,

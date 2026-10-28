@@ -18,6 +18,7 @@ axion-accounts.workspace = true
 axion-compositor.workspace = true
 axion-config.workspace = true
 axion-engine.workspace = true
+axion-extensions.workspace = true
 axion-i18n.workspace = true
 axion-import.workspace = true
 axion-media.workspace = true
@@ -47,7 +48,7 @@ zeroize = "1"
 # Both already come with winit and arboard: the clipboard for pastes into pages (Wayland
 # data-control) and the pointer during file drags (X11).
 wl-clipboard-rs = "0.9"
-x11rb = { version = "0.13", default-features = false }
+x11rb = { version = "0.13", default-features = false, features = ["randr"] }
 # Dragging a tab out of the window starts a Wayland drag on winit's connection (winit 0.30 cannot
 # be a drag source; see `platform::dragout`). Both come with winit already.
 wayland-client = "0.31"
@@ -65,6 +66,7 @@ tpm = ["axion-vault/tpm"]
 [dev-dependencies]
 # A stub GPU device for tests that need one (favicons, the chrome built with tabs).
 wgpu = { workspace = true, features = ["noop"] }
+tempfile = "3"
 
 [lints]
 workspace = true

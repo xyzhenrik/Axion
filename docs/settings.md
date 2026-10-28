@@ -133,6 +133,12 @@ How tabs look and how Axion saves memory. See [Tabs and memory](features/tabs-an
 | **Page colour** (**Extreme** / **Dominant**) | Shown when **Colour in tab bar** is on. **Extreme** takes the darkest or lightest prominent colour. **Dominant** takes the main colour, evened out. Turning the colour on switches from neutral to **Extreme**. | Neutral (page colour off) | `appearance.tint_mode` (`neutral`, `extreme`, `dominant`) |
 | **Open new tabs in background** | Tabs opened from links do not take over the screen. | On | `tabs.open_links_in_background` |
 | **Middle click closes tabs** | A middle click on a tab (bar, sidebar or tab overview) closes it. | On | `tabs.middle_click_closes_tab` |
+| **New tabs join the group they open from** | A tab opened from a tab of a tab group (a link, **New Tab to the Right**) joins that group. | On | `tabs.new_tab_joins_group` |
+| **Show tab group names in the tab bar** | Tab groups get a coloured chip with their name in front of their tabs. Off: only a colour line under the tabs. | On | `tabs.group_chips_in_bar` |
+| **Show a speaker on tabs playing sound** | Tabs that play sound, or are muted, show a speaker in the tab bar and the sidebar. Click it to mute or unmute. | On | `tabs.show_audio_indicator` |
+| **Remember muted sites** | **Mute Site** in a tab's menu is remembered: tabs of that site start muted. | On | `tabs.remember_site_mute` |
+| Closed tabs remembered | How many closed tabs **Reopen Closed Tab** and the tab search remember. | 25 | `tabs.closed_tabs_remembered` |
+| History results in the tab search | At most this many history entries in the tab search (0: none). | 8 | `tabs.tab_search_history_results` |
 | **Drag tabs out as links** | Dragging a tab out of the window into another app drops its address there (a text field gets the link). | On | `tabs.drag_out_links` (`tabs.drag_out_distance`: how far outside the window counts as out, default 12 px) |
 | **Close tabs** | Closes tabs you have not looked at for a while: **Manually** (never), **After a Day**, **After a Week**, **After a Month**. Pinned tabs and tabs playing media stay. | Manually | `tabs.close_after_days` (0, 1, 7, 30) |
 | **Bookmarks bar** | When the bookmarks bar shows: **Always**, **On Home Page**, **Never**. | Always | `layout.bookmarks_bar` (`always`, `home`, `never`) |
@@ -236,6 +242,23 @@ Greek, Turkish, Arabic, Japanese and Korean. Pairs without English go through En
 
 A searchable list of all shortcuts, grouped by area. To change one, edit `keymap.toml`; edits
 apply immediately. See [Keyboard shortcuts](keyboard-shortcuts.md).
+
+### Command palette and page zoom
+
+Both are controlled in `config.toml` only (no Settings page yet).
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| Command palette (**Ctrl+K**) | A search sheet over every browser action with its shortcut; Up/Down choose, Enter runs, Esc closes. New actions appear in it by themselves. | - | keymap action `command_palette` |
+| Palette rows | How many commands are listed at once. | 8 | `command_palette.max_rows` |
+| Palette shortcuts | Shows each command's shortcut. | On | `command_palette.show_shortcuts` |
+| Palette width | Width of the sheet in logical pixels (shrinks with the window). | 560 | `command_palette.width` |
+| Default zoom | Zoom of sites without a zoom of their own (percent). | 100 | `zoom.default_percent` |
+| Zoom step | One **Ctrl +** / **Ctrl -** step, in Chromium zoom levels (each level is 1.2x; 0.5 gives 100, 110, 120, 131 ...). | 0.5 | `zoom.step` |
+| Zoom limits | Smallest and largest zoom (percent). | 25 / 500 | `zoom.min_percent`, `zoom.max_percent` |
+| Remember zoom per site | Zoom set with **Ctrl +/-/0** is remembered for the site (all its pages and tabs; not in private tabs). Off: it belongs to the tab and resets when the next page loads. | On | `zoom.remember_per_site` |
+| Zoom indicator | Shows the zoom in the address field while it is not the default; a click resets it. | On | `zoom.show_indicator` |
+| Share selected text | The page menu's **Share...** row for selected text opens a new e-mail with the text and the page's address. | On | `ui.page_context_menu_share` |
 
 ## Shields
 

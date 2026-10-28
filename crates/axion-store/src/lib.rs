@@ -97,7 +97,37 @@ const MIGRATIONS: &[&str] = &[
         decided INTEGER NOT NULL,
         PRIMARY KEY (origin, kind)
     );",
+    // 13: installed Chrome extensions (their files live in the profile's extensions folder)
+    "CREATE TABLE extensions (
+        id TEXT PRIMARY KEY,
+        dir TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        source TEXT NOT NULL DEFAULT '',
+        installed INTEGER NOT NULL DEFAULT 0
+    );",
+    // 14: tab groups: the group of each open tab, and the groups themselves
+    "ALTER TABLE session_tabs ADD COLUMN group_id INTEGER;
+    CREATE TABLE session_groups (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT '',
+        color TEXT NOT NULL DEFAULT 'blue',
+        collapsed INTEGER NOT NULL DEFAULT 0
+    );",
 ];
+
+/// An installed Chrome extension (its manifest is read from `dir`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtensionRow {
+    /// Chromium's extension id.
+    pub id: String,
+    /// The unpacked extension's folder.
+    pub dir: String,
+    pub enabled: bool,
+    /// Where it was installed from (the folder or package the user picked).
+    pub source: String,
+    /// Unix seconds.
+    pub installed: i64,
+}
 
 /// A remembered permission decision of a site.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -244,6 +274,18 @@ pub struct SessionTab {
     pub title: String,
     /// Unix seconds.
     pub last_viewed: i64,
+    /// The tab group it belongs to (`SessionGroup::id`).
+    pub group: Option<u32>,
+}
+
+/// A saved tab group of the session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionGroup {
+    pub id: u32,
+    pub name: String,
+    /// The colour's stable key (`blue`, `green`, …).
+    pub color: String,
+    pub collapsed: bool,
 }
 
 /// Seconds per day, for the recency buckets.
@@ -789,10 +831,18 @@ impl Store {
         tx.execute("DELETE FROM session_tabs", [])?;
         {
             let mut insert = tx.prepare(
-                "INSERT INTO session_tabs (position, url, title, active, last_viewed) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO session_tabs (position, url, title, active, last_viewed, group_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
             for (i, tab) in tabs.iter().enumerate() {
-                insert.execute(params![i as i64, tab.url, tab.title, i == active, tab.last_viewed])?;
+                insert.execute(params![
+                    i as i64,
+                    tab.url,
+                    tab.title,
+                    i == active,
+                    tab.last_viewed,
+                    tab.group
+                ])?;
             }
         }
         tx.commit()?;
@@ -801,12 +851,12 @@ impl Store {
 
     /// The saved session's tabs and the active one's index.
     pub fn session(&self) -> Result<(Vec<SessionTab>, usize)> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT url, title, active, last_viewed FROM session_tabs ORDER BY position")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT url, title, active, last_viewed, group_id FROM session_tabs ORDER BY position",
+        )?;
         let rows = stmt.query_map([], |r| {
             Ok((
-                SessionTab { url: r.get(0)?, title: r.get(1)?, last_viewed: r.get(3)? },
+                SessionTab { url: r.get(0)?, title: r.get(1)?, last_viewed: r.get(3)?, group: r.get(4)? },
                 r.get::<_, bool>(2)?,
             ))
         })?;
@@ -820,6 +870,31 @@ impl Store {
             tabs.push(tab);
         }
         Ok((tabs, active))
+    }
+
+    /// Replaces the saved tab groups.
+    pub fn save_session_groups(&mut self, groups: &[SessionGroup]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM session_groups", [])?;
+        {
+            let mut insert = tx
+                .prepare("INSERT INTO session_groups (id, name, color, collapsed) VALUES (?1, ?2, ?3, ?4)")?;
+            for g in groups {
+                insert.execute(params![g.id, g.name, g.color, g.collapsed])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The saved tab groups.
+    pub fn session_groups(&self) -> Result<Vec<SessionGroup>> {
+        let mut stmt =
+            self.conn.prepare("SELECT id, name, color, collapsed FROM session_groups ORDER BY id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(SessionGroup { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, collapsed: r.get(3)? })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     // ---- top sites ----
@@ -998,6 +1073,45 @@ impl Store {
     /// Forgets every remembered permission decision.
     pub fn clear_site_permissions(&self) -> Result<()> {
         self.conn.execute("DELETE FROM site_permissions", [])?;
+        Ok(())
+    }
+
+    // ---- extensions ----
+
+    /// Installed extensions, oldest first.
+    pub fn extensions(&self) -> Result<Vec<ExtensionRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, dir, enabled, source, installed FROM extensions ORDER BY installed, id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ExtensionRow {
+                id: r.get(0)?,
+                dir: r.get(1)?,
+                enabled: r.get::<_, i64>(2)? != 0,
+                source: r.get(3)?,
+                installed: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Adds an extension, or replaces the one with the same id (keeping it switched on or off).
+    pub fn upsert_extension(&self, row: &ExtensionRow) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO extensions (id, dir, enabled, source, installed) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET dir = excluded.dir, source = excluded.source, installed = excluded.installed",
+            params![row.id, row.dir, row.enabled as i64, row.source, row.installed],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_extension_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        self.conn.execute("UPDATE extensions SET enabled = ?2 WHERE id = ?1", params![id, enabled as i64])?;
+        Ok(())
+    }
+
+    pub fn remove_extension(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM extensions WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -1293,13 +1407,38 @@ mod tests {
     fn session_round_trip() {
         let mut s = store();
         assert_eq!(s.session().unwrap(), (vec![], 0));
-        let tab =
-            |url: &str, title: &str| SessionTab { url: url.into(), title: title.into(), last_viewed: 7 };
+        let tab = |url: &str, title: &str| SessionTab {
+            url: url.into(),
+            title: title.into(),
+            last_viewed: 7,
+            group: None,
+        };
         let tabs = vec![tab("https://a/", "A"), tab("https://b/", "B")];
         s.save_session(&tabs, 1).unwrap();
         assert_eq!(s.session().unwrap(), (tabs.clone(), 1));
         s.save_session(&tabs[..1], 0).unwrap();
         assert_eq!(s.session().unwrap().0.len(), 1);
+    }
+
+    #[test]
+    fn session_groups_round_trip() {
+        let mut s = store();
+        assert!(s.session_groups().unwrap().is_empty());
+        let groups = vec![
+            SessionGroup { id: 2, name: "Work".into(), color: "green".into(), collapsed: true },
+            SessionGroup { id: 5, name: String::new(), color: "pink".into(), collapsed: false },
+        ];
+        s.save_session_groups(&groups).unwrap();
+        assert_eq!(s.session_groups().unwrap(), groups);
+        let mut tab =
+            SessionTab { url: "https://a/".into(), title: "A".into(), last_viewed: 1, group: Some(2) };
+        s.save_session(std::slice::from_ref(&tab), 0).unwrap();
+        assert_eq!(s.session().unwrap().0[0].group, Some(2));
+        tab.group = None;
+        s.save_session(&[tab], 0).unwrap();
+        assert_eq!(s.session().unwrap().0[0].group, None);
+        s.save_session_groups(&[]).unwrap();
+        assert!(s.session_groups().unwrap().is_empty());
     }
 
     #[test]
@@ -1346,6 +1485,31 @@ mod tests {
         assert_eq!(all, [("a.com".into(), "standard".into()), ("b.com".into(), "aggressive".into())]);
         s.set_site_setting("b.com", "shields", None).unwrap();
         assert_eq!(s.site_settings("shields").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn extensions_are_listed_toggled_and_removed() {
+        let s = Store::in_memory().unwrap();
+        let row = |id: &str, installed| ExtensionRow {
+            id: id.into(),
+            dir: format!("/p/{id}"),
+            enabled: true,
+            source: "/src".into(),
+            installed,
+        };
+        s.upsert_extension(&row("b", 2)).unwrap();
+        s.upsert_extension(&row("a", 1)).unwrap();
+        s.set_extension_enabled("a", false).unwrap();
+        // Installing the same id again replaces the folder but keeps the switch.
+        let mut again = row("a", 3);
+        again.dir = "/new".into();
+        s.upsert_extension(&again).unwrap();
+        let all = s.extensions().unwrap();
+        assert_eq!(all.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
+        assert!(!all[1].enabled);
+        assert_eq!(all[1].dir, "/new");
+        s.remove_extension("b").unwrap();
+        assert_eq!(s.extensions().unwrap().len(), 1);
     }
 
     #[test]

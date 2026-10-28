@@ -109,6 +109,7 @@ ask_where_to_save = false
 | `passwords` | Saving, filling, generator, clipboard. |
 | `accounts` | Profile picture size and limit. |
 | `import` | Limits of the import from other browsers (history entries, bookmarks, file sizes). |
+| `extensions` | Chrome extensions on or off (`enabled`, default on). |
 | `hardware` | Acceleration, page frames, graphics card. |
 | `devtools`, `find`, `clipboard`, `toast`, `sidebar`, `ui` | Smaller options. |
 | `updates` | Update source and schedule. |
@@ -136,6 +137,9 @@ ask_where_to_save = false
 | `passwords.generator_symbols` | Generated passwords include symbols. | `true` |
 | `find.match_case` | Find on page matches upper and lower case exactly. | `false` |
 | `privacy.prompt_unlock_on_open` | Show the password card by itself when locked private tabs open. | `true` |
+| `permissions.screen_picker` | Who picks what `getDisplayMedia()` shares: `auto` (Axion's own picker on X11, the desktop's portal dialog on Wayland), `own` (Axion's picker wherever it can list sources), `system` (Chromium and the desktop decide). | `"auto"` |
+| `permissions.screen_picker_max_sources` | Most screens and windows the picker lists (screens first). | `12` |
+| `permissions.screen_picker_thumbnail_width` | Width of the picker's thumbnails in logical pixels. | `160` |
 | `permissions.stop_reload_after_ms` | After **Stop** in the recording popover, a page that still records this long after is reloaded. | `1500` |
 | `ui.tooltip_delay_ms` | How long before a tooltip appears. | `700` |
 | `toast.duration_seconds` | How long short notices stay. | `2.0` |
@@ -146,7 +150,7 @@ Shortcuts, one line per action. See [Keyboard shortcuts](keyboard-shortcuts.md) 
 rules.
 
 ```toml
-focus_address_bar = ["Alt+D", "Ctrl+K"]
+focus_address_bar = ["Alt+D", "Ctrl+E"]
 tab_overview = []            # no key
 ```
 

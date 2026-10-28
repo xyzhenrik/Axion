@@ -85,6 +85,16 @@ pub enum NewViewKind {
     Popup,
 }
 
+/// What the user picked to share.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenPick {
+    /// The source in Chromium's desktop media id notation: `screen:<id>:0` or `window:<xid>:0`
+    /// (`screen:-1:0` is all screens together).
+    pub id: String,
+    /// Share the sound of the computer too.
+    pub audio: bool,
+}
+
 /// The DevTools panel to start on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DevToolsPanel {
@@ -246,6 +256,15 @@ pub enum EngineEvent {
         id: PermissionId,
         origin: String,
         kinds: Vec<PermissionKind>,
+    },
+    /// The page called `getDisplayMedia()` and the engine's own screen picker is on (see
+    /// [`Engine::set_screen_picker`]): the browser lets the user choose a source and answers
+    /// with [`Engine::answer_screen_pick`]. `audio`: the page also asks for the sound.
+    ScreenPickRequested {
+        view: ViewId,
+        token: u64,
+        origin: String,
+        audio: bool,
     },
     /// Chromium withdrew a request before it was answered (the page navigated or closed).
     PermissionCancelled {
@@ -416,6 +435,15 @@ pub trait Engine {
     /// Whether sharing a screen lets the user pick what to share in a dialog of the desktop
     /// (Wayland: the screen cast portal). Without one (X11) the whole screen is shared.
     fn screen_share_has_picker(&self) -> bool;
+    /// Turns the engine's own screen picker on or off. On, `getDisplayMedia()` is reported as
+    /// [`EngineEvent::ScreenPickRequested`] and the page gets the source the browser picks
+    /// ([`Engine::answer_screen_pick`]); off, Chromium decides (the desktop's picker, or the
+    /// whole screen). It applies to pages loaded from now on.
+    fn set_screen_picker(&mut self, on: bool);
+    /// Answers an [`EngineEvent::ScreenPickRequested`]: `Some` shares that source (its
+    /// [`ScreenPick::id`] as the browser's source list named it) and counts as the user's
+    /// permission for that one share; `None` refuses.
+    fn answer_screen_pick(&mut self, view: ViewId, token: u64, pick: Option<ScreenPick>);
 
     /// Asks the view to produce a frame now (call once per compositor frame for visible views).
     /// Engines that render on their own timer (see [`Engine::set_frame_rate`]) ignore it.

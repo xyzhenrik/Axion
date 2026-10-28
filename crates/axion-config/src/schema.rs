@@ -31,6 +31,8 @@ pub struct Config {
     pub accounts: Accounts,
     pub import: Import,
     pub find: Find,
+    pub zoom: Zoom,
+    pub command_palette: CommandPalette,
     pub devtools: DevTools,
     pub clipboard: Clipboard,
     pub toast: Toast,
@@ -848,15 +850,19 @@ impl Default for Privacy {
     }
 }
 
-/// Chrome extensions.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Chrome extensions (Manifest V3, installed from an unpacked folder or a `.crx` file).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Extensions {
-    /// Chrome extensions are not supported yet; the Web Store cannot install them. Leave this
-    /// off: with the extension system running, the Web Store's "Add to Chrome" reaches an
-    /// install dialog that has no window to attach to in off-screen mode and crashes Chromium.
-    /// Applies after a restart. Default: off.
+    /// Run Chromium's extension system and show the extensions button in the toolbar. Off: no
+    /// extension loads and the button is hidden. Applies after a restart. Default: on.
     pub enabled: bool,
+}
+
+impl Default for Extensions {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 /// What happens when a site asks for a permission nobody has decided for it yet.
@@ -896,6 +902,25 @@ pub struct Permissions {
     /// "Stop" in the capture popover ends the page's tracks; if the page still records this
     /// long after, the page is reloaded (milliseconds).
     pub stop_reload_after_ms: u32,
+    /// Who chooses what a page shares when it calls `getDisplayMedia()`.
+    pub screen_picker: ScreenPicker,
+    /// Most screens and windows the picker lists (screens first).
+    pub screen_picker_max_sources: u32,
+    /// Width of the picker's thumbnails (logical pixels); their height follows at 16:9.
+    pub screen_picker_thumbnail_width: u32,
+}
+
+/// Who chooses what a shared screen or window is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenPicker {
+    /// Axion's own picker on X11; the desktop's (screen cast portal) on Wayland.
+    #[default]
+    Auto,
+    /// Axion's own picker wherever it can list sources (X11 and XWayland).
+    Own,
+    /// Chromium and the desktop decide (the portal's dialog, else the whole screen).
+    System,
 }
 
 impl Default for Permissions {
@@ -909,6 +934,9 @@ impl Default for Permissions {
             clipboard: PermissionDefault::Ask,
             other: PermissionDefault::Ask,
             stop_reload_after_ms: 1500,
+            screen_picker: ScreenPicker::Auto,
+            screen_picker_max_sources: 12,
+            screen_picker_thumbnail_width: 160,
         }
     }
 }
@@ -1080,6 +1108,56 @@ pub struct Find {
     pub match_case: bool,
 }
 
+/// Page zoom (Ctrl +/-/0), remembered per site.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Zoom {
+    /// Zoom of sites that have none of their own (percent).
+    pub default_percent: f64,
+    /// One zoom step, in Chromium zoom levels (each level is x1.2; 0.5 steps through 100, 110, 120, 131 ...).
+    pub step: f64,
+    /// Smallest and largest zoom (percent).
+    pub min_percent: f64,
+    pub max_percent: f64,
+    /// Remember a site's zoom (in the profile's site settings) and apply it to every page of
+    /// that site. Off: zoom belongs to the tab and resets when another site loads.
+    pub remember_per_site: bool,
+    /// Show the zoom (with a reset on click) in the address field while a page is not at its
+    /// default zoom.
+    pub show_indicator: bool,
+}
+
+impl Default for Zoom {
+    fn default() -> Self {
+        Self {
+            default_percent: 100.0,
+            step: 0.5,
+            min_percent: 25.0,
+            max_percent: 500.0,
+            remember_per_site: true,
+            show_indicator: true,
+        }
+    }
+}
+
+/// The command palette (Ctrl+K).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommandPalette {
+    /// Rows listed at once (the list scrolls by the selection).
+    pub max_rows: u32,
+    /// Show each command's shortcut.
+    pub show_shortcuts: bool,
+    /// The palette is this wide (logical px; it shrinks with the window).
+    pub width: f32,
+}
+
+impl Default for CommandPalette {
+    fn default() -> Self {
+        Self { max_rows: 8, show_shortcuts: true, width: 560.0 }
+    }
+}
+
 /// Chromium's developer tools (unchanged: Axion does not build its own). They open in a
 /// window of their own.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1157,6 +1235,9 @@ pub struct Ui {
     pub page_context_menu_label_chars: u32,
     /// The most characters of a selection the context menu searches for.
     pub page_context_menu_query_chars: u32,
+    /// The context menu's "Share…" row for selected text (opens a new e-mail with the text and
+    /// the page's address).
+    pub page_context_menu_share: bool,
     /// "Copy Image" scales images larger than this down (pixels on the long side).
     pub copy_image_max_px: u32,
     /// The first-run introduction's card is at most this wide (logical px); it shrinks with
@@ -1178,6 +1259,7 @@ impl Default for Ui {
             tooltip_delay_ms: 700,
             page_context_menu_label_chars: 14,
             page_context_menu_query_chars: 400,
+            page_context_menu_share: true,
             copy_image_max_px: 8192,
             onboarding_max_width: 880.0,
             onboarding_max_height: 640.0,
@@ -1456,6 +1538,19 @@ pub struct Tabs {
     pub open_links_in_background: bool,
     /// A middle click on a tab (in the tab bar, the sidebar or the tab overview) closes it.
     pub middle_click_closes_tab: bool,
+    /// A tab opened from a tab of a tab group (a link, New Tab to the Right) joins that group.
+    pub new_tab_joins_group: bool,
+    /// Tab groups show as a coloured chip with their name in the compact tab bar and the
+    /// separate tab row (off: only a colour marker on their tabs).
+    pub group_chips_in_bar: bool,
+    /// Tabs that play sound show a speaker (click to mute) in the tab bar and the sidebar.
+    pub show_audio_indicator: bool,
+    /// "Mute Site" is remembered: new tabs of a muted site start muted.
+    pub remember_site_mute: bool,
+    /// How many closed tabs the tab search (and Reopen Closed Tab) remembers.
+    pub closed_tabs_remembered: u32,
+    /// How many history entries the tab search lists at most.
+    pub tab_search_history_results: u32,
     /// Close tabs not looked at for this many days (0: never).
     pub close_after_days: u32,
     /// How often memory use is measured and the tab rules are applied.
@@ -1496,6 +1591,12 @@ impl Default for Tabs {
             restore_session: true,
             open_links_in_background: true,
             middle_click_closes_tab: true,
+            new_tab_joins_group: true,
+            group_chips_in_bar: true,
+            show_audio_indicator: true,
+            remember_site_mute: true,
+            closed_tabs_remembered: 25,
+            tab_search_history_results: 8,
             close_after_days: 0,
             check_interval_seconds: 5.0,
             drag_threshold: 6.0,

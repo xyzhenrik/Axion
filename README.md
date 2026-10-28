@@ -307,7 +307,7 @@ background = "my-wallpaper.jpg"
 
 ```toml
 # keymap.toml - an entry replaces that action's default chords
-focus_address_bar = ["Alt+D", "Ctrl+K"]
+focus_address_bar = ["Alt+D", "Ctrl+E"]
 toggle_sidebar = ["Ctrl+Shift+L"]
 tab_overview = []            # unbind
 ```
@@ -324,7 +324,8 @@ Pages keep `Ctrl+W` and `Ctrl+T`. All of these can be remapped in Settings or `k
 | Select tab 1-8 / last tab | `Alt+1`...`Alt+8` / `Alt+9` |
 | Pin or unpin tab | `Alt+P` |
 | Tab overview | `Alt+O`, `F9` |
-| Address bar | `Alt+D`, `F6`, `Ctrl+K` |
+| Address bar | `Alt+D`, `F6` |
+| Command palette | `Ctrl+K` |
 | Back / forward | `Alt+Left`, `Ctrl+[` / `Alt+Right`, `Ctrl+]` |
 | Reload / hard reload | `Ctrl+R`, `F5` / `Ctrl+Shift+R`, `Ctrl+F5` |
 | Toggle sidebar | `Ctrl+Shift+L` |
@@ -452,7 +453,8 @@ the [Chromium Embedded Framework](https://bitbucket.org/chromiumembedded/cef) an
 [taffy](https://github.com/DioxusLabs/taffy), [glyphon](https://github.com/grovesNL/glyphon),
 Brave's [adblock-rust](https://github.com/brave/adblock-rust),
 [rusqlite](https://github.com/rusqlite/rusqlite) and SQLite, [hls.js](https://github.com/video-dev/hls.js)
-(Apache-2.0) and the wider Rust ecosystem.
+(Apache-2.0), the [Lucide](https://lucide.dev) icons (ISC, see [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES))
+and the wider Rust ecosystem.
 
 Axion's design is inspired by Apple's Safari on iPadOS, but it contains **no Apple assets, code or
 branding**. Safari is a trademark of Apple Inc. Axion is an independent project and is not
