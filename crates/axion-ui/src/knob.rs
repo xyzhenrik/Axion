@@ -5,10 +5,13 @@
 
 use std::time::Instant;
 
-use axion_physics::{Animated, Spring, rubber_band};
+use axion_physics::{Animated, DECELERATION_FAST, Spring, project, rubber_band};
 
 /// How far (in units of the travel) the knob can be pulled past an end.
 const OVERPULL: f32 = 0.18;
+/// A pointer that has not moved for this long (s) before release hands no velocity on.
+const MIN_SAMPLE_DT: f32 = 0.002;
+const STALE_VELOCITY: f32 = 0.08;
 /// Pointer movement (logical px) that turns a press into a drag.
 const DRAG_SLOP: f32 = 3.0;
 /// The lens frosts back once the knob is this close (in units of the travel) to its place.
@@ -27,6 +30,9 @@ pub(crate) struct Knob {
     /// How far the pointer is beyond the travel's ends (units of the travel, unbanded; 0 inside
     /// it): the glass is pulled by that much, and stretches with it on the drag curve.
     pub over: f32,
+    /// Where the knob would come to rest if flung with the release velocity (travel units),
+    /// set by `release`: `position + project(velocity, fast deceleration)`.
+    pub projected: f32,
 }
 
 struct Drag {
@@ -44,6 +50,7 @@ impl Knob {
             drag: None,
             speed: 0.0,
             over: 0.0,
+            projected: pos,
         }
     }
 
@@ -74,17 +81,25 @@ impl Knob {
         };
         let now = Instant::now();
         let dt = now.duration_since(drag.last.1).as_secs_f32();
-        if dt > 0.0 {
+        // Events closer than this are batched input, not motion: they carry no usable speed.
+        if dt >= MIN_SAMPLE_DT {
             let v = (x - drag.last.0) / travel.max(1.0) / dt;
             self.speed += (v - self.speed) * VELOCITY_SMOOTHING;
+            drag.last = (x, now);
         }
-        drag.last = (x, now);
         self.pos.snap(pos);
     }
 
     /// Pointer up. Returns whether it was a drag (then the knob's side decides), not a tap.
     pub fn release(&mut self, target: f32) -> bool {
-        let moved = self.drag.take().is_some_and(|d| d.moved);
+        let drag = self.drag.take();
+        let moved = drag.as_ref().is_some_and(|d| d.moved);
+        // Velocity handoff: the spring starts with the pointer's release velocity (as
+        // UIKit/SwiftUI springs do), unless the pointer had stopped before letting go.
+        let fresh = drag.as_ref().is_some_and(|d| d.last.1.elapsed().as_secs_f32() < STALE_VELOCITY);
+        let v = if moved && fresh { self.speed } else { 0.0 };
+        self.pos.velocity = v;
+        self.projected = self.pos.value + project(v, DECELERATION_FAST);
         self.pos.target = target;
         moved
     }
@@ -151,6 +166,21 @@ mod tests {
         k.drag_to(-200.0, 20.0);
         assert!(k.pos.value < 0.0 && k.pos.value > -OVERPULL);
         assert!(k.release(0.0), "a drag");
+    }
+
+    #[test]
+    fn release_hands_the_pointer_velocity_to_the_spring() {
+        let mut k = knob();
+        k.press(0.0);
+        for i in 1..=6 {
+            k.drag_to(i as f32 * 2.0, 40.0);
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+        let speed = k.speed;
+        assert!(speed > 0.5, "moving right: {speed}");
+        assert!(k.release(1.0));
+        assert_eq!(k.pos.velocity, speed, "spring starts with the release velocity");
+        assert!(k.projected > k.pos.value, "a rightward fling projects further right");
     }
 
     #[test]

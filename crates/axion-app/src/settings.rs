@@ -197,7 +197,6 @@ enum Setting {
     Dispersion,
     Squash,
     DragStretch,
-    DragResistance,
     MergeDistance,
     LockPrivateTabs,
     HideAdElements,
@@ -286,7 +285,6 @@ impl Setting {
             Setting::Dispersion => tr_mark("Colour dispersion"),
             Setting::Squash => tr_mark("Squash when moving"),
             Setting::DragStretch => tr_mark("Drag stretch (maximum)"),
-            Setting::DragResistance => tr_mark("Drag resistance"),
             Setting::MergeDistance => tr_mark("Merge distance"),
             Setting::LockPrivateTabs => tr_mark("Lock private tabs with the account password"),
             Setting::HideAdElements => tr_mark("Hide empty ad spaces"),
@@ -425,7 +423,6 @@ impl Setting {
             Setting::Dispersion => (0.0, 0.4),
             Setting::Squash => (0.0, 0.2),
             Setting::DragStretch => (0.0, 0.2),
-            Setting::DragResistance => (5.0, 200.0),
             Setting::MergeDistance => (0.0, 40.0),
             Setting::FreezeAfter => (0.0, 60.0),
             Setting::HideControlsAfter => (1.0, 10.0),
@@ -460,7 +457,6 @@ impl Setting {
             Setting::Dispersion => percent(c.glass.light.dispersion),
             Setting::Squash => percent(c.glass.squash),
             Setting::DragStretch => percent(c.glass.drag_stretch_max),
-            Setting::DragResistance => format!("{:.0} px", c.glass.drag_resistance),
             Setting::MergeDistance => format!("{:.0} px", c.glass.merge_distance),
             Setting::FreezeAfter => minutes(c.tabs.freeze_after_minutes),
             Setting::DiscardAfter => minutes(c.tabs.discard_after_minutes),
@@ -569,7 +565,6 @@ impl Setting {
             Setting::Dispersion => c.glass.light.dispersion,
             Setting::Squash => c.glass.squash,
             Setting::DragStretch => c.glass.drag_stretch_max,
-            Setting::DragResistance => c.glass.drag_resistance,
             Setting::MergeDistance => c.glass.merge_distance,
         };
         let (min, max) = self.range();
@@ -684,7 +679,6 @@ impl Setting {
             }
             Setting::Squash => c.glass.squash = v,
             Setting::DragStretch => c.glass.drag_stretch_max = v,
-            Setting::DragResistance => c.glass.drag_resistance = v.round(),
             Setting::MergeDistance => c.glass.merge_distance = v.round(),
         }
     }
@@ -1933,7 +1927,6 @@ impl SettingsSheet {
                     Setting::Dispersion,
                     Setting::Squash,
                     Setting::DragStretch,
-                    Setting::DragResistance,
                     Setting::MergeDistance,
                 ] {
                     self.control(ui, config, setting);
@@ -4367,7 +4360,6 @@ mod tests {
             Setting::Squash,
             Setting::MergeDistance,
             Setting::DragStretch,
-            Setting::DragResistance,
         ] {
             setting.set(&mut config, 0.5);
             // Values are rounded to sensible steps (text size to 0.05), so allow one step.

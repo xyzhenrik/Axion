@@ -1333,8 +1333,8 @@ impl Ui {
         let n = children.len().max(1);
         let tapped = self.pointer.and_then(|p| children.iter().position(|&c| self.frame(c).contains(p)));
         let knob = self.knobs.get_mut(&node)?;
-        let dragged_to = knob.pos.value;
         let moved = knob.release(0.0);
+        let dragged_to = knob.projected;
         let index = if moved {
             ((dragged_to.clamp(0.0, 1.0) * (n - 1) as f32).round() as usize).min(n - 1)
         } else {
@@ -1376,8 +1376,8 @@ impl Ui {
             _ => None,
         }?;
         let knob = self.knobs.get_mut(&node)?;
-        let dragged_to = knob.pos.value;
         let moved = knob.release(0.0);
+        let dragged_to = knob.projected;
         let now_on = if moved { dragged_to > 0.5 } else { !on };
         knob.pos.target = if now_on { 1.0 } else { 0.0 };
         if now_on == on {
@@ -1847,7 +1847,9 @@ impl Ui {
             let limit = glass
                 .drag_stretch_max()
                 .min(PULL_STRETCH * PULL_LIMIT * s / bg_px.size.max_element().max(1.0));
-            let e = axion_physics::drag_stretch(press.distance.value, limit, glass.drag_resistance());
+            // UIScrollView's rubber band over the glass's own size (its "range").
+            let range = bg_px.size.max_element().max(1.0) / s;
+            let e = axion_physics::drag_stretch(press.distance.value, limit, range, glass.rubber_band_c());
             let (angle, content) = stretch_content(press.dir, e);
             // The icons and labels stay at the glass's rest centre and are deformed with the
             // same stretch as the glass (never carried off with the pointer): `carry` maps
@@ -2279,7 +2281,8 @@ impl Ui {
         let by_pull = axion_physics::drag_stretch(
             over_px,
             glass.drag_stretch_max() * LENS_SQUASH_RATIO,
-            glass.drag_resistance(),
+            travel_px / self.scale,
+            glass.rubber_band_c(),
         );
         by_speed.max(by_pull)
     }
