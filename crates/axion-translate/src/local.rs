@@ -27,6 +27,11 @@ pub enum HelperMessage {
         tag: u64,
         reason: String,
     },
+    /// A timing the engine measured (for the log).
+    Log {
+        what: String,
+        ms: u64,
+    },
 }
 
 #[derive(Deserialize)]
@@ -42,6 +47,12 @@ enum Wire {
         #[serde(default)]
         message: String,
     },
+    Log {
+        #[serde(default)]
+        what: String,
+        #[serde(default)]
+        ms: u64,
+    },
 }
 
 /// Parses a console message of the engine page (`None` for any other).
@@ -51,6 +62,7 @@ pub fn parse(console_message: &str) -> Option<HelperMessage> {
         Wire::Ready => HelperMessage::Ready,
         Wire::Done { tag, texts } => HelperMessage::Done { tag, texts },
         Wire::Error { tag, message } => HelperMessage::Error { tag, reason: message },
+        Wire::Log { what, ms } => HelperMessage::Log { what, ms },
     })
 }
 
@@ -60,6 +72,9 @@ pub struct LocalTranslator {
     scripts: Vec<String>,
     waiting: HashSet<u64>,
     done: Vec<Outcome>,
+    /// A warm-up is queued: the engine page is wanted although no job waits.
+    warming: bool,
+    workers: u32,
 }
 
 impl LocalTranslator {
@@ -69,18 +84,37 @@ impl LocalTranslator {
 
     /// Whether any job is waiting for the engine page (the browser then makes sure it exists).
     pub fn wants_helper(&self) -> bool {
-        !self.waiting.is_empty()
+        !self.waiting.is_empty() || self.warming
+    }
+
+    /// How many workers the engine page may use (0: it decides).
+    pub fn set_workers(&mut self, workers: u32) {
+        self.workers = workers;
+    }
+
+    /// Asks the engine page to start up and load the model of `from` → `to` now, so the first
+    /// job doesn't wait for it.
+    pub fn prewarm(&mut self, from: &str, to: &str) {
+        let payload = serde_json::json!({ "from": from, "to": to, "workers": self.workers });
+        self.warming = true;
+        self.scripts.push(format!("window.__axionEngine && window.__axionEngine.prewarm({payload});"));
     }
 
     /// The scripts to run in the engine page now (none until it said it is ready).
     pub fn take_scripts(&mut self) -> Vec<String> {
-        if self.ready { std::mem::take(&mut self.scripts) } else { Vec::new() }
+        if self.ready {
+            self.warming = false;
+            std::mem::take(&mut self.scripts)
+        } else {
+            Vec::new()
+        }
     }
 
     /// The engine page said something.
     pub fn on_message(&mut self, message: HelperMessage) {
         match message {
             HelperMessage::Ready => self.ready = true,
+            HelperMessage::Log { what, ms } => tracing::info!(ms, "translation engine: {what}"),
             HelperMessage::Done { tag, texts } => {
                 if self.waiting.remove(&tag) {
                     self.done.push(Outcome::Done { tag, texts });
@@ -98,6 +132,7 @@ impl LocalTranslator {
     /// from a fresh page.
     pub fn helper_lost(&mut self) {
         self.ready = false;
+        self.warming = false;
         self.scripts.clear();
         for tag in self.waiting.drain() {
             self.done.push(Outcome::Failed { tag, reason: "the translation engine stopped".into() });
@@ -121,7 +156,7 @@ impl Translator for LocalTranslator {
 
     fn submit(&mut self, job: Job) {
         let payload = serde_json::json!({
-            "tag": job.tag, "from": job.from, "to": job.to, "texts": job.texts,
+            "tag": job.tag, "from": job.from, "to": job.to, "texts": job.texts, "workers": self.workers,
         });
         self.waiting.insert(job.tag);
         self.scripts.push(format!("window.__axionEngine && window.__axionEngine.job({payload});"));

@@ -2152,6 +2152,18 @@ pub enum TranslationBackend {
     Endpoint,
 }
 
+/// How much of a page is translated up front.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranslationScope {
+    /// What is on screen plus `viewport_margin` screens around it; the rest as it is scrolled
+    /// into view.
+    #[default]
+    Visible,
+    /// The whole page: the visible part first, then the rest in the background.
+    Page,
+}
+
 /// Page translation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -2189,6 +2201,23 @@ pub struct Translation {
     /// The hidden page that runs the local engine is closed after this many seconds without
     /// work, which frees the memory of the models.
     pub engine_idle_seconds: u32,
+    /// How much of the page is translated up front (`visible`: the viewport and its margin,
+    /// the rest while scrolling; `page`: everything, visible part first).
+    pub scope: TranslationScope,
+    /// With `scope = "visible"`: how many screens above and below the viewport are translated
+    /// ahead of scrolling.
+    pub viewport_margin: f32,
+    /// The first request carries at most this many text pieces, so the first translation
+    /// shows up quickly.
+    pub first_pieces: u32,
+    /// Requests the page keeps waiting for the engine at once; more would only delay what
+    /// scrolls into view.
+    pub inflight_batches: u32,
+    /// Engine workers translating in parallel (0: half the processor cores, 1 to 4).
+    pub engine_workers: u32,
+    /// Starts the engine and loads the model as soon as a translation is offered or the
+    /// Translate button is used, so the first translation doesn't wait for them.
+    pub prewarm: bool,
 }
 
 impl Default for Translation {
@@ -2211,6 +2240,12 @@ impl Default for Translation {
             detect_min_chars: 120,
             endpoint_timeout_seconds: 30,
             engine_idle_seconds: 120,
+            scope: TranslationScope::Visible,
+            viewport_margin: 1.0,
+            first_pieces: 12,
+            inflight_batches: 2,
+            engine_workers: 0,
+            prewarm: true,
         }
     }
 }
