@@ -623,6 +623,8 @@ pub enum Choose {
     Photo,
     /// Bookmark files to import (HTML or JSON).
     Bookmarks,
+    /// An extension package (`.crx` or `.zip`).
+    ExtensionPackage,
 }
 
 /// The XDG desktop portal's file chooser (`FileChooser.OpenFile`, for a folder with
@@ -662,6 +664,18 @@ pub fn choose_portal(title: &str, what: Choose) -> zbus::Result<Option<PathBuf>>
                     (0, "*.htm".to_owned()),
                     (0, "*.json".to_owned()),
                     (0, "Bookmarks".to_owned()),
+                ],
+            )];
+            options.insert("filters", Value::from(filters));
+        }
+        Choose::ExtensionPackage => {
+            let filters = vec![(
+                tr("Extension packages").to_owned(),
+                vec![
+                    (0u32, "*.crx".to_owned()),
+                    (0, "*.zip".to_owned()),
+                    (1, "application/x-chrome-extension".to_owned()),
+                    (1, "application/zip".to_owned()),
                 ],
             )];
             options.insert("filters", Value::from(filters));

@@ -299,7 +299,7 @@ Do not include passwords, vault files or the contents of `device.key`.
 
 ## Chrome Web Store: "Add to Chrome" does nothing
 
-Installing extensions from the Chrome Web Store is not supported; Axion does not load
-extensions yet. The extension system is switched off (`[extensions] enabled = false`, the
-default), so the Web Store's install button fails harmlessly. Turning it on is not recommended:
-Chromium's install dialog has no window to attach to in Axion and would crash the browser.
+The Chrome Web Store cannot install extensions in Axion: its install dialog needs a native window
+and would crash the browser, so the store shows a notice instead. Install extensions from the
+extensions button in the toolbar (an unpacked folder or a `.crx` file); see
+[Chrome extensions](features/extensions.md).

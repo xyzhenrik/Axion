@@ -97,7 +97,29 @@ const MIGRATIONS: &[&str] = &[
         decided INTEGER NOT NULL,
         PRIMARY KEY (origin, kind)
     );",
+    // 13: installed Chrome extensions (their files live in the profile's extensions folder)
+    "CREATE TABLE extensions (
+        id TEXT PRIMARY KEY,
+        dir TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        source TEXT NOT NULL DEFAULT '',
+        installed INTEGER NOT NULL DEFAULT 0
+    );",
 ];
+
+/// An installed Chrome extension (its manifest is read from `dir`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtensionRow {
+    /// Chromium's extension id.
+    pub id: String,
+    /// The unpacked extension's folder.
+    pub dir: String,
+    pub enabled: bool,
+    /// Where it was installed from (the folder or package the user picked).
+    pub source: String,
+    /// Unix seconds.
+    pub installed: i64,
+}
 
 /// A remembered permission decision of a site.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1001,6 +1023,45 @@ impl Store {
         Ok(())
     }
 
+    // ---- extensions ----
+
+    /// Installed extensions, oldest first.
+    pub fn extensions(&self) -> Result<Vec<ExtensionRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, dir, enabled, source, installed FROM extensions ORDER BY installed, id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ExtensionRow {
+                id: r.get(0)?,
+                dir: r.get(1)?,
+                enabled: r.get::<_, i64>(2)? != 0,
+                source: r.get(3)?,
+                installed: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Adds an extension, or replaces the one with the same id (keeping it switched on or off).
+    pub fn upsert_extension(&self, row: &ExtensionRow) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO extensions (id, dir, enabled, source, installed) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET dir = excluded.dir, source = excluded.source, installed = excluded.installed",
+            params![row.id, row.dir, row.enabled as i64, row.source, row.installed],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_extension_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        self.conn.execute("UPDATE extensions SET enabled = ?2 WHERE id = ?1", params![id, enabled as i64])?;
+        Ok(())
+    }
+
+    pub fn remove_extension(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM extensions WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     // ---- bookmarks ----
 
     pub fn add_bookmark(&self, url: &str, title: &str, now: i64) -> Result<i64> {
@@ -1346,6 +1407,31 @@ mod tests {
         assert_eq!(all, [("a.com".into(), "standard".into()), ("b.com".into(), "aggressive".into())]);
         s.set_site_setting("b.com", "shields", None).unwrap();
         assert_eq!(s.site_settings("shields").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn extensions_are_listed_toggled_and_removed() {
+        let s = Store::in_memory().unwrap();
+        let row = |id: &str, installed| ExtensionRow {
+            id: id.into(),
+            dir: format!("/p/{id}"),
+            enabled: true,
+            source: "/src".into(),
+            installed,
+        };
+        s.upsert_extension(&row("b", 2)).unwrap();
+        s.upsert_extension(&row("a", 1)).unwrap();
+        s.set_extension_enabled("a", false).unwrap();
+        // Installing the same id again replaces the folder but keeps the switch.
+        let mut again = row("a", 3);
+        again.dir = "/new".into();
+        s.upsert_extension(&again).unwrap();
+        let all = s.extensions().unwrap();
+        assert_eq!(all.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
+        assert!(!all[1].enabled);
+        assert_eq!(all[1].dir, "/new");
+        s.remove_extension("b").unwrap();
+        assert_eq!(s.extensions().unwrap().len(), 1);
     }
 
     #[test]

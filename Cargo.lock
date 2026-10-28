@@ -413,6 +413,7 @@ dependencies = [
  "axion-compositor",
  "axion-config",
  "axion-engine",
+ "axion-extensions",
  "axion-i18n",
  "axion-import",
  "axion-media",
@@ -430,6 +431,7 @@ dependencies = [
  "pollster",
  "rustix 1.1.5",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "ureq",
@@ -481,6 +483,19 @@ dependencies = [
  "tracing",
  "ureq",
  "wgpu",
+]
+
+[[package]]
+name = "axion-extensions"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

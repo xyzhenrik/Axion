@@ -54,6 +54,8 @@ struct ProcessFlags {
     render_node: Option<PathBuf>,
     hardware_video_decoding: bool,
     extensions_enabled: bool,
+    /// Unpacked extensions to load (`--load-extension`).
+    load_extensions: Vec<PathBuf>,
     /// Chromium switches from the settings (`[hardware]`, see `CefOptions::extra_switches`).
     extra_switches: Vec<(String, Option<String>)>,
     /// The browser process's message pump schedule (`None` in helper processes).
@@ -134,10 +136,10 @@ wrap_app! {
                     }
                 }
             }
-            for (name, value) in extension_switches(self.flags.extensions_enabled) {
+            for (name, value) in extension_switches(self.flags.extensions_enabled, &self.flags.load_extensions) {
                 match value {
                     Some(value) => {
-                        command_line.append_switch_with_value(Some(&name.into()), Some(&value.into()))
+                        command_line.append_switch_with_value(Some(&name.into()), Some(&value.as_str().into()))
                     }
                     None => command_line.append_switch(Some(&name.into())),
                 }
@@ -150,17 +152,31 @@ wrap_app! {
     }
 }
 
-/// The Chromium switches for the extension system. Axion cannot host extensions yet (no window
-/// for their install dialog, no popups), so unless they are enabled the whole system is off:
-/// external extensions (e.g. a desktop's browser integration) stay unloaded. This alone does
-/// not remove `chrome.webstorePrivate` from the Web Store page (the PDF viewer, a component
-/// extension, keeps working), so `network.rs` also refuses to load the Web Store at all: its
-/// "Add to Chrome" reached `ExtensionInstallPrompt`, which crashes in off-screen mode.
-fn extension_switches(enabled: bool) -> Vec<(&'static str, Option<&'static str>)> {
-    if enabled {
+/// The Chromium switches for the extension system. Off: the whole system is off (external
+/// extensions, e.g. a desktop's browser integration, stay unloaded). On: Chromium runs the
+/// extensions Axion installed, loaded unpacked with `--load-extension` (CEF 156 has no
+/// `LoadExtension` call, and the Web Store install flow needs a native window: it stays
+/// blocked, see `network.rs`). Extensions can only be added or removed by restarting.
+fn extension_switches(enabled: bool, load: &[PathBuf]) -> Vec<(&'static str, Option<String>)> {
+    if !enabled {
+        return vec![
+            ("disable-extensions", None),
+            ("disable-component-extensions-with-background-pages", None),
+        ];
+    }
+    if load.is_empty() {
         return Vec::new();
     }
-    vec![("disable-extensions", None), ("disable-component-extensions-with-background-pages", None)]
+    // The switch is a comma separated list with no way to escape a comma.
+    let (ok, bad): (Vec<_>, Vec<_>) = load.iter().partition(|p| !p.to_string_lossy().contains(','));
+    for path in bad {
+        tracing::warn!(path = %path.display(), "extension skipped: its folder name contains a comma");
+    }
+    if ok.is_empty() {
+        return Vec::new();
+    }
+    let list = ok.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(",");
+    vec![("load-extension", Some(list))]
 }
 
 /// `AXION_FAKE_MEDIA_DEVICES=1`: tests use Chromium's fake capture devices.
@@ -201,6 +217,7 @@ pub fn run_subprocess_if_needed() -> Option<i32> {
         render_node: None,
         hardware_video_decoding: false,
         extensions_enabled: false,
+        load_extensions: Vec::new(),
         extra_switches: Vec::new(),
         schedule: None,
     });
@@ -233,9 +250,10 @@ pub struct CefOptions {
     pub frame_settle: std::time::Duration,
     /// Decode video on the GPU (VA-API).
     pub hardware_video_decoding: bool,
-    /// Run Chromium's extension system. Off by default: Axion cannot host extensions yet and the
-    /// Web Store's install dialog crashes without a native window (see [`extension_switches`]).
+    /// Run Chromium's extension system (see [`extension_switches`]).
     pub extensions_enabled: bool,
+    /// Folders of the unpacked extensions to load; ignored unless `extensions_enabled`.
+    pub load_extensions: Vec<PathBuf>,
     /// More Chromium command line switches (name, value), e.g. from Settings › Hardware.
     pub extra_switches: Vec<(String, Option<String>)>,
     /// Wakes the embedder's event loop when Chromium has work (see [`Engine::next_pump`]).
@@ -287,6 +305,7 @@ impl CefEngine {
             render_node: options.render_node.clone(),
             hardware_video_decoding: options.hardware_video_decoding,
             extensions_enabled: options.extensions_enabled,
+            load_extensions: options.load_extensions.clone(),
             extra_switches: options.extra_switches.clone(),
             schedule: Some(schedule.clone()),
         });
@@ -306,9 +325,8 @@ impl CefEngine {
         tracing::info!(accelerated = options.accelerated, render_node = ?options.render_node, "Chromium ready");
         let net = Arc::<Network>::default();
         scheme::install(&net, None, false);
-        if !options.extensions_enabled {
-            net.block_web_store.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
+        // Always: the Web Store's install dialog crashes without a native window.
+        net.block_web_store.store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(Self {
             device,
             queue,
@@ -1335,10 +1353,11 @@ fn emulate_color_scheme(host: &BrowserHost, dark: bool) {
 #[cfg(test)]
 mod tests {
     use super::extension_switches;
+    use std::path::PathBuf;
 
     #[test]
-    fn extensions_are_off_by_default_switches() {
-        let off = extension_switches(false);
+    fn extensions_off_disable_the_system() {
+        let off = extension_switches(false, &[PathBuf::from("/x")]);
         assert!(off.contains(&("disable-extensions", None)));
         assert!(off.iter().any(|(n, _)| *n == "disable-component-extensions-with-background-pages"));
         // Nothing may re-enable an extension.
@@ -1346,7 +1365,9 @@ mod tests {
     }
 
     #[test]
-    fn enabled_extensions_add_no_switches() {
-        assert!(extension_switches(true).is_empty());
+    fn enabled_extensions_load_the_installed_folders() {
+        assert!(extension_switches(true, &[]).is_empty());
+        let on = extension_switches(true, &[PathBuf::from("/a"), PathBuf::from("/b"), PathBuf::from("/c,d")]);
+        assert_eq!(on, vec![("load-extension", Some("/a,/b".to_owned()))]);
     }
 }

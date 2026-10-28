@@ -18,6 +18,7 @@ axion-accounts.workspace = true
 axion-compositor.workspace = true
 axion-config.workspace = true
 axion-engine.workspace = true
+axion-extensions.workspace = true
 axion-i18n.workspace = true
 axion-import.workspace = true
 axion-media.workspace = true
@@ -63,6 +64,7 @@ tpm = ["axion-vault/tpm"]
 [dev-dependencies]
 # A stub GPU device for tests that need one (favicons, the chrome built with tabs).
 wgpu = { workspace = true, features = ["noop"] }
+tempfile = "3"
 
 [lints]
 workspace = true

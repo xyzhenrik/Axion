@@ -109,6 +109,7 @@ ask_where_to_save = false
 | `passwords` | Saving, filling, generator, clipboard. |
 | `accounts` | Profile picture size and limit. |
 | `import` | Limits of the import from other browsers (history entries, bookmarks, file sizes). |
+| `extensions` | Chrome extensions on or off (`enabled`, default on). |
 | `hardware` | Acceleration, page frames, graphics card. |
 | `devtools`, `find`, `clipboard`, `toast`, `sidebar`, `ui` | Smaller options. |
 | `updates` | Update source and schedule. |
