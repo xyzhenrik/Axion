@@ -82,6 +82,11 @@ impl GroupColor {
         }
     }
 
+    pub fn color(self) -> axion_config::Color {
+        let [r, g, b] = self.rgb();
+        axion_config::Color::rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b))
+    }
+
     /// The colour after this one in the palette (new groups cycle through it).
     pub fn next(self) -> Self {
         let i = Self::ALL.iter().position(|&c| c == self).unwrap_or(0);
@@ -124,6 +129,8 @@ pub struct Tab {
     pub playing_media: bool,
     /// Muted from the address bar's speaker.
     pub muted: bool,
+    /// Muted because its site is (Mute Site): let go again when the tab leaves the site.
+    pub site_muted: bool,
     /// When the tab was last shown (unix seconds), for closing unused tabs.
     pub last_viewed: i64,
     /// The page's media, as the bridge last reported it.
@@ -156,6 +163,7 @@ impl Tab {
             playing_media: false,
             media: None,
             muted: false,
+            site_muted: false,
             pinned: false,
             group: None,
             capture: Default::default(),

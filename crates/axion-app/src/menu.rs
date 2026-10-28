@@ -74,6 +74,8 @@ pub enum MenuAction {
     LockAccount,
     /// A tab's context menu (see `context_menu`).
     Tab(crate::context_menu::TabCommand),
+    /// A tab group header's context menu.
+    Group(crate::context_menu::GroupCommand),
     /// A bookmark's context menu, or the bookmarks bar's overflow menu.
     Bookmark(crate::context_menu::BookmarkCommand),
     /// The Playlist page's menus and the page menu's Playlist rows.
