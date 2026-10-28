@@ -232,6 +232,7 @@ impl SheetMorph {
         let growth = self.drip.growth();
         // Flat mode has no drop to hand off: the sheet itself fades in and out.
         let near = phase != Phase::Open && growth < HANDOFF && current.is_some() && !ui.theme().flat();
+        ui.claim_space(self.sheet);
         ui.set_visual_frame(self.sheet, Some(frame));
         ui.set_opacity(self.sheet, if near { 0.0 } else { self.drip.fade() });
         if let Some(proxy) = current {

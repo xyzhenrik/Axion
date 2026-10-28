@@ -60,6 +60,8 @@ pub enum Art {
 }
 
 pub struct NowPlayingCard {
+    /// The lift applied now (logical px).
+    lift: std::cell::Cell<f32>,
     holder: NodeId,
     root: NodeId,
     art: NodeId,
@@ -288,6 +290,7 @@ impl NowPlayingCard {
         let (next, _) = control(ui, controls, ChromeAction::NowPlayingNext, Icon::Next, 22.0);
         ui.set_visible(holder, false);
         Self {
+            lift: std::cell::Cell::new(0.0),
             holder,
             root,
             art,
@@ -403,8 +406,19 @@ impl NowPlayingCard {
         ui.set_visible(self.placeholder, placeholder);
     }
 
+    /// Where the card rests with no lift (logical px); `None` while it is away.
+    pub fn rest_frame(&self, ui: &Ui) -> Option<Frame> {
+        if !ui.is_visible(self.root) {
+            return None;
+        }
+        let mut frame = ui.frame(self.root);
+        frame.origin.y += self.lift.get();
+        (frame.size.x > 1.0).then_some(frame)
+    }
+
     /// Lifts the card by `lift` px (the account menu is opening below it).
     pub fn set_lift(&self, ui: &mut Ui, lift: f32) {
+        self.lift.set(lift.max(0.0));
         let mut style = ui.style(self.root);
         let bottom = length(lift.max(0.0));
         if style.inset.bottom != bottom {

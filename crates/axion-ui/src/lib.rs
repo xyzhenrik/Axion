@@ -162,6 +162,10 @@ pub struct Ui {
     /// The theme in dark, for planes that are always dark (see `set_plane_dark`).
     dark_theme: Theme,
     dark_planes: HashSet<NodeId>,
+    /// Nodes that take up screen space other floating things keep clear of (see `claim_space`).
+    space_claims: Vec<NodeId>,
+    /// Where a claiming node is heading (a popover still growing): its area counts in full at once.
+    claim_targets: HashMap<NodeId, Rect>,
     /// Set while painting a dark plane.
     painting_dark: Cell<bool>,
     scale: f32,
@@ -209,6 +213,8 @@ impl Ui {
             fonts: RefCell::new(FontSystem::new()),
             dark_theme: Theme::new(theme.config(), true),
             dark_planes: HashSet::new(),
+            space_claims: Vec::new(),
+            claim_targets: HashMap::new(),
             painting_dark: Cell::new(false),
             theme,
             scale,
@@ -539,6 +545,43 @@ impl Ui {
         {
             *crop = uv;
         }
+    }
+
+    /// Registers `node` as occupying screen space: whenever it is shown, floating things that
+    /// place themselves (toasts) keep clear of it. Popovers, menus and sheets claim their glass
+    /// when they are built, so a new one needs no special case anywhere else.
+    pub fn claim_space(&mut self, node: NodeId) {
+        if !self.space_claims.contains(&node) {
+            self.space_claims.push(node);
+        }
+    }
+
+    /// Declares where a claiming node ends up (`None` once it is leaving), so others keep clear
+    /// of the whole area while it still grows or shrinks.
+    pub fn set_claim_target(&mut self, node: NodeId, target: Option<Rect>) {
+        match target {
+            Some(r) => self.claim_targets.insert(node, r),
+            None => self.claim_targets.remove(&node),
+        };
+    }
+
+    /// The frames (as drawn now, logical px) of every shown node that claimed space, except
+    /// `except` and their descendants' owners.
+    pub fn claimed_areas(&self, except: &[NodeId]) -> Vec<Rect> {
+        self.space_claims
+            .iter()
+            .filter(|n| !except.contains(n) && self.is_visible(**n))
+            .filter_map(|&n| {
+                let w = self.widget(n)?;
+                let mut r = w.visual_frame.unwrap_or(w.frame);
+                if let Some(t) = self.claim_targets.get(&n) {
+                    let lo = r.origin.min(t.origin);
+                    let hi = (r.origin + r.size).max(t.origin + t.size);
+                    r = Rect { origin: lo, size: hi - lo };
+                }
+                (r.size.x > 1.0 && r.size.y > 1.0 && w.opacity > 0.01).then_some(r)
+            })
+            .collect()
     }
 
     pub fn set_visual_frame(&mut self, node: NodeId, frame: Option<Rect>) {
