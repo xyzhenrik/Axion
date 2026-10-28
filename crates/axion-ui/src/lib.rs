@@ -1572,9 +1572,12 @@ impl Ui {
             lens,
             held: Animated::new(0.0, spring),
             pull,
+            distance: Animated::new(0.0, spring),
+            dir: Vec2::X,
         });
         press.scale.spring = spring;
         press.offset.spring = spring;
+        press.distance.spring = spring;
         press.lens = lens;
         press.held.spring = spring;
         press.held.target = 1.0;
@@ -1588,6 +1591,7 @@ impl Ui {
             press.scale.target = 1.0;
             press.offset.target = Vec2::ZERO;
             press.held.target = 0.0;
+            press.distance.target = 0.0;
         }
     }
 
@@ -1598,6 +1602,14 @@ impl Ui {
         let still = self.theme.config().glass.reduce_motion;
         if let Some(press) = self.press_scale.get_mut(&glass) {
             let d = p - anchor;
+            // The stretch follows how far the pointer is from where it went down (only along
+            // the axes the glass may be pulled on), however little the glass itself follows.
+            let free = Vec2::new(f32::from(press.pull.x > 0.0), f32::from(press.pull.y > 0.0));
+            let reach = d * free;
+            if reach.length() > 0.0 {
+                press.dir = reach / reach.length();
+            }
+            press.distance.target = if still { 0.0 } else { reach.length() };
             press.offset.target = if still {
                 Vec2::ZERO
             } else if press.pull.x == press.pull.y {
@@ -1661,12 +1673,15 @@ impl Ui {
             press.scale.step(dt);
             press.offset.step(dt);
             press.held.step(dt);
+            press.distance.step(dt);
             !(press.scale.target == 1.0
                 && press.scale.is_settled(PRESS_SETTLED)
                 && press.held.target == 0.0
                 && press.held.is_settled(PRESS_SETTLED)
                 && press.offset.target == Vec2::ZERO
-                && press.offset.is_settled(0.05))
+                && press.offset.is_settled(0.05)
+                && press.distance.target == 0.0
+                && press.distance.is_settled(0.05))
         });
         // A slider's knob sits where its value is; only the lens animates.
         let sliders: Vec<(NodeId, f32)> = self
@@ -1825,21 +1840,25 @@ impl Ui {
         let flat = theme.flat();
         let press_xf = self.press_scale.get(&node).filter(|_| !flat).map(|press| {
             let offset = press.offset.value * s;
-            let pull = offset.length();
-            let e = (pull * PULL_STRETCH / bg_px.size.max_element().max(1.0)).min(self.squash());
-            let dir = if pull > 0.0 { (offset / pull).abs() } else { Vec2::ZERO };
-            // Along the pull it stretches, across it it narrows a little (like the glass).
-            let along = Vec2::ONE + dir * e;
-            let across = Vec2::ONE - Vec2::new(dir.y, dir.x) * e * 0.5;
-            // A lens carries its content: it stays centred in the lens, moving and stretching
-            // with it. Held group glass keeps its several items in place instead.
-            let carry = press.lens.then(|| Carry { from: px.center(), to: px.center() + offset });
+            // The stretch grows with the pointer's distance but resists more and more; its
+            // limit is what a pull used to reach at most (and never more than the glass's
+            // size allows: wide bars barely stretch).
+            let glass = &self.theme.config().glass;
+            let limit = glass
+                .drag_stretch_max()
+                .min(PULL_STRETCH * PULL_LIMIT * s / bg_px.size.max_element().max(1.0));
+            let e = axion_physics::drag_stretch(press.distance.value, limit, glass.drag_resistance());
+            let (angle, content) = stretch_content(press.dir, e);
+            // The icons and labels stay at the glass's rest centre and are deformed with the
+            // same stretch as the glass (never carried off with the pointer): `carry` maps
+            // the centre onto itself and `content_scale` is the shared transform.
+            let carry = press.lens.then(|| Carry { from: px.center(), to: px.center() });
             PressXf {
                 scale: press.scale.value,
                 offset,
                 stretch: Vec2::new(1.0 + e, 1.0 / (1.0 + e)),
-                angle: offset.y.atan2(offset.x),
-                content_scale: press.scale.value * along * across,
+                angle,
+                content_scale: press.scale.value * content,
                 carry,
             }
         });
@@ -2080,14 +2099,14 @@ impl Ui {
                     let surface = theme.color(Paint::Surface);
                     let rest = [surface[0], surface[1], surface[2], SEGMENT_PILL_OPACITY];
                     let rect = Rect { origin: pill.origin * s, size: pill.size * s };
-                    self.paint_pill(rect, rest, lens, fade, depth, stacks);
+                    let stretch = self.knob_stretch(held, px.size.x);
+                    self.paint_pill(rect, rest, lens, stretch, fade, depth, stacks);
                 }
             }
             WidgetKind::Toggle { on } => {
                 let held = self.knobs.get(&node);
                 let pos = held.map_or(if *on { 1.0 } else { 0.0 }, |k| k.pos.value);
                 let lens = held.map_or(0.0, |k| k.lens.value.clamp(0.0, 1.0));
-                let speed = held.map_or(0.0, |k| k.speed);
                 // The track blends from grey to the accent with the knob's position.
                 let t = pos.clamp(0.0, 1.0);
                 let off = theme.color(Paint::Label);
@@ -2109,7 +2128,8 @@ impl Ui {
                     origin.x + TOGGLE_INSET * s + knob.x / 2.0 + travel * pos,
                     origin.y + size.y / 2.0,
                 );
-                self.paint_knob(center, knob, lens, speed, fade, depth, true, stacks);
+                let stretch = self.knob_stretch(held, travel);
+                self.paint_knob(center, knob, lens, stretch, fade, depth, true, stacks);
             }
             WidgetKind::Slider { value, line: true } => {
                 let held = self.knobs.get(&node);
@@ -2125,10 +2145,10 @@ impl Ui {
                 content.quads.push(Quad::fill(filled, h / 2.0, faded([label[0], label[1], label[2], 0.95])));
                 // A dragged slider's fill end is a glass lens (no knob at rest).
                 if lens > MIN_VISIBLE {
-                    let speed = held.map_or(0.0, |k| k.speed);
+                    let stretch = self.knob_stretch(held, px.size.x);
                     let center = Vec2::new(px.origin.x + px.size.x * value, y);
                     let side = rest.max(LINE_SLIDER) * LINE_LENS * s;
-                    self.paint_knob(center, Vec2::splat(side), lens, speed, fade, depth, false, stacks);
+                    self.paint_knob(center, Vec2::splat(side), lens, stretch, fade, depth, false, stacks);
                 }
             }
             WidgetKind::Slider { value, line: false } => {
@@ -2148,9 +2168,9 @@ impl Ui {
                 content.quads.push(Quad::fill(filled, track_h / 2.0, faded(theme.color(Paint::Accent))));
                 let held = self.knobs.get(&node);
                 let lens = held.map_or(0.0, |k| k.lens.value.clamp(0.0, 1.0));
-                let speed = held.map_or(0.0, |k| k.speed);
+                let stretch = self.knob_stretch(held, width);
                 let center = Vec2::new(px.origin.x + inset + width * value, y);
-                self.paint_knob(center, Vec2::splat(knob), lens, speed, fade, depth, true, stacks);
+                self.paint_knob(center, Vec2::splat(knob), lens, stretch, fade, depth, true, stacks);
             }
         }
 
@@ -2247,6 +2267,23 @@ impl Ui {
         }
     }
 
+    /// How far a held knob's lens stretches along its travel (`travel_px`, physical px): by
+    /// its speed (as before, up to `glass.squash`), and by how far the pointer is pulled past
+    /// the ends of the travel, on the saturating drag curve (up to `glass.drag_stretch_max`,
+    /// a little more for a long lens).
+    fn knob_stretch(&self, knob: Option<&knob::Knob>, travel_px: f32) -> f32 {
+        let Some(k) = knob else { return 0.0 };
+        let glass = &self.theme.config().glass;
+        let by_speed = (k.speed.abs() * LENS_SQUASH).min(self.squash() * LENS_SQUASH_RATIO);
+        let over_px = k.over * travel_px / self.scale;
+        let by_pull = axion_physics::drag_stretch(
+            over_px,
+            glass.drag_stretch_max() * LENS_SQUASH_RATIO,
+            glass.drag_resistance(),
+        );
+        by_speed.max(by_pull)
+    }
+
     /// A switch or slider knob (physical px): opaque white at rest (a line slider has
     /// none: `rest_knob` off), a clear glass lens while held (`lens` 0→1), stretched along fast
     /// motion.
@@ -2256,7 +2293,7 @@ impl Ui {
         center: Vec2,
         knob: Vec2,
         lens: f32,
-        speed: f32,
+        stretch: f32,
         fade: f32,
         depth: usize,
         rest_knob: bool,
@@ -2266,7 +2303,7 @@ impl Ui {
         // Flat mode: a plain knob that never swells into a lens.
         let lens = if self.theme.flat() { 0.0 } else { lens };
         let grow = Vec2::ONE + (LENS_GROWTH - Vec2::ONE) * lens;
-        let stretch = (speed.abs() * LENS_SQUASH).min(self.squash() * LENS_SQUASH_RATIO) * lens;
+        let stretch = stretch * lens;
         let size = knob * grow * Vec2::new(1.0 + stretch, 1.0 / (1.0 + stretch).sqrt());
         let rect = Rect { origin: center - size / 2.0, size };
         let radius = size.y / 2.0;
@@ -2293,11 +2330,13 @@ impl Ui {
 
     /// A segmented control's selection pill (physical px): `rest` colour at rest, a glass lens
     /// (grown like a held switch knob) while held.
+    #[allow(clippy::too_many_arguments)]
     fn paint_pill(
         &self,
         rect: Rect,
         rest: [f32; 4],
         lens: f32,
+        stretch: f32,
         fade: f32,
         depth: usize,
         stacks: &mut [Stack<'_>],
@@ -2305,7 +2344,7 @@ impl Ui {
         let s = self.scale;
         let lens = if self.theme.flat() { 0.0 } else { lens };
         let grow = Vec2::ONE + (Vec2::new(1.12, 1.25) - Vec2::ONE) * lens;
-        let size = rect.size * grow;
+        let size = rect.size * grow * Vec2::new(1.0 + stretch * lens, 1.0 / (1.0 + stretch * lens).sqrt());
         let center = rect.center();
         let radius = size.y / 2.0;
         let r = Rect { origin: center - size / 2.0, size };
@@ -2390,6 +2429,11 @@ struct Press {
     held: Animated<f32>,
     /// How far it follows the pointer along each axis (rubber band limits, logical px).
     pull: Vec2,
+    /// How far the pointer is from where it went down (logical px, sprung): what the stretch
+    /// grows with, along `dir`, on a saturating curve (`axion_physics::drag_stretch`).
+    distance: Animated<f32>,
+    /// Unit direction of the pull (kept while the stretch springs back).
+    dir: Vec2,
 }
 
 struct GlassItem {
@@ -2415,6 +2459,16 @@ struct PressXf {
     /// Set for an animated frame (popover growing): the whole subtree is mapped from the
     /// layout frame onto the visual one, so items move with it instead of staying put.
     carry: Option<Carry>,
+}
+
+/// The shared stretch transform of glass and its content: `e` along the unit direction `dir`
+/// (the glass's own shader: `(1 + e, 1 / (1 + e))` along/across, area preserving). Returns the
+/// stretch angle and that scaling as seen on the screen axes (exact for pulls along an axis,
+/// the nearest axis-aligned scaling for diagonal ones), for quads, icons and text boxes.
+fn stretch_content(dir: Vec2, e: f32) -> (f32, Vec2) {
+    let (along, across) = (1.0 + e, 1.0 / (1.0 + e));
+    let (c2, s2) = (dir.x * dir.x, dir.y * dir.y);
+    (dir.y.atan2(dir.x), Vec2::new(along * c2 + across * s2, along * s2 + across * c2))
 }
 
 /// Maps the layout frame's centre onto the visual frame's.
@@ -3507,9 +3561,14 @@ mod tests {
             .filter_map(|l| if let Layer::Content(c) = l { c.icons.first().copied() } else { None })
             .next_back()
             .expect("the icon");
-        // Same transform as the glass: it is centred in the lens and scaled by the same amount.
-        assert!((icon.rect.center() - lens.center).length() < 1.0);
+        // Same transform as the glass: scaled by the same amount, but it stays at the rest
+        // centre while the lens follows the pointer a little.
+        assert!((icon.rect.center() - Vec2::splat(28.0)).length() < 0.01);
+        assert!(lens.center.x > 28.5);
         assert!(icon.rect.size.x > 20.0 * 1.2, "scaled with the lens: {:?}", icon.rect.size);
+        // Stretched along the pull (x) and narrower across it, like the glass.
+        assert!(icon.rect.size.x / icon.rect.size.y > 1.0 + 1e-3, "{:?}", icon.rect.size);
+        assert!(lens.stretch.x > 1.0 && lens.stretch.y < 1.0);
     }
 
     fn glass_and_icons(ui: &Ui) -> (Vec<GlassShape>, Vec<Rect>, usize) {
@@ -3529,6 +3588,60 @@ mod tests {
             }
         }
         (shapes, icons, quads)
+    }
+
+    /// The stretch of a held button at a pointer distance: (icon size ratio x/y, glass stretch).
+    fn pulled(distance: f32) -> (f32, f32) {
+        let mut ui = ui();
+        let (_, button, _) = row(&mut ui);
+        ui.add(button, Widget::icon(axion_compositor::Icon::Back, 20.0), Style::default());
+        let mut style = ui.style(button);
+        style.justify_content = JustifyContent::CENTER;
+        style.align_items = AlignItems::CENTER;
+        ui.set_style(button, style);
+        ui.layout();
+        ui.handle(UiInput::PointerMove(Vec2::new(28.0, 28.0)));
+        ui.handle(UiInput::PointerDown);
+        ui.handle(UiInput::PointerMove(Vec2::new(28.0 + distance, 28.0)));
+        for _ in 0..200 {
+            ui.animate(1.0 / 60.0);
+        }
+        let (shapes, icons, _) = glass_and_icons(&ui);
+        (icons[0].size.x / icons[0].size.y, shapes[1].stretch.x)
+    }
+
+    #[test]
+    fn the_drag_stretch_grows_with_distance_but_saturates_at_the_old_maximum() {
+        let max = 1.0 + axion_config::Config::default().glass.drag_stretch_max;
+        let (_, near) = pulled(5.0);
+        let (_, mid) = pulled(30.0);
+        let (_, far) = pulled(150.0);
+        let (icon_far, huge) = pulled(5000.0);
+        assert!(near > 1.0 && near < mid && mid < far && far <= huge, "{near} {mid} {far} {huge}");
+        // Resistance: the second 25 px add less than the first 25.
+        assert!((mid - near) / 25.0 < (near - 1.0) / 5.0, "per-px gain falls");
+        assert!((huge - max).abs() < 0.002, "asymptote {huge} vs {max}");
+        // The icon is deformed by the same amount (its aspect, not just its place).
+        assert!(icon_far > 1.0 + (max - 1.0) * 0.8, "{icon_far}");
+    }
+
+    #[test]
+    fn no_drag_stretch_under_reduce_motion_or_flat() {
+        let mut config = axion_config::Config::default();
+        config.glass.reduce_motion = true;
+        let mut ui = Ui::new(Theme::new(&config, false), 1.0);
+        ui.set_viewport(Vec2::new(800.0, 600.0), 1.0);
+        let (_, button, _) = row(&mut ui);
+        ui.add(button, Widget::icon(axion_compositor::Icon::Back, 20.0), Style::default());
+        ui.layout();
+        ui.handle(UiInput::PointerMove(Vec2::new(28.0, 28.0)));
+        ui.handle(UiInput::PointerDown);
+        ui.handle(UiInput::PointerMove(Vec2::new(280.0, 28.0)));
+        for _ in 0..120 {
+            ui.animate(1.0 / 60.0);
+        }
+        let (shapes, _, _) = glass_and_icons(&ui);
+        assert!(shapes.iter().all(|s| (s.stretch.x - 1.0).abs() < 1e-5), "{:?}", shapes);
     }
 
     #[test]
@@ -3572,10 +3685,10 @@ mod tests {
         assert!(lens.glow > 0.0, "it is lighter");
         // No plain highlight: the lens is the feedback.
         assert_eq!(quads, 0);
-        // The icon rides along, centred in the lens, and grows with it.
+        // The icon grows and stretches with the glass but stays at its rest place.
         let (rest, held) = (rest_icons[0], icons[0]);
         assert!((rest.center() - Vec2::splat(28.0)).length() < 1.0);
-        assert!((held.center() - lens.center).length() < 1.0);
+        assert!((held.center() - rest.center()).length() < 0.01, "stays: {:?}", held.center());
         assert!(held.size.x > rest.size.x * 1.3);
         // Released, it springs back into the bar.
         ui.handle(UiInput::PointerUp);
@@ -3635,11 +3748,12 @@ mod tests {
         assert!(lens.center.x > 70.5, "it follows the pointer");
         assert!(lens.glow > 0.0, "it is lighter");
         assert_eq!(quads, 0, "no plain highlight on the pressed button");
-        // Every icon moves with it, keeping its place inside the capsule.
-        let shift = lens.center.x - 70.0;
+        // Every icon stays at its rest place (about the capsule's rest centre): it swells and
+        // stretches with the glass but is never carried along with the pointer.
         for (rest, held) in rest_icons.iter().zip(&icons) {
             let expected = 70.0 + (rest.center().x - 70.0) * (lens.half_size.x / 70.0);
-            assert!((held.center().x - (expected + shift)).abs() < 2.0, "{rest:?} → {held:?}");
+            assert!((held.center().x - expected).abs() < 3.0, "{rest:?} → {held:?}");
+            assert!((held.center().y - rest.center().y).abs() < 0.5);
         }
         ui.handle(UiInput::PointerUp);
         for _ in 0..120 {
