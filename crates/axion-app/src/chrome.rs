@@ -124,6 +124,8 @@ pub enum ChromeAction {
     PlaylistButton,
     /// The toolbar's download button (opens the downloads popover).
     DownloadsButton,
+    /// The toolbar's extensions button (opens the extensions popover).
+    ExtensionsButton,
     /// The `k`th trailing button of panel entry `i` (a download's pause, open …).
     PanelButton(usize, usize),
     /// Opens the Passwords sheet.
@@ -192,7 +194,7 @@ const GROUP_BASE: u32 = 11_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 34] = [
+    const SIMPLE: [ChromeAction; 35] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -218,6 +220,7 @@ impl ChromeAction {
         ChromeAction::ClearPanel,
         ChromeAction::Downloads,
         ChromeAction::DownloadsButton,
+        ChromeAction::ExtensionsButton,
         ChromeAction::Passwords,
         ChromeAction::Account,
         ChromeAction::CollapseTabs,
@@ -461,6 +464,10 @@ pub struct Chrome {
     page_menu_bar: NodeId,
     shield: NodeId,
     share: NodeId,
+    /// The extensions button (left of share) and whether it is wanted at all
+    /// (`extensions.enabled`).
+    extensions: NodeId,
+    extensions_shown: bool,
     shield_glyph: NodeId,
     address_favicon: NodeId,
     /// While typing a new address: `Some(url)` whose icon to show (`None` inside = globe).
@@ -1423,6 +1430,14 @@ impl Chrome {
             Style { size: Size { width: percent(0.0), height: percent(1.0) }, ..Default::default() },
         );
         ui.set_visible(downloads, false);
+        let (extensions_button, _) = icon_button(
+            ui,
+            actions,
+            ChromeAction::ExtensionsButton,
+            Widget::icon(Icon::Extensions, 21.0),
+            BUTTON,
+        );
+        tip(ui, extensions_button, tr("Extensions"), None);
         let (share_button, _) =
             icon_button(ui, actions, ChromeAction::Share, Widget::icon(Icon::Share, 21.0), BUTTON);
         tip(ui, share_button, tr("Copy Link"), None);
@@ -1494,6 +1509,7 @@ impl Chrome {
                 forward,
                 home_button,
                 share_button,
+                extensions_button,
                 new_tab_button,
                 downloads,
             ],
@@ -1557,6 +1573,8 @@ impl Chrome {
             page_menu_bar,
             shield,
             share: share_button,
+            extensions: extensions_button,
+            extensions_shown: true,
             shield_glyph,
             address_favicon,
             address_icon_override: None,
@@ -2420,6 +2438,7 @@ impl Chrome {
             for node in [self.back, self.share, self.new_tab] {
                 ui.set_visible(node, true);
             }
+            ui.set_visible(self.extensions, self.extensions_shown);
             let downloads = self.download_state.is_some_and(|(shown, _)| shown);
             ui.set_visible(self.downloads, downloads);
         }
@@ -2552,6 +2571,19 @@ impl Chrome {
     /// The toolbar's download button (logical px), for anchoring the downloads popover.
     pub fn downloads_frame(&self, ui: &Ui) -> Frame {
         ui.frame(self.downloads)
+    }
+
+    /// Shows or hides the toolbar's extensions button (`extensions.enabled`).
+    pub fn set_extensions_button(&mut self, ui: &mut Ui, shown: bool) {
+        if self.extensions_shown != shown {
+            self.extensions_shown = shown;
+            ui.set_visible(self.extensions, shown && !self.locked);
+        }
+    }
+
+    /// The toolbar's extensions button (logical px), for anchoring its popover.
+    pub fn extensions_frame(&self, ui: &Ui) -> Frame {
+        ui.frame(self.extensions)
     }
 
     /// The toolbar's share button (logical px), where toasts for it appear.

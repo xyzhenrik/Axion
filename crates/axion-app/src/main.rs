@@ -21,6 +21,8 @@ mod context_menu;
 mod desktop;
 mod desktop_integration;
 mod downloads;
+mod extensions;
+mod extensions_popover;
 mod downloads_popover;
 mod drip;
 mod engine_icons;

@@ -845,15 +845,19 @@ impl Default for Privacy {
     }
 }
 
-/// Chrome extensions.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Chrome extensions (Manifest V3, installed from an unpacked folder or a `.crx` file).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Extensions {
-    /// Chrome extensions are not supported yet; the Web Store cannot install them. Leave this
-    /// off: with the extension system running, the Web Store's "Add to Chrome" reaches an
-    /// install dialog that has no window to attach to in off-screen mode and crashes Chromium.
-    /// Applies after a restart. Default: off.
+    /// Run Chromium's extension system and show the extensions button in the toolbar. Off: no
+    /// extension loads and the button is hidden. Applies after a restart. Default: on.
     pub enabled: bool,
+}
+
+impl Default for Extensions {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 /// What happens when a site asks for a permission nobody has decided for it yet.

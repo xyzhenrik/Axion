@@ -34,6 +34,8 @@ use crate::context_menu::ContextMenus;
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
 use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
+use crate::extensions::Extensions;
+use crate::extensions_popover::{ExtensionsAction, ExtensionsPopover};
 use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::filedrop::{DropOutcome, FileDrop};
 use crate::find::{FindAction, FindBar};
@@ -252,6 +254,13 @@ pub struct Browser {
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
     downloads_popover: DownloadsPopover,
+    /// Chrome extensions: the installed list, and the popover of the toolbar's puzzle piece.
+    extensions: Extensions,
+    extensions_popover: ExtensionsPopover,
+    /// The extension whose details the popover shows (else the list).
+    extensions_details: Option<String>,
+    /// The details' Remove button was clicked once.
+    extensions_confirm_remove: bool,
     /// Site permissions: the prompt, the recording indicator's popover and the decisions.
     permissions: permissions::PermissionsUi,
     toast: Toast,
@@ -612,6 +621,7 @@ impl Browser {
         PrivateLock::drop_old_password(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
         let downloads = Downloads::new(profile.clone());
+        let extensions = Extensions::new(&profile, store.as_ref());
         let vault_path = profile.join("vault.sqlite");
         let mut engine = CefEngine::new(
             device.clone(),
@@ -639,6 +649,7 @@ impl Browser {
                 hardware_video_decoding: crate::hardware::video_decoding(&config),
                 extra_switches: crate::hardware::chromium_switches(&config.hardware),
                 extensions_enabled: config.extensions.enabled,
+                load_extensions: extensions.load_dirs(),
                 waker: options.waker.clone(),
             },
         )?;
@@ -664,6 +675,7 @@ impl Browser {
         let account_menu = Menu::build(&mut ui, chrome.sidebar_node(), ACCOUNT_MENU_BASE, Placement::Above);
         let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
+        let extensions_popover = ExtensionsPopover::build(&mut ui, chrome.bar_node());
         let permissions = permissions::PermissionsUi::build(&mut ui, chrome.bar_node(), store.as_ref());
         let toast = Toast::build(&mut ui, chrome.bar_node());
         let find = FindBar::build(&mut ui, chrome.bar_node());
@@ -745,6 +757,10 @@ impl Browser {
             shields,
             shields_popover,
             downloads_popover,
+            extensions,
+            extensions_popover,
+            extensions_details: None,
+            extensions_confirm_remove: false,
             permissions,
             toast,
             updater: Updater::new(),
@@ -951,6 +967,7 @@ impl Browser {
     fn update_layout(&mut self) {
         self.resize_counters.layouts += 1;
         let size = self.logical_size();
+        self.chrome.set_extensions_button(&mut self.ui, self.config.extensions.enabled);
         self.ui.set_viewport(size, self.scale());
         self.chrome.apply_layout(&mut self.ui, &self.config, size);
         let tabs = if self.is_locked() { &self.no_tabs } else { &self.tabs };
@@ -1419,6 +1436,7 @@ impl Browser {
         self.menu.close(&mut self.ui, &self.config);
         self.shields_popover.close(&mut self.ui, &self.config);
         self.downloads_popover.close(&mut self.ui, &self.config);
+        self.extensions_popover.close(&mut self.ui, &self.config);
         // The actions below the list must fit in the menu.
         let shown = MAX_ITEMS - 3;
         let mut items: Vec<MenuItem> = self
@@ -3028,6 +3046,7 @@ impl Browser {
         self.account_menu.close(&mut self.ui, &self.config);
         self.shields_popover.close(&mut self.ui, &self.config);
         self.downloads_popover.close(&mut self.ui, &self.config);
+        self.extensions_popover.close(&mut self.ui, &self.config);
         self.permissions.capture.close(&mut self.ui, &self.config);
         self.suggestions.hide(&mut self.ui, &self.config);
         self.passwords.hide_prompt(None, false);
@@ -3516,6 +3535,11 @@ impl Browser {
                         None => {}
                     }
                 }
+                UiEvent::Clicked { action, .. } if self.extensions_popover.action(action).is_some() => {
+                    if let Some(action) = self.extensions_popover.action(action) {
+                        self.extensions_action(action);
+                    }
+                }
                 UiEvent::Clicked { action, .. } if self.permissions.prompt.action(action).is_some() => {
                     if let Some(choice) = self.permissions.prompt.action(action) {
                         self.answer_permission_prompt(choice);
@@ -3624,6 +3648,7 @@ impl Browser {
                     }
                     Some(ChromeAction::PlaylistButton) => self.toggle_playlist_popover(),
                     Some(ChromeAction::DownloadsButton) => self.toggle_downloads_popover(),
+                    Some(ChromeAction::ExtensionsButton) => self.toggle_extensions_popover(),
                     Some(ChromeAction::PanelButton(i, k)) => {
                         self.downloads.row_button(List::Panel, i, k, &mut self.engine);
                         self.show_panel_with(Panel::Downloads, true);
@@ -4090,6 +4115,7 @@ impl Browser {
             }
         }
         self.downloads_pump(downloads_changed);
+        self.extensions_pump();
         self.check_capture_stops();
         self.apply_permission_defaults();
         self.import_pump();
@@ -4379,6 +4405,7 @@ impl Browser {
             || self.context_menus.is_open()
             || self.shields_popover.is_open()
             || self.downloads_popover.is_open()
+            || self.extensions_popover.is_open()
             || self.permissions.prompt.is_open()
             || self.permissions.capture.is_open()
             || self.suggestions.is_visible()
@@ -4392,11 +4419,130 @@ impl Browser {
             || self.lock_screen.is_alert_open()
     }
 
+    /// Opens or closes the extensions popover (the toolbar's puzzle piece).
+    fn toggle_extensions_popover(&mut self) {
+        if self.extensions_popover.is_open() {
+            self.extensions_popover.close(&mut self.ui, &self.config);
+            return;
+        }
+        self.shields_popover.close(&mut self.ui, &self.config);
+        self.downloads_popover.close(&mut self.ui, &self.config);
+        self.menu.close(&mut self.ui, &self.config);
+        self.extensions_confirm_remove = false;
+        if self.extensions_details.as_ref().is_some_and(|id| self.extensions.get(id).is_none()) {
+            self.extensions_details = None;
+        }
+        self.open_extensions_popover();
+    }
+
+    /// Opens the extensions popover, or refreshes it.
+    fn open_extensions_popover(&mut self) {
+        let icons: Vec<_> = self
+            .extensions
+            .views()
+            .iter()
+            .map(|e| {
+                let path = e.icon.clone();
+                self.avatars.get(&format!("extension:{}", e.id), || path)
+            })
+            .collect();
+        let content = crate::extensions_popover::Content {
+            extensions: self.extensions.views(),
+            icons: &icons,
+            needs_restart: self.extensions.needs_restart(),
+            installing: self.extensions.is_installing(),
+            details: self.extensions_details.as_deref(),
+            confirm_remove: self.extensions_confirm_remove,
+        };
+        let anchor = self.chrome.extensions_frame(&self.ui);
+        let width = self.logical_size().x;
+        self.extensions_popover.open(&mut self.ui, &self.config, anchor, width, &content);
+    }
+
+    fn extensions_action(&mut self, action: ExtensionsAction) {
+        let current = self.extensions_details.clone();
+        let nth = |this: &Self, i: usize| this.extensions.views().get(i).map(|e| e.id.clone());
+        match action {
+            ExtensionsAction::InstallFolder => self.extensions.choose(crate::extensions::Pick::Folder),
+            ExtensionsAction::InstallPackage => self.extensions.choose(crate::extensions::Pick::Package),
+            ExtensionsAction::Relaunch => {
+                let id = self.account_id.clone();
+                self.relaunch_into(&id);
+            }
+            ExtensionsAction::Details(i) => self.extensions_details = nth(self, i),
+            ExtensionsAction::Back => {
+                self.extensions_details = None;
+                self.extensions_confirm_remove = false;
+            }
+            ExtensionsAction::Toggle(i) => {
+                if let Some(id) = nth(self, i) {
+                    let on = self.extensions.get(&id).is_some_and(|e| !e.enabled);
+                    self.extensions.set_enabled(&id, on, self.store.as_ref());
+                }
+            }
+            ExtensionsAction::DetailToggle => {
+                if let Some(id) = current {
+                    let on = self.extensions.get(&id).is_some_and(|e| !e.enabled);
+                    self.extensions.set_enabled(&id, on, self.store.as_ref());
+                }
+            }
+            ExtensionsAction::OpenPopup | ExtensionsAction::OpenOptions => {
+                let page = current.as_deref().and_then(|id| self.extensions.get(id)).and_then(|e| {
+                    let page = if action == ExtensionsAction::OpenPopup { &e.popup } else { &e.options_page };
+                    page.as_ref().map(|p| crate::extensions::page_url(&e.id, p))
+                });
+                if let Some(url) = page {
+                    self.extensions_popover.close(&mut self.ui, &self.config);
+                    if let Err(e) = self.open_tab(&url, true) {
+                        tracing::warn!("opening the extension page failed: {e}");
+                    }
+                    return;
+                }
+            }
+            ExtensionsAction::Remove => {
+                if !self.extensions_confirm_remove {
+                    self.extensions_confirm_remove = true;
+                } else if let Some(id) = current {
+                    self.extensions.remove(&id, self.store.as_ref());
+                    self.extensions_details = None;
+                    self.extensions_confirm_remove = false;
+                }
+            }
+        }
+        self.open_extensions_popover();
+    }
+
+    /// Results of extension installs; keeps an open popover current.
+    fn extensions_pump(&mut self) {
+        use crate::extensions::Event;
+        let events = self.extensions.poll(self.store.as_ref());
+        if events.is_empty() {
+            return;
+        }
+        for event in events {
+            match event {
+                Event::Installed(name) => {
+                    let text = axion_i18n::tr_fmt!("Installed {name}. Relaunch to use it.", name = name);
+                    self.show_toast(Icon::Extensions, &text);
+                }
+                Event::Failed(why) => {
+                    tracing::warn!("installing the extension failed: {why}");
+                    let text = axion_i18n::tr_fmt!("Could not install the extension: {why}", why = why);
+                    self.show_toast(Icon::Info, &text);
+                }
+            }
+        }
+        if self.extensions_popover.is_open() {
+            self.open_extensions_popover();
+        }
+    }
+
     fn toggle_downloads_popover(&mut self) {
         if self.downloads_popover.is_open() {
             self.downloads_popover.close(&mut self.ui, &self.config);
         } else {
             self.shields_popover.close(&mut self.ui, &self.config);
+            self.extensions_popover.close(&mut self.ui, &self.config);
             self.menu.close(&mut self.ui, &self.config);
             self.open_downloads_popover();
         }
@@ -5255,6 +5401,14 @@ impl Browser {
             return;
         }
         if pressed
+            && self.extensions_popover.is_open()
+            && !self.extensions_popover.contains(&self.ui, p)
+            && !self.chrome.extensions_frame(&self.ui).contains(p)
+        {
+            self.extensions_popover.close(&mut self.ui, &self.config);
+            return;
+        }
+        if pressed
             && self.downloads_popover.is_open()
             && !self.downloads_popover.contains(&self.ui, p)
             && !self.chrome.downloads_frame(&self.ui).contains(p)
@@ -5433,6 +5587,13 @@ impl Browser {
         }
         if pressed && self.add_account.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.add_account.close(&mut self.ui);
+            return false;
+        }
+        if pressed
+            && self.extensions_popover.is_open()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            self.extensions_popover.close(&mut self.ui, &self.config);
             return false;
         }
         if pressed
@@ -5721,6 +5882,12 @@ impl Browser {
                 "history" => self.show_panel(Panel::History),
                 "downloads" => self.show_panel(Panel::Downloads),
                 "downloads-popover" => self.toggle_downloads_popover(),
+                // Capture aids: the extensions popover, and the details of the first extension.
+                "extensions-popover" => self.toggle_extensions_popover(),
+                "extensions-details" => {
+                    self.extensions_details = self.extensions.views().first().map(|e| e.id.clone());
+                    self.toggle_extensions_popover();
+                }
                 // Test aids: the Share button's toast, and the sidebar list's search text
                 // ("panel-search:TEXT", after "history" / "bookmarks").
                 "share" => self.copy_link(),
@@ -6466,6 +6633,7 @@ impl Browser {
         self.add_account.animate(&mut self.ui, dt);
         self.shields_popover.animate(&mut self.ui, dt);
         self.downloads_popover.animate(&mut self.ui, dt);
+        self.extensions_popover.animate(&mut self.ui, dt);
         let width = self.logical_size().x;
         let address = self.chrome.address_frame(&self.ui);
         let top = self.page_rect().origin.y;
@@ -7212,6 +7380,7 @@ fn chrome_allowed_while_locked(action: ChromeAction) -> bool {
             | ChromeAction::NewTab
             | ChromeAction::MuteTab
             | ChromeAction::DownloadsButton
+            | ChromeAction::ExtensionsButton
             | ChromeAction::SelectTab(_)
             | ChromeAction::CloseTab(_)
             | ChromeAction::OpenBookmark(_)
@@ -7278,7 +7447,7 @@ fn ms_since(started: Instant) -> f32 {
     started.elapsed().as_secs_f32() * 1000.0
 }
 
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
