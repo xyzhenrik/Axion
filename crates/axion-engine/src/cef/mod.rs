@@ -10,6 +10,7 @@ mod download;
 mod drag;
 mod gpu;
 mod input;
+mod mediaproxy;
 mod network;
 mod paste;
 mod permission;

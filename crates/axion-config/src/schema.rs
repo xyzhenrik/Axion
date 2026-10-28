@@ -1465,6 +1465,12 @@ pub struct Media {
     /// Sites whose own player is kept, also in fullscreen. Just the site's name, like
     /// "youtube.com" — its subdomains (www., m., …) count too. Edit in Settings › Media.
     pub trusted_player_sites: Vec<String>,
+    /// Sites whose `<video>`/`<audio>` elements are not media to play or list: calls and chats
+    /// (Discord voice/video, …) where the elements carry live call streams. The bridge does not
+    /// see them, so no player, no Now Playing entry, no Playlist entry. The site's name, like
+    /// "discord.com"; subdomains count too. Streams the page gets from the camera, microphone
+    /// or a peer connection (`srcObject`) are skipped on every site.
+    pub ignored_media_sites: Vec<String>,
     /// Older settings (Axion's controls inline), no longer used; accepted so old files load.
     #[serde(skip_serializing)]
     own_controls: Option<bool>,
@@ -1564,6 +1570,9 @@ impl Default for Media {
             ]
             .map(String::from)
             .to_vec(),
+            ignored_media_sites: ["discord.com", "discordapp.com", "discord.gg", "discord.media"]
+                .map(String::from)
+                .to_vec(),
             own_controls: None,
             replace_site_players: None,
             hide_controls_after_seconds: 2.5,

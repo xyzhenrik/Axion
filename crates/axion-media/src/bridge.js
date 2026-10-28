@@ -14,6 +14,10 @@
     return sites.some(function (s) { return host === s || host.slice(-s.length - 1) === '.' + s; });
   })(location.hostname, __AXION_TRUSTED__);
   if (TRUSTED) OWN_FULLSCREEN = false;
+  // Sites whose media elements are calls and chats (Discord voice/video...), not media.
+  var IGNORED = (function (host, sites) {
+    return sites.some(function (s) { return host === s || host.slice(-s.length - 1) === '.' + s; });
+  })(location.hostname, __AXION_IGNORED__);
   var MARK = '\u0001axion:';
   var log = console.debug.bind(console);
   var isTop = window === window.top;
@@ -22,7 +26,11 @@
     'durationchange', 'seeked', 'loadedmetadata', 'emptied', 'progress', 'resize'];
   var seq = 0;
   var media = new Set();
-  var shadowRoots = [];
+  // Shadow roots are held weakly: sites like YouTube create thousands of them while the page
+  // lives, and a strong list would keep every removed component's whole DOM alive (a leak that
+  // ends in the renderer running out of memory after hours of watching).
+  var shadowRefs = [];
+  var WEAK = typeof WeakRef === 'function';
   var children = new Map();   // child window -> its players
   var childOf = new Map();    // player id -> child window
   var childSession = null;
@@ -35,7 +43,7 @@
   var attachShadow = Element.prototype.attachShadow;
   Element.prototype.attachShadow = function () {
     var root = attachShadow.apply(this, arguments);
-    shadowRoots.push(root);
+    shadowRefs.push(WEAK ? new WeakRef(root) : root);
     return root;
   };
   var play = HTMLMediaElement.prototype.play;
@@ -73,7 +81,35 @@
   }
   if (!addStyle()) document.addEventListener('DOMContentLoaded', addStyle);
 
+  // The live shadow roots; the ones the page let go of are dropped from the list.
+  function shadowRoots() {
+    var live = [], keep = [];
+    for (var i = 0; i < shadowRefs.length; i++) {
+      var root = WEAK ? shadowRefs[i].deref() : shadowRefs[i];
+      if (!root) continue;
+      keep.push(shadowRefs[i]);
+      live.push(root);
+    }
+    // Without WeakRef, roots whose host left the document are dropped (media in them is found
+    // again by `play()`).
+    if (!WEAK) {
+      keep = []; live = live.filter(function (r) { var ok = r.host && r.host.isConnected; if (ok) keep.push(r); return ok; });
+    }
+    shadowRefs = keep;
+    return live;
+  }
+
+  // A call's or camera's live stream (WebRTC, getUserMedia) is not something to play, list or
+  // control as media: such elements are left alone, wherever they appear.
+  function isCall(el) {
+    if (IGNORED) return true;
+    try {
+      return !!el.srcObject && typeof MediaStream !== 'undefined' && el.srcObject instanceof MediaStream;
+    } catch (e) { return false; }
+  }
+
   function register(el) {
+    if (IGNORED) return;
     // The start page's live wallpaper is decoration, not media: no player, no "playing" tab,
     // no Now Playing entry, and it never keeps the tab from freezing.
     if (el.hasAttribute && el.hasAttribute('data-axion-wallpaper')) return;
@@ -86,14 +122,14 @@
   }
 
   function scan() {
-    [document].concat(shadowRoots).forEach(function (root) {
+    [document].concat(shadowRoots()).forEach(function (root) {
       if (root.querySelectorAll) root.querySelectorAll('video,audio').forEach(register);
     });
   }
 
   function frames() {
     var out = [];
-    [document].concat(shadowRoots).forEach(function (root) {
+    [document].concat(shadowRoots()).forEach(function (root) {
       if (root.querySelectorAll) root.querySelectorAll('iframe,frame').forEach(function (f) { out.push(f); });
     });
     return out;
@@ -102,6 +138,19 @@
     var all = frames();
     for (var i = 0; i < all.length; i++) if (all[i].contentWindow === win) return all[i];
     return null;
+  }
+
+  // A live stream: an endless duration, or (in Axion's own media view) a live HLS playlist,
+  // whose duration hls.js otherwise reports as the length of the window it holds.
+  function isLive(el) {
+    if (el.duration === Infinity) return true;
+    try {
+      var h = window.__axionHls;
+      if (h && h.media === el && h.levels && h.levels[h.currentLevel] && h.levels[h.currentLevel].details) {
+        return !!h.levels[h.currentLevel].details.live;
+      }
+    } catch (e) {}
+    return false;
   }
 
   function describe(el) {
@@ -126,7 +175,7 @@
       x: r.left, y: r.top, w: r.width, h: r.height, vw: el.videoWidth || 0, vh: el.videoHeight || 0,
       fit: el.tagName === 'VIDEO' ? (getComputedStyle(el).objectFit || '') : '',
       paused: el.paused, ended: el.ended, time: el.currentTime || 0,
-      duration: isFinite(el.duration) ? el.duration : 0, live: el.duration === Infinity,
+      duration: isFinite(el.duration) ? el.duration : 0, live: isLive(el),
       volume: el.volume, muted: el.muted, rate: el.playbackRate, buffered: buffered,
       captions: captions, caption: caption, native: !!el.__axNative,
       trusted: TRUSTED,
@@ -164,10 +213,19 @@
   function report() {
     timer = 0;
     var list = [];
-    media.forEach(function (el) { if (el.isConnected || !el.paused) list.push(describe(el)); });
+    media.forEach(function (el) {
+      if (isCall(el)) return;
+      if (el.isConnected || !el.paused) { list.push(describe(el)); return; }
+      // Gone from the page and not playing: forgotten (a later play() registers it again).
+      media.delete(el);
+    });
     children.forEach(function (players, win) {
       var f = frameOf(win);
-      if (!f) { children.delete(win); return; }
+      if (!f) {
+        players.forEach(function (p) { childOf.delete(p.id); });
+        children.delete(win);
+        return;
+      }
       var r = f.getBoundingClientRect();
       var ox = r.left + f.clientLeft, oy = r.top + f.clientTop;
       var inFullscreen = !!document.fullscreenElement && (document.fullscreenElement === f || document.fullscreenElement.contains(f));
@@ -222,6 +280,11 @@
     switch (c.action) {
       case 'play': el.play(); break;
       case 'pause': el.pause(); break;
+      case 'stop':
+        // Stop: paused, back at the start. A live stream has no start: it just pauses.
+        el.pause();
+        if (!isLive(el) && isFinite(el.duration)) { try { el.currentTime = 0; } catch (e) {} }
+        break;
       case 'toggle': if (el.paused || el.ended) el.play(); else el.pause(); break;
       case 'seek': el.currentTime = Math.max(0, v); break;
       case 'skip': el.currentTime = Math.max(0, el.currentTime + v); break;
@@ -286,8 +349,11 @@
     if (d.k === 'cmd' && e.source === parent && !isTop) { cmd(d.cmd); return; }
     if (!frameOf(e.source)) return;
     if (d.k === 'state') {
+      var before = children.get(e.source) || [];
+      var now = {};
+      d.players.forEach(function (p) { now[p.id] = true; childOf.set(p.id, e.source); });
+      before.forEach(function (p) { if (!now[p.id]) childOf.delete(p.id); });
       children.set(e.source, d.players);
-      d.players.forEach(function (p) { childOf.set(p.id, e.source); });
       if (d.session) childSession = d.session;
       schedule();
     } else if (d.k === 'event') {
@@ -302,7 +368,7 @@
   window.addEventListener('scroll', schedule, { passive: true, capture: true });
   window.addEventListener('resize', schedule);
   window.addEventListener('pagehide', function () {
-    media.clear(); children.clear();
+    media.clear(); children.clear(); childOf.clear();
     if (timer) clearTimeout(timer);
     report();
   });

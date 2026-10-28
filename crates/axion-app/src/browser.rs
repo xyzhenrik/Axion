@@ -683,7 +683,11 @@ impl Browser {
         let media_service = Arc::new(crate::media_view::MediaService::default());
         media_service.set_bridge(axion_media::bridge_script(
             &bridge_secret(),
-            &axion_media::BridgeOptions { own_fullscreen: false, trusted_sites: Vec::new() },
+            &axion_media::BridgeOptions {
+                own_fullscreen: false,
+                trusted_sites: Vec::new(),
+                ignored_sites: config.media.ignored_media_sites.clone(),
+            },
         ));
         engine.set_internal_pages(Some(Arc::new(crate::media_view::Chain(vec![
             home.service(),
@@ -1955,6 +1959,7 @@ impl Browser {
                 MprisCommand::Play => A::Play,
                 MprisCommand::Pause => A::Pause,
                 MprisCommand::PlayPause => A::Toggle,
+                MprisCommand::Stop => A::Stop,
                 MprisCommand::Next => A::NextTrack,
                 MprisCommand::Previous => {
                     self.now_playing_previous();
@@ -1965,7 +1970,12 @@ impl Browser {
                 MprisCommand::Volume(v) => A::Volume(v),
                 MprisCommand::Rate(r) => A::Rate(r),
             };
-            self.now_playing_command(action);
+            // The Playlist's video, while it plays, is what the desktop's controls are about.
+            if self.playlist.playback.as_ref().is_some_and(|p| p.player().is_some()) {
+                self.playlist_media(action);
+            } else {
+                self.now_playing_command(action);
+            }
         }
     }
 
@@ -7177,6 +7187,7 @@ fn media_replace(config: &Config) -> axion_media::BridgeOptions {
     axion_media::BridgeOptions {
         own_fullscreen: media.fullscreen_player,
         trusted_sites: media.trusted_player_sites.clone(),
+        ignored_sites: media.ignored_media_sites.clone(),
     }
 }
 

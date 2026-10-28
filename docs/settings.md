@@ -177,6 +177,7 @@ a site. Changes apply to pages loaded next.
 | Setting | What it does | Default | Config key |
 |---|---|---|---|
 | Trusted sites list | Sites that keep their own player. | YouTube, Twitch, Vimeo, Dailymotion, Netflix, Disney+, Prime Video, Crunchyroll, Spotify, SoundCloud | `media.trusted_player_sites` |
+| Ignored media sites | Sites whose video/audio elements are calls or chats (Discord…), not media: no player, no Now Playing, no Playlist entry. Camera, microphone and call streams are skipped everywhere. | Discord | `media.ignored_media_sites` |
 
 ### Playback
 
