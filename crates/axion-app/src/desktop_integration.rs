@@ -47,8 +47,9 @@ const STAMP_KEY: &str = "# X-Axion-Integration:";
 
 /// Revision of what [`install`] writes and does. Raising it rewrites every existing entry once
 /// (and so sends the icon change signal once): revision 2 added that signal, for entries an
-/// older Axion wrote while KDE kept an empty icon for them.
-const REVISION: u32 = 2;
+/// older Axion wrote while KDE kept an empty icon for them; revision 3 is the new logo, so
+/// every installed copy of the old icon is replaced and the caches refreshed once.
+const REVISION: u32 = 3;
 
 /// Where KDE's icon loaders listen for [`notify_icons_changed`].
 const ICON_LOADER_PATH: &str = "/KIconLoader";
@@ -176,7 +177,7 @@ pub fn is_up_to_date(target: &Target) -> bool {
         && target
             .icon_files()
             .iter()
-            .all(|(path, bytes)| std::fs::metadata(path).is_ok_and(|m| m.len() == bytes.len() as u64))
+            .all(|(path, bytes)| std::fs::read(path).is_ok_and(|have| have == *bytes))
 }
 
 /// Writes `bytes` to `path` (through a temporary file, so a reader never sees half of it)
@@ -372,6 +373,22 @@ mod tests {
         std::fs::remove_file(dir.join("icons/hicolor/48x48/apps/axion.png")).expect("remove");
         assert!(!is_up_to_date(&t));
         assert!(install(&t).expect("repair"));
+        assert!(is_up_to_date(&t));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_old_icon_is_replaced() {
+        let dir = scratch("old-icon");
+        let t = target(dir.clone(), "/usr/bin/axion");
+        assert!(install(&t).expect("install"));
+        // An older Axion's icon (any other bytes, even of the same length) is stale and replaced.
+        let path = dir.join("icons/hicolor/64x64/apps/axion.png");
+        let mut old = std::fs::read(&path).expect("read");
+        old[100] ^= 0xff;
+        std::fs::write(&path, &old).expect("write");
+        assert!(!is_up_to_date(&t));
+        assert!(install(&t).expect("replace"));
         assert!(is_up_to_date(&t));
         let _ = std::fs::remove_dir_all(dir);
     }

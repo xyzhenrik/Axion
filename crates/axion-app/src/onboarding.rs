@@ -1670,19 +1670,22 @@ impl Onboarding {
 
     fn welcome(&mut self, ui: &mut Ui, body: NodeId, config: &Config, inner: f32) {
         let side = if self.compact() { ICON_SIDE * 0.82 } else { ICON_SIDE };
+        // The app icon is a rounded glass tile with its own soft edge: shown as is, never
+        // clipped or shadowed again (the fallback tile below is).
         let holder = ui.add(
             body,
-            Widget::container()
-                .with_shadow(Shadow { offset_y: 6.0, blur: 22.0, opacity: 0.25 })
-                .with_radius(side * 0.23),
+            if self.icon.is_some() {
+                Widget::container()
+            } else {
+                Widget::container()
+                    .with_shadow(Shadow { offset_y: 6.0, blur: 22.0, opacity: 0.25 })
+                    .with_radius(side * 0.23)
+            },
             Style { size: dims(side, side), flex_shrink: 0.0, ..Default::default() },
         );
         if let Some(icon) = &self.icon {
-            let image = ui.add(
-                holder,
-                Widget::image().with_radius(side * 0.23),
-                Style { size: dims(side, side), ..Default::default() },
-            );
+            let image =
+                ui.add(holder, Widget::image(), Style { size: dims(side, side), ..Default::default() });
             ui.set_image(image, Some(icon.clone()));
         } else {
             ui.add(
