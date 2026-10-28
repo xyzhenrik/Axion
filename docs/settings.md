@@ -123,6 +123,7 @@ Fine-tune the glass material. These settings only matter with **Glass** set to *
 | **Colour dispersion** | Colour fringes along the glass rim. 0 to 40 %. | 12 % (10 % in dark mode) | `glass.light.dispersion`, `glass.dark.dispersion` |
 | **Squash when moving** | How far glass stretches along the direction you drag it. 0 to 20 %. | 8 % | `glass.squash` |
 | **Merge distance** | How close two glass shapes must be before they flow together. 0 to 40 px. | 20 px | `glass.merge_distance` |
+| Button shadow | Share of the glass drop shadow that a glass button casts. 0 (the default) means buttons are pure refractive glass with nothing dark around them; panels, sheets and popovers keep their shadow. Edit in `config.toml`. | 0 | `glass.button_shadow` |
 
 ## Tabs & Memory
 
@@ -193,6 +194,8 @@ a site. Changes apply to pages loaded next.
 | Trusted sites list | Sites that keep their own player. | YouTube, Twitch, Vimeo, Dailymotion, Netflix, Disney+, Prime Video, Crunchyroll, Spotify, SoundCloud | `media.trusted_player_sites` |
 | Ignored media sites | Sites whose video/audio elements are calls or chats (Discord…), not media: no player, no Now Playing, no Playlist entry. Camera, microphone and call streams are skipped everywhere. | Discord | `media.ignored_media_sites` |
 | Loading indicator | A turning ring on the players while a video loads or buffers. | On | `media.loading_indicator` |
+| Picture-in-Picture veil | Opacity of a black veil over the whole Picture-in-Picture picture while its controls show. 0 (the default): none; the controls stay legible through their own glass tint. Edit in `config.toml`. | 0 | `media.controls_scrim` |
+| Cover size | Side of the cover picture (the item's artwork or thumbnail) the fullscreen player and Picture-in-Picture show for sound without a picture, as a share of the shorter side. Edit in `config.toml`. | 0.55 | `media.cover_size` |
 | Ring speed | Seconds per turn of that ring. | 0.9 | `media.loading_spin_seconds` |
 | Keep paused player | How long a paused player that left the page keeps the Now Playing card. | 30 s | `media.now_playing_keep_seconds` |
 

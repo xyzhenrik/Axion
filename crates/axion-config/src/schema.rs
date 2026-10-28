@@ -469,6 +469,10 @@ pub struct Glass {
     /// thickness: buttons are pure refractive glass, never a grey plate. Text-bearing panels keep
     /// their level's opacity.
     pub button_opacity: f32,
+    /// Share (0-1) of the glass drop shadow that a glass *button* casts. 0 (the default): none,
+    /// so a button is pure refractive glass with nothing dark around it; panels, sheets and
+    /// popovers keep their shadow.
+    pub button_shadow: f32,
     /// Tint opacity (0–1) of tinted (primary, destructive) glass buttons: how much of the accent
     /// colour the glass takes. The rest is the backdrop, refracted, with the rim light on top.
     pub tinted_opacity: f32,
@@ -539,6 +543,7 @@ impl Default for Glass {
             popover_bridge_fillet: 30.0,
             menu_plate_opacity: 0.6,
             button_opacity: 0.04,
+            button_shadow: 0.0,
             tinted_opacity: 0.65,
             tinted_rim: 1.6,
             adaptive_opacity: 0.12,
@@ -1892,6 +1897,13 @@ pub struct Media {
     /// Height (logical px) of the area that grabs the progress bar: the track alone would be
     /// too thin to hit comfortably. At least 24.
     pub progress_hit_height: f32,
+    /// Opacity (0-1) of a black veil over the whole picture of Picture in Picture while its
+    /// controls show. 0 (the default): none. The controls keep their labels legible through
+    /// their own glass tint instead, so the picture stays clean.
+    pub controls_scrim: f32,
+    /// Side of the cover picture shown for sound without a picture (fullscreen player,
+    /// Picture in Picture), as a share (0.1-1) of the shorter side of the picture area.
+    pub cover_size: f32,
     /// Side (logical px) of the artwork tile of the sidebar's Now Playing card.
     pub now_playing_artwork_size: f32,
     /// Gap (logical px) between the Now Playing card and the account button below it (and the
@@ -1978,6 +1990,8 @@ impl Default for Media {
             pip_min_width: 272.0,
             progress_thickness: 8.0,
             progress_hit_height: 28.0,
+            controls_scrim: 0.0,
+            cover_size: 0.55,
             now_playing_artwork_size: 52.0,
             now_playing_gap: 10.0,
             now_playing_artwork: true,

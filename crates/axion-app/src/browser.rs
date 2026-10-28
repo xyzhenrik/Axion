@@ -2420,6 +2420,7 @@ impl Browser {
         if !shown && !own_view {
             self.engine.request_frame(view);
         }
+        let cover = if player.audio_only() { self.audio_cover(view) } else { None };
         let picture = self.engine.frame(view).map(|frame| {
             let tex = Vec2::new(frame.texture.width() as f32, frame.texture.height() as f32);
             let uv = if !shown {
@@ -2437,6 +2438,7 @@ impl Browser {
         });
         if let Some(pip) = &mut self.pip {
             pip.takeover = !shown;
+            pip.cover = cover;
             pip.player = Some(player);
             pip.render(picture, &self.config);
         }
@@ -2502,7 +2504,16 @@ impl Browser {
         let tab = self.tabs.active().filter(|_| !self.overview.is_open() && !locked);
         // Fullscreen from the Playlist: the player is about its playback view.
         let playback = self.playlist.playback.as_ref().filter(|_| self.playlist.fullscreen);
+        let player_view = playback.map(|p| p.view).or(tab.map(|t| t.view));
+        // Sound without a picture shows the item's cover (only fetched while something is full screen).
+        let cover = match player_view {
+            Some(view) if self.chrome.page_fullscreen() || playback.is_some() => self.audio_cover(view),
+            _ => None,
+        };
+        let playback = self.playlist.playback.as_ref().filter(|_| self.playlist.fullscreen);
+        let tab = self.tabs.active().filter(|_| !self.overview.is_open() && !locked);
         let cx = PlayerContext {
+            cover,
             view: playback.map(|p| p.view).or(tab.map(|t| t.view)),
             media: match playback {
                 Some(p) => p.media.as_ref(),
@@ -6960,6 +6971,12 @@ impl Browser {
                 "playlist-pip" => self.playlist_action(crate::playlist_page::PageAction::PictureInPicture),
                 "playlist-open-page" => self.playlist_action(crate::playlist_page::PageAction::OpenPage),
                 // Items saved before sources were captured: forget every captured source.
+                // Capture aid: the Playlist page with a failed item (`playlist-fail:codec`); an
+                // item is made up when the list is empty.
+                fail if fail.starts_with("playlist-fail") => {
+                    let code = fail.strip_prefix("playlist-fail:").unwrap_or("codec").to_owned();
+                    self.capture_playlist_failure(&code);
+                }
                 "playlist-forget-source" => {
                     let ids: Vec<i64> = self.playlist.items.iter().map(|i| i.id).collect();
                     if let Some(store) = &self.store {

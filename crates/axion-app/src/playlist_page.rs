@@ -602,6 +602,8 @@ impl PlaylistPage {
                 ..Default::default()
             },
         );
+        // Black in every scheme: what lies on it (the failure's buttons, the ring) is drawn dark.
+        ui.set_plane_dark(video_box, true);
         let video = ui.add(video_box, Widget::image(), Style::default());
         ui.set_visible(video, false);
         let note_box =

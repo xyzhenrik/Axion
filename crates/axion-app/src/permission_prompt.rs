@@ -8,7 +8,7 @@ use axion_config::{Color, Config};
 use axion_engine::{PermissionId, PermissionKind, ViewId};
 use axion_i18n::tr;
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
 
 use crate::drip::Phase;
@@ -660,8 +660,11 @@ fn secondary(ui: &mut Ui, parent: NodeId, text: &str, style: TextStyle) -> NodeI
 }
 
 fn capsule_button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, primary: bool) {
-    let background =
-        if primary { Background::Fill(Paint::Accent, 1.0) } else { Background::Fill(Paint::Label, 0.08) };
+    let background = if primary {
+        Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
+    } else {
+        Background::Glass(GlassLevel::Thin)
+    };
     let button = ui.add(
         parent,
         Widget::container().with_action(action).with_radius(CAPSULE).with_background(background),
@@ -687,7 +690,7 @@ fn pill(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str) {
         Widget::container()
             .with_action(action)
             .with_radius(CAPSULE)
-            .with_background(Background::Fill(Paint::Fixed(STOP_COLOR), 1.0)),
+            .with_background(Background::TintedGlass(GlassLevel::Thin, Paint::Fixed(STOP_COLOR))),
         Style {
             size: Size { width: auto(), height: length(32.0) },
             padding: padding(14.0, 0.0),
@@ -707,7 +710,7 @@ fn close_button(ui: &mut Ui, parent: NodeId) {
         Widget::container()
             .with_action(CLOSE)
             .with_radius(CAPSULE)
-            .with_background(Background::Fill(Paint::Label, 0.06)),
+            .with_background(Background::Glass(GlassLevel::Thin)),
         Style {
             size: Size { width: length(28.0), height: length(28.0) },
             flex_shrink: 0.0,

@@ -135,6 +135,7 @@ fn circle(ui: &mut Ui, parent: NodeId, control: PipControl, icon: Icon, text: Op
             .with_action(control.id())
             .with_radius(CAPSULE)
             .with_background(Background::Glass(GlassLevel::Thick))
+            .with_glass_density(crate::player::CONTROL_DENSITY)
             .pressed_whole()
             .without_hover_fill(),
         Style {
@@ -441,6 +442,11 @@ pub struct PipWindow {
     compositor: Option<(Compositor, wgpu::TextureFormat)>,
     ui: Ui,
     picture: NodeId,
+    /// Black ground and the cover picture over `picture` while the video is only sound.
+    cover_ground: NodeId,
+    cover_image: NodeId,
+    /// The cover to show then (set by the browser each frame).
+    pub cover: Option<crate::favicons::SiteIcon>,
     controls: NodeId,
     buttons: [Button; 5],
     play_icon: NodeId,
@@ -519,10 +525,31 @@ impl PipWindow {
                 ..Default::default()
             },
         );
-        let controls = ui.add(
+        let cover_ground = ui.add(
             root,
             Widget::container()
-                .with_background(Background::Fill(Paint::Fixed(axion_config::Color::rgb(0x000000)), 0.2)),
+                .with_background(Background::Fill(Paint::Fixed(axion_config::Color::rgb(0x000000)), 1.0)),
+            Style {
+                position: Position::Absolute,
+                size: Size { width: percent(1.0), height: percent(1.0) },
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        let cover_image =
+            ui.add(cover_ground, Widget::image().with_radius(crate::player::COVER_RADIUS), Style::default());
+        ui.set_visible(cover_ground, false);
+        let controls = ui.add(
+            root,
+            Widget::container().with_background(if config.media.controls_scrim > 0.0 {
+                Background::Fill(
+                    Paint::Fixed(axion_config::Color::rgb(0x000000)),
+                    config.media.controls_scrim.clamp(0.0, 1.0),
+                )
+            } else {
+                Background::None
+            }),
             Style {
                 position: Position::Absolute,
                 size: Size { width: percent(1.0), height: percent(1.0) },
@@ -557,6 +584,7 @@ impl PipWindow {
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thick))
                 .with_button_tint()
+                .with_glass_density(crate::player::CONTROL_DENSITY)
                 .with_radius(CAPSULE),
             Style {
                 position: Position::Absolute,
@@ -586,6 +614,7 @@ impl PipWindow {
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thick))
                 .with_button_tint()
+                .with_glass_density(crate::player::CONTROL_DENSITY)
                 .with_radius(CAPSULE)
                 .with_clip(),
             Style { position: Position::Absolute, ..Default::default() },
@@ -617,6 +646,9 @@ impl PipWindow {
             compositor: None,
             ui,
             picture,
+            cover_ground,
+            cover_image,
+            cover: None,
             controls,
             buttons,
             play_icon,
@@ -1081,6 +1113,19 @@ impl PipWindow {
         self.step_refit(dt, config);
         let Some(output) = &self.output else { return };
         let target_size = Vec2::new(output.config.width as f32, output.config.height as f32);
+        // Sound without a picture: the cover (artwork) on black.
+        let art = self.cover.clone().filter(|_| self.player.as_ref().is_some_and(Player::audio_only));
+        self.ui.set_visible(self.cover_ground, art.is_some());
+        if let Some(art) = art {
+            let side = output.logical_size().min_element() * config.media.cover_size.clamp(0.1, 1.0);
+            let mut style = self.ui.style(self.cover_image);
+            style.size = Size { width: length(side), height: length(side) };
+            if style != self.ui.style(self.cover_image) {
+                self.ui.set_style(self.cover_image, style);
+            }
+            self.ui.set_image_crop(self.cover_image, Some(crate::now_playing::square_crop(art.1)));
+            self.ui.set_image(self.cover_image, Some(art));
+        }
         if let Some((image, uv)) = picture {
             let (w, h) = image.1;
             // The video covers the window: while the window's aspect differs (during a resize,

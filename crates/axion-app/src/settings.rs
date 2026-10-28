@@ -2069,7 +2069,7 @@ impl SettingsSheet {
                         Widget::container()
                             .with_action(SettingsAction::RemoveTrustedSite(i).id())
                             .with_radius(CAPSULE)
-                            .with_background(Background::Fill(Paint::Label, 0.08)),
+                            .with_background(Background::Glass(GlassLevel::Thin)),
                         Style {
                             size: Size { width: length(28.0), height: length(28.0) },
                             justify_content: JustifyContent::CENTER,
@@ -2158,10 +2158,11 @@ impl SettingsSheet {
                     Widget::container()
                         .with_action(SettingsAction::ClearHistory.id())
                         .with_radius(CAPSULE)
-                        .with_background(Background::Fill(
-                            Paint::Fixed(Color::rgb(0xE2453A)),
-                            if self.confirm_clear { 1.0 } else { 0.14 },
-                        )),
+                        .with_background(if self.confirm_clear {
+                            Background::TintedGlass(GlassLevel::Thin, Paint::Fixed(Color::rgb(0xE2453A)))
+                        } else {
+                            Background::Glass(GlassLevel::Thin)
+                        }),
                     Style {
                         size: Size { width: auto(), height: length(36.0) },
                         padding: padding(16.0, 0.0),
@@ -2713,7 +2714,7 @@ impl SettingsSheet {
                         Widget::container()
                             .with_action(SettingsAction::RemoveSiteData(i).id())
                             .with_radius(CAPSULE)
-                            .with_background(Background::Fill(Paint::Label, 0.08)),
+                            .with_background(Background::Glass(GlassLevel::Thin)),
                         Style {
                             size: Size { width: length(28.0), height: length(28.0) },
                             justify_content: JustifyContent::CENTER,
@@ -2777,7 +2778,7 @@ impl SettingsSheet {
                 Widget::container()
                     .with_action(SettingsAction::ForgetPermission(i).id())
                     .with_radius(CAPSULE)
-                    .with_background(Background::Fill(Paint::Label, 0.08)),
+                    .with_background(Background::Glass(GlassLevel::Thin)),
                 Style {
                     size: Size { width: length(28.0), height: length(28.0) },
                     flex_shrink: 0.0,
@@ -3895,7 +3896,7 @@ fn primary_button(ui: &mut Ui, parent: NodeId, text: &str, action: SettingsActio
 fn idle_pill(ui: &mut Ui, parent: NodeId, text: &str) {
     let button = ui.add(
         parent,
-        Widget::container().with_radius(CAPSULE).with_background(Background::Fill(Paint::Label, 0.07)),
+        Widget::container().with_radius(CAPSULE).with_background(Background::Glass(GlassLevel::Thin)),
         Style { size: Size { width: auto(), height: length(36.0) }, padding: padding(16.0, 0.0), ..row(0.0) },
     );
     let label = ui.add_label(button, text, TextStyle::Callout, Style::default());

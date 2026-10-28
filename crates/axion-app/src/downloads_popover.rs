@@ -7,7 +7,7 @@ use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
 use axion_i18n::tr;
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
 
 use crate::chrome::PanelItem;
@@ -153,7 +153,7 @@ impl DownloadsPopover {
                     Widget::container()
                         .with_action(id)
                         .with_radius(CAPSULE)
-                        .with_background(Background::Fill(Paint::Label, 0.07)),
+                        .with_background(Background::Glass(GlassLevel::Thin)),
                     Style {
                         size: Size { width: length(28.0), height: length(28.0) },
                         flex_shrink: 0.0,

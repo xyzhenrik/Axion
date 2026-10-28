@@ -4217,6 +4217,7 @@ impl Chrome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axion_ui::{UiEvent, UiInput};
 
     #[test]
     fn tabs_share_the_width_equally() {
@@ -4259,6 +4260,74 @@ mod tests {
         assert_eq!(bookmarks_that_fit(&widths, 2.0, 150.0, 26.0), 1);
         assert_eq!(bookmarks_that_fit(&widths, 2.0, 50.0, 26.0), 0);
         assert_eq!(bookmarks_that_fit(&[], 2.0, 50.0, 26.0), 0);
+    }
+
+    /// The Now Playing card's previous / play-pause / next buttons: a real press and release at the
+    /// centre of each (through the UI's hit-testing) must come out as exactly that button's action,
+    /// not be taken by the card's own "show the tab" area, and must not start a tab drag.
+    #[test]
+    fn now_playing_buttons_dispatch_their_own_actions() {
+        let config = Config::default();
+        let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+        let mut chrome = Chrome::build(&mut ui, &config);
+        let window = Vec2::new(1400.0, 900.0);
+        ui.set_viewport(window, 1.0);
+        chrome.apply_layout(&mut ui, &config, window);
+        let card = NowPlaying {
+            title: "Song".into(),
+            subtitle: "example.com".into(),
+            playing: true,
+            time: 10.0,
+            duration: 200.0,
+            live: false,
+            can_prev: true,
+            can_next: true,
+        };
+        chrome.set_now_playing(&mut ui, &config, Some(&card));
+        for _ in 0..240 {
+            chrome.animate(&mut ui, 1.0 / 60.0);
+            ui.layout();
+        }
+        let [previous, toggle, next] = chrome.now_playing.buttons();
+        let expected = [
+            (previous, ChromeAction::NowPlayingPrevious),
+            (toggle, ChromeAction::NowPlayingToggle),
+            (next, ChromeAction::NowPlayingNext),
+        ];
+        for (node, action) in expected {
+            let frame = ui.frame(node);
+            assert!(frame.size.x > 1.0 && frame.size.y > 1.0, "{action:?}: the button has a size");
+            let centre = frame.origin + frame.size / 2.0;
+            assert!(ui.is_visible(node), "{action:?}: visible");
+            let _ = ui.handle(UiInput::PointerMove(centre));
+            let (consumed, down) = ui.handle(UiInput::PointerDown);
+            assert!(down.is_empty(), "{action:?}: nothing fires on the press");
+            assert!(consumed, "{action:?}: the press is the UI's");
+            // The press is on a button, never on a tab (the browser starts a tab drag only then).
+            let pressed = ui.pressed_action().expect("the press holds a button");
+            assert_eq!(pressed, node, "{action:?}: the card's own click area did not take the press");
+            assert!(chrome.tab_item(pressed).is_none(), "{action:?}: not a tab");
+            let (_, up) = ui.handle(UiInput::PointerUp);
+            let clicked: Vec<_> = up
+                .iter()
+                .filter_map(|e| match e {
+                    UiEvent::Clicked { action, node: n } => Some((ChromeAction::from_id(*action), *n)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(clicked, vec![(Some(action), node)], "{action:?}: exactly its own click");
+        }
+        // The card's header still shows the tab.
+        let header_click = {
+            let title = ui.frame(chrome.now_playing.title_node());
+            let _ = ui.handle(UiInput::PointerMove(title.origin + Vec2::new(4.0, title.size.y / 2.0)));
+            let _ = ui.handle(UiInput::PointerDown);
+            ui.handle(UiInput::PointerUp).1
+        };
+        assert!(header_click.iter().any(|e| matches!(
+            e,
+            UiEvent::Clicked { action, .. } if ChromeAction::from_id(*action) == Some(ChromeAction::NowPlaying)
+        )));
     }
 
     /// Regression: leaving the locked private view must bring the whole toolbar back (the lock

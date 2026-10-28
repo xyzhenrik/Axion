@@ -27,6 +27,9 @@ pub struct GlassShape {
     /// The shape only joins others (a bridge between a popover and its bar): it takes no part
     /// in the tint, which blends across it from the shapes it joins.
     pub join_only: bool,
+    /// How much of the pass's drop shadow this shape casts (0-1; 1 = all of it). A glass
+    /// *button* casts none: a shadow around a small control reads as a dark plate behind it.
+    pub shadow: f32,
 }
 
 impl GlassShape {
@@ -41,6 +44,7 @@ impl GlassShape {
             merge: None,
             glow: 0.0,
             join_only: false,
+            shadow: 1.0,
         }
     }
 
@@ -75,6 +79,8 @@ impl GlassShape {
                 self.tint_opacity.map_or(-1.0, |a| a.clamp(0.0, 1.0))
             },
             glow: self.glow.clamp(0.0, 1.0),
+            shadow: self.shadow.clamp(0.0, 1.0),
+            _pad: 0.0,
         }
     }
 }
@@ -99,6 +105,8 @@ pub(crate) struct ShapeGpu {
     pub angle: f32,
     pub tint_opacity: f32,
     pub glow: f32,
+    pub shadow: f32,
+    pub _pad: f32,
 }
 
 #[cfg(test)]
@@ -114,8 +122,8 @@ mod tests {
     }
 
     #[test]
-    fn gpu_layout_is_40_bytes() {
-        assert_eq!(std::mem::size_of::<ShapeGpu>(), 40);
+    fn gpu_layout_is_48_bytes() {
+        assert_eq!(std::mem::size_of::<ShapeGpu>(), 48);
         assert_eq!(std::mem::size_of::<crate::params::ParamsUniform>(), 80);
     }
 }

@@ -12,9 +12,10 @@
 
 use std::time::{Duration, Instant};
 
+use crate::favicons::SiteIcon;
 use crate::spinner::Spinner;
 use axion_compositor::{Icon, Rect as Frame};
-use axion_config::Config;
+use axion_config::{Color, Config};
 use axion_engine::ViewId;
 use axion_i18n::tr;
 use axion_media::{Action, Command, Kind, PageMedia, Player, format_time};
@@ -121,6 +122,8 @@ pub struct Context<'a> {
     pub pointer: Option<Vec2>,
     /// The page made something fullscreen.
     pub page_fullscreen: bool,
+    /// The cover to show when the video is only sound (see [`Player::audio_only`]).
+    pub cover: Option<crate::favicons::SiteIcon>,
 }
 
 /// What the browser should do after a click on the controls.
@@ -133,6 +136,9 @@ pub enum Outcome {
 }
 
 pub struct PlayerOverlay {
+    /// Black ground and the cover picture under the controls, for sound without a picture.
+    cover: NodeId,
+    cover_image: NodeId,
     root: NodeId,
     top_left: NodeId,
     first_icon: NodeId,
@@ -179,6 +185,13 @@ fn row(gap: f32) -> Style {
     }
 }
 
+/// The glass thickness whose tint the player's controls take: they lie over any picture, so they
+/// carry a denser tint than a plain button (never a fill behind them).
+/// Corner radius of the cover picture.
+pub const COVER_RADIUS: f32 = 18.0;
+
+pub const CONTROL_DENSITY: GlassLevel = GlassLevel::Regular;
+
 fn square(side: f32) -> Size<Dimension> {
     Size { width: length(side), height: length(side) }
 }
@@ -209,6 +222,7 @@ fn circle(
             .with_action(control.id())
             .with_radius(CAPSULE)
             .with_background(Background::Glass(GlassLevel::Thick))
+            .with_glass_density(CONTROL_DENSITY)
             .pressed_whole()
             .without_hover_fill(),
         Style { size: square(side), flex_shrink: 0.0, justify_content: JustifyContent::CENTER, ..row(0.0) },
@@ -249,6 +263,19 @@ fn time_label(ui: &mut Ui, parent: NodeId, text: &str) -> NodeId {
 
 impl PlayerOverlay {
     pub fn build(ui: &mut Ui) -> Self {
+        // Under the controls (and not faded with them): a cover for sound without a picture.
+        let cover = ui.add(
+            ui.root(),
+            Widget::container().with_background(Background::Fill(Paint::Fixed(Color::rgb(0x000000)), 1.0)),
+            Style {
+                position: Position::Absolute,
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        let cover_image = ui.add(cover, Widget::image().with_radius(COVER_RADIUS), Style::default());
+        ui.set_visible(cover, false);
         let root = ui.add(
             ui.root(),
             Widget::container(),
@@ -271,6 +298,7 @@ impl PlayerOverlay {
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thick))
                 .with_button_tint()
+                .with_glass_density(CONTROL_DENSITY)
                 .with_radius(CAPSULE),
             Style {
                 padding: Rect {
@@ -350,6 +378,7 @@ impl PlayerOverlay {
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thick))
                 .with_button_tint()
+                .with_glass_density(CONTROL_DENSITY)
                 .with_radius(CAPSULE),
             Style {
                 padding: Rect {
@@ -375,6 +404,8 @@ impl PlayerOverlay {
         let remaining = time_label(ui, bar, "-0:00");
         ui.set_visible(root, false);
         Self {
+            cover,
+            cover_image,
             root,
             top_left,
             first_icon,
@@ -466,6 +497,7 @@ impl PlayerOverlay {
         let (mode, player, rect) = self.choose(config, cx);
         self.mode = mode;
         let (Some(player), Some(view), Some(rect)) = (player, cx.view, rect) else {
+            ui.set_visible(self.cover, false);
             self.target = None;
             self.close_speed_menu(ui);
             self.fade(ui, false, dt);
@@ -476,6 +508,7 @@ impl PlayerOverlay {
             self.apply_layout(ui, config);
         }
         self.place(ui, rect);
+        self.show_cover(ui, config, rect, &player, cx.cover.as_ref());
         self.show_state(ui, &player);
         // While it loads the ring takes the play button's place (and its room).
         let loading = player.loading && !player.paused;
@@ -578,6 +611,29 @@ impl PlayerOverlay {
             st.min_size.height = length(media.progress_hit_height.max(MIN_HIT_HEIGHT));
         });
         ui.set_icon(self.first_icon, Icon::Close);
+    }
+
+    /// The cover (the item's artwork) in the middle of the black area while the video is only
+    /// sound; nothing for a real picture.
+    fn show_cover(&self, ui: &mut Ui, config: &Config, rect: Frame, player: &Player, art: Option<&SiteIcon>) {
+        let shown = player.audio_only() && art.is_some();
+        ui.set_visible(self.cover, shown);
+        let Some(art) = art.filter(|_| shown) else { return };
+        let mut style = ui.style(self.cover);
+        style.inset =
+            Rect { left: length(rect.origin.x), top: length(rect.origin.y), right: auto(), bottom: auto() };
+        style.size = Size { width: length(rect.size.x), height: length(rect.size.y) };
+        if style != ui.style(self.cover) {
+            ui.set_style(self.cover, style);
+        }
+        let side = rect.size.min_element() * config.media.cover_size.clamp(0.1, 1.0);
+        let mut image = ui.style(self.cover_image);
+        image.size = square(side);
+        if image != ui.style(self.cover_image) {
+            ui.set_style(self.cover_image, image);
+        }
+        ui.set_image_crop(self.cover_image, Some(crate::now_playing::square_crop(art.1)));
+        ui.set_image(self.cover_image, Some(art.clone()));
     }
 
     fn place(&self, ui: &mut Ui, rect: Frame) {

@@ -122,6 +122,12 @@ impl Player {
         !self.paused && !self.ended
     }
 
+    /// Sound without a picture: it has played, yet no video frame size is known (music, a
+    /// podcast, a "video" that is only its audio track). Axion's players show a cover then.
+    pub fn audio_only(&self) -> bool {
+        self.vw <= 0.0 && self.time > 1.0
+    }
+
     /// Playing and audible.
     pub fn is_audible(&self) -> bool {
         self.is_playing() && !self.muted && self.volume > 0.0

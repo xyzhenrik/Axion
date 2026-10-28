@@ -16,7 +16,7 @@
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 
 use crate::popover::Popover;
 
@@ -86,7 +86,7 @@ impl Toast {
             Widget::container()
                 .with_action(ACTION)
                 .with_radius(CAPSULE)
-                .with_background(Background::Fill(Paint::Accent, 0.16)),
+                .with_background(Background::Glass(GlassLevel::Thin)),
             Style {
                 size: Size { width: auto(), height: length(BUTTON_HEIGHT) },
                 flex_shrink: 0.0,

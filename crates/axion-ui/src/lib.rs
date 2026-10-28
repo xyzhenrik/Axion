@@ -1710,21 +1710,22 @@ impl Ui {
         // Glass is drawn in one pass per (thickness, opacity) group; only shapes in the same
         // pass flow into each other.
         for stack in stacks {
-            let mut groups: Vec<(GlassLevel, f32, Option<[f32; 4]>)> = Vec::new();
+            let mut groups: Vec<(GlassLevel, f32, Option<[f32; 4]>, bool)> = Vec::new();
             for item in &stack.glass {
-                let key = (item.level, item.fade, item.tint);
+                let key = (item.level, item.fade, item.tint, item.dark);
                 if !groups.contains(&key) {
                     groups.push(key);
                 }
             }
-            groups.sort_by_key(|(level, fade, tint)| {
-                (*level as u8, (fade * GLASS_FADE_STEPS) as u32, tint.is_some())
+            groups.sort_by_key(|(level, fade, tint, dark)| {
+                (*level as u8, (fade * GLASS_FADE_STEPS) as u32, tint.is_some(), *dark)
             });
-            for (level, fade, tint) in groups {
+            for (level, fade, tint, dark) in groups {
+                let theme = if dark { &self.dark_theme } else { &self.theme };
                 let shapes: Vec<GlassShape> = stack
                     .glass
                     .iter()
-                    .filter(|g| g.level == level && g.fade == fade && g.tint == tint)
+                    .filter(|g| g.level == level && g.fade == fade && g.tint == tint && g.dark == dark)
                     .map(|g| {
                         let mut shape = g.shape;
                         if let Some(opacity) = &mut shape.tint_opacity {
@@ -1733,9 +1734,8 @@ impl Ui {
                         shape
                     })
                     .collect();
-                let mut params = self.paint_theme().glass(level, s);
+                let mut params = theme.glass(level, s);
                 if let Some(tint) = tint {
-                    let theme = self.paint_theme();
                     let glass = theme.tinted_glass(tint).0;
                     params.tint = [glass[0], glass[1], glass[2], theme.tinted_opacity()];
                     // Tinted glass is a button: neighbours stay separate drops (no blob between two).
@@ -1763,6 +1763,24 @@ impl Ui {
     /// `depth` = number of glass ancestors. A glass node goes to stack `depth + 1`, where its
     /// content is drawn on top of it.
     fn paint_node<'a>(
+        &'a self,
+        node: NodeId,
+        depth: usize,
+        inherited_alpha: f32,
+        inherited_fade: f32,
+        stacks: &mut Vec<Stack<'a>>,
+    ) {
+        // A dark plane may also be nested (the Playlist's black video area): its whole subtree
+        // paints in the dark scheme.
+        let outer = self.painting_dark.get();
+        if self.dark_planes.contains(&node) {
+            self.painting_dark.set(true);
+        }
+        self.paint_node_inner(node, depth, inherited_alpha, inherited_fade, stacks);
+        self.painting_dark.set(outer);
+    }
+
+    fn paint_node_inner<'a>(
         &'a self,
         node: NodeId,
         depth: usize,
@@ -1901,6 +1919,7 @@ impl Ui {
                 };
                 let mut shape = GlassShape::rounded_rect(bg_px.center(), bg_px.size * 0.5, bg_radius);
                 shape.tint_opacity = glass_tint_opacity(widget, theme);
+                shape.shadow = glass_shadow(widget, theme);
                 shape.merge = widget.glass_merge.map(|m| m * s);
                 shape.join_only = widget.join_only;
                 if let Some(xf) = &press_xf {
@@ -1911,7 +1930,13 @@ impl Ui {
                     shape.stretch_angle = xf.angle;
                 }
                 shape.glow = lens_glow.unwrap_or(0.0);
-                stacks[depth + 1].glass.push(GlassItem { level, fade: quantize_fade(fade), tint, shape });
+                stacks[depth + 1].glass.push(GlassItem {
+                    level,
+                    fade: quantize_fade(fade),
+                    tint,
+                    shape,
+                    dark: self.painting_dark.get(),
+                });
                 child_depth = depth + 1;
             }
             // A soft plate only helps text over glass; a flat card is solid already.
@@ -1954,8 +1979,15 @@ impl Ui {
                     shape.stretch = xf.stretch;
                     shape.stretch_angle = xf.angle;
                     shape.tint_opacity = glass_tint_opacity(glass, theme);
+                    shape.shadow = glass_shadow(glass, theme);
                     shape.glow = lens_glow.unwrap_or(0.0);
-                    stacks[depth].glass.push(GlassItem { level, fade: quantize_fade(fade), tint, shape });
+                    stacks[depth].glass.push(GlassItem {
+                        level,
+                        fade: quantize_fade(fade),
+                        tint,
+                        shape,
+                        dark: self.painting_dark.get(),
+                    });
                 }
             }
         }
@@ -2254,6 +2286,7 @@ impl Ui {
                 fade: quantize_fade(glass),
                 tint: None,
                 shape,
+                dark: self.painting_dark.get(),
             });
         }
     }
@@ -2291,6 +2324,7 @@ impl Ui {
                 fade: quantize_fade(glass),
                 tint: None,
                 shape,
+                dark: self.painting_dark.get(),
             });
         }
     }
@@ -2364,6 +2398,8 @@ struct GlassItem {
     /// A strong tint colour (tinted glass), instead of the level's own.
     tint: Option<[f32; 4]>,
     shape: GlassShape,
+    /// Painted in the dark scheme (a dark plane, see `Ui::set_plane_dark`).
+    dark: bool,
 }
 
 /// The press transform of held glass (physical px).
@@ -2491,6 +2527,13 @@ fn glass_tint_opacity(widget: &Widget, theme: &Theme) -> Option<f32> {
         ((widget.action.is_some() || widget.button_tint) && matches!(widget.background, Background::Glass(_)))
             .then(|| theme.glass_button_opacity())
     })
+}
+
+/// How much of the pass's drop shadow a glass widget's shape casts: all of it for a panel, only
+/// `glass.button_shadow` (none by default) for a button (a widget with an action, or a tinted
+/// primary button), so nothing dark hangs around a button.
+fn glass_shadow(widget: &Widget, theme: &Theme) -> f32 {
+    if widget.action.is_some() || widget.button_tint { theme.glass_button_shadow() } else { 1.0 }
 }
 
 /// Flat mode audit: what in a painted frame is glass or imitates it. Flat mode draws solid

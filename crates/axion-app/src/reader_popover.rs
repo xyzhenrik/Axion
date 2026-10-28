@@ -6,7 +6,7 @@ use axion_config::{Config, ReaderFont, ReaderTheme};
 use axion_i18n::{tr, tr_mark};
 use axion_reader::Look;
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
 
 use crate::popover::Popover;
@@ -170,7 +170,7 @@ impl ReaderPopover {
             Widget::container()
                 .with_action(Action::Exit.id())
                 .with_radius(CAPSULE)
-                .with_background(Background::Fill(Paint::Label, 0.08)),
+                .with_background(Background::Glass(GlassLevel::Thin)),
             Style {
                 size: Size { width: auto(), height: length(ROW) },
                 padding: Rect {
@@ -214,7 +214,7 @@ fn label(ui: &mut Ui, parent: NodeId, text: &str) {
 /// A round − / + button; dimmed (no action) at its limit.
 fn step_button(ui: &mut Ui, parent: NodeId, action: Action, icon: Icon, enabled: bool) {
     let mut widget =
-        Widget::container().with_radius(CAPSULE).with_background(Background::Fill(Paint::Label, 0.08));
+        Widget::container().with_radius(CAPSULE).with_background(Background::Glass(GlassLevel::Thin));
     if enabled {
         widget = widget.with_action(action.id());
     }

@@ -448,7 +448,7 @@ fn capsule_button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, pri
     let background = if primary {
         Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
     } else {
-        Background::Fill(Paint::Label, 0.08)
+        Background::Glass(GlassLevel::Thin)
     };
     let button = ui.add(
         parent,
@@ -491,7 +491,7 @@ fn icon_button(ui: &mut Ui, parent: NodeId, action: ActionId, icon: Icon, size: 
         Widget::container()
             .with_action(action)
             .with_radius(CAPSULE)
-            .with_background(Background::Fill(Paint::Label, 0.06)),
+            .with_background(Background::Glass(GlassLevel::Thin)),
         Style {
             size: Size { width: length(size), height: length(size) },
             flex_shrink: 0.0,
