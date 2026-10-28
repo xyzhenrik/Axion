@@ -1,10 +1,11 @@
 //! Mid-drag frames of glass controls at several pointer distances, light and dark: a button
-//! with an icon (pulled sideways), a switch and a slider (knobs pulled past their ends).
-//! Shows the drag curve (strong at first, then resisting, saturating at `glass.drag_stretch_max`)
-//! and that the icon stays at its rest place and is stretched like the glass.
+//! with an icon, the big round play button, a three-button group (all pulled sideways), a switch
+//! and a slider (knobs pulled past their ends). Shows the drag curve (subtle, nearly linear for a
+//! long way, saturating at `glass.drag_stretch_max`) and that icons and labels are deformed
+//! exactly like the glass, about its centre.
 //!
 //! `cargo run -p axion-ui --example drag_capture --release -- out_prefix`
-//! writes `out_prefix_light.png` and `out_prefix_dark.png` (rows: 0, 6, 25, 80, 300 px).
+//! writes `out_prefix_light.png` and `out_prefix_dark.png` (rows: 0, 6, 25, 80, 300, 600 px).
 
 use axion_compositor::{Compositor, Icon, ImageDraw, Layer, Rect as Frame, Scene};
 use axion_config::Config;
@@ -15,12 +16,14 @@ use glam::Vec2;
 const SCALE: f32 = 2.0;
 /// One cell, logical px.
 const CELL: (f32, f32) = (260.0, 110.0);
-const DISTANCES: [f32; 5] = [0.0, 6.0, 25.0, 80.0, 300.0];
+const DISTANCES: [f32; 6] = [0.0, 6.0, 25.0, 80.0, 300.0, 600.0];
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 #[derive(Clone, Copy)]
 enum Subject {
     Button,
+    Play,
+    Group,
     Switch,
     Slider,
 }
@@ -49,6 +52,51 @@ fn build(config: &Config, dark: bool, subject: Subject) -> (Ui, Vec2) {
             );
             ui.add(b, Widget::icon(Icon::Back, 24.0), Style::default());
             Vec2::new(78.0, 55.0)
+        }
+        Subject::Play => {
+            let b = ui.add(
+                root,
+                Widget::container()
+                    .with_background(Background::Glass(GlassLevel::Regular))
+                    .with_action(ActionId(2))
+                    .with_radius(CAPSULE),
+                at(80.0, 23.0, 64.0, 64.0),
+            );
+            ui.add(b, Widget::icon(Icon::Play, 30.0), Style::default());
+            Vec2::new(112.0, 55.0)
+        }
+        Subject::Group => {
+            let g = ui.add(
+                root,
+                Widget::container()
+                    .with_background(Background::Glass(GlassLevel::Thin))
+                    .with_radius(CAPSULE)
+                    .pressed_whole(),
+                Style {
+                    padding: Rect {
+                        left: length(4.0),
+                        right: length(4.0),
+                        top: length(0.0),
+                        bottom: length(0.0),
+                    },
+                    gap: Size { width: length(2.0), height: length(0.0) },
+                    ..at(55.0, 33.0, 150.0, 44.0)
+                },
+            );
+            for (id, icon) in [(3, Icon::Back), (4, Icon::Forward), (5, Icon::Home)] {
+                let b = ui.add(
+                    g,
+                    Widget::container().with_action(ActionId(id)).with_radius(CAPSULE),
+                    Style {
+                        size: Size { width: length(44.0), height: length(44.0) },
+                        justify_content: JustifyContent::CENTER,
+                        align_items: AlignItems::CENTER,
+                        ..Default::default()
+                    },
+                );
+                ui.add(b, Widget::icon(icon, 22.0), Style::default());
+            }
+            Vec2::new(55.0 + 75.0, 55.0)
         }
         Subject::Switch => {
             ui.add(root, Widget::toggle(true), at(100.0, 41.0, 63.0, 28.0));
@@ -130,8 +178,8 @@ fn main() {
     let row_bytes = (4 * cw).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
 
     for (scheme, dark) in [("light", false), ("dark", true)] {
-        let subjects = [Subject::Button, Subject::Switch, Subject::Slider];
-        let mut montage = image::RgbaImage::new(cw * 3, ch * DISTANCES.len() as u32);
+        let subjects = [Subject::Button, Subject::Play, Subject::Group, Subject::Switch, Subject::Slider];
+        let mut montage = image::RgbaImage::new(cw * subjects.len() as u32, ch * DISTANCES.len() as u32);
         for (row, distance) in DISTANCES.iter().enumerate() {
             for (col, subject) in subjects.iter().enumerate() {
                 let (mut ui, grab) = build(&config, dark, *subject);
