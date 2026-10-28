@@ -9,7 +9,7 @@ use base64::Engine as _;
 use cef::*;
 
 use super::client::ViewContext;
-use crate::{EngineEvent, PdfOptions, ShotArea, ShotRequest};
+use crate::{EngineEvent, PdfOptions};
 
 const HEADER: &str = "<div style=\"font-size:8px;width:100%;padding:0 24px;display:flex;\
 justify-content:space-between;color:#555\"><span class=\"title\"></span><span class=\"date\"></span></div>";
@@ -64,7 +64,6 @@ pub(super) struct ShotJob {
     pub ctx: ViewContext,
     pub browser_id: i32,
     pub id: u32,
-    pub request: ShotRequest,
     /// The DevTools message whose answer is awaited.
     pub message: Rc<Cell<i32>>,
     /// Keeps the observer registered until the screenshot is done.
@@ -82,77 +81,24 @@ impl ShotJob {
         self.report(EngineEvent::ScreenshotFailed { view: self.ctx.view, id: self.id });
     }
 
-    fn call(&self, method: &str, params: &serde_json::Value) {
+    fn start(&self) {
         let Some(mut dict) = dictionary_value_create() else { return self.fail() };
-        fill(&mut dict, params);
-        let id = self.host.execute_dev_tools_method(0, Some(&method.into()), Some(&mut dict));
+        dict.set_string(Some(&"format".into()), Some(&"png".into()));
+        let id =
+            self.host.execute_dev_tools_method(0, Some(&"Page.captureScreenshot".into()), Some(&mut dict));
         if id == 0 {
             return self.fail();
         }
         self.message.set(id);
     }
 
-    fn capture(&self, clip: Option<(f64, f64, f64, f64)>, beyond: bool) {
-        let mut params = serde_json::json!({ "format": "png", "captureBeyondViewport": beyond });
-        if let Some((x, y, width, height)) = clip {
-            params["clip"] = serde_json::json!({
-                "x": x, "y": y, "width": width, "height": height, "scale": self.request.scale
-            });
-        }
-        self.call("Page.captureScreenshot", &params);
-    }
-
-    fn start(&self) {
-        match self.request.area {
-            ShotArea::Visible => self.capture(None, false),
-            ShotArea::Rect { x, y, width, height } => self.capture(Some((x, y, width, height)), false),
-            ShotArea::FullPage { .. } => self.call("Page.getLayoutMetrics", &serde_json::json!({})),
-        }
-    }
-
     fn result(&self, success: bool, result: &[u8]) {
         let value: Option<serde_json::Value> = serde_json::from_slice(result).ok();
-        let Some(value) = value.filter(|_| success) else { return self.fail() };
-        if let Some(data) = value.get("data").and_then(|d| d.as_str()) {
-            return match base64::engine::general_purpose::STANDARD.decode(data) {
-                Ok(png) => self.report(EngineEvent::ScreenshotReady { view: self.ctx.view, id: self.id, png }),
-                Err(_) => self.fail(),
-            };
-        }
-        // The layout metrics: now the whole document.
-        let ShotArea::FullPage { max_height } = self.request.area else { return self.fail() };
-        let size = value.get("cssContentSize").or_else(|| value.get("contentSize"));
-        let number = |key: &str| size.and_then(|s| s.get(key)).and_then(|n| n.as_f64()).unwrap_or(0.0);
-        let (width, height) = (number("width").ceil(), number("height").ceil().min(f64::from(max_height)));
-        if width < 1.0 || height < 1.0 {
-            return self.fail();
-        }
-        self.capture(Some((0.0, 0.0, width, height)), true);
-    }
-}
-
-/// Copies a JSON object into a CEF dictionary (strings, numbers, booleans, nested objects).
-fn fill(dict: &mut DictionaryValue, value: &serde_json::Value) {
-    let Some(object) = value.as_object() else { return };
-    for (key, value) in object {
-        let key = CefString::from(key.as_str());
-        match value {
-            serde_json::Value::Bool(b) => {
-                dict.set_bool(Some(&key), *b as i32);
-            }
-            serde_json::Value::Number(n) => {
-                dict.set_double(Some(&key), n.as_f64().unwrap_or(0.0));
-            }
-            serde_json::Value::String(s) => {
-                dict.set_string(Some(&key), Some(&s.as_str().into()));
-            }
-            serde_json::Value::Object(_) => {
-                if let Some(mut child) = dictionary_value_create() {
-                    fill(&mut child, value);
-                    dict.set_dictionary(Some(&key), Some(&mut child));
-                }
-            }
-            _ => {}
+        let data = value.filter(|_| success).and_then(|v| v.get("data")?.as_str().map(str::to_owned));
+        let png = data.and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok());
+        match png {
+            Some(png) => self.report(EngineEvent::ScreenshotReady { view: self.ctx.view, id: self.id, png }),
+            None => self.fail(),
         }
     }
 }
@@ -178,12 +124,11 @@ wrap_dev_tools_message_observer! {
 }
 
 /// Starts a screenshot of `host`'s page.
-pub(super) fn capture(host: BrowserHost, ctx: ViewContext, browser_id: i32, id: u32, request: ShotRequest) {
+pub(super) fn capture(host: BrowserHost, ctx: ViewContext, browser_id: i32, id: u32) {
     let job = ShotJob {
         ctx,
         browser_id,
         id,
-        request,
         message: Rc::new(Cell::new(-1)),
         registration: Rc::default(),
         host: host.clone(),

@@ -1030,17 +1030,21 @@ impl Engine for CefEngine {
             browser_id: state.browser_id,
         });
         let settings = snapshot::pdf_settings(options);
-        host.print_to_pdf(Some(&path.to_string_lossy().as_ref().into()), Some(&settings), Some(&mut callback));
+        host.print_to_pdf(
+            Some(&path.to_string_lossy().as_ref().into()),
+            Some(&settings),
+            Some(&mut callback),
+        );
     }
 
-    fn capture_screenshot(&mut self, view: ViewId, id: u32, request: &crate::ShotRequest) {
+    fn capture_screenshot(&mut self, view: ViewId, id: u32) {
         let Some(state) = self.views.get(&view).filter(|v| !v.closing) else { return };
         let Some(host) = state.browser.as_ref().and_then(|b| b.host()) else {
             let event = EngineEvent::ScreenshotFailed { view, id };
             self.shared.events.borrow_mut().push((state.browser_id, event));
             return;
         };
-        snapshot::capture(host, state.ctx.clone(), state.browser_id, id, *request);
+        snapshot::capture(host, state.ctx.clone(), state.browser_id, id);
     }
 
     fn context_command(&mut self, view: ViewId, command: crate::ContextCommand) {

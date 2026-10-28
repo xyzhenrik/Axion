@@ -105,6 +105,7 @@ ask_where_to_save = false
 | `tabs` | Freezing, unloading, memory budget, session restore, closing old tabs. |
 | `media` | The video player, trusted sites, Picture in Picture, desktop integration. |
 | `playlist` | The Playlist. |
+| `print`, `screenshot` | Print / Save as PDF and the screenshot tool: paper, margins, formats, folders. |
 | `downloads`, `data` | Download behaviour, what "Clear Browsing Data" clears. |
 | `passwords` | Saving, filling, generator, clipboard. |
 | `accounts` | Profile picture size and limit. |
@@ -139,6 +140,21 @@ ask_where_to_save = false
 | `permissions.stop_reload_after_ms` | After **Stop** in the recording popover, a page that still records this long after is reloaded. | `1500` |
 | `ui.tooltip_delay_ms` | How long before a tooltip appears. | `700` |
 | `toast.duration_seconds` | How long short notices stay. | `2.0` |
+| `print.paper` | Paper of **Save as PDF**: `a4`, `a3`, `a5`, `letter`, `legal`. The dialog keeps its last choices in `print.*`. | `a4` |
+| `print.landscape`, `print.backgrounds`, `print.header_footer` | Landscape, background colours and images, title / address / page numbers. | `false` |
+| `print.margins` | `none`, `narrow`, `default`, `wide`. | `default` |
+| `print.margin_narrow_inches`, `print.margin_default_inches`, `print.margin_wide_inches` | Width of the margin presets. | `0.2`, `0.4`, `1.0` |
+| `print.scale_percent` | Content scale in percent (25 to 200). | `100` |
+| `print.directory` | Folder for PDFs when **Ask where to save each file** is off (empty: the download folder). | empty |
+| `print.open_after_saving` | Open the PDF in a tab once it is saved. | `false` |
+| `screenshot.format` | `png` or `jpeg`. | `png` |
+| `screenshot.jpeg_quality` | JPEG quality, 1 to 100. | `90` |
+| `screenshot.after_capture` | `ask` (show it with Copy / Save), `copy` or `save`. | `ask` |
+| `screenshot.directory` | Folder for screenshots when **Ask where to save each file** is off (empty: the download folder). | empty |
+| `screenshot.full_page_max_height` | A full page screenshot stops at this height (CSS pixels). | `16000` |
+| `screenshot.scroll_settle_ms` | A full page screenshot scrolls a screen at a time and waits this long after each scroll (ms). | `250` |
+| `screenshot.dim_opacity` | How dark the page gets around the selection (0 to 1). | `0.45` |
+| `screenshot.min_selection` | Smaller drags are ignored (logical pixels). | `8` |
 
 ## `keymap.toml`
 

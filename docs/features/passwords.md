@@ -6,7 +6,7 @@ encrypted vault on your computer. How the vault is protected is explained in
 
 ## Open Passwords
 
-Press **Ctrl+P**, or choose **Passwords** in the sidebar. The first time, Axion asks you to set up a
+Press **Ctrl+Alt+P**, or choose **Passwords** in the sidebar. The first time, Axion asks you to set up a
 password for your account (**Set Up Passwords**). After that you enter your account password to
 unlock. The list has four kinds of items: **Passwords**, **Cards**, **Addresses** and
 **Secure Notes**. Use the search field to find an item, and **+** to add one by hand.

@@ -571,7 +571,7 @@ pub(crate) fn show_in_folder(path: &Path) {
 }
 
 /// `file://` URI of an absolute path.
-fn file_uri(path: &Path) -> String {
+pub(crate) fn file_uri(path: &Path) -> String {
     let mut uri = String::from("file://");
     for &b in path.as_os_str().as_encoded_bytes() {
         if b.is_ascii_alphanumeric() || b"/-_.~".contains(&b) {
@@ -674,6 +674,49 @@ pub fn choose_portal(title: &str, what: Choose) -> zbus::Result<Option<PathBuf>>
         &("", title, options),
     )?;
     // The first (only) answer: 0 = chosen, otherwise cancelled.
+    let Some(message) = responses.next() else { return Ok(None) };
+    let (code, results): (u32, HashMap<String, OwnedValue>) = message?.body().deserialize()?;
+    if code != 0 {
+        return Ok(None);
+    }
+    let Some(uris) = results.get("uris") else { return Ok(None) };
+    let Value::Array(uris) = &**uris else { return Ok(None) };
+    Ok(uris.iter().find_map(|uri| match uri {
+        Value::Str(uri) => uri_path(uri.as_str()),
+        _ => None,
+    }))
+}
+
+/// The XDG desktop portal's save dialog (`FileChooser.SaveFile`) for a file called `name`,
+/// starting in `folder`. Blocks until the user picks a path (`Some`) or cancels (`None`).
+pub fn choose_save_portal(title: &str, name: &str, folder: &Path) -> zbus::Result<Option<PathBuf>> {
+    let connection = Connection::session()?;
+    let token = format!("axion_save_{}", std::process::id());
+    let sender =
+        connection.unique_name().map(|n| n.trim_start_matches(':').replace('.', "_")).unwrap_or_default();
+    let handle = format!("{PORTAL_PATH}/request/{sender}/{token}");
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.freedesktop.portal.Request")?
+        .member("Response")?
+        .path(handle.as_str())?
+        .build();
+    let mut responses = MessageIterator::for_match_rule(rule, &connection, Some(1))?;
+    let mut options: HashMap<&str, Value<'_>> = HashMap::new();
+    options.insert("handle_token", Value::from(token.as_str()));
+    options.insert("modal", Value::from(true));
+    options.insert("current_name", Value::from(name));
+    // `current_folder` is a NUL-terminated byte string.
+    let mut folder_bytes = folder.as_os_str().as_encoded_bytes().to_vec();
+    folder_bytes.push(0);
+    options.insert("current_folder", Value::from(folder_bytes));
+    connection.call_method(
+        Some(PORTAL),
+        PORTAL_PATH,
+        Some("org.freedesktop.portal.FileChooser"),
+        "SaveFile",
+        &("", title, options),
+    )?;
     let Some(message) = responses.next() else { return Ok(None) };
     let (code, results): (u32, HashMap<String, OwnedValue>) = message?.body().deserialize()?;
     if code != 0 {

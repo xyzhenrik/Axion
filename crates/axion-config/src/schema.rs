@@ -1169,6 +1169,8 @@ pub struct Screenshot {
     pub after_capture: ShotAfter,
     /// A full page screenshot stops at this many CSS pixels of height.
     pub full_page_max_height: u32,
+    /// How long a full page screenshot waits after each scroll step for the page to draw (ms).
+    pub scroll_settle_ms: u32,
     /// How dark the page gets around the selection (0–1).
     pub dim_opacity: f32,
     /// The smallest selection that counts (logical px); smaller drags are ignored.
@@ -1183,6 +1185,7 @@ impl Default for Screenshot {
             jpeg_quality: 90,
             after_capture: ShotAfter::Ask,
             full_page_max_height: 16_000,
+            scroll_settle_ms: 250,
             dim_opacity: 0.45,
             min_selection: 8.0,
         }

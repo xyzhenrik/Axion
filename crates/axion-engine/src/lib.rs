@@ -24,7 +24,7 @@ pub use permission::{PermissionAnswer, PermissionId, PermissionKind};
 pub use policy::{
     MediaViewOptions, NavigationRequest, RequestPolicy, RequestVerdict, ResourceKind, ResourceRequest,
 };
-pub use snapshot::{PdfOptions, ShotArea, ShotRequest};
+pub use snapshot::PdfOptions;
 pub use transfer::{DropData, FindRequest, PasteData, PastedFile};
 
 use glam::Vec2;
@@ -408,9 +408,9 @@ pub trait Engine {
 
     /// Prints the view's page to a PDF file; answers with [`EngineEvent::PdfSaved`].
     fn print_to_pdf(&mut self, view: ViewId, path: std::path::PathBuf, options: &PdfOptions);
-    /// Takes a screenshot of the view's page; answers with [`EngineEvent::ScreenshotReady`]
-    /// or [`EngineEvent::ScreenshotFailed`] carrying `id`.
-    fn capture_screenshot(&mut self, view: ViewId, id: u32, request: &ShotRequest);
+    /// Takes a screenshot of what the view shows now (at the view's resolution); answers with
+    /// [`EngineEvent::ScreenshotReady`] or [`EngineEvent::ScreenshotFailed`] carrying `id`.
+    fn capture_screenshot(&mut self, view: ViewId, id: u32);
 
     /// Runs an editing command of the page's context menu in the view's focused frame.
     fn context_command(&mut self, view: ViewId, command: ContextCommand);

@@ -63,8 +63,10 @@ use crate::player::{
     Context as PlayerContext, Control as PlayerControl, Mode as PlayerMode, Outcome as PlayerOutcome,
     PlayerOverlay,
 };
+use crate::print_dialog::PrintDialog;
 use crate::private::{PrivateLock, TabDrop};
 use crate::resize_bench::{self, FrameTimes, Recorder, ResizeBench, ResizeCounters};
+use crate::screenshot::{Phase as ShotPhase, ShotTool};
 use crate::settings::{AccountInfo, Category, Outcome, SettingsAction, SettingsSheet};
 use crate::shields::ShieldsState;
 use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
@@ -80,6 +82,7 @@ use crate::url::display_host;
 use crate::url::resolve_input;
 use crate::window_resize::{Debounce, ResizePacer};
 
+mod capture;
 mod context;
 mod import;
 mod onboarding;
@@ -261,6 +264,9 @@ pub struct Browser {
     toast: Toast,
     updater: Updater,
     update_alert: UpdateAlert,
+    print_dialog: PrintDialog,
+    shot: ShotTool,
+    snap: capture::CaptureState,
     /// The graphics settings' confirmation (shared GPU memory on AMD) is showing in the alert.
     gpu_confirm: bool,
     /// What the GPU session actually uses (Settings › Hardware, diagnostics).
@@ -749,6 +755,8 @@ impl Browser {
         let add_account = AddAccountSheet::build(&mut ui);
         let onboarding = Onboarding::build(&mut ui);
         let update_alert = UpdateAlert::build(&mut ui);
+        let print_dialog = PrintDialog::build(&mut ui);
+        let shot = ShotTool::build(&mut ui);
         let update_check_at = axion_update::auto_check_due(&config.updates, &axion_update::SystemClock)
             .then(|| Instant::now() + Duration::from_secs(u64::from(config.updates.startup_delay_seconds)));
         // The dragged tab's lens above the chrome, and the lock screen's alert above all.
@@ -793,6 +801,9 @@ impl Browser {
             toast,
             updater: Updater::new(),
             update_alert,
+            print_dialog,
+            shot,
+            snap: capture::CaptureState::default(),
             gpu_confirm: false,
             hardware_status,
             update_check_at,
@@ -1332,6 +1343,8 @@ impl Browser {
             Action::DevTools => self.toggle_devtools(DevToolsPanel::Default),
             Action::DevToolsConsole => self.toggle_devtools(DevToolsPanel::Console),
             Action::ViewSource => self.view_source(),
+            Action::Print => self.open_print(),
+            Action::Screenshot => self.start_screenshot(),
             Action::Find => self.open_find(),
             Action::FindNext | Action::FindPrevious => {
                 if self.find.is_open() {
@@ -1773,6 +1786,9 @@ impl Browser {
     }
 
     fn page_message(&mut self, view: ViewId, message: &str) {
+        if self.shot_metrics(view, message) {
+            return;
+        }
         if axion_vault::autofill::is_message(message) {
             self.autofill_message(view, message);
             return;
@@ -2843,6 +2859,11 @@ impl Browser {
         self.show_panel_with(panel, true);
     }
 
+    /// The first key of `action` as text (for a menu row's detail).
+    fn shortcut_label(&self, action: Action) -> String {
+        self.keymap.chords_for(action).first().map(ToString::to_string).unwrap_or_default()
+    }
+
     fn open_page_menu(&mut self) {
         if self.menu.is_open() {
             self.menu.close(&mut self.ui, &self.config);
@@ -2869,6 +2890,10 @@ impl Browser {
                     .with_caption(tr("Zoom")),
                 ],
             ),
+            MenuItem::new(Icon::File, tr("Print or Save as PDF…"), MenuAction::Print)
+                .with_detail(self.shortcut_label(Action::Print)),
+            MenuItem::new(Icon::Screen, tr("Screenshot…"), MenuAction::Screenshot)
+                .with_detail(self.shortcut_label(Action::Screenshot)),
             MenuItem::new(Icon::Reload, tr("Reload Without Cache"), MenuAction::HardReload),
             MenuItem::new(Icon::Settings, tr("Settings"), MenuAction::Settings),
         ];
@@ -3065,6 +3090,14 @@ impl Browser {
             MenuAction::FindOnPage => {
                 self.menu.close(&mut self.ui, &self.config);
                 self.run(Action::Find);
+            }
+            MenuAction::Print => {
+                self.menu.close(&mut self.ui, &self.config);
+                self.run(Action::Print);
+            }
+            MenuAction::Screenshot => {
+                self.menu.close(&mut self.ui, &self.config);
+                self.run(Action::Screenshot);
             }
             MenuAction::Settings => {
                 // Out of the menu's Settings row (the menu's glass lies in the bar's plane).
@@ -3551,6 +3584,8 @@ impl Browser {
                     }
                     self.add_account_action(action);
                 }
+                UiEvent::Clicked { action, .. } if self.print_click(action) => {}
+                UiEvent::Clicked { action, .. } if self.shot_click(action) => {}
                 UiEvent::Clicked { action, .. } if self.update_alert.action(action).is_some() => {
                     let Some(action) = self.update_alert.action(action) else { continue };
                     let on_alert = self.pointer.is_some_and(|p| self.update_alert.contains(&self.ui, p));
@@ -3803,6 +3838,7 @@ impl Browser {
         let _op = crate::stall::op("pump");
         let started = Instant::now();
         self.pump_engine();
+        self.poll_capture();
         let page_frames = self.engine.counters().page_frames;
         if page_frames != self.pumped_page_frames {
             // A page frame came: shown at once, not one refresh after a skipped frame.
@@ -4110,6 +4146,9 @@ impl Browser {
                     self.image_fetched(view, width, height, rgba);
                 }
                 EngineEvent::ImageFailed { view, .. } => self.image_failed(view),
+                EngineEvent::PdfSaved { path, ok, .. } => self.pdf_saved(&path, ok),
+                EngineEvent::ScreenshotReady { view, id, png } => self.screenshot_ready(view, id, &png),
+                EngineEvent::ScreenshotFailed { view, id } => self.screenshot_failed(view, id),
                 EngineEvent::FaviconFailed { view, url } if self.playlist_thumbnail_failed(view, &url) => {}
                 EngineEvent::FaviconReady { view, url, width, height, rgba }
                     if self.playlist_thumbnail_ready(view, &url, (width, height), &rgba) => {}
@@ -4478,6 +4517,8 @@ impl Browser {
             || self.add_account.is_open()
             || self.onboarding.is_open()
             || self.update_alert.is_open()
+            || self.print_dialog.is_open()
+            || self.shot.is_active()
             || self.lock_screen.is_alert_open()
     }
 
@@ -5248,6 +5289,12 @@ impl Browser {
         self.fullscreen_reveal_pointer(p);
         let (over_ui, events) = self.ui.handle(UiInput::PointerMove(p));
         self.handle_ui_events(events);
+        if self.shot.phase() == ShotPhase::Select {
+            // Choosing a region: the page doesn't see the pointer.
+            self.shot.pointer_move(p);
+            self.leave_page();
+            return;
+        }
         if self.playlist_open() {
             // The Playlist's video area is a page of its own; the one below rests.
             self.playlist_pointer(p, None);
@@ -5355,6 +5402,18 @@ impl Browser {
             winit::event::MouseButton::Back if pressed => return self.run(Action::Back),
             winit::event::MouseButton::Forward if pressed => return self.run(Action::Forward),
             _ => {}
+        }
+        if self.shot.phase() == ShotPhase::Select && !self.shot.toolbar_contains(&self.ui, p) {
+            let left = button == winit::event::MouseButton::Left;
+            if left && pressed && self.page_rect().contains(p) {
+                self.shot.pointer_down(p);
+            } else if left && !pressed {
+                let min = self.config.screenshot.min_selection;
+                if let Some(rect) = self.shot.pointer_up(p, min) {
+                    self.shot_selected(rect);
+                }
+            }
+            return;
         }
         let page_button = match button {
             winit::event::MouseButton::Left => MouseButton::Left,
@@ -5559,6 +5618,16 @@ impl Browser {
         if pressed && self.account_menu.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.account_menu.close(&mut self.ui, &self.config);
             return false;
+        }
+        if pressed && input::key(event) == Some(Key::Named("Escape".into())) {
+            if self.print_dialog.is_open() {
+                self.close_print();
+                return false;
+            }
+            if self.shot.is_active() {
+                self.close_screenshot();
+                return false;
+            }
         }
         if pressed
             && self.update_alert.is_dismissable()
@@ -5835,6 +5904,41 @@ impl Browser {
             }
             match what {
                 "menu" => self.open_page_menu(),
+                // Capture aids for printing and screenshots: open the print dialog, save the PDF
+                // with its current choices, start the screenshot tool, a scripted selection,
+                // and the three captures.
+                "print" => self.run(Action::Print),
+                "print-save" => {
+                    self.print_click(crate::print_dialog::SAVE);
+                }
+                "print-landscape" => {
+                    self.print_click(crate::print_dialog::ORIENT_LANDSCAPE);
+                }
+                "screenshot" => self.run(Action::Screenshot),
+                "screenshot-select" => {
+                    let page = self.page_rect();
+                    self.shot.test_selection(Rect::new(
+                        page.origin.x + page.size.x * 0.2,
+                        page.origin.y + page.size.y * 0.25,
+                        page.size.x * 0.5,
+                        page.size.y * 0.4,
+                    ));
+                }
+                "screenshot-region" => {
+                    let page = self.page_rect();
+                    self.shot_selected(Rect::new(
+                        page.origin.x + page.size.x * 0.2,
+                        page.origin.y + page.size.y * 0.25,
+                        page.size.x * 0.5,
+                        page.size.y * 0.4,
+                    ));
+                }
+                "screenshot-visible" => {
+                    self.shot_click(crate::screenshot::MODE_VISIBLE);
+                }
+                "screenshot-full" => {
+                    self.shot_click(crate::screenshot::MODE_FULL);
+                }
                 // Capture aids: the developer tools (again: back out of them), on the Console,
                 // the page source, and closing the shown tab.
                 "devtools" => self.run(Action::DevTools),
@@ -6639,6 +6743,9 @@ impl Browser {
         self.poll_panel_search();
         self.toast.animate(&mut self.ui, &self.config, dt);
         self.update_alert.animate(&mut self.ui, dt);
+        self.print_dialog.animate(&mut self.ui, &self.config, dt);
+        let page = self.page_rect();
+        self.shot.animate(&mut self.ui, &self.config, page, dt);
         self.poll_updates();
         let blocked = self.tooltips_blocked();
         let window = self.logical_size();
@@ -7144,7 +7251,12 @@ impl Browser {
 
     /// When the event loop should wake up next at the latest (the engine's next pump).
     pub fn next_wakeup(&self) -> Option<Instant> {
-        self.engine.next_pump()
+        let pump = self.engine.next_pump();
+        // A full page screenshot waits for the page to scroll and draw.
+        match self.snap.next_deadline() {
+            Some(at) => Some(pump.map_or(at, |p| p.min(at))),
+            None => pump,
+        }
     }
 
     /// Typing probe: types the next character when it is due (between frames, as a key event

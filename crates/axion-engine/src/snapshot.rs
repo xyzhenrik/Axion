@@ -36,22 +36,3 @@ impl Default for PdfOptions {
         }
     }
 }
-
-/// What a screenshot shows.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ShotArea {
-    /// What the view shows now.
-    Visible,
-    /// The whole document, scrolled out (at most `max_height` CSS px tall).
-    FullPage { max_height: u32 },
-    /// A rectangle of the page in CSS px, from the view's top left corner.
-    Rect { x: f64, y: f64, width: f64, height: f64 },
-}
-
-/// A screenshot request.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ShotRequest {
-    pub area: ShotArea,
-    /// Device pixels per CSS pixel of the result.
-    pub scale: f64,
-}

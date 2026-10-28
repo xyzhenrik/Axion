@@ -954,3 +954,46 @@
 
 "Add Axion to the application menu" = "Axion zum Anwendungsmenü hinzufügen"
 "Gives Axion its icon in the taskbar and the application menu. Applies after restarting Axion." = "Gibt Axion sein Symbol in der Taskleiste und im Anwendungsmenü. Wird nach einem Neustart von Axion übernommen."
+
+# crates/axion-app/src/browser.rs
+"Print or Save as PDF…" = "Drucken oder als PDF sichern…"
+"Screenshot…" = "Bildschirmfoto…"
+
+# crates/axion-app/src/browser/capture.rs
+"Couldn’t copy the screenshot" = "Bildschirmfoto konnte nicht kopiert werden"
+"Couldn’t save the PDF" = "PDF konnte nicht gesichert werden"
+"Couldn’t save the screenshot" = "Bildschirmfoto konnte nicht gesichert werden"
+"Couldn’t take the screenshot" = "Bildschirmfoto konnte nicht aufgenommen werden"
+"PDF saved" = "PDF gesichert"
+"Save Screenshot" = "Bildschirmfoto sichern"
+"Save as PDF" = "Als PDF sichern"
+"Saving PDF…" = "PDF wird gesichert…"
+"Screenshot" = "Bildschirmfoto"
+"Screenshot copied" = "Bildschirmfoto kopiert"
+"Screenshot saved" = "Bildschirmfoto gesichert"
+"This page can’t be printed" = "Diese Seite lässt sich nicht drucken"
+
+# crates/axion-app/src/print_dialog.rs
+"Backgrounds" = "Hintergründe"
+"Header and footer" = "Kopf- und Fußzeile"
+"Landscape" = "Querformat"
+"Margins" = "Ränder"
+"Narrow" = "Schmal"
+"Options" = "Optionen"
+"Orientation" = "Ausrichtung"
+"Paper" = "Papier"
+"Portrait" = "Hochformat"
+"Save as PDF…" = "Als PDF sichern…"
+"Scale" = "Maßstab"
+"Wide" = "Breit"
+
+# crates/axion-app/src/screenshot.rs
+"Full Page" = "Ganze Seite"
+"Selection" = "Auswahl"
+"Visible Area" = "Sichtbarer Bereich"
+
+# crates/axion-app/src/settings.rs
+"Print or save as PDF" = "Drucken oder als PDF sichern"
+
+# crates/axion-app/src/page_menu.rs
+"Print…" = "Drucken…"
