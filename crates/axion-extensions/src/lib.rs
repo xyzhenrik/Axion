@@ -8,13 +8,29 @@
 //! Extensions are loaded unpacked (`--load-extension`), so every extension lives as a plain
 //! folder under `<profile>/extensions/`. See `docs/features/extensions.md` for the limits.
 
+mod compat;
+mod crx;
 mod install;
 mod manifest;
+mod page;
+mod prefs;
 mod unpack;
+mod webstore;
 
-pub use install::{Installed, install_file, install_folder, remove_folder};
+pub use compat::{REQUEST_PERMISSIONS, disable_request_apis, strip_request_apis};
+pub use crx::{Verified, verify_crx3};
+pub use install::{Installed, install_file, install_folder, install_store_package, remove_folder};
 pub use manifest::{Manifest, Permissions, extension_id_for_key, extension_id_for_path, is_broad_host};
+pub use page::{
+    MARKER as PAGE_MARKER, Message as PageMessage, configure_script, is_store_url, page_script,
+    parse as parse_page_message,
+};
+pub use prefs::allow_user_scripts;
 pub use unpack::{crx_public_key, unzip};
+pub use webstore::{
+    Client as StoreClient, Update, download_url, is_extension_id, is_google_url, is_newer, product_version,
+    update_check_url,
+};
 
 use std::path::PathBuf;
 
@@ -33,6 +49,8 @@ pub enum ExtensionError {
     Package(String),
     #[error("the extension is larger than {0} MB")]
     TooLarge(u64),
+    #[error("could not reach the Chrome Web Store: {0}")]
+    Network(String),
 }
 
 pub type Result<T> = std::result::Result<T, ExtensionError>;

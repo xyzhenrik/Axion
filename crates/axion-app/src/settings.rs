@@ -232,6 +232,8 @@ enum Setting {
     ClearDownloadsItem,
     OfferToSavePasswords,
     ExtensionsEnabled,
+    ExtensionsWebStore,
+    ExtensionsAutoUpdate,
     AutofillPasswords,
     ClearClipboardAfter,
     PlaylistQuickAction,
@@ -313,6 +315,8 @@ impl Setting {
             Setting::ClearDownloadsItem => tr_mark("Downloads list"),
             Setting::OfferToSavePasswords => tr_mark("Offer to save passwords"),
             Setting::ExtensionsEnabled => tr_mark("Chrome extensions (after restart)"),
+            Setting::ExtensionsWebStore => tr_mark("Install from the Chrome Web Store (after restart)"),
+            Setting::ExtensionsAutoUpdate => tr_mark("Update Web Store extensions automatically"),
             Setting::AutofillPasswords => tr_mark("Offer to fill saved passwords"),
             Setting::ClearClipboardAfter => tr_mark("Clear clipboard after copying"),
             Setting::PlaylistQuickAction => tr_mark("Playlist button in the address field"),
@@ -376,6 +380,8 @@ impl Setting {
                 | Setting::ClearDownloadsItem
                 | Setting::OfferToSavePasswords
                 | Setting::ExtensionsEnabled
+                | Setting::ExtensionsWebStore
+                | Setting::ExtensionsAutoUpdate
                 | Setting::AutofillPasswords
                 | Setting::PlaylistQuickAction
                 | Setting::PlaylistAutoDownload
@@ -512,6 +518,8 @@ impl Setting {
             Setting::ClearDownloadsItem => return c.data.clear_downloads as u8 as f32,
             Setting::OfferToSavePasswords => return c.passwords.offer_to_save as u8 as f32,
             Setting::ExtensionsEnabled => return c.extensions.enabled as u8 as f32,
+            Setting::ExtensionsWebStore => return c.extensions.web_store as u8 as f32,
+            Setting::ExtensionsAutoUpdate => return c.extensions.auto_update as u8 as f32,
             Setting::AutofillPasswords => return c.passwords.autofill as u8 as f32,
             Setting::PlaylistQuickAction => return c.playlist.quick_action as u8 as f32,
             Setting::PlaylistAutoDownload => return c.playlist.auto_download as u8 as f32,
@@ -600,6 +608,8 @@ impl Setting {
             Setting::ClearDownloadsItem => c.data.clear_downloads = on,
             Setting::OfferToSavePasswords => c.passwords.offer_to_save = on,
             Setting::ExtensionsEnabled => c.extensions.enabled = on,
+            Setting::ExtensionsWebStore => c.extensions.web_store = on,
+            Setting::ExtensionsAutoUpdate => c.extensions.auto_update = on,
             Setting::AutofillPasswords => c.passwords.autofill = on,
             Setting::PlaylistQuickAction => c.playlist.quick_action = on,
             Setting::PlaylistAutoDownload => c.playlist.auto_download = on,
@@ -2145,9 +2155,11 @@ impl SettingsSheet {
                 self.site_permissions_section(ui, config);
                 self.section(ui, tr("Extensions"));
                 self.control(ui, config, Setting::ExtensionsEnabled);
+                self.control(ui, config, Setting::ExtensionsWebStore);
+                self.control(ui, config, Setting::ExtensionsAutoUpdate);
                 self.note(
                     ui,
-                    tr("Manifest V3 extensions are installed from the extensions button in the toolbar (an unpacked folder or a .crx file). Each extension's permissions are listed there. The Chrome Web Store cannot install them."),
+                    tr("Manifest V3 extensions install from the Chrome Web Store (Axion asks first and shows every permission), or from the extensions button in the toolbar (an unpacked folder or a .crx file). Updates for Web Store extensions are downloaded in the background and apply after a restart."),
                 );
             }
             Category::Passwords => {

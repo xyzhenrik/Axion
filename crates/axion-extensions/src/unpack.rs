@@ -23,7 +23,7 @@ fn u16_at(data: &[u8], at: usize) -> Option<usize> {
     Some(u16::from_le_bytes(data.get(at..at + 2)?.try_into().ok()?) as usize)
 }
 
-fn u32_at(data: &[u8], at: usize) -> Option<usize> {
+pub(crate) fn u32_at(data: &[u8], at: usize) -> Option<usize> {
     Some(u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?) as usize)
 }
 
@@ -70,7 +70,7 @@ fn v3_key(header: &[u8]) -> Option<String> {
 }
 
 /// The length-delimited fields of a protobuf message (others are skipped).
-fn protobuf_fields(data: &[u8]) -> impl Iterator<Item = (u64, &[u8])> {
+pub(crate) fn protobuf_fields(data: &[u8]) -> impl Iterator<Item = (u64, &[u8])> {
     let mut rest = data;
     std::iter::from_fn(move || {
         loop {
@@ -249,7 +249,7 @@ pub(crate) mod tests {
         out
     }
 
-    fn field(number: u64, body: &[u8]) -> Vec<u8> {
+    pub(crate) fn field(number: u64, body: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         let mut tag = (number << 3) | 2;
         loop {
@@ -261,7 +261,16 @@ pub(crate) mod tests {
             }
             out.push(byte | 0x80);
         }
-        out.push(body.len() as u8);
+        let mut len = body.len();
+        loop {
+            let byte = (len & 0x7F) as u8;
+            len >>= 7;
+            if len == 0 {
+                out.push(byte);
+                break;
+            }
+            out.push(byte | 0x80);
+        }
         out.extend_from_slice(body);
         out
     }

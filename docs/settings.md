@@ -281,6 +281,21 @@ Blocking of ads, trackers, popups and redirects. See [Shields](features/shields.
 | **Lock private tabs with the account password** | Private tabs ask for the account password before they open. Needs an account password; the page offers to create one. | On | `privacy.lock_private_tabs` |
 | **Browsing history** (**Clear History…**) | Deletes your whole browsing history. Click again to confirm. For a time range, use **Clear Browsing Data…** | - | - |
 
+### Extensions
+
+Chrome extensions (Manifest V3). They are installed from the Chrome Web Store, or from the
+extensions button in the toolbar; see [Chrome extensions](features/extensions.md).
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| **Chrome extensions (after restart)** | Runs Chromium's extension system and shows the extensions button. Off: no extension loads. | On | `extensions.enabled` |
+| **Install from the Chrome Web Store (after restart)** | "Add to Chrome" on the Chrome Web Store installs the extension, after Axion shows what it can do and you say yes. Off: the store is not opened. | On | `extensions.web_store` |
+| **Update Web Store extensions automatically** | Looks for newer versions in the background and downloads them. They run after the next restart. An update that asks for more permissions waits for your yes. | On | `extensions.auto_update` |
+
+Config file only: `extensions.update_interval_hours` (24), `extensions.timeout_seconds` (60),
+`extensions.allow_user_scripts` (on) and `extensions.block_request_apis` (on). See
+[Chrome extensions](features/extensions.md#how-it-works).
+
 ### Site Permissions
 
 What happens when a site asks for your microphone, camera, screen and the like and you have not
