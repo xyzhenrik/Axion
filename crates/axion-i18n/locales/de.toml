@@ -1221,3 +1221,11 @@
 
 # crates/axion-app/src/extensions_popover.rs
 "Network request APIs are off in Axion" = "Netzwerk-Request-APIs sind in Axion aus"
+
+# crates/axion-app/src/browser/ext_popup.rs, extensions_popover.rs, settings.rs
+"Relaunch Axion to use this extension." = "Starte Axion neu, um diese Erweiterung zu verwenden."
+"Show in Address Field" = "Im Adressfeld anzeigen"
+"Icons in the address field" = "Symbole im Adressfeld"
+"Pinned" = "Angeheftet"
+"On Matching Pages" = "Auf passenden Seiten"
+"Extensions with a popup can show their icon in the address field; pin them in the extensions popover. \"On Matching Pages\" hides a pinned icon on pages the extension has no access to." = "Erweiterungen mit Popup können ihr Symbol im Adressfeld zeigen; hefte sie im Erweiterungen-Popover an. „Auf passenden Seiten“ blendet ein angeheftetes Symbol auf Seiten aus, auf die die Erweiterung keinen Zugriff hat."

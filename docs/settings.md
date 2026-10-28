@@ -292,9 +292,13 @@ extensions button in the toolbar; see [Chrome extensions](features/extensions.md
 | **Chrome extensions (after restart)** | Runs Chromium's extension system and shows the extensions button. Off: no extension loads. | On | `extensions.enabled` |
 | **Install from the Chrome Web Store (after restart)** | "Add to Chrome" on the Chrome Web Store installs the extension, after Axion shows what it can do and you say yes. Off: the store is not opened. | On | `extensions.web_store` |
 | **Update Web Store extensions automatically** | Looks for newer versions in the background and downloads them. They run after the next restart. An update that asks for more permissions waits for your yes. | On | `extensions.auto_update` |
+| **Icons in the address field** | Which extensions with a popup put their icon in the address field: **Pinned** (the ones you pinned in the extensions popover), **On Matching Pages** (pinned ones, only on pages the extension has access to) or **Never**. | Pinned | `extensions.show_in_address_bar` |
 
 Config file only: `extensions.update_interval_hours` (24), `extensions.timeout_seconds` (60),
-`extensions.allow_user_scripts` (on) and `extensions.block_request_apis` (on). See
+`extensions.allow_user_scripts` (on), `extensions.block_request_apis` (on) and the popup's size
+limits and timing: `extensions.popup_min_size` (25), `extensions.popup_max_width` (800),
+`extensions.popup_max_height` (600), `extensions.popup_measure_ms` (150) and
+`extensions.popup_load_timeout_ms` (3000). See
 [Chrome extensions](features/extensions.md#how-it-works).
 
 ### Site Permissions

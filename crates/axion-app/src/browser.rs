@@ -34,6 +34,7 @@ use crate::context_menu::ContextMenus;
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
 use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
+use crate::extension_popup::ExtensionPopupCard;
 use crate::extensions::Extensions;
 use crate::extensions_popover::{ExtensionsAction, ExtensionsPopover};
 use crate::favicons::{FETCH_SIZE, Favicons};
@@ -90,6 +91,7 @@ use crate::zoom::{self, SiteZoom};
 
 mod capture;
 mod context;
+mod ext_popup;
 mod import;
 mod onboarding;
 mod page_context;
@@ -268,6 +270,14 @@ pub struct Browser {
     /// Chrome extensions: the installed list, and the popover of the toolbar's puzzle piece.
     extensions: Extensions,
     extensions_popover: ExtensionsPopover,
+    /// The open extension popup (its own off-screen view) and the card it is drawn in.
+    ext_popup: Option<ext_popup::ExtPopup>,
+    ext_popup_card: ExtensionPopupCard,
+    /// The last size each extension's popup had (the next one starts there).
+    ext_popup_sizes: std::collections::HashMap<String, Vec2>,
+    /// The extensions whose icons the address field shows, in order, and what it was last told.
+    address_extensions: Vec<String>,
+    address_extension_signature: Vec<(String, bool, bool)>,
     /// The extension whose details the popover shows (else the list).
     extensions_details: Option<String>,
     /// The details' Remove button was clicked once.
@@ -744,6 +754,7 @@ impl Browser {
         let reading = reading::ReadingUi::build(&mut ui, chrome.bar_node(), &profile, &config);
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
         let extensions_popover = ExtensionsPopover::build(&mut ui, chrome.bar_node());
+        let ext_popup_card = ExtensionPopupCard::build(&mut ui, chrome.bar_node());
         let permissions = permissions::PermissionsUi::build(&mut ui, chrome.bar_node(), store.as_ref());
         let toast = Toast::build(&mut ui, chrome.bar_node());
         let find = FindBar::build(&mut ui, chrome.bar_node());
@@ -838,6 +849,11 @@ impl Browser {
             downloads_popover,
             extensions,
             extensions_popover,
+            ext_popup: None,
+            ext_popup_card,
+            ext_popup_sizes: std::collections::HashMap::new(),
+            address_extensions: Vec::new(),
+            address_extension_signature: Vec::new(),
             extensions_details: None,
             extensions_confirm_remove: false,
             permissions,
@@ -1197,6 +1213,7 @@ impl Browser {
     }
 
     fn on_active_changed(&mut self, previous: Option<ViewId>) {
+        self.close_extension_popup();
         self.close_playlist();
         // Find on Page belongs to the page it was opened on.
         self.close_find();
@@ -3986,6 +4003,7 @@ impl Browser {
                     Some(ChromeAction::ZoomIndicator) => self.run(Action::ZoomReset),
                     Some(ChromeAction::DownloadsButton) => self.toggle_downloads_popover(),
                     Some(ChromeAction::ExtensionsButton) => self.toggle_extensions_popover(),
+                    Some(ChromeAction::ExtensionButton(i)) => self.extension_icon_clicked(i),
                     Some(ChromeAction::PanelButton(i, k)) => {
                         self.downloads.row_button(List::Panel, i, k, &mut self.engine);
                         self.show_panel_with(Panel::Downloads, true);
@@ -4238,6 +4256,9 @@ impl Browser {
                     tracing::trace!(?view, "engine: translation message");
                 }
                 event => tracing::debug!(?event, "engine"),
+            }
+            if self.ext_popup_event(&event) {
+                continue;
             }
             match event {
                 EngineEvent::AddressChanged { view, url } => {
@@ -4774,6 +4795,7 @@ impl Browser {
             || self.reading.popovers_open()
             || self.downloads_popover.is_open()
             || self.extensions_popover.is_open()
+            || self.ext_popup_open()
             || self.permissions.prompt.is_open()
             || self.permissions.capture.is_open()
             || self.suggestions.is_visible()
@@ -4855,7 +4877,35 @@ impl Browser {
                 let id = self.account_id.clone();
                 self.relaunch_into(&id);
             }
+            ExtensionsAction::Activate(i) => {
+                // The popup opens under the puzzle piece; without one the details show.
+                match nth(self, i).and_then(|id| self.extensions.get(&id).cloned()) {
+                    Some(ext) if ext.has_popup() => {
+                        let anchor = self.chrome.extensions_frame(&self.ui);
+                        self.extension_clicked(&ext.id, anchor);
+                        return;
+                    }
+                    Some(ext) if ext.popup.is_some() && !ext.broken => {
+                        // Switched on or installed since the start: it needs a relaunch.
+                        self.extensions_details = Some(ext.id);
+                    }
+                    Some(ext) => self.extensions_details = Some(ext.id),
+                    None => {}
+                }
+            }
             ExtensionsAction::Details(i) => self.extensions_details = nth(self, i),
+            ExtensionsAction::Pin(i) => {
+                if let Some(id) = nth(self, i) {
+                    let on = self.extensions.get(&id).is_some_and(|e| !e.pinned);
+                    self.extensions.set_pinned(&id, on, self.store.as_ref());
+                }
+            }
+            ExtensionsAction::DetailPin => {
+                if let Some(id) = current.clone() {
+                    let on = self.extensions.get(&id).is_some_and(|e| !e.pinned);
+                    self.extensions.set_pinned(&id, on, self.store.as_ref());
+                }
+            }
             ExtensionsAction::Back => {
                 self.extensions_details = None;
                 self.extensions_confirm_remove = false;
@@ -5734,7 +5784,9 @@ impl Browser {
                     MouseScrollDelta::LineDelta(x, y) => Vec2::new(x, y) * LINE_SCROLL,
                     MouseScrollDelta::PixelDelta(p) => Vec2::new(p.x as f32, p.y as f32) / self.scale(),
                 };
-                if self.overview.is_open() {
+                if self.pointer.is_some_and(|p| self.ext_popup_wheel(p, delta)) {
+                    // The extension popup scrolled.
+                } else if self.overview.is_open() {
                     self.overview.scroll_by(&mut self.ui, delta.y);
                 } else if self.passwords.is_open() {
                     self.passwords.scroll_by(&mut self.ui, delta.y);
@@ -5773,7 +5825,7 @@ impl Browser {
                     // The button-up may go to another window: nothing stays held.
                     self.release_pointer_holds();
                 }
-                if let Some(view) = self.active_view()
+                if let Some(view) = self.key_view()
                     && self.ui.focused().is_none()
                     && !self.is_locked()
                 {
@@ -5823,6 +5875,9 @@ impl Browser {
             self.leave_page();
             return;
         }
+        if self.ext_popup_open() {
+            self.ext_popup_pointer(p);
+        }
         if self.playlist_open() {
             // The Playlist's video area is a page of its own; the one below rests.
             self.playlist_pointer(p, None);
@@ -5851,7 +5906,9 @@ impl Browser {
     }
 
     fn update_cursor(&self) {
+        let popup_cursor = self.ext_popup_cursor();
         let icon = match self.ui.cursor() {
+            _ if popup_cursor.is_some() => popup_cursor.and_then(input::cursor_icon),
             Some(UiCursor::Pointer) => Some(winit::window::CursorIcon::Pointer),
             Some(UiCursor::Text) => Some(winit::window::CursorIcon::Text),
             Some(UiCursor::Default) => Some(winit::window::CursorIcon::Default),
@@ -5965,6 +6022,14 @@ impl Browser {
             _ => return,
         };
 
+        if pressed && self.ext_popup_open() && !self.ext_popup_owns(p) {
+            // A click outside only dismisses the extension popup.
+            self.close_extension_popup();
+            return;
+        }
+        if self.ext_popup_open() && self.ext_popup_button(p, button, pressed) {
+            return;
+        }
         if pressed && self.lock_screen.is_alert_open() && !self.lock_screen.alert_contains(&self.ui, p) {
             // A click outside the password card only dismisses it.
             self.lock_screen.close_alert(&mut self.ui);
@@ -6130,6 +6195,10 @@ impl Browser {
         }
         if self.onboarding.is_open() {
             return self.onboarding_key(event);
+        }
+        if pressed && self.ext_popup_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.close_extension_popup();
+            return false;
         }
         if pressed && self.passwords.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.close_passwords();
@@ -6350,8 +6419,8 @@ impl Browser {
             return false;
         }
 
-        // A locked page gets no keys.
-        if let Some(view) = self.active_view().filter(|_| !self.is_locked()) {
+        // A locked page gets no keys; an open extension popup gets them instead of the page.
+        if let Some(view) = self.key_view().filter(|_| !self.is_locked()) {
             for key in input::page_key_events(event, self.modifiers) {
                 self.engine.send_input(view, &key);
             }
@@ -6579,6 +6648,10 @@ impl Browser {
                 "downloads-popover" => self.toggle_downloads_popover(),
                 // Capture aids: the extensions popover, and the details of the first extension.
                 "extensions-popover" => self.toggle_extensions_popover(),
+                // Test aids: the first extension's popup, a real pointer click or typing in it.
+                aid if aid.starts_with("extension-popup") || aid.starts_with("ext-") => {
+                    self.ext_popup_aid(aid);
+                }
                 "extensions-details" => {
                     self.extensions_details = self.extensions.views().first().map(|e| e.id.clone());
                     self.toggle_extensions_popover();
@@ -7380,6 +7453,8 @@ impl Browser {
         self.shields_popover.animate(&mut self.ui, dt);
         self.downloads_popover.animate(&mut self.ui, dt);
         self.extensions_popover.animate(&mut self.ui, dt);
+        self.ext_popup_tick(dt);
+        self.sync_extension_icons();
         let width = self.logical_size().x;
         let address = self.chrome.address_frame(&self.ui);
         let top = self.page_rect().origin.y;
@@ -8220,6 +8295,7 @@ fn chrome_allowed_while_locked(action: ChromeAction) -> bool {
             | ChromeAction::MuteTabAt(_)
             | ChromeAction::DownloadsButton
             | ChromeAction::ExtensionsButton
+            | ChromeAction::ExtensionButton(_)
             | ChromeAction::SelectTab(_)
             | ChromeAction::CloseTab(_)
             | ChromeAction::OpenBookmark(_)

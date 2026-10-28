@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
-    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, GlassStyle, GpuChoice,
-    Keymap, PageFrames, PermissionDefault, PlaylistSort, ReaderFont, ReaderTheme, RemoveDownloads,
-    ShieldLevel, TabBarStyle, ThemeMode, TintMode, TranslationBackend, UiLanguage,
+    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, ExtensionIcons,
+    GlassStyle, GpuChoice, Keymap, PageFrames, PermissionDefault, PlaylistSort, ReaderFont, ReaderTheme,
+    RemoveDownloads, ShieldLevel, TabBarStyle, ThemeMode, TintMode, TranslationBackend, UiLanguage,
 };
 use axion_i18n::{tr, tr_fmt, tr_mark, tr_n};
 use axion_ui::taffy::prelude::*;
@@ -691,6 +691,8 @@ pub enum SettingsAction {
     BookmarksBar(BookmarksBar),
     /// `appearance.tint_mode` while the page colour is on.
     TintMode(TintMode),
+    /// Privacy › Extensions: which extensions put their icon in the address field.
+    ExtensionIcons(ExtensionIcons),
     PlaylistSort(PlaylistSort),
     ReaderFont(ReaderFont),
     ReaderTheme(ReaderTheme),
@@ -780,6 +782,12 @@ const TRUSTED_SITE_BASE: u32 = 200;
 const CATEGORY_BASE: u32 = 900;
 /// Reader view and translation controls.
 const READING_BASE: u32 = 1100;
+/// Privacy › Extensions: which extensions show their icon in the address field.
+const EXTENSION_ICONS: [(&str, ExtensionIcons); 3] = [
+    (tr_mark("Pinned"), ExtensionIcons::Pinned),
+    (tr_mark("On Matching Pages"), ExtensionIcons::Active),
+    (tr_mark("Never"), ExtensionIcons::None),
+];
 const READER_FONTS: [(&str, ReaderFont); 3] = [
     (tr_mark("Serif"), ReaderFont::Serif),
     (tr_mark("Sans"), ReaderFont::Sans),
@@ -955,6 +963,11 @@ impl SettingsAction {
                     SettingsAction::ReaderTheme(t) => {
                         READING_BASE + 3 + READER_THEMES.iter().position(|(_, x)| *x == t).unwrap_or(0) as u32
                     }
+                    SettingsAction::ExtensionIcons(i) => {
+                        READING_BASE
+                            + 40
+                            + EXTENSION_ICONS.iter().position(|(_, x)| *x == i).unwrap_or(0) as u32
+                    }
                     SettingsAction::TranslationBackend(TranslationBackend::Local) => READING_BASE + 7,
                     SettingsAction::TranslationBackend(TranslationBackend::Endpoint) => READING_BASE + 8,
                     SettingsAction::TranslateTarget(i) => READING_BASE + 10 + i as u32,
@@ -1053,6 +1066,9 @@ impl SettingsAction {
                 SettingsAction::TranslateTarget((n - READING_BASE - 10) as usize)
             }
             n if n == READING_BASE + 30 => SettingsAction::RemoveTranslationModels,
+            n if (READING_BASE + 40..READING_BASE + 40 + EXTENSION_ICONS.len() as u32).contains(&n) => {
+                SettingsAction::ExtensionIcons(EXTENSION_ICONS[(n - READING_BASE - 40) as usize].1)
+            }
             85 => SettingsAction::OpenPasswords,
             86 => SettingsAction::ImportPasswords,
             87 => SettingsAction::ExportPasswords,
@@ -2163,6 +2179,18 @@ impl SettingsSheet {
                 self.control(ui, config, Setting::ExtensionsEnabled);
                 self.control(ui, config, Setting::ExtensionsWebStore);
                 self.control(ui, config, Setting::ExtensionsAutoUpdate);
+                let row_node = self.row(ui, tr("Icons in the address field"));
+                let options: Vec<(&str, ActionId)> = EXTENSION_ICONS
+                    .iter()
+                    .map(|(name, icons)| (tr(name), SettingsAction::ExtensionIcons(*icons).id()))
+                    .collect();
+                let current =
+                    EXTENSION_ICONS.iter().position(|(_, i)| *i == config.extensions.show_in_address_bar);
+                segmented(ui, row_node, &options, current);
+                self.note(
+                    ui,
+                    tr("Extensions with a popup can show their icon in the address field; pin them in the extensions popover. \"On Matching Pages\" hides a pinned icon on pages the extension has no access to."),
+                );
                 self.note(
                     ui,
                     tr("Manifest V3 extensions install from the Chrome Web Store (Axion asks first and shows every permission), or from the extensions button in the toolbar (an unpacked folder or a .crx file). Updates for Web Store extensions are downloaded in the background and apply after a restart."),
@@ -3659,6 +3687,10 @@ impl SettingsSheet {
                 config.appearance.tint_mode = mode;
                 Outcome::Changed
             }
+            SettingsAction::ExtensionIcons(icons) => {
+                config.extensions.show_in_address_bar = icons;
+                Outcome::Changed
+            }
             SettingsAction::PlaylistSort(sort) => {
                 config.playlist.sort = sort;
                 Outcome::Changed
@@ -4413,6 +4445,9 @@ mod tests {
             SettingsAction::OpenReleasePage,
             SettingsAction::SaveRepository,
             SettingsAction::RelaunchNow,
+            SettingsAction::ExtensionIcons(ExtensionIcons::Pinned),
+            SettingsAction::ExtensionIcons(ExtensionIcons::Active),
+            SettingsAction::ExtensionIcons(ExtensionIcons::None),
             SettingsAction::PageFrames(PageFrames::Auto),
             SettingsAction::PageFrames(PageFrames::Gpu),
             SettingsAction::PageFrames(PageFrames::Software),

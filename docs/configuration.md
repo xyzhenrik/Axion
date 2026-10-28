@@ -110,7 +110,7 @@ ask_where_to_save = false
 | `passwords` | Saving, filling, generator, clipboard. |
 | `accounts` | Profile picture size and limit. |
 | `import` | Limits of the import from other browsers (history entries, bookmarks, file sizes). |
-| `extensions` | Chrome extensions: on or off (`enabled`), the Chrome Web Store (`web_store`), automatic updates (`auto_update`, `update_interval_hours`, `timeout_seconds`), user scripts (`allow_user_scripts`) and the request APIs (`block_request_apis`). See [Chrome extensions](features/extensions.md). |
+| `extensions` | Chrome extensions: on or off (`enabled`), the Chrome Web Store (`web_store`), automatic updates (`auto_update`, `update_interval_hours`, `timeout_seconds`), user scripts (`allow_user_scripts`), the request APIs (`block_request_apis`), the icons in the address field (`show_in_address_bar`) and the popup's size limits (`popup_*`). See [Chrome extensions](features/extensions.md). |
 | `hardware` | Acceleration, page frames, graphics card. |
 | `devtools`, `find`, `clipboard`, `toast`, `sidebar`, `ui` | Smaller options. |
 | `updates` | Update source and schedule. |
