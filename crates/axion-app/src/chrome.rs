@@ -160,8 +160,6 @@ pub enum ChromeAction {
     MuteOtherTabAt(usize),
     /// A tab group's header or chip (by group id): folds or unfolds its tabs.
     ToggleTabGroup(u32),
-    /// The `i`th extension icon in the address field: opens that extension's popup.
-    ExtensionButton(usize),
 }
 
 /// The sidebar's sections that fold away.
@@ -267,12 +265,6 @@ const BOOKMARK_BASE: u32 = 18_000;
 const GROUP_BASE: u32 = 11_000;
 const TAB_MUTE_BASE: u32 = 60_000;
 const TAB_MUTE_OTHER_BASE: u32 = 61_000;
-const EXTENSION_BUTTON_BASE: u32 = 62_000;
-/// Extension icons the address field has room for at most (more collapse into the popover).
-pub const EXTENSION_SLOTS: usize = 6;
-/// An extension icon's button and picture (logical px).
-const EXTENSION_BUTTON: f32 = 30.0;
-const EXTENSION_PICTURE: f32 = 20.0;
 const TAB_GROUP_BASE: u32 = 100_000;
 /// Trailing buttons a panel entry can have.
 pub const PANEL_BUTTONS: usize = 4;
@@ -331,7 +323,6 @@ impl ChromeAction {
             ChromeAction::MuteTabAt(i) => TAB_MUTE_BASE + i as u32,
             ChromeAction::MuteOtherTabAt(i) => TAB_MUTE_OTHER_BASE + i as u32,
             ChromeAction::ToggleTabGroup(g) => TAB_GROUP_BASE + g,
-            ChromeAction::ExtensionButton(i) => EXTENSION_BUTTON_BASE + i as u32,
             simple => 1 + Self::SIMPLE.iter().position(|&a| a == simple).unwrap_or(0) as u32,
         })
     }
@@ -340,9 +331,6 @@ impl ChromeAction {
         match id.0 {
             n if (1..=Self::SIMPLE.len() as u32).contains(&n) => Some(Self::SIMPLE[n as usize - 1]),
             n if n >= TAB_GROUP_BASE => Some(ChromeAction::ToggleTabGroup(n - TAB_GROUP_BASE)),
-            n if (EXTENSION_BUTTON_BASE..EXTENSION_BUTTON_BASE + EXTENSION_SLOTS as u32).contains(&n) => {
-                Some(ChromeAction::ExtensionButton((n - EXTENSION_BUTTON_BASE) as usize))
-            }
             n if (TAB_MUTE_BASE..TAB_MUTE_BASE + 1000).contains(&n) => {
                 Some(ChromeAction::MuteTabAt((n - TAB_MUTE_BASE) as usize))
             }
@@ -602,10 +590,6 @@ pub struct Chrome {
     /// The Translate button in the address field, and its glyph.
     translate_button: NodeId,
     translate_icon: NodeId,
-    /// The extension icons of the address field (`EXTENSION_SLOTS` buttons, the first
-    /// `extension_wanted` of them in use).
-    extension_buttons: Vec<ExtensionSlot>,
-    extension_wanted: usize,
     /// The toolbar's right group (Share, New Tab, Overview …).
     actions: NodeId,
     /// The Playlist page is up: the toolbar shows only the sidebar button.
@@ -797,35 +781,10 @@ pub struct AddressFit {
     pub text: bool,
     /// Room for the speaker and Playlist buttons too.
     pub extras: bool,
-    /// How many extension icons fit beside the rest.
-    pub extension_icons: usize,
 }
 
 impl AddressFit {
-    pub const ALL: Self = Self {
-        close: true,
-        shield: true,
-        reload: true,
-        text: true,
-        extras: true,
-        extension_icons: EXTENSION_SLOTS,
-    };
-}
-
-/// One extension icon of the address field: the button, its picture and the puzzle piece shown
-/// instead while the extension has no picture.
-struct ExtensionSlot {
-    button: NodeId,
-    picture: NodeId,
-    glyph: NodeId,
-}
-
-/// An extension icon the address field shows.
-pub struct ExtensionIcon<'a> {
-    pub name: &'a str,
-    pub picture: Option<crate::home::Image>,
-    /// Its popup is open.
-    pub open: bool,
+    pub const ALL: Self = Self { close: true, shield: true, reload: true, text: true, extras: true };
 }
 
 /// Padding and gap of the open segment, and the smallest useful text width.
@@ -847,11 +806,7 @@ pub fn address_fit(width: f32) -> AddressFit {
         *slot = true;
     }
     let [text, shield, reload, close] = fits;
-    let extras = close && used + ADDRESS_EXTRAS_ROOM <= width;
-    let spare = (width - used - ADDRESS_EXTRAS_ROOM).max(0.0);
-    let extension_icons =
-        if extras { ((spare / (EXTENSION_BUTTON + ADDRESS_GAP)) as usize).min(EXTENSION_SLOTS) } else { 0 };
-    AddressFit { close, shield, reload, text, extras, extension_icons }
+    AddressFit { close, shield, reload, text, extras: close && used + ADDRESS_EXTRAS_ROOM <= width }
 }
 
 /// How many of the bookmarks bar's items (natural `widths`, `gap` apart) fit into `available`
@@ -1528,36 +1483,6 @@ impl Chrome {
         }
         tip(ui, zoom_button, tr("Reset Zoom"), Some(Action::ZoomReset));
         ui.set_visible(zoom_button, false);
-        // Extensions with a popup: their own icon, a click opens the popup under it.
-        let extension_buttons: Vec<ExtensionSlot> = (0..EXTENSION_SLOTS)
-            .map(|i| {
-                let button = ui.add(
-                    address,
-                    Widget::container()
-                        .with_action(ChromeAction::ExtensionButton(i).id())
-                        .with_radius(CAPSULE),
-                    Style {
-                        size: square(EXTENSION_BUTTON),
-                        flex_shrink: 0.0,
-                        justify_content: JustifyContent::CENTER,
-                        ..row(0.0)
-                    },
-                );
-                let picture = ui.add(
-                    button,
-                    Widget::image().with_radius(EXTENSION_PICTURE * 0.22),
-                    Style { size: square(EXTENSION_PICTURE), flex_shrink: 0.0, ..Default::default() },
-                );
-                let glyph = ui.add(
-                    button,
-                    Widget::icon(Icon::Extensions, 18.0).with_paint(Paint::Label),
-                    Style::default(),
-                );
-                ui.set_visible(picture, false);
-                ui.set_visible(button, false);
-                ExtensionSlot { button, picture, glyph }
-            })
-            .collect();
         let address_label = ui.add_label(address, "", TextStyle::BodyEmphasis, shrinking_label());
         ui.set_label_align(address_label, Align::Start);
         let address_field = ui.add_text_field(
@@ -1805,8 +1730,6 @@ impl Chrome {
             playlist_icon,
             translate_button,
             translate_icon,
-            extension_buttons,
-            extension_wanted: 0,
             actions,
             playlist_page: false,
             playlist_row,
@@ -2907,45 +2830,6 @@ impl Chrome {
         if let (Some(active), Some(w)) = (state, ui.widget_mut(self.translate_icon)) {
             w.set_paint(if active { Paint::Accent } else { Paint::Label });
         }
-    }
-
-    /// The extension icons of the address field (at most `EXTENSION_SLOTS`; the rest stay in
-    /// the extensions popover). A narrow field shows fewer, the first ones.
-    pub fn set_extension_icons(&mut self, ui: &mut Ui, icons: &[ExtensionIcon]) {
-        self.extension_wanted = icons.len().min(EXTENSION_SLOTS);
-        for (slot, icon) in self.extension_buttons.iter().zip(icons) {
-            tip(ui, slot.button, icon.name, None);
-            match &icon.picture {
-                Some(picture) => ui.set_image(slot.picture, Some(picture.clone())),
-                None => ui.set_image(slot.picture, None),
-            }
-            ui.set_visible(slot.picture, icon.picture.is_some());
-            ui.set_visible(slot.glyph, icon.picture.is_none());
-            if let Some(w) = ui.widget_mut(slot.glyph) {
-                w.set_paint(if icon.open { Paint::Accent } else { Paint::Label });
-            }
-        }
-        self.show_extension_buttons(ui);
-    }
-
-    /// How many extension icons the address field has room for now.
-    pub fn extension_icon_room(&self) -> usize {
-        self.tab_widths.address_fit.map_or(EXTENSION_SLOTS, |(fit, ..)| fit.extension_icons)
-    }
-
-    fn show_extension_buttons(&self, ui: &mut Ui) {
-        let room = self.extension_icon_room();
-        let capture = self.capture_wanted && self.tab_widths.address_fit.is_some();
-        for (i, slot) in self.extension_buttons.iter().enumerate() {
-            let shown =
-                i < self.extension_wanted && i < room && self.extras_fit() && !capture && !self.locked;
-            ui.set_visible(slot.button, shown);
-        }
-    }
-
-    /// The `i`th extension icon (logical px), for anchoring its popup.
-    pub fn extension_icon_frame(&self, ui: &Ui, i: usize) -> Option<Frame> {
-        self.extension_buttons.get(i).map(|s| ui.frame(s.button))
     }
 
     pub fn translate_button_frame(&self, ui: &Ui) -> Frame {
@@ -4111,7 +3995,6 @@ impl Chrome {
         ui.set_visible(self.playlist_button, self.playlist_wanted && fit.extras && !capture);
         ui.set_visible(self.translate_button, self.translate_wanted && fit.extras && !capture);
         ui.set_visible(self.zoom_button, self.zoom_wanted.is_some() && fit.extras);
-        self.show_extension_buttons(ui);
         let icon_only = !fit.text;
         let mut style = ui.style(self.address);
         style.padding =
@@ -4635,7 +4518,6 @@ mod tests {
         assert_eq!(address_fit(500.0), AddressFit::ALL);
         let at = |w| address_fit(w);
         assert!(at(260.0).close && at(260.0).reload && !at(260.0).extras);
-        assert_eq!(at(260.0).extension_icons, 0, "no room for extras, no room for extension icons");
         assert!(!at(150.0).close && at(150.0).shield && !at(150.0).reload && at(150.0).text);
         assert!(!at(90.0).shield && at(90.0).text);
         let icon = at(36.0);
@@ -4644,8 +4526,7 @@ mod tests {
         let mut last = 0;
         for w in 20..600 {
             let f = at(w as f32);
-            let n = [f.text, f.shield, f.reload, f.close, f.extras].iter().filter(|b| **b).count()
-                + f.extension_icons;
+            let n = [f.text, f.shield, f.reload, f.close, f.extras].iter().filter(|b| **b).count();
             assert!(n >= last, "width {w}");
             last = n;
         }

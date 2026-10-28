@@ -12,7 +12,6 @@ mod compat;
 mod crx;
 mod install;
 mod manifest;
-mod matching;
 mod page;
 mod prefs;
 mod unpack;
@@ -22,7 +21,6 @@ pub use compat::{REQUEST_PERMISSIONS, disable_request_apis, strip_request_apis};
 pub use crx::{Verified, verify_crx3};
 pub use install::{Installed, install_file, install_folder, install_store_package, remove_folder};
 pub use manifest::{Manifest, Permissions, extension_id_for_key, extension_id_for_path, is_broad_host};
-pub use matching::host_matches;
 pub use page::{
     MARKER as PAGE_MARKER, Message as PageMessage, configure_script, is_store_url, page_script,
     parse as parse_page_message,

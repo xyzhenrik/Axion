@@ -29,15 +29,13 @@ const DETAIL_REMOVE: ActionId = ActionId(ACTION_BASE + 7);
 const CONFIRM_ADD: ActionId = ActionId(ACTION_BASE + 8);
 const CONFIRM_CANCEL: ActionId = ActionId(ACTION_BASE + 9);
 const CHECK_UPDATES: ActionId = ActionId(ACTION_BASE + 20);
-const DETAIL_PIN: ActionId = ActionId(ACTION_BASE + 21);
 const ROW_BASE: u32 = ACTION_BASE + 10;
 const TOGGLE_BASE: u32 = ACTION_BASE + 30;
-const PIN_BASE: u32 = ACTION_BASE + 40;
 const INFO_BASE: u32 = ACTION_BASE + 50;
 /// How many extensions the list shows (the rest are reachable from Settings).
 pub const ROWS: usize = 8;
 const WIDTH: f32 = 400.0;
-/// The pin and details buttons of a row.
+/// The details button of a row.
 const ROW_BUTTON: f32 = 28.0;
 const PADDING: f32 = 6.0;
 const INSET: f32 = 12.0;
@@ -70,10 +68,6 @@ pub enum ExtensionsAction {
     Activate(usize),
     /// Row `i`'s details button.
     Details(usize),
-    /// Row `i`'s pin: its icon in the address field, or not.
-    Pin(usize),
-    /// The details' "Show in Address Field" switch.
-    DetailPin,
     /// Row `i`'s switch.
     Toggle(usize),
     /// Back from the details to the list.
@@ -195,7 +189,6 @@ impl ExtensionsPopover {
             );
             icon_of(ui, row_node, ext, content.icons.get(i).and_then(Option::as_ref));
             let text = ui.add(row_node, Widget::container(), column_grow());
-            let pinnable = ext.popup.is_some() && !ext.broken;
             ui.add_label(text, &ext.name, TextStyle::Body, shrinking());
             let line = if ext.broken {
                 tr("Files are missing").to_owned()
@@ -208,12 +201,15 @@ impl ExtensionsPopover {
             {
                 w.set_paint(Paint::Fixed(ERROR));
             }
-            if pinnable {
-                // Its icon in the address field, or only here.
-                let paint = if ext.pinned { Paint::Accent } else { Paint::Secondary };
-                row_button(ui, row_node, ActionId(PIN_BASE + i as u32), Icon::Pin, paint);
-            }
-            row_button(ui, row_node, ActionId(INFO_BASE + i as u32), Icon::Info, Paint::Secondary);
+            // Its settings: details, permissions, options, Remove.
+            row_button(
+                ui,
+                row_node,
+                ActionId(INFO_BASE + i as u32),
+                Icon::Gear,
+                Paint::Secondary,
+                tr("Settings"),
+            );
             if !ext.broken {
                 ui.add(
                     row_node,
@@ -322,14 +318,6 @@ impl ExtensionsPopover {
             ui.add(row_node, Widget::toggle(ext.enabled).with_action(DETAIL_TOGGLE), Style::default());
             heights.push(ACTION);
         }
-        if ext.popup.is_some() && !ext.broken {
-            let row_node = ui.add(self.plate, Widget::container(), fixed_row(ACTION, 8.0));
-            let label =
-                ui.add_label(row_node, tr("Show in Address Field"), TextStyle::Body, Style::default());
-            grow(ui, label);
-            ui.add(row_node, Widget::toggle(ext.pinned).with_action(DETAIL_PIN), Style::default());
-            heights.push(ACTION);
-        }
         // What the extension may do: the user sees all of it.
         let title = ui.add(self.plate, Widget::container(), fixed_row(SECTION, 0.0));
         ui.add_label(title, tr("Permissions"), TextStyle::Callout, Style::default());
@@ -406,6 +394,11 @@ impl ExtensionsPopover {
         action_of(id)
     }
 
+    /// Where the open popover ends up (logical px); `None` while it is closed.
+    pub fn target_frame(&self) -> Option<Frame> {
+        self.popover.is_open().then(|| self.popover.target())
+    }
+
     pub fn contains(&self, ui: &Ui, p: Vec2) -> bool {
         self.popover.contains(ui, p)
     }
@@ -444,7 +437,7 @@ fn icon_of(ui: &mut Ui, parent: NodeId, ext: &ExtensionView, image: Option<&Imag
 }
 
 /// A small icon button at the end of a row (pin, details); pure glass, no plate.
-fn row_button(ui: &mut Ui, parent: NodeId, id: ActionId, icon: Icon, paint: Paint) {
+fn row_button(ui: &mut Ui, parent: NodeId, id: ActionId, icon: Icon, paint: Paint, tip: &str) {
     let button = ui.add(
         parent,
         Widget::container().with_action(id).with_radius(CAPSULE),
@@ -456,6 +449,9 @@ fn row_button(ui: &mut Ui, parent: NodeId, id: ActionId, icon: Icon, paint: Pain
         },
     );
     ui.add(button, Widget::icon(icon, 16.0).with_paint(paint), Style::default());
+    if let Some(w) = ui.widget_mut(button) {
+        w.tooltip = Some(axion_ui::Tooltip { label: tip.to_owned(), action: None });
+    }
 }
 
 /// A capsule button of the install question; `primary` is the accent one.
@@ -544,12 +540,8 @@ fn action_of(id: ActionId) -> Option<ExtensionsAction> {
         CONFIRM_ADD => ExtensionsAction::ConfirmInstall,
         CONFIRM_CANCEL => ExtensionsAction::CancelInstall,
         CHECK_UPDATES => ExtensionsAction::CheckUpdates,
-        DETAIL_PIN => ExtensionsAction::DetailPin,
         _ if (ROW_BASE..ROW_BASE + ROWS as u32).contains(&n) => {
             ExtensionsAction::Activate((n - ROW_BASE) as usize)
-        }
-        _ if (PIN_BASE..PIN_BASE + ROWS as u32).contains(&n) => {
-            ExtensionsAction::Pin((n - PIN_BASE) as usize)
         }
         _ if (INFO_BASE..INFO_BASE + ROWS as u32).contains(&n) => {
             ExtensionsAction::Details((n - INFO_BASE) as usize)
@@ -617,10 +609,8 @@ mod tests {
         assert_eq!(action_of(CHECK_UPDATES), Some(ExtensionsAction::CheckUpdates));
         assert_eq!(action_of(DETAIL_REMOVE), Some(ExtensionsAction::Remove));
         assert_eq!(action_of(ActionId(ROW_BASE + 3)), Some(ExtensionsAction::Activate(3)));
-        assert_eq!(action_of(ActionId(PIN_BASE + 1)), Some(ExtensionsAction::Pin(1)));
         assert_eq!(action_of(ActionId(INFO_BASE + 2)), Some(ExtensionsAction::Details(2)));
-        assert_eq!(action_of(DETAIL_PIN), Some(ExtensionsAction::DetailPin));
-        assert!(TOGGLE_BASE + ROWS as u32 <= PIN_BASE && PIN_BASE + ROWS as u32 <= INFO_BASE);
+        assert!(TOGGLE_BASE + ROWS as u32 <= INFO_BASE);
         assert_eq!(action_of(ActionId(TOGGLE_BASE + 2)), Some(ExtensionsAction::Toggle(2)));
         assert_eq!(action_of(ActionId(ACTION_BASE + 99)), None);
         assert!(ROW_BASE + ROWS as u32 <= TOGGLE_BASE);

@@ -1,4 +1,4 @@
-//! Extension popups (`action.default_popup`) as an overlay under the icon that was clicked.
+//! Extension popups (`action.default_popup`) as an overlay under the extensions button.
 //!
 //! Chromium cannot attach a toolbar popup to Axion's off-screen window (it wants a native one),
 //! so the popup page is its own off-screen view (`chrome-extension://<id>/<popup>`, like any tab
@@ -12,27 +12,40 @@
 
 use super::*;
 use crate::extension_popup::ExtensionPopupCard;
-use crate::extensions::ExtensionView;
 
 /// The console message the page script reports with: `…size:W,H` or `…close`.
 const MARKER: &str = "\u{1}axion:extpopup:";
 
-/// Measures the page as Chrome's popup auto-resize does: the width it wants (its max-content
-/// width) and the height that takes at that width. Styles it changes for the measurement are
-/// put back before the page can paint. Reports only when the size changed (every message
-/// wakes the browser). Also makes `window.close()` report instead of doing nothing.
+/// Measures the page like Chrome's popup auto-resize: the width it wants (its max-content
+/// width) and the height that takes at that width, taking in content that sticks out of the
+/// document (absolutely positioned, overflowing) unless a scrolling ancestor clips it. A
+/// temporary style sheet takes the viewport out of the measurement (`min-height: 100vh`) and is
+/// gone before the page can paint. Reports only when the size changed (every message wakes the
+/// browser). Also makes `window.close()` report instead of doing nothing.
 const MEASURE: &str = r#"(function(){
-var d=document.documentElement;if(!d||!document.body)return;
+var d=document.documentElement,b=document.body;if(!d||!b)return;
 if(!window.__axionPopup){window.__axionPopup=1;window.close=function(){console.log("\u0001axion:extpopup:close")}}
-var s=d.style,k=["width","height","min-width","min-height","max-width"],o={};
-k.forEach(function(p){o[p]=[s.getPropertyValue(p),s.getPropertyPriority(p)]});
-s.setProperty("width","max-content","important");s.setProperty("height","auto","important");
-s.setProperty("min-width","0","important");s.setProperty("min-height","0","important");
-s.setProperty("max-width","none","important");
-var r=d.getBoundingClientRect(),w=Math.ceil(r.width),h=Math.ceil(r.height);
-k.forEach(function(p){if(o[p][0])s.setProperty(p,o[p][0],o[p][1]);else s.removeProperty(p)});
+var st=document.createElement("style");
+st.textContent="html{width:max-content!important;height:auto!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important}body{min-height:0!important}";
+d.appendChild(st);
+var r=d.getBoundingClientRect(),w=r.width,h=r.height,sx=window.scrollX,sy=window.scrollY;
+var all=b.getElementsByTagName("*"),n=Math.min(all.length,4000),clip=new Map();
+function clipped(e){for(var a=e.parentElement;a&&a!==b&&a!==d;a=a.parentElement){
+ var c=clip.get(a);if(c===undefined){var o=getComputedStyle(a).overflow;c=/hidden|auto|scroll|clip/.test(o);clip.set(a,c)}if(c)return true}return false}
+for(var i=0;i<n;i++){var e=all[i],q=e.getBoundingClientRect();
+ if(q.width===0&&q.height===0)continue;
+ var right=q.right+sx,bottom=q.bottom+sy;
+ if(right>w+.5||bottom>h+.5){var c=getComputedStyle(e);
+  if(c.position==="fixed"||c.visibility==="hidden"||c.display==="none"||clipped(e))continue;
+  if(right>w)w=right;if(bottom>h)h=bottom}}
+st.remove();
+w=Math.ceil(w);h=Math.ceil(h);
 var key=w+","+h;if(window.__axionPopupSize===key)return;window.__axionPopupSize=key;
 console.log("\u0001axion:extpopup:size:"+key)})()"#;
+
+/// A classic scrollbar's width: a popup that scrolls gets this much wider, so the scrollbar does
+/// not take the content's width.
+const SCROLLBAR: f32 = 15.0;
 
 /// An open extension popup.
 pub(super) struct ExtPopup {
@@ -69,11 +82,11 @@ impl Browser {
         self.ext_popup.as_ref().filter(|p| p.size.is_some()).map(|p| p.view).or_else(|| self.active_view())
     }
 
-    /// A click on extension `id`'s icon or row: opens its popup under `anchor` (a second click
-    /// closes it). Without a popup page, or one that cannot run yet, it does what it can.
+    /// A click on extension `id`'s row: opens its popup under `anchor` (the extensions button);
+    /// another extension's popup goes first, so there is never more than one. Without a popup
+    /// page, or one that cannot run yet, it does what it can.
     pub(super) fn extension_clicked(&mut self, id: &str, anchor: Rect) {
         if self.ext_popup.as_ref().is_some_and(|p| p.id == id) {
-            self.close_extension_popup();
             return;
         }
         self.close_extension_popup();
@@ -103,11 +116,15 @@ impl Browser {
         self.shields_popover.close(&mut self.ui, &self.config);
         self.downloads_popover.close(&mut self.ui, &self.config);
         self.menu.close(&mut self.ui, &self.config);
+        // The page starts as large as a popup may get (so what depends on the window lays out
+        // fully); it is measured and shrunk to its content from there.
         let config = &self.config.extensions;
-        let min = Vec2::splat(config.popup_min_size.max(1) as f32);
-        let remembered = self.ext_popup_sizes.get(id).copied().unwrap_or(min);
+        let max = Vec2::new(config.popup_max_width as f32, config.popup_max_height as f32);
+        let room =
+            ExtensionPopupCard::room(anchor, self.logical_size(), ExtensionPopupCard::gap(&self.config));
+        let start = max.min(room).max(Vec2::splat(config.popup_min_size.max(1) as f32)).round();
         let url = crate::extensions::page_url(&ext.id, &popup);
-        let size = ViewSize { logical: remembered, scale: self.scale() };
+        let size = ViewSize { logical: start, scale: self.scale() };
         match self.engine.create_view(&url, size, false) {
             Ok(view) => {
                 // Keys and the pointer go to the popup from now on.
@@ -163,6 +180,8 @@ impl Browser {
     /// card along. Call before the layout.
     pub(super) fn ext_popup_tick(&mut self, dt: f32) {
         self.ext_popup_card.animate(&mut self.ui, dt);
+        let window = self.logical_size();
+        let gap = ExtensionPopupCard::gap(&self.config);
         let Some(popup) = self.ext_popup.as_mut() else { return };
         let config = &self.config.extensions;
         // A tab switch leaves the popup behind.
@@ -188,9 +207,12 @@ impl Browser {
             }
             return;
         }
-        if popup.size.is_none() {
-            return;
-        }
+        let Some(size) = popup.size else { return };
+        // Beside the extensions list when that is open, never under it.
+        let natural = ExtensionPopupCard::natural(popup.anchor, window, size, gap);
+        let list = self.extensions_popover.target_frame();
+        let placed = crate::extension_popup::place_clear(natural, list, window);
+        self.ext_popup_card.follow(&mut self.ui, placed);
         self.engine.request_frame(popup.view);
         if let Some(frame) = self.engine.frame(popup.view) {
             let view = match &popup.texture {
@@ -217,19 +239,24 @@ impl Browser {
         let Some((w, h)) = rest.strip_prefix("size:").and_then(|s| s.split_once(',')) else { return };
         let (Ok(w), Ok(h)) = (w.parse::<f32>(), h.parse::<f32>()) else { return };
         let window = self.logical_size();
+        let gap = ExtensionPopupCard::gap(&self.config);
         let scale = self.scale();
         let Some(popup) = self.ext_popup.as_mut() else { return };
         let config = &self.config.extensions;
-        let room = ExtensionPopupCard::room(popup.anchor, window);
+        let room = ExtensionPopupCard::room(popup.anchor, window, gap);
         let min = config.popup_min_size.max(1) as f32;
         let max = Vec2::new(config.popup_max_width as f32, config.popup_max_height as f32).min(room);
-        let size = Vec2::new(w, h).max(Vec2::splat(min)).min(max.max(Vec2::splat(min))).round();
+        let max = max.max(Vec2::splat(min));
+        // Taller than it may be: it scrolls, and the scrollbar needs room of its own.
+        let w = if h > max.y { w + SCROLLBAR } else { w };
+        let size = Vec2::new(w, h).max(Vec2::splat(min)).min(max).round();
         if popup.size == Some(size) {
             return;
         }
         popup.size = Some(size);
-        let (view, id, anchor) = (popup.view, popup.id.clone(), popup.anchor);
-        self.ext_popup_sizes.insert(id, size);
+        // The page lays out again at its new size: look once more at once.
+        popup.last_measure = Instant::now() - Duration::from_secs(1);
+        let (view, anchor) = (popup.view, popup.anchor);
         self.engine.resize(view, ViewSize { logical: size, scale });
         self.ext_popup_card.show(&mut self.ui, &self.config, anchor, window, size);
     }
@@ -405,74 +432,26 @@ impl Browser {
         self.ext_popup.as_ref().filter(|p| p.hover).map(|p| p.cursor)
     }
 
-    /// Whether `p` is on the popup's card or the icon it belongs to (a click there is not
-    /// "outside").
+    /// Whether `p` is on the popup's card, the extensions list beside it or the button they
+    /// belong to (a click there is not "outside").
     pub(super) fn ext_popup_owns(&self, p: Vec2) -> bool {
-        self.ext_popup
-            .as_ref()
-            .is_some_and(|popup| popup.anchor.contains(p) || self.ext_popup_card.contains(&self.ui, p))
+        self.ext_popup.as_ref().is_some_and(|popup| {
+            popup.anchor.contains(p)
+                || self.ext_popup_card.contains(&self.ui, p)
+                || self.extensions_popover.contains(&self.ui, p)
+        })
     }
 
-    /// The extension icons of the address field, for the page that is shown: only when they
-    /// changed, the chrome is told.
-    pub(super) fn sync_extension_icons(&mut self) {
-        let mode = self.config.extensions.show_in_address_bar;
-        let url = self.tabs.active().map(|t| t.url.clone()).unwrap_or_default();
-        let wanted: Vec<&ExtensionView> = if self.config.extensions.enabled {
-            self.extensions.views().iter().filter(|e| e.shows_icon(mode, &url)).collect()
-        } else {
-            Vec::new()
-        };
-        let open = self.ext_popup.as_ref().map(|p| p.id.as_str());
-        let icons: Vec<(String, String, Option<crate::home::Image>, bool)> = wanted
-            .iter()
-            .map(|e| {
-                let path = e.icon.clone();
-                let picture = self.avatars.get(&format!("extension:{}", e.id), || path);
-                (e.id.clone(), e.name.clone(), picture, open == Some(e.id.as_str()))
-            })
-            .collect();
-        let signature: Vec<(String, bool, bool)> =
-            icons.iter().map(|(id, _, picture, open)| (id.clone(), picture.is_some(), *open)).collect();
-        if signature == self.address_extension_signature {
-            return;
-        }
-        self.address_extension_signature = signature;
-        self.address_extensions = icons.iter().map(|(id, ..)| id.clone()).collect();
-        let items: Vec<crate::chrome::ExtensionIcon> = icons
-            .iter()
-            .map(|(_, name, picture, open)| crate::chrome::ExtensionIcon {
-                name,
-                picture: picture.clone(),
-                open: *open,
-            })
-            .collect();
-        self.chrome.set_extension_icons(&mut self.ui, &items);
-    }
-
-    /// A click on the `i`th extension icon of the address field.
-    pub(super) fn extension_icon_clicked(&mut self, i: usize) {
-        let Some(id) = self.address_extensions.get(i).cloned() else { return };
-        let Some(anchor) = self.chrome.extension_icon_frame(&self.ui, i) else { return };
-        self.extension_clicked(&id, anchor);
-    }
-
-    /// Test aids for `--open=`: `extension-popup` clicks the first extension icon (else the
-    /// puzzle piece), `ext-click:XxY` presses and releases the pointer at (X, Y) of the popup's
+    /// Test aids for `--open=`: `extension-popup` opens the first extension's popup (as a click on
+    /// its row does), `ext-click:XxY` presses and releases the pointer at (X, Y) of the popup's
     /// page, `ext-type:TEXT` types into it, `ext-wait` only pauses between steps.
     pub(super) fn ext_popup_aid(&mut self, aid: &str) {
         tracing::info!(aid, open = self.ext_popup.is_some(), "extension popup test aid");
         if aid == "extension-popup" {
-            self.sync_extension_icons();
             self.ui.layout();
-            if self.address_extensions.is_empty() {
-                let anchor = self.chrome.extensions_frame(&self.ui);
-                if let Some(id) = self.extensions.views().iter().find(|e| e.has_popup()).map(|e| e.id.clone())
-                {
-                    self.extension_clicked(&id, anchor);
-                }
-            } else {
-                self.extension_icon_clicked(0);
+            let anchor = self.chrome.extensions_frame(&self.ui);
+            if let Some(id) = self.extensions.views().iter().find(|e| e.has_popup()).map(|e| e.id.clone()) {
+                self.extension_clicked(&id, anchor);
             }
         } else if let Some(at) = aid.strip_prefix("ext-click:") {
             let Some((x, y)) = at.split_once('x').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))

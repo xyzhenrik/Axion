@@ -63,34 +63,30 @@ for later.
 Switch the whole feature off with `[extensions] enabled = false` (Settings › Privacy). Then no
 extension runs and the button disappears. Default: on.
 
-## Extension popups and icons in the address field
+## Extension popups
 
-An extension that has a popup (`action.default_popup`) opens it as an overlay under what you
-clicked: a glass card that drips out of the extension's icon, like Chrome's popup window. The card
-is as large as the popup's content (at least 25 x 25, at most 800 x 600 px, like Chrome; it grows and
-shrinks while the popup changes) and the popup is fully usable: pointer, scrolling, typing and
-focus work. It closes on **Esc**, a click outside, switching tabs, `window.close()` in the popup, or
-a link that leaves the extension (links open as tabs in the window).
+An extension that has a popup (`action.default_popup`) opens it as an overlay under the extensions
+button: a glass card that drips out of the puzzle piece, like Chrome's popup window. Click the
+extension's row in the extensions popover to open it. The (gear) button of a row opens the
+extension's settings: details, permissions, options and Remove. Extensions without a popup open
+their options page (else their details) when you click the row.
 
-Where you click:
+The card is as large as the popup's content (at least 25 x 25, at most 800 x 600 px, like Chrome)
+and follows it while it changes. The popup starts in a view of the maximum size, a script measures
+what the page wants (its max-content width and the height that takes, including content that
+sticks out of the document, but not content inside a scrolling box) and the view shrinks to it.
+`min-height: 100vh` is taken out of the measurement. A popup taller than the maximum (or than the
+window) scrolls, and gets 15 px of width for the scrollbar. The popup is fully usable: pointer,
+scrolling, typing and focus work. It closes on **Esc**, a click outside, switching tabs,
+`window.close()` in the popup, or a link that leaves the extension (links open as tabs in the
+window). There is only one popup: clicking another extension's row replaces it.
 
-- **The extension's icon in the address field.** Extensions with a popup show their own icon there
-  (the icon from the manifest, as a glass button beside Shields, Aa and Translate). Which
-  ones: Settings > Privacy > Extensions > **Icons in the address field**
-  (`extensions.show_in_address_bar`): **Pinned** (default), **On Matching Pages** or **Never**.
-- **The extensions button.** A click on an extension's row in its popover opens the popup under the
-  puzzle piece. The pin beside the name pins or unpins the extension's icon in the address field,
-  the (i) button shows its details (permissions, options, Remove), where **Show in Address Field**
-  does the same as the pin. Extensions without a popup open their options page (else their details).
-
-Pinned is the default for every new extension. A narrow address field shows fewer icons: they
-collapse first (before the other buttons of the field) into the extensions popover, which always
-lists every extension. **On Matching Pages** shows a pinned icon only on pages the extension's site
-access covers (an extension that asks for no sites is always shown): Chromium does not tell Axion
-whether an extension is "active" on a page (a badge, an enabled state), so site access is the stand-in.
+Pressing the extensions button while a popup is open opens the list **above** the popup: the card
+glides below the list (or beside it when the window has no room below) and both stay usable. Esc
+closes the list first, a click outside closes both.
 
 An extension runs only after Axion was started with it, so an extension you just installed or
-switched on shows no icon and a click says "Relaunch Axion to use this extension."
+switched on shows "Relaunch Axion to use this extension." when you click it.
 
 ## Userscript managers (Tampermonkey, Violentmonkey)
 
@@ -126,8 +122,8 @@ from a tab that shows the store, and never installs without its own dialog.
 
 Test aids: `AXION_INSTALL_EXTENSION=<folder or .crx>` installs one before the engine starts;
 `AXION_AUTO_CONFIRM_STORE_INSTALL=1` answers the install window with yes (automated runs cannot
-click it); `--open=extensions-popover` and `--open=extensions-details` capture the popover; `--open=extension-popup` (with `--lead`) clicks
-the first extension's icon, `ext-click:XxY` and `ext-type:TEXT` steps (separate steps with commas)
+click it); `--open=extensions-popover` and `--open=extensions-details` capture the popover; `--open=extension-popup` (with `--lead`) opens
+the first extension's popup, `ext-click:XxY` and `ext-type:TEXT` steps (separate steps with commas)
 click and type into the open popup.
 
 ## Limits
@@ -149,7 +145,7 @@ click and type into the open popup.
   `activeTab` do what they do for a popup page in a tab. "Open Popup in a Tab" (in the details)
   still opens it as a tab.
 - **No badge text** (`chrome.action.setBadgeText`), no action title or icon changes drawn on the
-  address field's icon, no keyboard shortcut commands, no extension side panel, no
+  toolbar icon, no keyboard shortcut commands, no extension side panel, no
   context-menu items drawn by Axion's own menus. An extension whose button has no popup (it
   only reacts to `chrome.action.onClicked`) cannot be clicked: Chromium has no call to deliver that
   click, so Axion opens its options page or details instead.

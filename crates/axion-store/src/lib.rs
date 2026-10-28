@@ -113,8 +113,10 @@ const MIGRATIONS: &[&str] = &[
         color TEXT NOT NULL DEFAULT 'blue',
         collapsed INTEGER NOT NULL DEFAULT 0
     );",
-    // 15: whether an extension's icon sits in the address field (pinned)
+    // 15: whether an extension's icon sits in the address field (pinned); the feature is gone
     "ALTER TABLE extensions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 1;",
+    // 16: … and so is the column
+    "ALTER TABLE extensions DROP COLUMN pinned;",
 ];
 
 /// An installed Chrome extension (its manifest is read from `dir`).
@@ -129,8 +131,6 @@ pub struct ExtensionRow {
     pub source: String,
     /// Unix seconds.
     pub installed: i64,
-    /// The extension's icon is shown in the address field (`extensions.show_in_address_bar`).
-    pub pinned: bool,
 }
 
 /// A remembered permission decision of a site.
@@ -1084,9 +1084,9 @@ impl Store {
 
     /// Installed extensions, oldest first.
     pub fn extensions(&self) -> Result<Vec<ExtensionRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, dir, enabled, source, installed, pinned FROM extensions ORDER BY installed, id",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, dir, enabled, source, installed FROM extensions ORDER BY installed, id")?;
         let rows = stmt.query_map([], |r| {
             Ok(ExtensionRow {
                 id: r.get(0)?,
@@ -1094,31 +1094,23 @@ impl Store {
                 enabled: r.get::<_, i64>(2)? != 0,
                 source: r.get(3)?,
                 installed: r.get(4)?,
-                pinned: r.get::<_, i64>(5)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Adds an extension, or replaces the one with the same id (keeping it switched on or off,
-    /// and pinned or not).
+    /// Adds an extension, or replaces the one with the same id (keeping it switched on or off).
     pub fn upsert_extension(&self, row: &ExtensionRow) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO extensions (id, dir, enabled, source, installed, pinned) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO extensions (id, dir, enabled, source, installed) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(id) DO UPDATE SET dir = excluded.dir, source = excluded.source, installed = excluded.installed",
-            params![row.id, row.dir, row.enabled as i64, row.source, row.installed, row.pinned as i64],
+            params![row.id, row.dir, row.enabled as i64, row.source, row.installed],
         )?;
         Ok(())
     }
 
     pub fn set_extension_enabled(&self, id: &str, enabled: bool) -> Result<()> {
         self.conn.execute("UPDATE extensions SET enabled = ?2 WHERE id = ?1", params![id, enabled as i64])?;
-        Ok(())
-    }
-
-    /// Pins an extension's icon to the address field, or takes it off.
-    pub fn set_extension_pinned(&self, id: &str, pinned: bool) -> Result<()> {
-        self.conn.execute("UPDATE extensions SET pinned = ?2 WHERE id = ?1", params![id, pinned as i64])?;
         Ok(())
     }
 
@@ -1508,12 +1500,10 @@ mod tests {
             enabled: true,
             source: "/src".into(),
             installed,
-            pinned: true,
         };
         s.upsert_extension(&row("b", 2)).unwrap();
         s.upsert_extension(&row("a", 1)).unwrap();
         s.set_extension_enabled("a", false).unwrap();
-        s.set_extension_pinned("a", false).unwrap();
         // Installing the same id again replaces the folder but keeps the switch.
         let mut again = row("a", 3);
         again.dir = "/new".into();
@@ -1521,7 +1511,6 @@ mod tests {
         let all = s.extensions().unwrap();
         assert_eq!(all.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
         assert!(!all[1].enabled);
-        assert!(!all[1].pinned && all[0].pinned, "a reinstall keeps the pin");
         assert_eq!(all[1].dir, "/new");
         s.remove_extension("b").unwrap();
         assert_eq!(s.extensions().unwrap().len(), 1);

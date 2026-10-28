@@ -81,8 +81,6 @@ pub struct ExtensionView {
     pub broken: bool,
     /// Installed from the Chrome Web Store (so it is updated from there).
     pub store: bool,
-    /// Its icon sits in the address field (if `extensions.show_in_address_bar` allows).
-    pub pinned: bool,
     /// Chromium was started with it: its pages work (a change needs a restart).
     pub running: bool,
 }
@@ -91,24 +89,6 @@ impl ExtensionView {
     /// Whether its popup can be opened now.
     pub fn has_popup(&self) -> bool {
         self.popup.is_some() && self.enabled && self.running && !self.broken
-    }
-
-    /// Whether its icon belongs in the address field on the page `url`, for `mode`.
-    pub fn shows_icon(&self, mode: axion_config::ExtensionIcons, url: &str) -> bool {
-        use axion_config::ExtensionIcons;
-        if !self.has_popup() || !self.pinned {
-            return false;
-        }
-        match mode {
-            ExtensionIcons::None => false,
-            ExtensionIcons::Pinned => true,
-            // Only where the extension has access: its site access matches the page. An
-            // extension that asks for no sites has nothing to match, so it is always there.
-            ExtensionIcons::Active => {
-                self.permissions.hosts.is_empty()
-                    || self.permissions.hosts.iter().any(|h| axion_extensions::host_matches(h, url))
-            }
-        }
     }
 }
 
@@ -449,15 +429,6 @@ impl Extensions {
         self.refresh(Some(store));
     }
 
-    /// Pins an extension's icon to the address field, or takes it off.
-    pub fn set_pinned(&mut self, id: &str, pinned: bool, store: Option<&Store>) {
-        let Some(store) = store else { return };
-        if let Err(e) = store.set_extension_pinned(id, pinned) {
-            tracing::warn!("pinning the extension failed: {e}");
-        }
-        self.refresh(Some(store));
-    }
-
     /// Removes an extension and its files (it stops after the next start).
     pub fn remove(&mut self, id: &str, store: Option<&Store>) {
         let Some(store) = store else { return };
@@ -559,7 +530,6 @@ fn view_of(row: &ExtensionRow) -> ExtensionView {
     let mut view = view_from(&row.id, dir, row.enabled, manifest.ok().as_ref());
     view.broken = broken;
     view.store = row.source.starts_with(STORE_SOURCE);
-    view.pinned = row.pinned;
     view
 }
 
@@ -577,7 +547,6 @@ fn view_from(id: &str, dir: PathBuf, enabled: bool, manifest: Option<&Manifest>)
         dir,
         broken: false,
         store: false,
-        pinned: true,
         running: false,
     }
 }
@@ -694,7 +663,6 @@ fn record(
             enabled,
             source,
             installed: crate::browser::unix_now(),
-            pinned: true,
         })
         .map_err(|e| e.to_string())?;
     tracing::info!(id = %installed.id, name = %installed.manifest.name, "extension installed");
@@ -852,33 +820,6 @@ mod tests {
     }
 
     #[test]
-    fn icons_in_the_address_field_follow_pin_mode_and_page() {
-        use axion_config::ExtensionIcons;
-        let mut view = view_from("abc", PathBuf::from("/x"), true, None);
-        view.popup = Some("popup.html".into());
-        view.running = true;
-        view.permissions.hosts = vec!["https://*.example.com/*".into()];
-        let page = "https://www.example.com/a";
-        assert!(view.shows_icon(ExtensionIcons::Pinned, "axion://home/"));
-        assert!(view.shows_icon(ExtensionIcons::Active, page));
-        assert!(!view.shows_icon(ExtensionIcons::Active, "https://other.org/"));
-        assert!(!view.shows_icon(ExtensionIcons::None, page));
-        // Not pinned, switched off, not started yet, or without a popup: never.
-        let mut off = view.clone();
-        off.pinned = false;
-        assert!(!off.shows_icon(ExtensionIcons::Pinned, page));
-        off = view.clone();
-        off.running = false;
-        assert!(!off.shows_icon(ExtensionIcons::Pinned, page));
-        off = view.clone();
-        off.popup = None;
-        assert!(!off.shows_icon(ExtensionIcons::Pinned, page));
-        // No site access asked for: nothing to match, so it stays.
-        view.permissions.hosts.clear();
-        assert!(view.shows_icon(ExtensionIcons::Active, "https://other.org/"));
-    }
-
-    #[test]
     fn a_missing_folder_is_broken_not_fatal() {
         let profile = tempfile::tempdir().unwrap();
         let store = Store::open(&profile.path().join("axion.sqlite")).unwrap();
@@ -889,7 +830,6 @@ mod tests {
                 enabled: true,
                 source: String::new(),
                 installed: 1,
-                pinned: true,
             })
             .unwrap();
         let ext = Extensions::new(profile.path(), Some(&store), &ExtensionsConfig::default());

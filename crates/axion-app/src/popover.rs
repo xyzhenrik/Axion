@@ -50,9 +50,23 @@ pub struct Popover {
     detach: bool,
     /// Where it opens to (logical px).
     target: Frame,
+    /// Never joined to its anchor's glass: no bridge, a card of its own from the start.
+    unjoined: bool,
 }
 
 impl Popover {
+    /// Stays a card of its own: it flows out of its anchor but is never merged with the anchor's
+    /// glass by a bridge.
+    pub fn unjoined(mut self) -> Self {
+        self.unjoined = true;
+        self
+    }
+
+    /// Where it opens to (logical px).
+    pub fn target(&self) -> Frame {
+        self.target
+    }
+
     /// Floats free of its anchor once open (joined only while it flows out and back in).
     pub fn detached(mut self) -> Self {
         self.detach = true;
@@ -93,6 +107,7 @@ impl Popover {
             covered: Vec::new(),
             detach: false,
             target: Frame::default(),
+            unjoined: false,
         }
     }
 
@@ -203,7 +218,7 @@ impl Popover {
         // Flat mode fades the card in and out instead (1 otherwise: nothing changes).
         ui.set_opacity(self.root, self.drip.fade());
         // Flat mode has no bridges: the card is just a card.
-        let mut bridge = self.join.filter(|_| !ui.theme().flat()).and_then(|(join, r)| {
+        let mut bridge = self.join.filter(|_| !ui.theme().flat() && !self.unjoined).and_then(|(join, r)| {
             bridge_frame_reaching(join, r, frame, self.radius, self.bridge_depth, self.bridge_into_join)
         });
         if self.detach {
