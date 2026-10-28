@@ -33,6 +33,7 @@ pub struct Config {
     pub clipboard: Clipboard,
     pub toast: Toast,
     pub sidebar: Sidebar,
+    pub window: WindowBehavior,
     pub ui: Ui,
     pub updates: Updates,
     pub extensions: Extensions,
@@ -970,6 +971,9 @@ pub struct Data {
     pub clear_cache: bool,
     pub clear_downloads: bool,
     pub clear_range: ClearRange,
+    /// How long (milliseconds) the window waits for the history database when another part of
+    /// Axion (an import) holds it, before the entry is skipped. The window freezes meanwhile.
+    pub db_busy_timeout_ms: u32,
 }
 
 impl Default for Data {
@@ -981,6 +985,7 @@ impl Default for Data {
             clear_cache: true,
             clear_downloads: true,
             clear_range: ClearRange::AllTime,
+            db_busy_timeout_ms: 500,
         }
     }
 }
@@ -1085,6 +1090,42 @@ pub struct DevTools {
 impl Default for DevTools {
     fn default() -> Self {
         Self { enabled: true }
+    }
+}
+
+/// Remembering the window and the panels between runs, and how quitting behaves. The remembered
+/// values themselves (position, size, which panels are open) live in the profile's
+/// `window.toml`, not here: they change all the time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WindowBehavior {
+    /// Reopen the window where and how big it was (maximized, fullscreen and monitor included).
+    pub restore_geometry: bool,
+    /// Reopen the sidebar and its sections as they were.
+    pub restore_panels: bool,
+    /// The window's state is written this many milliseconds after it last changed.
+    pub save_delay_ms: u32,
+    /// A remembered position is used only while at least this much of the window (logical px
+    /// each way) is still on a connected monitor; else the window opens on the default monitor.
+    pub min_visible_px: u32,
+    /// Quitting waits this long (milliseconds) for Chromium to shut down; then the process
+    /// ends at once (everything of ours is saved before that). 0 never forces the exit.
+    pub shutdown_timeout_ms: u32,
+    /// How long (milliseconds) quitting waits for the pages to close before it stops
+    /// waiting for them.
+    pub close_pages_timeout_ms: u32,
+}
+
+impl Default for WindowBehavior {
+    fn default() -> Self {
+        Self {
+            restore_geometry: true,
+            restore_panels: true,
+            save_delay_ms: 800,
+            min_visible_px: 120,
+            shutdown_timeout_ms: 6000,
+            close_pages_timeout_ms: 2500,
+        }
     }
 }
 

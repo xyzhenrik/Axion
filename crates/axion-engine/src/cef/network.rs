@@ -307,6 +307,33 @@ wrap_request_handler! {
     }
 
     impl RequestHandler {
+        fn on_render_process_terminated(
+            &self,
+            browser: Option<&mut Browser>,
+            status: TerminationStatus,
+            error_code: ::std::os::raw::c_int,
+            error_string: Option<&CefString>,
+        ) {
+            let detail = error_string.map(ToString::to_string).unwrap_or_default();
+            let reason = format!("{:?}, code {error_code} {detail}", status.as_ref());
+            tracing::error!(view = ?self.view, %reason, "the page's renderer process ended");
+            self.net.emit(browser.map(|b| &*b), EngineEvent::RendererGone { view: self.view, reason });
+        }
+
+        fn on_render_process_unresponsive(
+            &self,
+            _browser: Option<&mut Browser>,
+            _callback: Option<&mut UnresponsiveProcessCallback>,
+        ) -> ::std::os::raw::c_int {
+            // Chromium waits for it to recover (the tab can be closed meanwhile); we only log.
+            tracing::warn!(view = ?self.view, "the page's renderer process does not respond");
+            0
+        }
+
+        fn on_render_process_responsive(&self, _browser: Option<&mut Browser>) {
+            tracing::info!(view = ?self.view, "the page's renderer process responds again");
+        }
+
         fn on_before_browse(
             &self,
             browser: Option<&mut Browser>,

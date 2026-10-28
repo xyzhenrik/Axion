@@ -182,6 +182,8 @@ const EDGE_SAMPLE_INSET: f32 = 20.0;
 const OPEN_STEP_INTERVAL: Duration = Duration::from_millis(2500);
 const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 /// How many of the saved session's tabs are pinned (they come first), in the profile's meta.
+/// A page whose renderer ends is reloaded at most this often.
+const RENDERER_RELOAD_GAP: Duration = Duration::from_secs(10);
 const SESSION_PINNED_KEY: &str = "session_pinned_tabs";
 /// History rows shown in the sidebar panel.
 const PANEL_HISTORY_LIMIT: usize = 300;
@@ -234,6 +236,8 @@ pub struct Options {
     pub bench_resize: bool,
     /// Wakes the event loop when the engine has work.
     pub waker: Option<axion_engine::cef::Waker>,
+    /// Test aid (`--quit-after=SECS`): closes the window like the user would, after this long.
+    pub quit_after: Option<Duration>,
 }
 
 pub struct Browser {
@@ -384,6 +388,16 @@ pub struct Browser {
     config: Config,
     keymap: Keymap,
     paths: ConfigPaths,
+    /// The account's profile directory (`window.toml` lives in it).
+    profile_dir: PathBuf,
+    /// What `window.toml` holds (or will hold once `window_state_dirty` is due).
+    window_state: axion_config::WindowState,
+    window_state_dirty: Option<Instant>,
+    /// Tells the shutdown watchdog that our own data is saved (see `shutdown`).
+    shutdown_guard: Option<crate::shutdown::Guard>,
+    quit_at: Option<Instant>,
+    /// When each view's page was last reloaded after its renderer ended.
+    renderer_reloads: std::collections::HashMap<ViewId, Instant>,
     watcher: Option<ConfigWatcher>,
     dark: bool,
     /// The desktop's light/dark preference (for `theme = "auto"`) and the last value seen.
@@ -519,16 +533,28 @@ impl Browser {
         // Wayland shows the icon of `axion.desktop` (matched by the app id below): make sure a
         // current one exists before the window does (not for capture runs: they are test runs).
         crate::desktop_integration::ensure(config.general.desktop_integration && options.capture.is_none());
-        let attributes = Window::default_attributes()
+        // Where the window was last time (not for runs that name a size or place, nor captures).
+        let saved_window = axion_config::WindowState::load(&account_paths.profile);
+        let restore = config.window.restore_geometry
+            && options.capture.is_none()
+            && options.size.is_none()
+            && options.position.is_none()
+            && !options.maximized;
+        let placement =
+            if restore { restored_placement(event_loop, &saved_window, &config.window) } else { None };
+        let size = options.size.or(placement.as_ref().map(|p| p.size)).unwrap_or(DEFAULT_WINDOW_SIZE);
+        tracing::info!(?size, restored = ?placement.as_ref().map(|p| p.position), maximized = saved_window.maximized, "opening the window");
+        let mut attributes = Window::default_attributes()
             .with_title("Axion")
             .with_window_icon(crate::app_icon::window_icon())
-            .with_inner_size(winit::dpi::LogicalSize::<f64>::from(
-                options.size.unwrap_or(DEFAULT_WINDOW_SIZE),
-            ))
+            .with_inner_size(winit::dpi::LogicalSize::<f64>::from(size))
             .with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 360.0))
-            .with_maximized(options.maximized)
+            .with_maximized(options.maximized || (restore && saved_window.maximized))
             // Test runs (`--capture`, `AXION_NO_FOCUS=1`) must not steal the focus from the user.
             .with_active(options.capture.is_none() && std::env::var_os("AXION_NO_FOCUS").is_none());
+        if let Some((x, y)) = placement.as_ref().and_then(|p| p.position) {
+            attributes = attributes.with_position(winit::dpi::PhysicalPosition::new(x, y));
+        }
         // Wayland app id / X11 class: matches `axion.desktop`, so the shell shows our icon.
         #[cfg(target_os = "linux")]
         let attributes = {
@@ -539,6 +565,7 @@ impl Browser {
 
         match options.position {
             Some((x, y)) => window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y)),
+            None if placement.as_ref().is_some_and(|p| p.position.is_some()) => {}
             None => place_on_monitor(event_loop, &window),
         }
         let hardware_env = crate::hardware::Overrides::from_env();
@@ -608,6 +635,12 @@ impl Browser {
         let store = axion_store::Store::open(&profile.join("axion.sqlite"))
             .inspect_err(|e| tracing::error!("history unavailable: {e}"))
             .ok();
+        if let Some(store) = &store
+            && let Err(e) =
+                store.set_busy_timeout(Duration::from_millis(u64::from(config.data.db_busy_timeout_ms)))
+        {
+            tracing::warn!("setting the database timeout failed: {e}");
+        }
         let store_path = store.as_ref().map(|_| profile.join("axion.sqlite"));
         PrivateLock::drop_old_password(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
@@ -657,7 +690,10 @@ impl Browser {
         let queue = queue.clone();
         // Under the chrome, so menus and popovers cover the video controls.
         let player = PlayerOverlay::build(&mut ui);
-        let chrome = Chrome::build(&mut ui, &config);
+        let mut chrome = Chrome::build(&mut ui, &config);
+        if config.window.restore_panels && options.capture.is_none() {
+            chrome.restore_panels(&mut ui, &saved_window);
+        }
         let suggestions = SuggestionList::build(&mut ui, chrome.bar_node());
         let menu = Menu::build(&mut ui, chrome.bar_node(), PAGE_MENU_BASE, Placement::Below);
         // In the sidebar's plane, rising from the account button at its bottom.
@@ -842,6 +878,12 @@ impl Browser {
             config,
             keymap,
             paths,
+            profile_dir: profile.clone(),
+            window_state: saved_window.clone(),
+            window_state_dirty: None,
+            shutdown_guard: None,
+            quit_at: options.quit_after.map(|d| Instant::now() + d),
+            renderer_reloads: std::collections::HashMap::new(),
             watcher,
             dark,
             desktop_theme,
@@ -920,6 +962,9 @@ impl Browser {
         browser.start_onboarding(&options, accounts_file, config_file);
         browser.playlist_start();
         browser.engine.set_color_scheme(browser.dark);
+        if restore && saved_window.fullscreen {
+            browser.set_presentation(true);
+        }
         let mut urls = options.urls;
         if urls.is_empty() && browser.config.tabs.restore_session && browser.restore_session() {
             return Ok(browser);
@@ -1553,7 +1598,15 @@ impl Browser {
 
     /// Whether the window should close (an account switch is under way).
     pub fn wants_exit(&self) -> bool {
-        self.relaunch.is_some()
+        self.relaunch.is_some() || self.quit_at.is_some_and(|t| Instant::now() >= t)
+    }
+
+    pub fn shutdown_limit(&self) -> Duration {
+        Duration::from_millis(u64::from(self.config.window.shutdown_timeout_ms))
+    }
+
+    pub fn set_shutdown_guard(&mut self, guard: crate::shutdown::Guard) {
+        self.shutdown_guard = Some(guard);
     }
 
     /// The relaunch to start once this browser is dropped (Chromium shut down).
@@ -2301,6 +2354,26 @@ impl Browser {
     }
 
     // ---- lifecycle ----
+
+    /// The page's renderer died: the tab would stay blank for good. Load the page again, but
+    /// not more than once per `RENDERER_RELOAD_GAP` per view (a page that crashes at once
+    /// would otherwise loop).
+    fn renderer_gone(&mut self, view: ViewId, reason: &str) {
+        let now = Instant::now();
+        let again =
+            self.renderer_reloads.get(&view).is_none_or(|t| now.duration_since(*t) >= RENDERER_RELOAD_GAP);
+        if again {
+            tracing::warn!(?view, reason, "reloading the page after its renderer ended");
+            self.renderer_reloads.insert(view, now);
+            self.engine.reload(view, false);
+        } else {
+            tracing::warn!(
+                ?view,
+                reason,
+                "the renderer ended again right after a reload; leaving the tab as it is"
+            );
+        }
+    }
 
     /// The tab was just hidden: its background time starts now.
     fn mark_hidden(&mut self, view: ViewId) {
@@ -4061,6 +4134,7 @@ impl Browser {
                     }
                 }
                 EngineEvent::PageMessage { view, message } => self.page_message(view, &message),
+                EngineEvent::RendererGone { view, reason } => self.renderer_gone(view, &reason),
                 EngineEvent::RequestBlocked { view, url } | EngineEvent::NavigationBlocked { view, url } => {
                     self.count_blocked(view, url);
                 }
@@ -4116,6 +4190,7 @@ impl Browser {
         let outcome = self.passwords.tick(&mut self.ui, &self.config, &mut self.clipboard);
         self.passwords_outcome(outcome);
         self.reload_config_if_changed();
+        self.track_window_state(false);
         self.apply_lifecycle();
         // An unlock lasts for the session; only Lock locks again.
         self.sync_account_lock();
@@ -4657,6 +4732,53 @@ impl Browser {
     fn refresh_settings(&mut self) {
         if self.settings.is_open() {
             self.settings.show(&mut self.ui, &self.config, &self.keymap);
+        }
+    }
+
+    /// Notices changes of the window (place, size, maximized, F11) and the sidebar panels and
+    /// writes `window.toml` a moment after the last one (`force`: now, when quitting).
+    fn track_window_state(&mut self, force: bool) {
+        let behavior = &self.config.window;
+        if self.capture.is_some() || !(behavior.restore_geometry || behavior.restore_panels) {
+            return;
+        }
+        let mut now = self.window_state.clone();
+        if self.window.is_minimized() != Some(true) {
+            let presentation = self.chrome.presentation();
+            let fullscreen = self.window.fullscreen().is_some();
+            now.fullscreen = presentation;
+            // A maximized or fullscreen window keeps the restored size and place.
+            if !fullscreen && !self.window.is_maximized() {
+                let size = self.window.inner_size().to_logical::<f64>(self.window.scale_factor());
+                if size.width >= 1.0 && size.height >= 1.0 {
+                    (now.width, now.height) = (size.width.round(), size.height.round());
+                }
+                if let Ok(p) = self.window.outer_position() {
+                    (now.x, now.y) = (Some(p.x), Some(p.y));
+                }
+            }
+            now.maximized = self.window.is_maximized() && !fullscreen;
+            if !fullscreen {
+                now.monitor = self.window.current_monitor().and_then(|m| m.name());
+            }
+        }
+        let (sidebar, tabs, saved, private) = self.chrome.panel_state();
+        now.sidebar_open = Some(sidebar);
+        now.tabs_section_open = Some(tabs);
+        now.saved_section_open = Some(saved);
+        now.private_section_open = Some(private);
+        if now != self.window_state {
+            self.window_state = now;
+            self.window_state_dirty.get_or_insert_with(Instant::now);
+        }
+        let due = self.window_state_dirty.is_some_and(|t| {
+            force || t.elapsed() >= Duration::from_millis(u64::from(behavior.save_delay_ms))
+        });
+        if due {
+            self.window_state_dirty = None;
+            if let Err(e) = self.window_state.save(&self.profile_dir) {
+                tracing::warn!("saving the window state failed: {e}");
+            }
         }
     }
 
@@ -7122,6 +7244,10 @@ enum Panel {
 /// Signals that `--capture` finished (not an error for the user).
 impl Drop for Browser {
     fn drop(&mut self) {
+        let started = Instant::now();
+        // The window goes at once; the rest of the shutdown happens unseen.
+        self.window.set_visible(false);
+        self.track_window_state(true);
         self.playlist_flush_all();
         if self.config_dirty_since.take().is_some()
             && let Err(e) = axion_config::save_config(&self.paths, &self.config)
@@ -7130,7 +7256,19 @@ impl Drop for Browser {
         }
         self.shields.save(self.store.as_ref());
         self.save_session_if_due(true);
+        let saved = started.elapsed();
         Downloads::on_quit(self.store.as_ref(), &self.config, &mut self.engine);
+        if let Some(guard) = &self.shutdown_guard {
+            guard.flushed();
+        }
+        // The engine (fields drop after this) closes the pages and Chromium; it is bounded.
+        self.engine
+            .set_close_timeout(Duration::from_millis(u64::from(self.config.window.close_pages_timeout_ms)));
+        tracing::info!(
+            saved_ms = saved.as_millis() as u64,
+            total_ms = started.elapsed().as_millis() as u64,
+            "browser data saved; closing Chromium"
+        );
     }
 }
 
@@ -7144,6 +7282,69 @@ impl std::fmt::Display for CaptureDone {
 }
 
 impl std::error::Error for CaptureDone {}
+
+/// Where a remembered window opens: its logical inner size and, where the platform lets
+/// applications place windows, its outer position.
+struct WindowPlacement {
+    size: (f64, f64),
+    position: Option<(i32, i32)>,
+}
+
+/// The remembered window clamped to what is connected now: a size larger than every monitor is
+/// cut down, a position that shows too little of the window on any monitor is dropped (the
+/// window then opens where the platform or `AXION_MONITOR` puts it). `None`: nothing remembered.
+fn restored_placement(
+    event_loop: &ActiveEventLoop,
+    saved: &axion_config::WindowState,
+    behavior: &axion_config::WindowBehavior,
+) -> Option<WindowPlacement> {
+    if !saved.has_size() {
+        return None;
+    }
+    let monitors: Vec<_> = event_loop.available_monitors().collect();
+    let rects: Vec<axion_config::MonitorRect> = monitors
+        .iter()
+        .map(|m| axion_config::MonitorRect {
+            x: m.position().x,
+            y: m.position().y,
+            width: m.size().width,
+            height: m.size().height,
+        })
+        .collect();
+    // Largest monitor in logical pixels bounds the size.
+    let (max_w, max_h) = monitors.iter().fold((0.0_f64, 0.0_f64), |(w, h), m| {
+        let scale = m.scale_factor().max(0.1);
+        (w.max(f64::from(m.size().width) / scale), h.max(f64::from(m.size().height) / scale))
+    });
+    let mut size = (saved.width, saved.height);
+    if max_w > 0.0 && max_h > 0.0 {
+        size = (size.0.min(max_w), size.1.min(max_h));
+    }
+    size = (size.0.max(480.0), size.1.max(360.0));
+    let position = saved.x.zip(saved.y).filter(|&(x, y)| {
+        let scale = monitors
+            .iter()
+            .find(|m| {
+                let (p, s) = (m.position(), m.size());
+                x >= p.x && y >= p.y && x < p.x + s.width as i32 && y < p.y + s.height as i32
+            })
+            .or(monitors.first())
+            .map_or(1.0, |m| m.scale_factor());
+        let visible = axion_config::is_visible(
+            x,
+            y,
+            (size.0 * scale) as u32,
+            (size.1 * scale) as u32,
+            (f64::from(behavior.min_visible_px) * scale) as u32,
+            &rects,
+        );
+        if !visible {
+            tracing::info!(x, y, monitor = ?saved.monitor, "remembered window position is off every monitor; opening at the default place");
+        }
+        visible
+    });
+    Some(WindowPlacement { size, position })
+}
 
 /// Moves the window onto the monitor named by `AXION_MONITOR` (a substring of its name, e.g.
 /// "HDMI-A-1"). Only X11 lets applications place windows; on Wayland the compositor decides.

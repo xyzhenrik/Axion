@@ -1666,6 +1666,27 @@ impl Chrome {
         if self.docked { self.docked_open } else { self.overlay_open }
     }
 
+    /// The panels worth remembering: the docked sidebar and its sections (tabs, saved, private).
+    pub fn panel_state(&self) -> (bool, bool, bool, bool) {
+        (self.docked_open, self.tabs_section_open, self.saved_section_open, self.private_section_open)
+    }
+
+    /// Restores [`Self::panel_state`] (before the first frame: no slide, sections folded as saved).
+    pub fn restore_panels(&mut self, ui: &mut Ui, saved: &axion_config::WindowState) {
+        if let Some(open) = saved.sidebar_open {
+            self.docked_open = open;
+        }
+        for (wanted, section, now) in [
+            (saved.tabs_section_open, Section::Tabs, self.tabs_section_open),
+            (saved.saved_section_open, Section::Saved, self.saved_section_open),
+            (saved.private_section_open, Section::Private, self.private_section_open),
+        ] {
+            if wanted.is_some_and(|w| w != now) {
+                self.toggle_section(ui, section);
+            }
+        }
+    }
+
     pub fn toggle_sidebar(&mut self) {
         if self.docked {
             self.docked_open = !self.docked_open;
