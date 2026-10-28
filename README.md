@@ -331,7 +331,7 @@ Pages keep `Ctrl+W` and `Ctrl+T`. All of these can be remapped in Settings or `k
 | Toggle sidebar | `Ctrl+Shift+L` |
 | Bookmark page / bookmarks / history | `Ctrl+D` / `Ctrl+B` / `Ctrl+H` |
 | Playlist: open / add video | `Ctrl+Shift+P` / `Ctrl+Shift+D` |
-| Passwords | `Ctrl+P` |
+| Passwords | `Ctrl+Alt+P` |
 | Lock private tabs and password filling | `Ctrl+L` |
 | Find / next / previous | `Ctrl+F` / `Ctrl+G`, `F3` / `Ctrl+Shift+G`, `Shift+F3` |
 | Zoom in / out / reset | `Ctrl++` / `Ctrl+-` / `Ctrl+0` |

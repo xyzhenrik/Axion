@@ -80,6 +80,10 @@ pub enum Action {
     DevToolsConsole,
     /// The page's source in a new tab (`view-source:`).
     ViewSource,
+    /// Print / save the page as PDF.
+    Print,
+    /// The screenshot tool.
+    Screenshot,
     Quit,
     // Media keys: only while a video plays fullscreen with Axion's controls, so plain keys
     // like Space keep reaching the page otherwise.
@@ -159,6 +163,8 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::DevTools, "devtools"),
     (Action::DevToolsConsole, "devtools_console"),
     (Action::ViewSource, "view_source"),
+    (Action::Print, "print"),
+    (Action::Screenshot, "screenshot"),
     (Action::Quit, "quit"),
     (Action::MediaPlayPause, "media_play_pause"),
     (Action::MediaSeekBack, "media_seek_back"),
@@ -423,7 +429,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::OpenPlaylist, &["Ctrl+Shift+P"]);
     bind(Action::PlaylistAdd, &["Ctrl+Shift+D"]);
     bind(Action::ToggleReader, &["Ctrl+Alt+R"]);
-    bind(Action::OpenPasswords, &["Ctrl+P"]);
+    bind(Action::OpenPasswords, &["Ctrl+Alt+P"]);
     bind(Action::Lock, &["Ctrl+L"]);
     bind(Action::Find, &["Ctrl+F"]);
     bind(Action::FindNext, &["Ctrl+G", "F3"]);
@@ -438,6 +444,8 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::DevTools, &["F12", "Ctrl+Shift+I"]);
     bind(Action::DevToolsConsole, &["Ctrl+Shift+J"]);
     bind(Action::ViewSource, &["Ctrl+U"]);
+    bind(Action::Print, &["Ctrl+P"]);
+    bind(Action::Screenshot, &["Ctrl+Shift+S"]);
     bind(Action::Quit, &["Ctrl+Q"]);
     bind(Action::MediaPlayPause, &["Space", "K"]);
     bind(Action::MediaSeekBack, &["Left", "J"]);
@@ -506,7 +514,8 @@ mod tests {
         assert_eq!(keymap.action_for(&chord("Alt+3")), Some(Action::SelectTab(3)));
         assert_eq!(keymap.action_for(&chord("Alt+T")), Some(Action::NewTab));
         assert_eq!(keymap.action_for(&chord("Alt+Q")), Some(Action::CloseTab));
-        assert_eq!(keymap.action_for(&chord("Ctrl+P")), Some(Action::OpenPasswords));
+        assert_eq!(keymap.action_for(&chord("Ctrl+P")), Some(Action::Print));
+        assert_eq!(keymap.action_for(&chord("Ctrl+Alt+P")), Some(Action::OpenPasswords));
         assert_eq!(keymap.action_for(&chord("Ctrl+F")), Some(Action::Find));
         assert_eq!(keymap.action_for(&chord("Alt+Left")), Some(Action::Back));
         for (keys, action) in [

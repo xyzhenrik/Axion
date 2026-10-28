@@ -4120,6 +4120,8 @@ fn shortcut_actions() -> Vec<KeyAction> {
         ZoomIn,
         ZoomOut,
         ZoomReset,
+        Print,
+        Screenshot,
         BookmarkPage,
         ShowBookmarks,
         ShowHistory,
@@ -4156,7 +4158,8 @@ pub(crate) fn shortcut_group(action: KeyAction) -> &'static str {
         NewTab | CloseTab | ReopenClosedTab | SearchTabs | NextTab | PreviousTab | PinTab | TabOverview
         | SelectTab(_) | SelectLastTab => tr("Tabs"),
         FocusAddressBar | Back | Forward | Reload | HardReload => tr("Navigation"),
-        Find | FindNext | FindPrevious | ZoomIn | ZoomOut | ZoomReset | Paste | PastePlainText => tr("Page"),
+        Find | FindNext | FindPrevious | ZoomIn | ZoomOut | ZoomReset | Paste | PastePlainText | Print
+        | Screenshot => tr("Page"),
         BookmarkPage | ShowBookmarks | ShowHistory | OpenPlaylist | PlaylistAdd | OpenPasswords
         | ToggleSidebar => tr("Panels"),
         Lock => tr("Privacy"),
@@ -4215,6 +4218,8 @@ fn shortcut_source_name(action: KeyAction) -> &'static str {
         DevTools => tr_mark("Developer tools"),
         DevToolsConsole => tr_mark("Developer console"),
         ViewSource => tr_mark("View source"),
+        Print => tr_mark("Print or save as PDF"),
+        Screenshot => tr_mark("Screenshot"),
         MediaPlayPause => tr_mark("Media play pause"),
         MediaSeekBack => tr_mark("Media seek back"),
         MediaSeekForward => tr_mark("Media seek forward"),

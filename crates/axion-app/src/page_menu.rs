@@ -48,6 +48,8 @@ pub enum PageCommand {
     Forward,
     Reload,
     SavePage,
+    Print,
+    Screenshot,
     ViewSource,
     /// Open the developer tools with the clicked element selected.
     Inspect,
@@ -304,6 +306,8 @@ pub fn items(params: &ContextMenuParams, info: &PageMenuInfo, keymap: &Keymap) -
         ]);
         groups.push(vec![
             row(Icon::Download, tr("Save Page As…"), PageCommand::SavePage).enabled(is_downloadable(page)),
+            keyed(Icon::File, tr("Print…"), PageCommand::Print, Action::Print),
+            keyed(Icon::Screen, tr("Screenshot…"), PageCommand::Screenshot, Action::Screenshot),
             row(Icon::Eye, tr("View Page Source"), PageCommand::ViewSource)
                 .enabled(is_document(page) && !page.starts_with("view-source:")),
         ]);
@@ -416,14 +420,26 @@ mod tests {
         }
         let names = labels(&page(), &on);
         assert_eq!(names.last().map(String::as_str), Some("Inspect"));
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 9);
     }
 
     #[test]
     fn plain_page() {
         let rows = menu(&page(), &info());
         let names: Vec<_> = rows.iter().map(|(l, _)| l.as_str()).collect();
-        assert_eq!(names, ["Back", "Forward", "Reload", "Save Page As…", "View Page Source", "Select All"]);
+        assert_eq!(
+            names,
+            [
+                "Back",
+                "Forward",
+                "Reload",
+                "Save Page As…",
+                "Print…",
+                "Screenshot…",
+                "View Page Source",
+                "Select All"
+            ]
+        );
         assert!(enabled(&rows, "Back"));
         assert!(!enabled(&rows, "Forward"));
         assert!(enabled(&rows, "Reload"));

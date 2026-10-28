@@ -39,6 +39,8 @@ changes. The names in the last column are what you use in `keymap.toml` (see
 | Find on page | Ctrl+F | `find` |
 | Find next | Ctrl+G, F3 | `find_next` |
 | Find previous | Ctrl+Shift+G, Shift+F3 | `find_previous` |
+| Print or save as PDF | Ctrl+P | `print` |
+| Screenshot | Ctrl+Shift+S | `screenshot` |
 | Zoom in | Ctrl++, Ctrl+= | `zoom_in` |
 | Zoom out | Ctrl+- | `zoom_out` |
 | Reset zoom | Ctrl+0 | `zoom_reset` |
@@ -56,7 +58,7 @@ changes. The names in the last column are what you use in `keymap.toml` (see
 | Add the page's video to the Playlist | Ctrl+Shift+D | `playlist_add` |
 | Reader view on or off | Ctrl+Alt+R | `toggle_reader` |
 | Translate the page, or show the original | not bound | `translate_page` |
-| Open Passwords | Ctrl+P | `open_passwords` |
+| Open Passwords | Ctrl+Alt+P | `open_passwords` |
 | Show or hide the sidebar | Ctrl+Shift+L | `toggle_sidebar` |
 
 ## Privacy

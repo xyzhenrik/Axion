@@ -318,6 +318,27 @@ listed here.
 | **Open “safe” files after downloading** | Opens pictures, movies, sounds, PDF and text documents when they finish. | Off | `downloads.open_safe_files` |
 | **Remove download list items** | When finished downloads leave the list: **Manually**, **After One Day**, **When Axion Quits**. | Manually | `downloads.remove_list_items` (`manually`, `after_one_day`, `on_quit`) |
 
+### Print and screenshots
+
+Choices in the **Print or Save as PDF** dialog (Ctrl+P, or **Print or Save as PDF…** in the page menu) and in the
+screenshot tool (Ctrl+Shift+S, or **Screenshot…**). The dialog remembers its last choices; the rest are config
+file keys (see [Configuration](configuration.md)). Both save the way downloads do: with a file chooser when
+**Ask where to save each file** is on, else straight into their folder.
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| **Paper** (dialog) | A4, A3, A5, Letter or Legal. | A4 | `print.paper` (`a4`, `a3`, `a5`, `letter`, `legal`) |
+| **Orientation** (dialog) | Portrait or landscape. | Portrait | `print.landscape` |
+| **Margins** (dialog) | None, Narrow, Default or Wide. | Default | `print.margins` (`none`, `narrow`, `default`, `wide`) |
+| **Scale** (dialog) | Content scale in steps of 10%. | 100% | `print.scale_percent` |
+| **Backgrounds** (dialog) | Print background colours and images. | Off | `print.backgrounds` |
+| **Header and footer** (dialog) | Title, date, address and page numbers. | Off | `print.header_footer` |
+| PDF folder | Where PDFs go when not asking. | The download location | `print.directory` |
+| Open PDF after saving | Shows the PDF in a tab. | Off | `print.open_after_saving` |
+| Screenshot format | PNG or JPEG. | PNG | `screenshot.format` (`png`, `jpeg`) |
+| After taking a screenshot | Show it with **Copy** and **Save**, or copy / save at once. | Show | `screenshot.after_capture` (`ask`, `copy`, `save`) |
+| Screenshot folder | Where screenshots go when not asking. | The download location | `screenshot.directory` |
+
 ### Import from another browser
 
 Brings bookmarks and history from the other browsers on this computer into the current account.

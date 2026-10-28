@@ -33,6 +33,8 @@ pub struct Config {
     pub find: Find,
     pub zoom: Zoom,
     pub command_palette: CommandPalette,
+    pub print: Print,
+    pub screenshot: Screenshot,
     pub devtools: DevTools,
     pub clipboard: Clipboard,
     pub toast: Toast,
@@ -1096,6 +1098,126 @@ impl Default for Passwords {
             login_check_seconds: 4.0,
             fetch_missing_icons: true,
             icon_fetch_limit: 40,
+        }
+    }
+}
+
+/// Paper sizes of the print dialog.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperSize {
+    #[default]
+    A4,
+    A3,
+    A5,
+    Letter,
+    Legal,
+}
+
+/// Page margins of the print dialog (their widths are `print.margin_*_inches`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrintMargins {
+    None,
+    Narrow,
+    #[default]
+    Default,
+    Wide,
+}
+
+/// Print and Save as PDF.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Print {
+    /// Folder the PDF goes to when not asking where; empty: the download folder.
+    pub directory: String,
+    /// The dialog's last choices (they are kept for next time).
+    pub paper: PaperSize,
+    pub landscape: bool,
+    pub margins: PrintMargins,
+    /// Print background colours and images.
+    pub backgrounds: bool,
+    /// Title, date, address and page numbers in the page margins.
+    pub header_footer: bool,
+    /// Scale of the content in percent.
+    pub scale_percent: u32,
+    /// Margin widths of the three presets (inches).
+    pub margin_narrow_inches: f32,
+    pub margin_default_inches: f32,
+    pub margin_wide_inches: f32,
+    /// Open the PDF in Axion once it is saved.
+    pub open_after_saving: bool,
+}
+
+impl Default for Print {
+    fn default() -> Self {
+        Self {
+            directory: String::new(),
+            paper: PaperSize::A4,
+            landscape: false,
+            margins: PrintMargins::Default,
+            backgrounds: false,
+            header_footer: false,
+            scale_percent: 100,
+            margin_narrow_inches: 0.2,
+            margin_default_inches: 0.4,
+            margin_wide_inches: 1.0,
+            open_after_saving: false,
+        }
+    }
+}
+
+/// File formats of screenshots.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShotFormat {
+    #[default]
+    Png,
+    Jpeg,
+}
+
+/// What happens to a screenshot once it is taken.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShotAfter {
+    /// Show it with the choice to copy or save.
+    #[default]
+    Ask,
+    Copy,
+    Save,
+}
+
+/// The screenshot tool.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Screenshot {
+    /// Folder for saved screenshots when not asking where; empty: the download folder.
+    pub directory: String,
+    pub format: ShotFormat,
+    /// JPEG quality, 1–100.
+    pub jpeg_quality: u8,
+    pub after_capture: ShotAfter,
+    /// A full page screenshot stops at this many CSS pixels of height.
+    pub full_page_max_height: u32,
+    /// How long a full page screenshot waits after each scroll step for the page to draw (ms).
+    pub scroll_settle_ms: u32,
+    /// How dark the page gets around the selection (0–1).
+    pub dim_opacity: f32,
+    /// The smallest selection that counts (logical px); smaller drags are ignored.
+    pub min_selection: f32,
+}
+
+impl Default for Screenshot {
+    fn default() -> Self {
+        Self {
+            directory: String::new(),
+            format: ShotFormat::Png,
+            jpeg_quality: 90,
+            after_capture: ShotAfter::Ask,
+            full_page_max_height: 16_000,
+            scroll_settle_ms: 250,
+            dim_opacity: 0.45,
+            min_selection: 8.0,
         }
     }
 }

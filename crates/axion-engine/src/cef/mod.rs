@@ -17,6 +17,7 @@ mod permission;
 mod schedule;
 mod scheme;
 mod settle;
+mod snapshot;
 mod stats;
 
 use std::collections::BTreeMap;
@@ -1036,6 +1037,35 @@ impl Engine for CefEngine {
         host.download_image(Some(&url.into()), 0, max_px, 0, Some(&mut callback));
     }
 
+    fn print_to_pdf(&mut self, view: ViewId, path: PathBuf, options: &crate::PdfOptions) {
+        let Some(state) = self.views.get(&view).filter(|v| !v.closing) else { return };
+        let Some(host) = state.browser.as_ref().and_then(|b| b.host()) else {
+            let event = EngineEvent::PdfSaved { view, path, ok: false };
+            self.shared.events.borrow_mut().push((state.browser_id, event));
+            return;
+        };
+        let mut callback = snapshot::PdfCallbackBuilder::new(snapshot::PdfJob {
+            ctx: state.ctx.clone(),
+            browser_id: state.browser_id,
+        });
+        let settings = snapshot::pdf_settings(options);
+        host.print_to_pdf(
+            Some(&path.to_string_lossy().as_ref().into()),
+            Some(&settings),
+            Some(&mut callback),
+        );
+    }
+
+    fn capture_screenshot(&mut self, view: ViewId, id: u32) {
+        let Some(state) = self.views.get(&view).filter(|v| !v.closing) else { return };
+        let Some(host) = state.browser.as_ref().and_then(|b| b.host()) else {
+            let event = EngineEvent::ScreenshotFailed { view, id };
+            self.shared.events.borrow_mut().push((state.browser_id, event));
+            return;
+        };
+        snapshot::capture(host, state.ctx.clone(), state.browser_id, id);
+    }
+
     fn context_command(&mut self, view: ViewId, command: crate::ContextCommand) {
         use crate::ContextCommand as C;
         let Some(frame) = self.browser(view).and_then(|b| b.focused_frame().or_else(|| b.main_frame()))
@@ -1209,6 +1239,9 @@ impl Engine for CefEngine {
                 | EngineEvent::ContextMenu { view, .. }
                 | EngineEvent::ImageReady { view, .. }
                 | EngineEvent::ImageFailed { view, .. }
+                | EngineEvent::PdfSaved { view, .. }
+                | EngineEvent::ScreenshotReady { view, .. }
+                | EngineEvent::ScreenshotFailed { view, .. }
                 | EngineEvent::CursorChanged { view, .. }
                 | EngineEvent::FullscreenRequested { view, .. }
                 | EngineEvent::PageMessage { view, .. }

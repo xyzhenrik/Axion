@@ -63,6 +63,10 @@ pub enum MenuAction {
     /// Chromium's developer tools for the page.
     DevTools,
     FindOnPage,
+    /// Print / Save as PDF.
+    Print,
+    /// The screenshot tool.
+    Screenshot,
     Settings,
     /// Opens Settings > About & Updates and looks for a new version.
     CheckForUpdates,

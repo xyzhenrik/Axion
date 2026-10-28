@@ -159,6 +159,8 @@ impl Browser {
             PageCommand::Forward => self.run(Action::Forward),
             PageCommand::Reload => self.run(Action::Reload),
             PageCommand::SavePage => self.save_to_downloads(view, params.page_url.trim()),
+            PageCommand::Print => self.run(Action::Print),
+            PageCommand::Screenshot => self.run(Action::Screenshot),
             PageCommand::Inspect => {
                 if self.config.devtools.enabled {
                     // The click in the page's own coordinates (logical px, like the engine's).
