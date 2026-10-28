@@ -37,6 +37,24 @@ impl Browser {
             }
             return true;
         }
+        if button == Button::Middle && self.config.tabs.middle_click_closes_tab && !self.is_locked() {
+            // The tab overview's cards (a click on a card's close button counts as the card).
+            if let Some(OverviewAction::Select(i) | OverviewAction::Close(i)) = self
+                .ui
+                .hit_action(p)
+                .and_then(|n| self.ui.widget(n))
+                .and_then(|w| w.action)
+                .and_then(OverviewAction::from_id)
+                && self.overview.is_open()
+            {
+                self.overview_action(OverviewAction::Close(i));
+                return true;
+            }
+            if let Some(item) = self.chrome.tab_at(&self.ui, node) {
+                self.close_tab_in(item.private, item.view);
+                return true;
+            }
+        }
         if button == Button::Right
             && !self.is_locked()
             && let Some(item) = self.chrome.tab_at(&self.ui, node)

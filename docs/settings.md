@@ -131,6 +131,8 @@ How tabs look and how Axion saves memory. See [Tabs and memory](features/tabs-an
 | **Colour in tab bar** | Tints the window around the page with a colour taken from the page, like Safari. | Off | `appearance.tint_from_page` |
 | **Page colour** (**Extreme** / **Dominant**) | Shown when **Colour in tab bar** is on. **Extreme** takes the darkest or lightest prominent colour. **Dominant** takes the main colour, evened out. Turning the colour on switches from neutral to **Extreme**. | Neutral (page colour off) | `appearance.tint_mode` (`neutral`, `extreme`, `dominant`) |
 | **Open new tabs in background** | Tabs opened from links do not take over the screen. | On | `tabs.open_links_in_background` |
+| **Middle click closes tabs** | A middle click on a tab (bar, sidebar or tab overview) closes it. | On | `tabs.middle_click_closes_tab` |
+| **Drag tabs out as links** | Dragging a tab out of the window into another app drops its address there (a text field gets the link). | On | `tabs.drag_out_links` (`tabs.drag_out_distance`: how far outside the window counts as out, default 12 px) |
 | **Close tabs** | Closes tabs you have not looked at for a while: **Manually** (never), **After a Day**, **After a Week**, **After a Month**. Pinned tabs and tabs playing media stay. | Manually | `tabs.close_after_days` (0, 1, 7, 30) |
 | **Bookmarks bar** | When the bookmarks bar shows: **Always**, **On Home Page**, **Never**. | Always | `layout.bookmarks_bar` (`always`, `home`, `never`) |
 
