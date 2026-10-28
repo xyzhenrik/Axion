@@ -25,6 +25,7 @@ mod downloads_popover;
 mod dragimage;
 mod drip;
 mod engine_icons;
+mod extension_popup;
 mod extensions;
 mod extensions_popover;
 mod eye;

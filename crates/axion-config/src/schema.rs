@@ -890,6 +890,35 @@ pub struct Extensions {
     pub update_interval_hours: u32,
     /// Seconds a Web Store request (a download or an update check) may take. Default: 60.
     pub timeout_seconds: u32,
+    /// Which extensions put their icon in the address field: `pinned` (the ones pinned in the
+    /// extensions popover), `active` (pinned ones, and only on pages the extension can act on)
+    /// or `none` (only the popover lists them). Default: `pinned`.
+    pub show_in_address_bar: ExtensionIcons,
+    /// The extension popup's smallest size, per side (logical px, like Chrome's 25). Default: 25.
+    pub popup_min_size: u32,
+    /// The extension popup's largest width (logical px, like Chrome's 800). Default: 800.
+    pub popup_max_width: u32,
+    /// The extension popup's largest height (logical px, like Chrome's 600). Default: 600.
+    pub popup_max_height: u32,
+    /// Milliseconds between two measurements of the popup's content (it grows and shrinks with
+    /// it). Default: 150.
+    pub popup_measure_ms: u32,
+    /// Milliseconds a popup may take to report its size before it opens in a tab instead.
+    /// Default: 3000.
+    pub popup_load_timeout_ms: u32,
+}
+
+/// Which extensions show their icon in the address field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtensionIcons {
+    /// The extensions pinned in the extensions popover.
+    #[default]
+    Pinned,
+    /// The pinned extensions, only on pages they can act on (their site access matches).
+    Active,
+    /// No icons in the address field.
+    None,
 }
 
 impl Default for Extensions {
@@ -902,6 +931,12 @@ impl Default for Extensions {
             block_request_apis: true,
             update_interval_hours: 24,
             timeout_seconds: 60,
+            show_in_address_bar: ExtensionIcons::Pinned,
+            popup_min_size: 25,
+            popup_max_width: 800,
+            popup_max_height: 600,
+            popup_measure_ms: 150,
+            popup_load_timeout_ms: 3000,
         }
     }
 }

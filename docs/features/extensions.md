@@ -63,6 +63,35 @@ for later.
 Switch the whole feature off with `[extensions] enabled = false` (Settings › Privacy). Then no
 extension runs and the button disappears. Default: on.
 
+## Extension popups and icons in the address field
+
+An extension that has a popup (`action.default_popup`) opens it as an overlay under what you
+clicked: a glass card that drips out of the extension's icon, like Chrome's popup window. The card
+is as large as the popup's content (at least 25 x 25, at most 800 x 600 px, like Chrome; it grows and
+shrinks while the popup changes) and the popup is fully usable: pointer, scrolling, typing and
+focus work. It closes on **Esc**, a click outside, switching tabs, `window.close()` in the popup, or
+a link that leaves the extension (links open as tabs in the window).
+
+Where you click:
+
+- **The extension's icon in the address field.** Extensions with a popup show their own icon there
+  (the icon from the manifest, as a glass button beside Shields, Aa and Translate). Which
+  ones: Settings > Privacy > Extensions > **Icons in the address field**
+  (`extensions.show_in_address_bar`): **Pinned** (default), **On Matching Pages** or **Never**.
+- **The extensions button.** A click on an extension's row in its popover opens the popup under the
+  puzzle piece. The pin beside the name pins or unpins the extension's icon in the address field,
+  the (i) button shows its details (permissions, options, Remove), where **Show in Address Field**
+  does the same as the pin. Extensions without a popup open their options page (else their details).
+
+Pinned is the default for every new extension. A narrow address field shows fewer icons: they
+collapse first (before the other buttons of the field) into the extensions popover, which always
+lists every extension. **On Matching Pages** shows a pinned icon only on pages the extension's site
+access covers (an extension that asks for no sites is always shown): Chromium does not tell Axion
+whether an extension is "active" on a page (a badge, an enabled state), so site access is the stand-in.
+
+An extension runs only after Axion was started with it, so an extension you just installed or
+switched on shows no icon and a click says "Relaunch Axion to use this extension."
+
 ## Userscript managers (Tampermonkey, Violentmonkey)
 
 Tampermonkey (id `dhdgffkkebhmkfjojejmpbldmpobfkfo`) installs from the store and runs: its service
@@ -97,7 +126,9 @@ from a tab that shows the store, and never installs without its own dialog.
 
 Test aids: `AXION_INSTALL_EXTENSION=<folder or .crx>` installs one before the engine starts;
 `AXION_AUTO_CONFIRM_STORE_INSTALL=1` answers the install window with yes (automated runs cannot
-click it); `--open=extensions-popover` and `--open=extensions-details` capture the popover.
+click it); `--open=extensions-popover` and `--open=extensions-details` capture the popover; `--open=extension-popup` (with `--lead`) clicks
+the first extension's icon, `ext-click:XxY` and `ext-type:TEXT` steps (separate steps with commas)
+click and type into the open popup.
 
 ## Limits
 
@@ -109,12 +140,19 @@ click it); `--open=extensions-popover` and `--open=extensions-details` capture t
   "Network request APIs are off in Axion". Ad blockers built on them do not work; Axion's own
   Shields do that job. Tampermonkey and extensions that only use content scripts, storage, tabs and
   the like are not affected.
-- **Toolbar popups open in a tab.** Chrome shows an extension's popup in a small window under its
-  button; Axion draws the whole window itself and Chromium cannot attach such a popup to it.
-  "Open Popup in a Tab" opens the popup page in a normal tab instead (`chrome-extension://<id>/…`).
-  It works, but the page has no idea which tab it was "clicked on".
-- **No extension buttons in the toolbar** (pin, badge text), no keyboard shortcut commands,
-  no extension side panel, no context-menu items drawn by Axion's own menus.
+- **Popups are their own page, not "attached" to a tab.** Chromium cannot attach Chrome's popup
+  window to Axion's off-screen window, so Axion opens the popup page (`chrome-extension://<id>/…`)
+  as a second off-screen browser and draws it in the card (the page works like in a tab). Its size
+  is measured by a script (the width the page asks for, the height that takes), not by Chromium's
+  own auto-resize, so a page whose size depends on the window (`100vw`, `100vh`) comes out
+  differently than in Chrome. Because it is not a tab, `chrome.tabs.query({active: true})` and
+  `activeTab` do what they do for a popup page in a tab. "Open Popup in a Tab" (in the details)
+  still opens it as a tab.
+- **No badge text** (`chrome.action.setBadgeText`), no action title or icon changes drawn on the
+  address field's icon, no keyboard shortcut commands, no extension side panel, no
+  context-menu items drawn by Axion's own menus. An extension whose button has no popup (it
+  only reacts to `chrome.action.onClicked`) cannot be clicked: Chromium has no call to deliver that
+  click, so Axion opens its options page or details instead.
 - **`.crx` files you pick yourself are not signature-checked** (you chose the file); store
   downloads are. The package's public key is kept, so the extension has the id it has in Chrome;
   an unpacked folder without a `key` gets an id derived from where Axion stored it.
