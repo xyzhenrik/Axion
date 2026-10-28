@@ -29,6 +29,8 @@ pub struct Config {
     pub accounts: Accounts,
     pub import: Import,
     pub find: Find,
+    pub zoom: Zoom,
+    pub command_palette: CommandPalette,
     pub devtools: DevTools,
     pub clipboard: Clipboard,
     pub toast: Toast,
@@ -1073,6 +1075,56 @@ pub struct Find {
     pub match_case: bool,
 }
 
+/// Page zoom (Ctrl +/-/0), remembered per site.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Zoom {
+    /// Zoom of sites that have none of their own (percent).
+    pub default_percent: f64,
+    /// One zoom step, in Chromium zoom levels (each level is x1.2; 0.5 steps through 100, 110, 120, 131 ...).
+    pub step: f64,
+    /// Smallest and largest zoom (percent).
+    pub min_percent: f64,
+    pub max_percent: f64,
+    /// Remember a site's zoom (in the profile's site settings) and apply it to every page of
+    /// that site. Off: zoom belongs to the tab and resets when another site loads.
+    pub remember_per_site: bool,
+    /// Show the zoom (with a reset on click) in the address field while a page is not at its
+    /// default zoom.
+    pub show_indicator: bool,
+}
+
+impl Default for Zoom {
+    fn default() -> Self {
+        Self {
+            default_percent: 100.0,
+            step: 0.5,
+            min_percent: 25.0,
+            max_percent: 500.0,
+            remember_per_site: true,
+            show_indicator: true,
+        }
+    }
+}
+
+/// The command palette (Ctrl+K).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommandPalette {
+    /// Rows listed at once (the list scrolls by the selection).
+    pub max_rows: u32,
+    /// Show each command's shortcut.
+    pub show_shortcuts: bool,
+    /// The palette is this wide (logical px; it shrinks with the window).
+    pub width: f32,
+}
+
+impl Default for CommandPalette {
+    fn default() -> Self {
+        Self { max_rows: 8, show_shortcuts: true, width: 560.0 }
+    }
+}
+
 /// Chromium's developer tools (unchanged: Axion does not build its own). They open in a
 /// window of their own.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1114,6 +1166,9 @@ pub struct Ui {
     pub page_context_menu_label_chars: u32,
     /// The most characters of a selection the context menu searches for.
     pub page_context_menu_query_chars: u32,
+    /// The context menu's "Share…" row for selected text (opens a new e-mail with the text and
+    /// the page's address).
+    pub page_context_menu_share: bool,
     /// "Copy Image" scales images larger than this down (pixels on the long side).
     pub copy_image_max_px: u32,
     /// The first-run introduction's card is at most this wide (logical px); it shrinks with
@@ -1135,6 +1190,7 @@ impl Default for Ui {
             tooltip_delay_ms: 700,
             page_context_menu_label_chars: 14,
             page_context_menu_query_chars: 400,
+            page_context_menu_share: true,
             copy_image_max_px: 8192,
             onboarding_max_width: 880.0,
             onboarding_max_height: 640.0,

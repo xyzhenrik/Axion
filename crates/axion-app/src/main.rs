@@ -76,6 +76,7 @@ mod update;
 mod update_alert;
 mod url;
 mod window_resize;
+mod zoom;
 
 use std::time::Duration;
 

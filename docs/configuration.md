@@ -146,7 +146,7 @@ Shortcuts, one line per action. See [Keyboard shortcuts](keyboard-shortcuts.md) 
 rules.
 
 ```toml
-focus_address_bar = ["Alt+D", "Ctrl+K"]
+focus_address_bar = ["Alt+D", "Ctrl+E"]
 tab_overview = []            # no key
 ```
 

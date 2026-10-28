@@ -547,6 +547,16 @@ pub(crate) fn open_path(path: &Path) {
     });
 }
 
+/// Opens an address (`mailto:` …) in its default application.
+pub(crate) fn open_uri(uri: &str) {
+    let uri = uri.to_owned();
+    spawn("xdg-open", move || match std::process::Command::new("xdg-open").arg(&uri).status() {
+        Ok(status) if !status.success() => tracing::warn!("xdg-open failed: {status}"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("xdg-open unavailable: {e}"),
+    });
+}
+
 /// Shows the file selected in the file manager, or at least opens its folder.
 pub(crate) fn show_in_folder(path: &Path) {
     let path = path.to_path_buf();

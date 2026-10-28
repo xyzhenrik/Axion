@@ -50,6 +50,7 @@ impl Browser {
             search_engine: page_menu::search_engine_name(&self.config.general.search_url),
             devtools: self.config.devtools.enabled,
             label_chars: self.config.ui.page_context_menu_label_chars as usize,
+            share: self.config.ui.page_context_menu_share,
         };
         let items = page_menu::items(&params, &info, &self.keymap);
         if items.is_empty() {
@@ -148,6 +149,11 @@ impl Browser {
                 if let Some(url) = resolve_input(&query, &self.config.general.search_url) {
                     self.open_page_link(view, &url, true);
                 }
+            }
+            PageCommand::ShareSelection => {
+                let limit = self.config.ui.page_context_menu_query_chars as usize;
+                let text: String = selection.trim().chars().take(limit.max(1)).collect();
+                downloads::open_uri(&page_menu::share_url(&text, params.page_url.trim()));
             }
             PageCommand::Back => self.run(Action::Back),
             PageCommand::Forward => self.run(Action::Forward),

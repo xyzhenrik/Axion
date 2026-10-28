@@ -70,7 +70,7 @@ More in [Accounts and privacy](features/accounts-and-privacy.md).
 
 ### The address field
 
-Click the address field (or press **Alt+D**, **F6** or **Ctrl+K**) and type a web address or a
+Click the address field (or press **Alt+D** or **F6**) and type a web address or a
 search. Suggestions from your bookmarks and history appear while you type. Anything that is not an
 address is searched with your **Search engine** (DuckDuckGo unless you change it in
 **Settings > General**).

@@ -94,6 +94,8 @@ pub enum ChromeAction {
     MuteTab,
     /// The recording indicator in the address field: what the tab records, with Stop.
     Capture,
+    /// The zoom in the address field: resets the page to its default zoom.
+    ZoomIndicator,
     /// The Now Playing card: open its tab.
     NowPlaying,
     /// The bookmarks bar's chevron: the bookmarks that don't fit, as a menu.
@@ -192,7 +194,7 @@ const GROUP_BASE: u32 = 11_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 34] = [
+    const SIMPLE: [ChromeAction; 35] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -227,6 +229,7 @@ impl ChromeAction {
         ChromeAction::Playlist,
         ChromeAction::PlaylistButton,
         ChromeAction::Capture,
+        ChromeAction::ZoomIndicator,
     ];
 
     pub fn id(self) -> ActionId {
@@ -476,6 +479,10 @@ pub struct Chrome {
     /// may still hide them, see `apply_address_fit`).
     audio_wanted: bool,
     playlist_wanted: bool,
+    /// The zoom indicator: its button and label, and the text it wants (`None`: hidden).
+    zoom_button: NodeId,
+    zoom_label: NodeId,
+    zoom_wanted: Option<String>,
     /// The address is being edited (the compact segment expands).
     editing: bool,
     /// The Playlist button in the address field, and its glyph.
@@ -1343,6 +1350,24 @@ impl Chrome {
         );
         tip(ui, playlist_button, tr("Add to Playlist"), Some(Action::PlaylistAdd));
         ui.set_visible(playlist_button, false);
+        // A page that is not at its default zoom: the zoom, and a click resets it.
+        let zoom_button = ui.add(
+            address,
+            Widget::container().with_action(ChromeAction::ZoomIndicator.id()).with_radius(CAPSULE),
+            Style {
+                size: Size { width: auto(), height: length(30.0) },
+                padding: padding(8.0, 8.0, 0.0, 0.0),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                ..row(0.0)
+            },
+        );
+        let zoom_label = ui.add_label(zoom_button, "", TextStyle::Footnote, Style::default());
+        if let Some(w) = ui.widget_mut(zoom_label) {
+            w.set_paint(Paint::Accent);
+        }
+        tip(ui, zoom_button, tr("Reset Zoom"), Some(Action::ZoomReset));
+        ui.set_visible(zoom_button, false);
         let address_label = ui.add_label(address, "", TextStyle::BodyEmphasis, shrinking_label());
         ui.set_label_align(address_label, Align::Start);
         let address_field = ui.add_text_field(
@@ -1567,6 +1592,9 @@ impl Chrome {
             capture_wanted: false,
             audio_wanted: false,
             playlist_wanted: false,
+            zoom_button,
+            zoom_label,
+            zoom_wanted: None,
             editing: false,
             playlist_button,
             playlist_icon,
@@ -2600,6 +2628,18 @@ impl Chrome {
         }
     }
 
+    /// Shows the page's zoom ("125%") in the address field, or hides it (`None`).
+    pub fn set_zoom_indicator(&mut self, ui: &mut Ui, text: Option<String>) {
+        if self.zoom_wanted == text {
+            return;
+        }
+        if let Some(text) = &text {
+            ui.set_text(self.zoom_label, text);
+        }
+        self.zoom_wanted = text;
+        ui.set_visible(self.zoom_button, self.zoom_wanted.is_some() && self.extras_fit());
+    }
+
     /// The Playlist button (logical px), for anchoring its popover.
     pub fn playlist_button_frame(&self, ui: &Ui) -> Frame {
         ui.frame(self.playlist_button)
@@ -3379,6 +3419,7 @@ impl Chrome {
         ui.set_visible(self.address_field, editing);
         ui.set_visible(self.audio_button, self.audio_wanted && fit.extras);
         ui.set_visible(self.playlist_button, self.playlist_wanted && fit.extras && !capture);
+        ui.set_visible(self.zoom_button, self.zoom_wanted.is_some() && fit.extras);
         let icon_only = !fit.text;
         let mut style = ui.style(self.address);
         style.padding =

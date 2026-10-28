@@ -25,7 +25,7 @@ changes. The names in the last column are what you use in `keymap.toml` (see
 
 | Action | Keys | Name in `keymap.toml` |
 |---|---|---|
-| Focus address bar | Alt+D, F6, Ctrl+K | `focus_address_bar` |
+| Focus address bar | Alt+D, F6 | `focus_address_bar` |
 | Back | Alt+Left, Ctrl+[ | `back` |
 | Forward | Alt+Right, Ctrl+] | `forward` |
 | Reload | Ctrl+R, F5 | `reload` |
@@ -77,6 +77,7 @@ These only work while **Developer tools** is on in **Settings > General**.
 | Action | Keys | Name in `keymap.toml` |
 |---|---|---|
 | Settings | Ctrl+,  and Ctrl+S | `open_settings` |
+| Command palette (search every action) | Ctrl+K | `command_palette` |
 | Fullscreen window | F11 | `toggle_fullscreen` |
 | Quit | Ctrl+Q | `quit` |
 
@@ -121,7 +122,7 @@ Each line is an action name and a list of keys:
 
 ```toml
 # Replaces the defaults of this action
-focus_address_bar = ["Alt+D", "Ctrl+K"]
+focus_address_bar = ["Alt+D", "Ctrl+E"]
 toggle_sidebar = ["Ctrl+Shift+B"]
 
 # An empty list removes all keys of an action

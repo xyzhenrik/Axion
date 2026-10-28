@@ -6,8 +6,6 @@ use std::time::Instant;
 use axion_engine::ViewId;
 use axion_tabs::Lifecycle;
 
-/// Each zoom step in Chromium's zoom-level units (1 level = ×1.2).
-pub const ZOOM_STEP: f64 = 0.5;
 /// Remembered closed tabs for "reopen closed tab".
 const CLOSED_HISTORY: usize = 25;
 

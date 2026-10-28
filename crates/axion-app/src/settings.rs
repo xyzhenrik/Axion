@@ -3935,6 +3935,7 @@ fn shortcut_actions() -> Vec<KeyAction> {
         OpenPasswords,
         ToggleSidebar,
         OpenSettings,
+        CommandPalette,
         ToggleFullscreen,
         Quit,
         Lock,
@@ -3956,7 +3957,7 @@ fn shortcut_actions() -> Vec<KeyAction> {
 
 /// The heading a shortcut is listed under on the Keyboard page; consecutive actions in
 /// `shortcut_actions` with the same heading share one section.
-fn shortcut_group(action: KeyAction) -> &'static str {
+pub(crate) fn shortcut_group(action: KeyAction) -> &'static str {
     use KeyAction::*;
     match action {
         NewTab | CloseTab | ReopenClosedTab | NextTab | PreviousTab | PinTab | TabOverview | SelectTab(_)
@@ -3967,13 +3968,13 @@ fn shortcut_group(action: KeyAction) -> &'static str {
         | ToggleSidebar => tr("Panels"),
         Lock => tr("Privacy"),
         DevTools | DevToolsConsole | ViewSource => tr("Developer"),
-        OpenSettings | ToggleFullscreen | Quit => tr("Window"),
+        OpenSettings | CommandPalette | ToggleFullscreen | Quit => tr("Window"),
         _ => tr("Media (fullscreen video)"),
     }
 }
 
 /// The name a shortcut is listed under, translated.
-fn shortcut_name(action: KeyAction) -> &'static str {
+pub(crate) fn shortcut_name(action: KeyAction) -> &'static str {
     tr(shortcut_source_name(action))
 }
 
@@ -4011,6 +4012,7 @@ fn shortcut_source_name(action: KeyAction) -> &'static str {
         OpenPasswords => tr_mark("Open passwords"),
         ToggleSidebar => tr_mark("Toggle sidebar"),
         OpenSettings => tr_mark("Open settings"),
+        CommandPalette => tr_mark("Command palette"),
         ToggleFullscreen => tr_mark("Toggle fullscreen"),
         Quit => tr_mark("Quit"),
         Lock => tr_mark("Lock"),

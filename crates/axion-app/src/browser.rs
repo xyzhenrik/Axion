@@ -70,7 +70,7 @@ use crate::shields::ShieldsState;
 use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
 use crate::suggestions::{SuggestionList, suggest};
 use crate::tabdrag::{TabDrag, Target};
-use crate::tabs::{Tab, Tabs, ZOOM_STEP};
+use crate::tabs::{Tab, Tabs};
 use crate::toast::Toast;
 use crate::tooltip::Tooltip;
 use crate::typing_probe;
@@ -79,6 +79,7 @@ use crate::update_alert::{AlertAction, AlertView, Tone, UpdateAlert};
 use crate::url::display_host;
 use crate::url::resolve_input;
 use crate::window_resize::{Debounce, ResizePacer};
+use crate::zoom::{self, SiteZoom};
 
 mod context;
 mod import;
@@ -190,8 +191,6 @@ const PANEL_SEARCH_LIMIT: usize = 1000;
 /// The History panel's clear button, and what it says while asking to confirm.
 const CLEAR_HISTORY: &str = tr_mark("Clear History…");
 const CLEAR_HISTORY_CONFIRM: &str = tr_mark("Click Again to Clear");
-/// Chromium's zoom levels are powers of this factor.
-const ZOOM_BASE: f64 = 1.2;
 /// Pixels per wheel notch.
 const LINE_SCROLL: f32 = 100.0;
 /// Slide anchors (see `Browser::slide_anchor`): the frame's right edge or its middle stays on
@@ -332,6 +331,8 @@ pub struct Browser {
     importer: Importer,
     /// History and bookmarks; `None` if the database couldn't be opened (browsing still works).
     store: Option<axion_store::Store>,
+    /// Sites' remembered page zoom (see `zoom`).
+    site_zoom: SiteZoom,
     /// Search text the overview's cards were last built for.
     overview_query: String,
     last_frame: Instant,
@@ -794,6 +795,7 @@ impl Browser {
             last_saved_config: None,
             panel_urls: Vec::new(),
             panel: None,
+            site_zoom: SiteZoom::load(store.as_ref()),
             store,
             favicons,
             downloads,
@@ -1102,12 +1104,41 @@ impl Browser {
                 self.engine.run_script(view, REFRESH_SCRIPT, false);
             }
             self.wake(view);
+            self.sync_tab_zoom(view);
             self.engine.set_hidden(view, false);
             self.engine.resize(view, self.view_size());
             self.engine.set_focus(view, true);
         }
         self.chrome.set_editing(&mut self.ui, false);
         self.tabs_changed = true;
+    }
+
+    /// The address field shows the zoom while the page is not at its default.
+    fn update_zoom_indicator(&mut self) {
+        let text = self
+            .tabs
+            .active()
+            .filter(|t| self.config.zoom.show_indicator && !SiteZoom::is_default(&self.config, t.zoom))
+            .map(|t| zoom::label(t.zoom));
+        self.chrome.set_zoom_indicator(&mut self.ui, text);
+    }
+
+    /// Zooms the page to `level` (Chromium zoom level) and remembers it on the tab.
+    fn set_tab_zoom(&mut self, view: ViewId, level: f64) {
+        if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
+            tab.zoom = level;
+        }
+        self.engine.set_zoom_level(view, level);
+    }
+
+    /// Brings a tab's zoom to what its site wants (after it loaded another address, or the
+    /// zoom settings changed).
+    fn sync_tab_zoom(&mut self, view: ViewId) {
+        let Some(tab) = find_tab(&self.tabs, &self.parked, view) else { return };
+        let want = self.site_zoom.level(&self.config, &tab.url);
+        if (want - tab.zoom).abs() > 1e-6 {
+            self.set_tab_zoom(view, want);
+        }
     }
 
     fn active_view(&self) -> Option<ViewId> {
@@ -1192,14 +1223,15 @@ impl Browser {
                 self.update_layout();
             }
             Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
-                if let Some(tab) = self.tabs.active_mut() {
-                    tab.zoom = match action {
-                        Action::ZoomIn => tab.zoom + ZOOM_STEP,
-                        Action::ZoomOut => tab.zoom - ZOOM_STEP,
-                        _ => 0.0,
+                if let Some(tab) = self.tabs.active() {
+                    let level = match action {
+                        Action::ZoomIn => SiteZoom::stepped(&self.config, tab.zoom, 1),
+                        Action::ZoomOut => SiteZoom::stepped(&self.config, tab.zoom, -1),
+                        _ => SiteZoom::default_level(&self.config),
                     };
-                    let (view, zoom) = (tab.view, tab.zoom);
-                    self.engine.set_zoom_level(view, zoom);
+                    let (view, url, persist) = (tab.view, tab.url.clone(), !tab.private);
+                    self.site_zoom.set(self.store.as_ref(), &self.config, &url, level, persist);
+                    self.set_tab_zoom(view, level);
                 }
             }
             Action::ToggleFullscreen => self.set_presentation(!self.chrome.presentation()),
@@ -2763,7 +2795,7 @@ impl Browser {
         }
         let Some(tab) = self.tabs.active() else { return };
         let bookmarked = self.store.as_ref().and_then(|s| s.bookmark_for(&tab.url).ok().flatten()).is_some();
-        let zoom = zoom_label(tab.zoom);
+        let zoom = zoom::label(tab.zoom);
         let items = vec![
             if bookmarked {
                 MenuItem::new(Icon::Bookmark, tr("Remove Bookmark"), MenuAction::RemoveBookmark)
@@ -2964,7 +2996,7 @@ impl Browser {
                     _ => Action::ZoomReset,
                 });
                 // The menu stays open: show the new level.
-                if let Some(zoom) = self.tabs.active().map(|t| zoom_label(t.zoom)) {
+                if let Some(zoom) = self.tabs.active().map(|t| zoom::label(t.zoom)) {
                     self.menu.set_text(&mut self.ui, MenuAction::Zoom, &zoom);
                     self.menu.set_text(&mut self.ui, MenuAction::ZoomReset, &zoom);
                 }
@@ -3623,6 +3655,7 @@ impl Browser {
                         }
                     }
                     Some(ChromeAction::PlaylistButton) => self.toggle_playlist_popover(),
+                    Some(ChromeAction::ZoomIndicator) => self.run(Action::ZoomReset),
                     Some(ChromeAction::DownloadsButton) => self.toggle_downloads_popover(),
                     Some(ChromeAction::PanelButton(i, k)) => {
                         self.downloads.row_button(List::Panel, i, k, &mut self.engine);
@@ -3872,6 +3905,7 @@ impl Browser {
                         tab.url = url;
                         self.tabs_changed = true;
                     }
+                    self.sync_tab_zoom(view);
                 }
                 EngineEvent::TitleChanged { view, title } => {
                     if let (Some(store), Some(tab)) = (
@@ -6479,6 +6513,7 @@ impl Browser {
         self.animate_permissions(dt, address);
         self.update_player(dt);
         self.update_playlist_buttons();
+        self.update_zoom_indicator();
         self.playlist_ui.popover.animate(&mut self.ui, dt);
         if self.playlist_open() {
             self.update_playlist_page(dt);
@@ -7266,11 +7301,6 @@ fn bridge_secret() -> String {
     let nanos =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     format!("{nanos:x}{:x}", std::process::id())
-}
-
-/// The page zoom as shown in the page menu ("100%").
-fn zoom_label(zoom: f64) -> String {
-    format!("{:.0}%", ZOOM_BASE.powf(zoom) * 100.0)
 }
 
 /// Milliseconds since `started` (frame timings).

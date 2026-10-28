@@ -42,6 +42,8 @@ pub enum PageCommand {
     Paste,
     SelectAll,
     SearchSelection,
+    /// Send the selected text (with the page's address) in a new e-mail.
+    ShareSelection,
     Back,
     Forward,
     Reload,
@@ -80,6 +82,8 @@ pub struct PageMenuInfo {
     pub search_engine: String,
     /// The most characters of the selection shown in the search row.
     pub label_chars: usize,
+    /// The selection menu offers Share (`ui.page_context_menu_share`).
+    pub share: bool,
 }
 
 /// Addresses Axion can open in a tab and download.
@@ -261,14 +265,9 @@ pub fn items(params: &ContextMenuParams, info: &PageMenuInfo, keymap: &Keymap) -
     }
 
     let selection = params.selection_text.trim();
-    let search = || {
-        let label = tr_fmt!(
-            "Search {engine} for “{text}”",
-            engine = info.search_engine,
-            text = shorten(selection, info.label_chars)
-        );
-        row(Icon::Search, &label, PageCommand::SearchSelection)
-    };
+    // The rows about the selected text, after Copy (and Cut …) in every menu that has a
+    // selection. Further selection actions (Translate …) go in `selection_rows`.
+    let selection_rows = || selection_rows(selection, info);
     if params.editable {
         let edit = params.edit;
         let mut group = vec![
@@ -283,11 +282,15 @@ pub fn items(params: &ContextMenuParams, info: &PageMenuInfo, keymap: &Keymap) -
                 .separated(),
         ];
         if !selection.is_empty() {
-            group.push(search().separated());
+            group.extend(
+                selection_rows().into_iter().enumerate().map(|(i, r)| if i == 0 { r.separated() } else { r }),
+            );
         }
         groups.push(group);
     } else if !selection.is_empty() {
-        groups.push(vec![row(Icon::Copy, tr("Copy"), PageCommand::Copy), search()]);
+        let mut group = vec![row(Icon::Copy, tr("Copy"), PageCommand::Copy)];
+        group.extend(selection_rows());
+        groups.push(group);
     }
 
     // Nothing in particular under the pointer: the page itself.
@@ -320,6 +323,33 @@ pub fn items(params: &ContextMenuParams, info: &PageMenuInfo, keymap: &Keymap) -
     out
 }
 
+/// The rows that act on the selected text (`selection`, trimmed and not empty): search, share.
+/// This is the one place to add further selection actions: push a row with its own
+/// [`PageCommand`] (and run it in `browser/page_context.rs`).
+fn selection_rows(selection: &str, info: &PageMenuInfo) -> Vec<MenuItem> {
+    let mut rows = Vec::new();
+    let label = tr_fmt!(
+        "Search {engine} for “{text}”",
+        engine = info.search_engine,
+        text = shorten(selection, info.label_chars)
+    );
+    rows.push(MenuItem::new(Icon::Search, &label, MenuAction::Page(PageCommand::SearchSelection)));
+    if info.share {
+        rows.push(MenuItem::new(Icon::Share, tr("Share…"), MenuAction::Page(PageCommand::ShareSelection)));
+    }
+    rows
+}
+
+/// The `mailto:` address that sends `text` (and the address of the page it is from).
+pub fn share_url(text: &str, page_url: &str) -> String {
+    let mut body = text.trim().to_owned();
+    if is_web_address(page_url) {
+        body.push_str("\n\n");
+        body.push_str(page_url.trim());
+    }
+    format!("mailto:?body={}", crate::url::encode_query(&body).replace('+', "%20"))
+}
+
 #[cfg(test)]
 mod tests {
     use axion_engine::EditFlags;
@@ -335,6 +365,7 @@ mod tests {
             system_clipboard: true,
             search_engine: "DuckDuckGo".into(),
             label_chars: 12,
+            share: true,
             ..Default::default()
         }
     }
@@ -525,7 +556,7 @@ mod tests {
     fn selection() {
         let params = ContextMenuParams { selection_text: "  hello\n  wide world of text ".into(), ..page() };
         let names = labels(&params, &info());
-        assert_eq!(names, ["Copy", "Search DuckDuckGo for “hello wide w…”"]);
+        assert_eq!(names, ["Copy", "Search DuckDuckGo for “hello wide w…”", "Share…"]);
     }
 
     #[test]
@@ -598,5 +629,25 @@ mod tests {
         // Off every player: found by the address it plays.
         assert_eq!(player_at(&players, Vec2::new(900.0, 900.0), "b").map(|p| p.id.as_str()), Some("small"));
         assert!(player_at(&players, Vec2::new(900.0, 900.0), "").is_none());
+    }
+
+    #[test]
+    fn selection_offers_search_and_share() {
+        let params = ContextMenuParams { selection_text: "two words".into(), ..page() };
+        let names = labels(&params, &info());
+        assert_eq!(names, ["Copy", "Search DuckDuckGo for “two words”", "Share…"]);
+        let off = PageMenuInfo { share: false, ..info() };
+        assert!(!labels(&params, &off).contains(&"Share…".to_owned()));
+        let field = ContextMenuParams { editable: true, ..params };
+        assert!(labels(&field, &info()).contains(&"Share…".to_owned()));
+    }
+
+    #[test]
+    fn share_url_carries_text_and_page() {
+        assert_eq!(
+            share_url("a b+c", "https://x.org/p"),
+            "mailto:?body=a%20b%2Bc%0A%0Ahttps%3A%2F%2Fx.org%2Fp"
+        );
+        assert_eq!(share_url("hi", "axion://home/"), "mailto:?body=hi");
     }
 }
