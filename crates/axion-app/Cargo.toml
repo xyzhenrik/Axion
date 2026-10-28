@@ -45,7 +45,7 @@ zeroize = "1"
 # Both already come with winit and arboard: the clipboard for pastes into pages (Wayland
 # data-control) and the pointer during file drags (X11).
 wl-clipboard-rs = "0.9"
-x11rb = { version = "0.13", default-features = false }
+x11rb = { version = "0.13", default-features = false, features = ["randr"] }
 # Dragging a tab out of the window starts a Wayland drag on winit's connection (winit 0.30 cannot
 # be a drag source; see `platform::dragout`). Both come with winit already.
 wayland-client = "0.31"

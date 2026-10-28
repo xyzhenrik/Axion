@@ -963,3 +963,8 @@
 # zoom indicator and selection menu
 "Reset Zoom" = "Zoom zurücksetzen"
 "Share…" = "Teilen…"
+# crates/axion-app/src/permission_prompt.rs (screen picker), platform/screens.rs
+"wants to share a screen or window:" = "möchte einen Bildschirm oder ein Fenster teilen:"
+"No screens or windows to share were found." = "Es wurden keine Bildschirme oder Fenster zum Teilen gefunden."
+"All Screens" = "Alle Bildschirme"
+"Entire Screen" = "Ganzer Bildschirm"

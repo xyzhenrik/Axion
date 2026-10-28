@@ -896,6 +896,25 @@ pub struct Permissions {
     /// "Stop" in the capture popover ends the page's tracks; if the page still records this
     /// long after, the page is reloaded (milliseconds).
     pub stop_reload_after_ms: u32,
+    /// Who chooses what a page shares when it calls `getDisplayMedia()`.
+    pub screen_picker: ScreenPicker,
+    /// Most screens and windows the picker lists (screens first).
+    pub screen_picker_max_sources: u32,
+    /// Width of the picker's thumbnails (logical pixels); their height follows at 16:9.
+    pub screen_picker_thumbnail_width: u32,
+}
+
+/// Who chooses what a shared screen or window is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenPicker {
+    /// Axion's own picker on X11; the desktop's (screen cast portal) on Wayland.
+    #[default]
+    Auto,
+    /// Axion's own picker wherever it can list sources (X11 and XWayland).
+    Own,
+    /// Chromium and the desktop decide (the portal's dialog, else the whole screen).
+    System,
 }
 
 impl Default for Permissions {
@@ -909,6 +928,9 @@ impl Default for Permissions {
             clipboard: PermissionDefault::Ask,
             other: PermissionDefault::Ask,
             stop_reload_after_ms: 1500,
+            screen_picker: ScreenPicker::Auto,
+            screen_picker_max_sources: 12,
+            screen_picker_thumbnail_width: 160,
         }
     }
 }
