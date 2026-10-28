@@ -2,7 +2,7 @@
 //!
 //! ```bash
 //! axion --check-update   # asks the configured update source once, prints the answer and exits
-//! axion [url…] [--account=ID] [--capture=out.png] [--size=1440x900] [--position=X,Y] [--maximized] [--overview] [--address=TEXT] [--open=menu|history|bookmarks|settings|private|private-locked|account-menu|…] [--lead=MS] [--onboarding]
+//! axion [url…] [--account=ID] [--capture=out.png] [--size=1440x900] [--position=X,Y] [--maximized] [--overview] [--address=TEXT] [--open=menu|history|bookmarks|settings|private|private-locked|account-menu|…] [--lead=MS] [--quit-after=SECS] [--onboarding]
 //! ```
 //!
 //! Environment (they win over Settings › Hardware): `AXION_GPU=low|high|<name>` picks the
@@ -64,6 +64,7 @@ mod resize_bench;
 mod settings;
 mod shields;
 mod shields_popover;
+mod shutdown;
 mod stall;
 mod suggestions;
 mod svg_icons;
@@ -102,6 +103,7 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|_| "info,wgpu_core=warn,wgpu_hal=warn".into()),
         )
         .init();
+    install_panic_hook();
     stall::start_from_env();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -131,6 +133,10 @@ fn main() -> Result<()> {
         account: args.iter().find_map(|a| a.strip_prefix("--account=")).map(str::to_owned),
         onboarding: args.iter().any(|a| a == "--onboarding"),
         bench_resize: args.iter().any(|a| a == "--bench-resize"),
+        quit_after: args
+            .iter()
+            .find_map(|a| a.strip_prefix("--quit-after=")?.parse().ok())
+            .map(Duration::from_secs_f32),
         waker: None,
     };
 
@@ -154,8 +160,16 @@ fn main() -> Result<()> {
     let mut app = App { options: Some(options), browser: None, error: None };
     event_loop.run_app(&mut app)?;
     let relaunch = app.browser.as_mut().and_then(Browser::take_relaunch);
-    // Dropping the browser saves the session and shuts Chromium down cleanly.
-    drop(app.browser.take());
+    // Dropping the browser saves everything, then shuts Chromium down; a watchdog ends the
+    // process if that takes longer than `window.shutdown_timeout_ms`.
+    let quit_started = std::time::Instant::now();
+    if let Some(mut browser) = app.browser.take() {
+        let guard = shutdown::arm(browser.shutdown_limit(), relaunch.clone());
+        browser.set_shutdown_guard(guard.clone());
+        drop(browser);
+        guard.finished();
+    }
+    tracing::info!(ms = quit_started.elapsed().as_millis() as u64, "shut down");
     // Switching accounts: Axion starts again in the other one.
     if let Some(relaunch) = relaunch {
         relaunch.spawn()?;
@@ -239,6 +253,26 @@ impl ApplicationHandler for App {
         // The loop sleeps now (until the next event, frame or Chromium wakeup).
         stall::idle();
     }
+}
+
+/// A panic is logged with its thread, place and backtrace (tracing, and `last-panic.txt` in the
+/// settings directory), so a crash report has something to go on even when stderr is gone.
+/// The default hook still runs after it. Panics unwind: the browser's `Drop` saves the session.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let report =
+            format!("thread '{}' panicked: {info}\n{backtrace}", thread.name().unwrap_or("<unnamed>"));
+        tracing::error!("{report}");
+        if let Ok(bases) = axion_accounts::Bases::discover() {
+            // Best effort: the process is already going down.
+            let _ = std::fs::create_dir_all(&bases.config);
+            let _ = std::fs::write(bases.config.join("last-panic.txt"), &report);
+        }
+        previous(info);
+    }));
 }
 
 /// `--check-update`: the account's `[updates]` settings, one check, the answer on stdout.
