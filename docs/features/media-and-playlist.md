@@ -38,8 +38,12 @@ If a video does not play at all, see [Troubleshooting](../troubleshooting.md) (H
 ## Picture in Picture
 
 Choose **Picture in Picture** in a video's menu or in the fullscreen player. The video moves into a
-small floating glass window that you can drag, resize (it keeps the video's shape) and that snaps to
-the corners.
+small floating glass window that you can drag and resize from any edge or corner. The window keeps the
+video's shape and follows the pointer smoothly while you resize; it stays between a minimum width and
+a maximum (`media.pip_min_width`, `media.pip_max_width`) and never grows beyond most of your screen.
+Axion remembers the size you chose (`window.restore_pip_size`), so the next video appears as big. When
+another video with a different shape starts in the open window, the window re-fits once to the new
+shape, keeping its size, and stays on screen (with Reduce Motion it just jumps).
 
 ## Now Playing and media keys
 

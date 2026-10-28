@@ -1310,6 +1310,9 @@ pub struct WindowBehavior {
     pub restore_geometry: bool,
     /// Reopen the sidebar and its sections as they were.
     pub restore_panels: bool,
+    /// Reopen Picture in Picture as big as the user last made it (the same area, at the new
+    /// video's shape).
+    pub restore_pip_size: bool,
     /// The window's state is written this many milliseconds after it last changed.
     pub save_delay_ms: u32,
     /// A remembered position is used only while at least this much of the window (logical px
@@ -1328,6 +1331,7 @@ impl Default for WindowBehavior {
         Self {
             restore_geometry: true,
             restore_panels: true,
+            restore_pip_size: true,
             save_delay_ms: 800,
             min_visible_px: 120,
             shutdown_timeout_ms: 6000,
@@ -1775,13 +1779,22 @@ pub struct Media {
     /// video is always visible (no black bars, nothing cropped). Off: free resizing.
     #[serde(alias = "pip_keep_aspect")]
     pub pip_lock_aspect: bool,
-    /// How long after the last resize step of the PiP window it snaps to the video's aspect
-    /// (window managers resize in many small steps). Only used when the live snapping
-    /// (`pip_aspect_live_seconds`) is off.
-    pub pip_aspect_settle_seconds: f32,
-    /// While the PiP window is being resized it is brought to the video's aspect at most this
-    /// often (seconds); 0 = only after the resize settled.
-    pub pip_aspect_live_seconds: f32,
+    /// Older settings (the PiP window used to snap back to the aspect after a delay), no longer
+    /// used: the window now follows the pointer continuously. Accepted so old files load.
+    #[serde(skip_serializing)]
+    pip_aspect_settle_seconds: Option<f32>,
+    #[serde(skip_serializing)]
+    pip_aspect_live_seconds: Option<f32>,
+    /// A PiP resize the window manager started on its own (no edge of ours grabbed, e.g.
+    /// Alt + right drag) counts as over when no new size arrived for this long (seconds).
+    pub pip_resize_idle_seconds: f32,
+    /// Width (logical px) of a fresh PiP window (the video fits a square of this side) when no
+    /// size is remembered.
+    pub pip_default_width: f32,
+    /// Widest the PiP window can be made (logical px).
+    pub pip_max_width: f32,
+    /// The PiP window never grows beyond this share of its monitor (0.1-1), either way.
+    pub pip_max_screen_fraction: f32,
     /// Size of the PiP window's controls (buttons, icons and the progress bar), as a multiple
     /// of the base size. Shrinks by itself in a small window so everything still fits.
     pub pip_control_scale: f32,
@@ -1868,8 +1881,12 @@ impl Default for Media {
             hardware_decoding: true,
             desktop_integration: true,
             pip_lock_aspect: true,
-            pip_aspect_settle_seconds: 0.3,
-            pip_aspect_live_seconds: 0.06,
+            pip_aspect_settle_seconds: None,
+            pip_aspect_live_seconds: None,
+            pip_resize_idle_seconds: 0.5,
+            pip_default_width: 480.0,
+            pip_max_width: 1280.0,
+            pip_max_screen_fraction: 0.9,
             pip_control_scale: 1.3,
             pip_resize_border: 6.0,
             pip_min_target: 36.0,
@@ -2247,6 +2264,16 @@ mod tests {
         assert!(!media.add_trusted_site("example.com"));
         assert!(!media.add_trusted_site("  "));
         assert!(!toml::to_string(&media).unwrap().contains("own_controls"));
+    }
+
+    #[test]
+    fn pip_old_snap_keys_still_load() {
+        let c: Config =
+            toml::from_str("[media]\npip_aspect_settle_seconds = 0.3\npip_aspect_live_seconds = 0.06")
+                .unwrap();
+        assert_eq!(c.media.pip_max_width, Media::default().pip_max_width);
+        assert!(!toml::to_string(&c.media).unwrap().contains("pip_aspect_"));
+        assert!(Config::default().window.restore_pip_size);
     }
 
     #[test]

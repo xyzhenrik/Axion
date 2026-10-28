@@ -31,6 +31,10 @@ pub struct WindowState {
     pub tabs_section_open: Option<bool>,
     pub saved_section_open: Option<bool>,
     pub private_section_open: Option<bool>,
+    /// The Picture in Picture window's size (logical px) as the user last made it: its area is
+    /// kept for the next video, whatever its shape.
+    pub pip_width: Option<f64>,
+    pub pip_height: Option<f64>,
 }
 
 impl WindowState {
@@ -121,6 +125,8 @@ mod tests {
             monitor: Some("HDMI-A-1".into()),
             maximized: true,
             sidebar_open: Some(false),
+            pip_width: Some(640.0),
+            pip_height: Some(360.0),
             ..WindowState::default()
         };
         assert!(state.save(&d).is_ok());

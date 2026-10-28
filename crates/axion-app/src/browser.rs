@@ -2169,7 +2169,32 @@ impl Browser {
         }
         // Its window opens from the event loop (`sync_windows`).
         let (device, queue, config) = (&self.device, &self.queue, &self.config);
-        self.pip.get_or_insert_with(|| PipWindow::new(device, queue, config)).show(view, player);
+        let saved = &self.window_state;
+        self.pip
+            .get_or_insert_with(|| {
+                let mut pip = PipWindow::new(device, queue, config);
+                if config.window.restore_pip_size
+                    && let (Some(w), Some(h)) = (saved.pip_width, saved.pip_height)
+                {
+                    pip.set_remembered(Some(Vec2::new(w as f32, h as f32)));
+                }
+                pip
+            })
+            .show(view, player);
+    }
+
+    /// The size the user gave the PiP window is remembered in `window.toml` (if allowed).
+    fn sync_pip_size(&mut self) {
+        let Some(size) = self.pip.as_mut().and_then(PipWindow::take_user_size) else { return };
+        if !self.config.window.restore_pip_size {
+            return;
+        }
+        let (w, h) = (f64::from(size.x.round()), f64::from(size.y.round()));
+        if self.window_state.pip_width != Some(w) || self.window_state.pip_height != Some(h) {
+            self.window_state.pip_width = Some(w);
+            self.window_state.pip_height = Some(h);
+            self.window_state_dirty.get_or_insert_with(Instant::now);
+        }
     }
 
     fn pip_view(&self) -> Option<ViewId> {
@@ -2179,7 +2204,7 @@ impl Browser {
     /// Opens windows that need the event loop (the PiP window).
     pub fn sync_windows(&mut self, event_loop: &ActiveEventLoop) {
         let Some(pip) = self.pip.as_mut().filter(|p| p.needs_window()) else { return };
-        if let Err(e) = pip.open(event_loop, &self.instance, &self.adapter) {
+        if let Err(e) = pip.open(event_loop, &self.instance, &self.adapter, &self.config) {
             tracing::error!("Picture in Picture failed: {e:#}");
             if let Some(view) = pip.view {
                 self.end_pip(view, None, false);
@@ -2198,6 +2223,7 @@ impl Browser {
     pub fn pip_window_event(&mut self, event: WindowEvent) {
         let Some(pip) = &mut self.pip else { return };
         let outcome = pip.window_event(event, &self.config);
+        self.sync_pip_size();
         self.pip_outcome(outcome);
     }
 
@@ -2300,6 +2326,7 @@ impl Browser {
             pip.player = Some(player);
             pip.render(picture, &self.config);
         }
+        self.sync_pip_size();
     }
 
     /// Whole-page fullscreen (F11): the window goes fullscreen and Axion's chrome gives way
@@ -5139,11 +5166,14 @@ impl Browser {
     /// writes `window.toml` a moment after the last one (`force`: now, when quitting).
     fn track_window_state(&mut self, force: bool) {
         let behavior = &self.config.window;
-        if self.capture.is_some() || !(behavior.restore_geometry || behavior.restore_panels) {
+        if !(behavior.restore_geometry || behavior.restore_panels || behavior.restore_pip_size) {
             return;
         }
+        // A capture run leaves the window's own place and panels alone (a screenshot's window
+        // is no user choice); only the PiP size, set by hand, is written.
+        let capturing = self.capture.is_some();
         let mut now = self.window_state.clone();
-        if self.window.is_minimized() != Some(true) {
+        if !capturing && self.window.is_minimized() != Some(true) {
             let presentation = self.chrome.presentation();
             let fullscreen = self.window.fullscreen().is_some();
             now.fullscreen = presentation;
@@ -5162,11 +5192,13 @@ impl Browser {
                 now.monitor = self.window.current_monitor().and_then(|m| m.name());
             }
         }
-        let (sidebar, tabs, saved, private) = self.chrome.panel_state();
-        now.sidebar_open = Some(sidebar);
-        now.tabs_section_open = Some(tabs);
-        now.saved_section_open = Some(saved);
-        now.private_section_open = Some(private);
+        if !capturing {
+            let (sidebar, tabs, saved, private) = self.chrome.panel_state();
+            now.sidebar_open = Some(sidebar);
+            now.tabs_section_open = Some(tabs);
+            now.saved_section_open = Some(saved);
+            now.private_section_open = Some(private);
+        }
         if now != self.window_state {
             self.window_state = now;
             self.window_state_dirty.get_or_insert_with(Instant::now);
@@ -6650,6 +6682,26 @@ impl Browser {
                     if let (&[w, h], Some(pip)) = (&n[..], &mut self.pip) {
                         pip.request_size(winit::dpi::LogicalSize::new(w, h), &self.config);
                     }
+                }
+                // Capture aids: an edge drag of the PiP window as the window manager reports it:
+                // "pip-grab:se" (n, s, e, w, ne, nw, se, sw), then any number of "pip-pull:DX:DY"
+                // (the pointer's distance from the grab, logical px), then "pip-ungrab".
+                grab if grab.starts_with("pip-grab:") => {
+                    if let Some(pip) = &mut self.pip {
+                        pip.grab_edge(&grab["pip-grab:".len()..]);
+                    }
+                }
+                pull if pull.starts_with("pip-pull:") => {
+                    let n: Vec<f64> = pull.split(':').skip(1).filter_map(|v| v.parse().ok()).collect();
+                    if let (&[dx, dy], Some(pip)) = (&n[..], &mut self.pip) {
+                        pip.pull_edge(dx, dy, &self.config);
+                    }
+                }
+                "pip-ungrab" => {
+                    if let Some(pip) = &mut self.pip {
+                        pip.release_edge();
+                    }
+                    self.sync_pip_size();
                 }
                 // Capture aids: the pointer in the PiP window (logical px) as a user drags: move
                 // to "pip-move:X:Y", press "pip-press" there, let go with "pip-release". No

@@ -134,6 +134,12 @@ ask_where_to_save = false
 | `tabs.max_frame_rate_cap` | Following the display, pages draw at most this many frames per second (0: no cap). | `120` |
 | `media.skip_seconds` | How far the skip buttons jump. | `10` |
 | `media.playback_speeds` | The speeds the speed button cycles through. | `[1.0, 1.25, 1.5, 2.0, 0.5, 0.75]` |
+| `media.pip_lock_aspect` | The Picture in Picture window keeps the video's shape when resized. | `true` |
+| `media.pip_min_width` | Narrowest the Picture in Picture window can be made, in pixels. | `272` |
+| `media.pip_max_width` | Widest it can be made, in pixels. | `1280` |
+| `media.pip_max_screen_fraction` | It never grows beyond this share of its monitor, either way (0.1 to 1). | `0.9` |
+| `media.pip_default_width` | Size of a first Picture in Picture window: the video fits a square of this side. | `480` |
+| `window.restore_pip_size` | Open Picture in Picture as big as you last made it. | `true` |
 | `passwords.generator_length` | Length of generated passwords. | `20` |
 | `passwords.generator_symbols` | Generated passwords include symbols. | `true` |
 | `find.match_case` | Find on page matches upper and lower case exactly. | `false` |
