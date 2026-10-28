@@ -354,6 +354,7 @@ impl Browser {
         if !self.reading.pages.get(&view).is_some_and(|t| t.reader_active) {
             self.toggle_reader();
         }
+        self.close_popups();
         self.open_reader_popover();
     }
 
