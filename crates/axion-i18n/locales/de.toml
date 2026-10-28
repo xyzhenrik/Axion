@@ -1236,3 +1236,4 @@
 "Pinned" = "Angeheftet"
 "On Matching Pages" = "Auf passenden Seiten"
 "Extensions with a popup can show their icon in the address field; pin them in the extensions popover. \"On Matching Pages\" hides a pinned icon on pages the extension has no access to." = "Erweiterungen mit Popup können ihr Symbol im Adressfeld zeigen; hefte sie im Erweiterungen-Popover an. „Auf passenden Seiten“ blendet ein angeheftetes Symbol auf Seiten aus, auf die die Erweiterung keinen Zugriff hat."
+"Audio only" = "Nur Ton"

@@ -192,6 +192,9 @@ a site. Changes apply to pages loaded next.
 |---|---|---|---|
 | Trusted sites list | Sites that keep their own player. | YouTube, Twitch, Vimeo, Dailymotion, Netflix, Disney+, Prime Video, Crunchyroll, Spotify, SoundCloud | `media.trusted_player_sites` |
 | Ignored media sites | Sites whose video/audio elements are calls or chats (Discord…), not media: no player, no Now Playing, no Playlist entry. Camera, microphone and call streams are skipped everywhere. | Discord | `media.ignored_media_sites` |
+| Loading indicator | A turning ring on the players while a video loads or buffers. | On | `media.loading_indicator` |
+| Ring speed | Seconds per turn of that ring. | 0.9 | `media.loading_spin_seconds` |
+| Keep paused player | How long a paused player that left the page keeps the Now Playing card. | 30 s | `media.now_playing_keep_seconds` |
 
 ### Playback
 

@@ -4194,15 +4194,21 @@ impl Browser {
                         }
                     }
                     Some(ChromeAction::NowPlaying) => {
+                        tracing::info!("Now Playing card: shows its tab");
                         if let Some(view) = self.now_playing {
                             self.show_view(view);
                         }
                     }
                     Some(ChromeAction::NowPlayingToggle) => {
+                        tracing::info!("Now Playing card: play/pause clicked");
                         self.now_playing_command(axion_media::Action::Toggle)
                     }
-                    Some(ChromeAction::NowPlayingPrevious) => self.now_playing_previous(),
+                    Some(ChromeAction::NowPlayingPrevious) => {
+                        tracing::info!("Now Playing card: previous clicked");
+                        self.now_playing_previous()
+                    }
                     Some(ChromeAction::NowPlayingNext) => {
+                        tracing::info!("Now Playing card: next clicked");
                         self.now_playing_command(axion_media::Action::NextTrack)
                     }
                     Some(ChromeAction::SelectTab(i)) => self.select_tab(i),

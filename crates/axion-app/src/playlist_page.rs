@@ -264,7 +264,13 @@ fn capsule(ui: &mut Ui, parent: NodeId, action: PageAction, icon: Icon, text: &s
     node
 }
 
+/// Space between the failure state's buttons (more than the glass merge distance).
+const FAILURE_BUTTON_GAP: f32 = 40.0;
+/// How far the ring sits above the middle while a note's text is under it.
+const RING_LIFT: f32 = 76.0;
 const SPINNER_SIDE: f32 = 56.0;
+/// The narrowest the volume pill gets in a narrow window (speaker, a short slider, padding).
+const VOLUME_MIN_WIDTH: f32 = 76.0;
 
 const DANGER: Color = Color::rgb(0xE5483E);
 
@@ -349,8 +355,14 @@ pub struct PlaylistPage {
     video_box: NodeId,
     video: NodeId,
     video_note: NodeId,
-    open_page_button: NodeId,
-    retry_button: NodeId,
+    failure_buttons: NodeId,
+    /// The row of the bottom buttons, and the volume pill whose width follows its room.
+    bottom: NodeId,
+    volume_capsule: NodeId,
+    /// The placeholder glyph over the note (hidden while the ring turns instead of it) and the
+    /// overlay that centres the ring.
+    note_icon: NodeId,
+    ring_overlay: NodeId,
     spinner: Spinner,
     /// The player area waits for its video (the ring turns).
     loading: bool,
@@ -594,7 +606,7 @@ impl PlaylistPage {
         ui.set_visible(video, false);
         let note_box =
             ui.add(video_box, Widget::container(), Style { align_items: AlignItems::CENTER, ..column(10.0) });
-        ui.add(
+        let note_icon = ui.add(
             note_box,
             Widget::icon(Icon::Playlist, 40.0).with_paint(Paint::Fixed(Color::rgb(0x8E8E93))),
             Style::default(),
@@ -603,14 +615,19 @@ impl PlaylistPage {
         if let Some(w) = ui.widget_mut(video_note) {
             w.set_paint(Paint::Fixed(Color::rgb(0x8E8E93)));
         }
-        let open_page_button =
-            capsule(ui, note_box, PageAction::OpenPage, Icon::Globe, tr("Open page"), false);
-        ui.set_visible(open_page_button, false);
-        let retry_button = capsule(ui, note_box, PageAction::Retry, Icon::Reload, tr("Retry"), false);
-        ui.set_visible(retry_button, false);
+        // The failure's two buttons side by side, wide apart: glass this close would flow into
+        // one shape (and make a dark bridge between them).
+        let failure_buttons = ui.add(
+            note_box,
+            Widget::container(),
+            Style { align_items: AlignItems::CENTER, ..row(FAILURE_BUTTON_GAP) },
+        );
+        capsule(ui, failure_buttons, PageAction::OpenPage, Icon::Globe, tr("Open page"), false);
+        capsule(ui, failure_buttons, PageAction::Retry, Icon::Reload, tr("Retry"), false);
+        ui.set_visible(failure_buttons, false);
         // The loading ring sits over the middle of the video area (in an overlay that fills
         // it and takes no clicks).
-        let overlay = ui.add(
+        let ring_overlay = ui.add(
             video_box,
             Widget::container(),
             Style {
@@ -621,7 +638,7 @@ impl PlaylistPage {
                 ..Default::default()
             },
         );
-        let spinner = Spinner::build(ui, overlay, SPINNER_SIDE);
+        let spinner = Spinner::build(ui, ring_overlay, SPINNER_SIDE);
 
         let info = ui.add(
             player_col,
@@ -727,6 +744,9 @@ impl PlaylistPage {
                     flex_grow: 1.0,
                     flex_basis: length(0.0),
                     size: Size { width: auto(), height: length(BOTTOM_BUTTON) },
+                    // Not as wide as its content wants: the volume pill shrinks instead of the
+                    // slot growing over its neighbour.
+                    min_size: Size { width: length(0.0), height: auto() },
                     justify_content: justify,
                     ..row(0.0)
                 },
@@ -753,6 +773,7 @@ impl PlaylistPage {
                 .with_tooltip(tr("Playback Speed"), None),
             Style {
                 size: Size { width: length(BOTTOM_BUTTON + 14.0), height: length(BOTTOM_BUTTON) },
+                flex_shrink: 0.0,
                 justify_content: JustifyContent::CENTER,
                 ..row(0.0)
             },
@@ -767,8 +788,10 @@ impl PlaylistPage {
                 .with_button_tint()
                 .with_radius(CAPSULE),
             Style {
+                // As wide as VOLUME_WIDTH where there is room, narrower (down to the speaker
+                // and a short slider) where the window is narrow: never over the sleep button.
                 size: Size { width: length(VOLUME_WIDTH), height: length(BOTTOM_BUTTON) },
-                flex_shrink: 1.0,
+                flex_shrink: 0.0,
                 margin: Rect {
                     left: length(VOLUME_GAP),
                     right: length(0.0),
@@ -850,8 +873,11 @@ impl PlaylistPage {
             video_box,
             video,
             video_note,
-            open_page_button,
-            retry_button,
+            failure_buttons,
+            bottom,
+            volume_capsule,
+            note_icon,
+            ring_overlay,
             spinner,
             loading: false,
             title,
@@ -1360,6 +1386,16 @@ impl PlaylistPage {
     /// The player half: texts, buttons' states, the picture.
     pub fn set_player(&mut self, ui: &mut Ui, m: &PlayerModel<'_>) {
         self.loading = m.loading && !m.open_page;
+        // While the ring turns it takes the placeholder glyph's place; the note's text stays,
+        // under the ring.
+        let ring_only = self.loading && m.video.is_none();
+        ui.set_visible(self.note_icon, !ring_only);
+        let lift = if ring_only && m.note.is_some() { RING_LIFT } else { 0.0 };
+        let mut style = ui.style(self.ring_overlay);
+        if style.padding.bottom != length(lift) {
+            style.padding.bottom = length(lift);
+            ui.set_style(self.ring_overlay, style);
+        }
         ui.set_text(self.title, m.title);
         ui.set_text(self.site, m.site);
         ui.set_text(self.elapsed, &format_time(m.elapsed));
@@ -1431,8 +1467,7 @@ impl PlaylistPage {
                     self.video_note,
                     note.unwrap_or(if self.list_empty { tr("No Videos") } else { tr("Choose a video") }),
                 );
-                ui.set_visible(self.open_page_button, m.open_page);
-                ui.set_visible(self.retry_button, m.open_page);
+                ui.set_visible(self.failure_buttons, m.open_page);
                 if let Some(parent) = ui.parent(self.video_note) {
                     ui.set_visible(parent, true);
                 }
@@ -1449,6 +1484,20 @@ impl PlaylistPage {
     pub fn animate(&mut self, ui: &mut Ui, config: &Config, dt: f32) {
         if !self.open {
             return;
+        }
+        // The volume pill takes the room its side of the row has (the speed button and the gaps
+        // before and after it excluded: glass closer than that to the sleep button flows into it), never more than VOLUME_WIDTH or less than its minimum:
+        // in a narrow window it must not reach the sleep button.
+        let row_width = ui.frame(self.bottom).size.x;
+        if row_width > 1.0 {
+            let side = (row_width - BOTTOM_BUTTON) / 2.0;
+            let room = side - (BOTTOM_BUTTON + 14.0) - VOLUME_GAP - VOLUME_GAP;
+            let wanted = room.clamp(VOLUME_MIN_WIDTH, VOLUME_WIDTH).floor();
+            let mut style = ui.style(self.volume_capsule);
+            if style.size.width != length(wanted) {
+                style.size.width = length(wanted);
+                ui.set_style(self.volume_capsule, style);
+            }
         }
         let loading = self.loading;
         self.spinner.update(ui, config, loading, dt);
