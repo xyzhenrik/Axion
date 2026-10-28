@@ -8,7 +8,7 @@ use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{Color, Config};
 use axion_i18n::{tr, tr_n};
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, CAPSULE, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
 
 use crate::extensions::{ExtensionView, access_summary, api_label};
@@ -44,7 +44,7 @@ const SECTION: f32 = 24.0;
 const ICON: f32 = 30.0;
 /// Permission lines the detail view shows before "and N more".
 const MAX_LINES: usize = 10;
-const ERROR: Color = Color::rgb(0xD0362B);
+const ERROR: Color = Color::rgb(0xFF6A5C);
 
 /// A click in the popover.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,7 +109,14 @@ impl ExtensionsPopover {
 
     /// Opens below `anchor` (the toolbar button), right-aligned with it, or refreshes the
     /// content if already open.
-    pub fn open(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, window_width: f32, content: &Content) {
+    pub fn open(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        anchor: Frame,
+        window_width: f32,
+        content: &Content,
+    ) {
         ui.clear_children(self.plate);
         let mut heights = Vec::new();
         match content.details.and_then(|id| content.extensions.iter().position(|e| e.id == id)) {
@@ -141,7 +148,11 @@ impl ExtensionsPopover {
             icon_of(ui, row_node, ext, content.icons.get(i).and_then(Option::as_ref));
             let text = ui.add(row_node, Widget::container(), column_grow());
             ui.add_label(text, &ext.name, TextStyle::Body, shrinking());
-            let line = if ext.broken { tr("Files are missing").to_owned() } else { access_summary(&ext.permissions) };
+            let line = if ext.broken {
+                tr("Files are missing").to_owned()
+            } else {
+                access_summary(&ext.permissions)
+            };
             let note = secondary(ui, text, &line, TextStyle::Footnote);
             if ext.permissions.broad()
                 && let Some(w) = ui.widget_mut(note)
@@ -242,7 +253,8 @@ impl ExtensionsPopover {
                 heights.push(ACTION);
             }
         }
-        let remove = if content.confirm_remove { tr("Click Again to Remove") } else { tr("Remove Extension") };
+        let remove =
+            if content.confirm_remove { tr("Click Again to Remove") } else { tr("Remove Extension") };
         let (_, label) = action_row_with_label(ui, self.plate, DETAIL_REMOVE, Icon::Trash, remove, false);
         if let Some(w) = ui.widget_mut(label) {
             w.set_paint(Paint::Fixed(ERROR));
@@ -275,7 +287,11 @@ fn icon_of(ui: &mut Ui, parent: NodeId, ext: &ExtensionView, image: Option<&Imag
             let node = ui.add(
                 parent,
                 Widget::image().with_radius(ICON * 0.22),
-                Style { size: Size { width: length(ICON), height: length(ICON) }, flex_shrink: 0.0, ..Default::default() },
+                Style {
+                    size: Size { width: length(ICON), height: length(ICON) },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
             );
             ui.set_image(node, Some(image.clone()));
         }
@@ -318,7 +334,8 @@ fn action_row_with_label(
     ui.add(node, Widget::icon(icon, 15.0).with_paint(Paint::Accent), Style::default());
     let style = if emphasis { TextStyle::BodyEmphasis } else { TextStyle::Callout };
     let label = ui.add_label(node, text, style, shrinking());
-    if let Some(w) = ui.widget_mut(label) {
+    // Accent text on dense glass reads poorly over a light page; only the primary row has it.
+    if emphasis && let Some(w) = ui.widget_mut(label) {
         w.set_paint(Paint::Accent);
     }
     (node, label)
@@ -352,7 +369,9 @@ fn action_of(id: ActionId) -> Option<ExtensionsAction> {
         DETAIL_POPUP => ExtensionsAction::OpenPopup,
         DETAIL_OPTIONS => ExtensionsAction::OpenOptions,
         DETAIL_REMOVE => ExtensionsAction::Remove,
-        _ if (ROW_BASE..ROW_BASE + ROWS as u32).contains(&n) => ExtensionsAction::Details((n - ROW_BASE) as usize),
+        _ if (ROW_BASE..ROW_BASE + ROWS as u32).contains(&n) => {
+            ExtensionsAction::Details((n - ROW_BASE) as usize)
+        }
         _ if (TOGGLE_BASE..TOGGLE_BASE + ROWS as u32).contains(&n) => {
             ExtensionsAction::Toggle((n - TOGGLE_BASE) as usize)
         }

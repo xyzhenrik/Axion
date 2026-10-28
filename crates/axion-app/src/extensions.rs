@@ -89,8 +89,12 @@ impl Extensions {
     }
 
     fn enabled_pairs(&self) -> Vec<(String, PathBuf)> {
-        let mut pairs: Vec<_> =
-            self.views.iter().filter(|v| v.enabled && !v.broken).map(|v| (v.id.clone(), v.dir.clone())).collect();
+        let mut pairs: Vec<_> = self
+            .views
+            .iter()
+            .filter(|v| v.enabled && !v.broken)
+            .map(|v| (v.id.clone(), v.dir.clone()))
+            .collect();
         pairs.sort();
         pairs
     }
@@ -173,7 +177,9 @@ impl Extensions {
         self.installing = true;
         let (jobs, root) = (Arc::clone(&self.jobs), self.root.clone());
         spawn("install-extension", move || {
-            let result = Store::open(&store_path).map_err(|e| e.to_string()).and_then(|store| install(&store, &root, &path));
+            let result = Store::open(&store_path)
+                .map_err(|e| e.to_string())
+                .and_then(|store| install(&store, &root, &path));
             jobs.lock().unwrap_or_else(PoisonError::into_inner).finished = Some(result);
         });
     }
@@ -234,10 +240,10 @@ fn install(store: &Store, root: &Path, path: &Path) -> Result<String, String> {
     let mut enabled = true;
     for old in existing.iter().filter(|r| r.id == installed.id || r.source == source) {
         enabled = old.enabled;
-        if PathBuf::from(&old.dir) != installed.dir {
-            if let Err(e) = axion_extensions::remove_folder(Path::new(&old.dir), root) {
-                tracing::warn!("removing the old copy failed: {e}");
-            }
+        if Path::new(&old.dir) != installed.dir
+            && let Err(e) = axion_extensions::remove_folder(Path::new(&old.dir), root)
+        {
+            tracing::warn!("removing the old copy failed: {e}");
         }
         if old.id != installed.id {
             store.remove_extension(&old.id).map_err(|e| e.to_string())?;
@@ -311,7 +317,9 @@ mod tests {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(
             dir.join("manifest.json"),
-            format!(r#"{{"manifest_version":3,"name":"{name}","version":"1","host_permissions":["<all_urls>"]}}"#),
+            format!(
+                r#"{{"manifest_version":3,"name":"{name}","version":"1","host_permissions":["<all_urls>"]}}"#
+            ),
         )
         .unwrap();
     }

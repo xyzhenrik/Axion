@@ -24,6 +24,7 @@ These pages explain what it can do and, above all, what each setting does.
 | [Media and Playlist](features/media-and-playlist.md) | The video player, Picture in Picture, media keys, the Playlist. |
 | [Start page](features/start-page.md) | Clock, top sites, search, backgrounds and statistics. |
 | [Appearance and Liquid Glass](features/appearance-and-glass.md) | Themes, accent colours, glass or flat, layout options. |
+| [Chrome extensions](features/extensions.md) | Installing Manifest V3 extensions, permissions, limits. |
 | [Developer tools](features/developer-tools.md) | F12, view source, Inspect. |
 | [Hardware acceleration](features/hardware-acceleration.md) | Graphics card and video decoding options. |
 | [Updates](features/updates.md) | How Axion finds and installs new versions. |

@@ -431,6 +431,7 @@ dependencies = [
  "pollster",
  "rustix 1.1.5",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "ureq",

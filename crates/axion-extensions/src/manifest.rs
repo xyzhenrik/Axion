@@ -166,7 +166,8 @@ fn localized(text: &str, manifest: &serde_json::Map<String, Value>, dir: &Path) 
         }
         let path = dir.join("_locales").join(locale).join("messages.json");
         let Ok(content) = std::fs::read_to_string(path) else { continue };
-        let Ok(Value::Object(messages)) = serde_json::from_str::<Value>(content.trim_start_matches('\u{feff}'))
+        let Ok(Value::Object(messages)) =
+            serde_json::from_str::<Value>(content.trim_start_matches('\u{feff}'))
         else {
             continue;
         };
@@ -207,11 +208,7 @@ pub fn extension_id_for_path(dir: &Path) -> String {
 }
 
 pub(crate) fn id_from_hash(hash: &[u8]) -> String {
-    hash.iter()
-        .take(16)
-        .flat_map(|b| [b >> 4, b & 0xF])
-        .map(|nibble| char::from(b'a' + nibble))
-        .collect()
+    hash.iter().take(16).flat_map(|b| [b >> 4, b & 0xF]).map(|nibble| char::from(b'a' + nibble)).collect()
 }
 
 #[cfg(test)]

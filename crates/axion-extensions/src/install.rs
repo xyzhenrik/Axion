@@ -86,11 +86,8 @@ fn staging_dir(root: &Path, source: &Path) -> Result<PathBuf> {
 /// Checks the unpacked extension and works out its id.
 fn finish(dir: &Path, _root: &Path) -> Result<Installed> {
     let manifest = Manifest::read(dir)?;
-    let id = manifest
-        .key
-        .as_deref()
-        .and_then(extension_id_for_key)
-        .unwrap_or_else(|| extension_id_for_path(dir));
+    let id =
+        manifest.key.as_deref().and_then(extension_id_for_key).unwrap_or_else(|| extension_id_for_path(dir));
     tracing::info!(%id, name = %manifest.name, "extension unpacked");
     Ok(Installed { id, dir: dir.to_owned(), manifest })
 }
@@ -104,7 +101,8 @@ fn pin_key(manifest: &Path, key: &str) -> Result<()> {
         && !object.contains_key("key")
     {
         object.insert("key".into(), Value::String(key.to_owned()));
-        let out = serde_json::to_string_pretty(&value).map_err(|e| ExtensionError::Manifest(e.to_string()))?;
+        let out =
+            serde_json::to_string_pretty(&value).map_err(|e| ExtensionError::Manifest(e.to_string()))?;
         std::fs::write(manifest, out).map_err(io(manifest))?;
     }
     Ok(())
@@ -165,7 +163,8 @@ mod tests {
     fn a_crx_keeps_its_id_through_the_key() {
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("t.crx");
-        std::fs::write(&file, make_crx3(&make_zip(&[("manifest.json", MANIFEST)]), b"pub key bytes")).unwrap();
+        std::fs::write(&file, make_crx3(&make_zip(&[("manifest.json", MANIFEST)]), b"pub key bytes"))
+            .unwrap();
         let installed = install_file(&file, &root.path().join("ext")).unwrap();
         let key = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"pub key bytes");
         assert_eq!(installed.manifest.key.as_deref(), Some(key.as_str()));

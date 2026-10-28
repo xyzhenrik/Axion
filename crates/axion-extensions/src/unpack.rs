@@ -127,7 +127,8 @@ fn entries(zip: &[u8]) -> Result<Vec<Entry>> {
             return Err(bad("damaged zip directory"));
         }
         let field = |offset: usize, wide: bool| {
-            if wide { u32_at(zip, at + offset) } else { u16_at(zip, at + offset) }.ok_or_else(|| bad("truncated zip"))
+            if wide { u32_at(zip, at + offset) } else { u16_at(zip, at + offset) }
+                .ok_or_else(|| bad("truncated zip"))
         };
         let (name_len, extra_len, comment_len) = (field(28, false)?, field(30, false)?, field(32, false)?);
         let name = zip.get(at + 46..at + 46 + name_len).ok_or_else(|| bad("truncated zip"))?;
@@ -166,7 +167,8 @@ pub fn unzip(data: &[u8], dest: &Path) -> Result<Option<String>> {
         if entry.name.ends_with('/') {
             continue;
         }
-        let relative = safe_relative(&entry.name).ok_or_else(|| bad(format!("unsafe path {}", entry.name)))?;
+        let relative =
+            safe_relative(&entry.name).ok_or_else(|| bad(format!("unsafe path {}", entry.name)))?;
         total += entry.size;
         if total > MAX_BYTES {
             return Err(ExtensionError::TooLarge(MAX_BYTES / (1024 * 1024)));
