@@ -300,8 +300,9 @@ pub struct Browser {
     /// Starts drags of a tab's link into other apps (see `platform::dragout`); `None` before it
     /// was connected or where the display server does not allow it.
     drag_out: Option<DragOut>,
-    /// Connecting `drag_out` was tried (once).
-    drag_out_tried: bool,
+    /// How often connecting `drag_out` was tried, and when last.
+    drag_out_tries: u8,
+    drag_out_tried_at: Option<Instant>,
     /// Asks the X server where the pointer is during such a drag (made on first use).
     pointer_probe: Option<PointerProbe>,
     /// Test aid: where a simulated file drag is (window, logical px), instead of the pointer.
@@ -856,7 +857,8 @@ impl Browser {
             palette,
             file_drop: FileDrop::default(),
             drag_out: None,
-            drag_out_tried: false,
+            drag_out_tries: 0,
+            drag_out_tried_at: None,
             pointer_probe: None,
             file_drag_at: None,
             clipboard_reader: ClipboardReader::default(),
@@ -5564,6 +5566,9 @@ impl Browser {
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = input::modifiers(m.state()),
             WindowEvent::CursorMoved { position, .. } => {
+                if let Some(drag_out) = &mut self.drag_out {
+                    drag_out.pump();
+                }
                 let p = Vec2::new(position.x as f32, position.y as f32) / self.scale();
                 self.pointer_moved(p);
             }
@@ -5580,6 +5585,9 @@ impl Browser {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                if let Some(drag_out) = &mut self.drag_out {
+                    drag_out.pump();
+                }
                 self.tooltip.cancel(&mut self.ui);
                 self.mouse_button(state, button)
             }
@@ -5727,13 +5735,23 @@ impl Browser {
     /// Connects the drag-out source on the first frame (Wayland needs to listen to the pointer
     /// from before a drag starts, to know the serial of its press).
     fn connect_drag_out(&mut self) {
-        if self.drag_out_tried || !self.config.tabs.drag_out_links {
+        /// A failed connection (the compositor was not ready, no seat yet) is tried again a few times.
+        const MAX_TRIES: u8 = 5;
+        const RETRY_AFTER: Duration = Duration::from_secs(2);
+        if self.drag_out.is_some() || self.drag_out_tries >= MAX_TRIES || !self.config.tabs.drag_out_links {
             return;
         }
-        self.drag_out_tried = true;
+        if self.drag_out_tried_at.is_some_and(|at| at.elapsed() < RETRY_AFTER) {
+            return;
+        }
+        self.drag_out_tries += 1;
+        self.drag_out_tried_at = Some(Instant::now());
         self.drag_out = DragOut::connect(&self.window);
         if self.drag_out.is_none() {
-            tracing::debug!("dragging tabs out as links is not available on this display server");
+            tracing::debug!(
+                tries = self.drag_out_tries,
+                "dragging tabs out as links is not available (yet) on this display server"
+            );
         }
     }
 
@@ -5745,14 +5763,19 @@ impl Browser {
             return false;
         }
         let Some(item) = self.tab_drag.dragged() else { return false };
-        let Some(url) = find_tab(&self.tabs, &self.parked, item.view)
-            .map(|t| t.url.clone())
-            .filter(|url| shareable_url(url))
+        let Some((url, title)) = find_tab(&self.tabs, &self.parked, item.view)
+            .map(|t| (t.url.clone(), t.title.clone()))
+            .filter(|(url, _)| shareable_url(url))
         else {
+            tracing::debug!(view = ?item.view, "tab drag out: the tab's address cannot be shared");
             return false;
         };
-        let Some(drag_out) = &mut self.drag_out else { return false };
-        if !drag_out.start(Payload { url }) {
+        let Some(drag_out) = &mut self.drag_out else {
+            tracing::debug!("tab drag out: no drag source on this display server");
+            return false;
+        };
+        if !drag_out.start(Payload { url, title }) {
+            tracing::debug!("tab drag out: the system refused the drag; the tab drag goes on");
             return false;
         }
         self.tab_drag.cancel(&mut self.ui);

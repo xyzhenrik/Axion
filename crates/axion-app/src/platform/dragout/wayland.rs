@@ -27,7 +27,7 @@ use wayland_client::protocol::wl_seat::{self, Capability, WlSeat};
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, event_created_child};
 
-use super::{MIME_PLAIN, MIME_PLAIN_UTF8, MIME_URI_LIST, Payload, data_for};
+use super::{MIME_MOZ_URL, MIME_PLAIN, MIME_PLAIN_UTF8, MIME_URI_LIST, Payload, data_for};
 
 /// How long the serving thread waits for a drag to end (a drop that was never finished).
 const DRAG_TIMEOUT: Duration = Duration::from_secs(120);
@@ -39,6 +39,8 @@ struct State {
     pointer: Option<WlPointer>,
     /// The serial of the latest button press.
     press_serial: Option<u32>,
+    /// The surface with pointer focus (our own pointer's view of it).
+    focus: Option<ObjectId>,
     /// The drag that is on: its source and what it carries.
     drag: Option<(WlDataSource, Payload)>,
 }
@@ -74,18 +76,43 @@ impl Source {
             .inspect_err(|e| tracing::debug!("no Wayland registry for tab drags: {e}"))
             .ok()?;
         let qh = queue.handle();
-        let manager: WlDataDeviceManager = globals.bind(&qh, 1..=3, ()).ok()?;
-        let seat: WlSeat = globals.bind(&qh, 1..=5, ()).ok()?;
+        let manager: WlDataDeviceManager = globals
+            .bind(&qh, 1..=3, ())
+            .inspect_err(|e| tracing::debug!("tab drags: no wl_data_device_manager: {e}"))
+            .ok()?;
+        let seat: WlSeat = globals
+            .bind(&qh, 1..=5, ())
+            .inspect_err(|e| tracing::debug!("tab drags: no wl_seat: {e}"))
+            .ok()?;
         let device = manager.get_data_device(&seat, &qh, ());
         let mut state = State::default();
         // The seat tells its capabilities, which makes it hand out the pointer.
-        queue.roundtrip(&mut state).ok()?;
-        state.pointer.as_ref()?;
+        queue
+            .roundtrip(&mut state)
+            .inspect_err(|e| tracing::debug!("tab drags: the seat roundtrip failed: {e}"))
+            .ok()?;
+        // A seat without a pointer yet (none plugged in) is fine: the capability can arrive
+        // later and `pump` then creates it.
+        tracing::debug!(has_pointer = state.pointer.is_some(), "tab drags: seat bound");
         // SAFETY: `surface` is the window's `wl_surface` (raw window handle), alive as long as
         // the window; `from_ptr` checks the object's interface.
-        let id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.as_ptr().cast()) }.ok()?;
+        let id = unsafe { ObjectId::from_ptr(WlSurface::interface(), surface.as_ptr().cast()) }
+            .inspect_err(|e| tracing::debug!("tab drags: the window surface is not usable: {e}"))
+            .ok()?;
         let surface = WlSurface::from_id(&conn, id).ok()?;
+        tracing::debug!(surface = ?surface.id(), "tab drags: connected to the Wayland seat");
         Some(Self { conn, qh, inner: Arc::new(Mutex::new(Inner { queue, state })), manager, device, surface })
+    }
+
+    /// Takes the events that winit's reads of the socket queued for this connection's own queue
+    /// (pointer buttons with their serials, seat changes). Cheap; called from the window's
+    /// event handlers so the queue neither grows without bound nor lags behind a press.
+    pub fn pump(&mut self) {
+        let Ok(mut guard) = self.inner.try_lock() else { return };
+        let Inner { queue, state } = &mut *guard;
+        if let Err(e) = queue.dispatch_pending(state) {
+            tracing::warn!("Wayland events for the tab drag failed: {e}");
+        }
     }
 
     /// Starts the drag from the press that is held now.
@@ -100,10 +127,21 @@ impl Source {
         if state.drag.is_some() {
             return false;
         }
-        let Some(serial) = state.press_serial else { return false };
+        let Some(serial) = state.press_serial else {
+            tracing::debug!("tab drag out (Wayland): no button press seen on the drag pointer");
+            return false;
+        };
+        tracing::debug!(
+            serial,
+            focus = ?state.focus,
+            surface = ?self.surface.id(),
+            manager_version = self.manager.version(),
+            "tab drag out (Wayland): starting wl_data_device.start_drag"
+        );
         let source = self.manager.create_data_source(&self.qh, ());
-        for mime in [MIME_URI_LIST, MIME_PLAIN_UTF8, MIME_PLAIN] {
-            source.offer(mime.to_owned());
+        for mime in super::offered_mimes(&[MIME_PLAIN_UTF8, MIME_PLAIN, MIME_URI_LIST, MIME_MOZ_URL]) {
+            tracing::debug!(%mime, "drag-out source: offer");
+            source.offer(mime);
         }
         if self.manager.version() >= 3 {
             source.set_actions(DndAction::Copy);
@@ -172,11 +210,20 @@ impl Dispatch<WlSeat, ()> for State {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(caps) } = event
-            && caps.contains(Capability::Pointer)
-            && state.pointer.is_none()
-        {
-            state.pointer = Some(seat.get_pointer(qh, ()));
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(caps) } = event {
+            tracing::debug!(?caps, "drag-out seat capabilities");
+            if caps.contains(Capability::Pointer) {
+                if state.pointer.is_none() {
+                    state.pointer = Some(seat.get_pointer(qh, ()));
+                }
+            } else if let Some(pointer) = state.pointer.take() {
+                // The last pointer went away (it may come back as a new object).
+                if pointer.version() >= 3 {
+                    pointer.release();
+                }
+                state.press_serial = None;
+                state.focus = None;
+            }
         }
     }
 }
@@ -190,8 +237,22 @@ impl Dispatch<WlPointer, ()> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_pointer::Event::Button { serial, state: WEnum::Value(ButtonState::Pressed), .. } = event {
-            state.press_serial = Some(serial);
+        match event {
+            wl_pointer::Event::Enter { serial, surface, .. } => {
+                tracing::trace!(serial, surface = ?surface.id(), "drag-out pointer: enter");
+                state.focus = Some(surface.id());
+            }
+            wl_pointer::Event::Leave { serial, .. } => {
+                tracing::trace!(serial, "drag-out pointer: leave");
+                state.focus = None;
+            }
+            wl_pointer::Event::Button { serial, button, state: bstate, .. } => {
+                tracing::trace!(serial, button, state = ?bstate, "drag-out pointer: button");
+                if matches!(bstate, WEnum::Value(ButtonState::Pressed)) {
+                    state.press_serial = Some(serial);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -212,11 +273,12 @@ impl Dispatch<WlDataDevice, ()> for State {
     fn event(
         _: &mut Self,
         _: &WlDataDevice,
-        _: wl_data_device::Event,
+        event: wl_data_device::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        tracing::trace!(?event, "drag-out data device event");
     }
 
     event_created_child!(State, WlDataDevice, [
@@ -247,16 +309,34 @@ impl Dispatch<WlDataSource, ()> for State {
     ) {
         match event {
             wl_data_source::Event::Send { mime_type, fd } => {
-                if let Some((_, payload)) = &state.drag
-                    && let Some(bytes) = data_for(payload, &mime_type)
-                {
+                let bytes = state.drag.as_ref().and_then(|(_, payload)| data_for(payload, &mime_type));
+                tracing::debug!(%mime_type, len = bytes.as_ref().map(Vec::len), "drag-out source: send");
+                if let Some(bytes) = bytes {
                     write_all(fd, &bytes);
                 }
+                // else: `fd` drops here, which closes it (the target sees EOF).
             }
-            // Dropped on nothing, cancelled, or taken and finished: the drag is over.
-            wl_data_source::Event::Cancelled | wl_data_source::Event::DndFinished => {
+            // Dropped on nothing, or the compositor refused/ended it: the drag is over.
+            wl_data_source::Event::Cancelled => {
+                tracing::debug!("drag-out source: cancelled");
                 state.drag = None;
                 source.destroy();
+            }
+            // The target took the data and is done with it.
+            wl_data_source::Event::DndFinished => {
+                tracing::debug!("drag-out source: dnd_finished (the drop was received)");
+                state.drag = None;
+                source.destroy();
+            }
+            wl_data_source::Event::DndDropPerformed => {
+                // The data may still be requested: the source stays until `dnd_finished`.
+                tracing::debug!("drag-out source: dnd_drop_performed");
+            }
+            wl_data_source::Event::Target { mime_type } => {
+                tracing::debug!(?mime_type, "drag-out source: target accepts");
+            }
+            wl_data_source::Event::Action { dnd_action } => {
+                tracing::debug!(?dnd_action, "drag-out source: action");
             }
             _ => {}
         }

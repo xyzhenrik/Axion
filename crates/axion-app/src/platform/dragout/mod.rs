@@ -15,12 +15,20 @@ use winit::window::Window;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Payload {
     pub url: String,
+    /// The tab's title (for `text/x-moz-url`; may be empty).
+    pub title: String,
 }
 
 impl Payload {
     /// `text/uri-list` (RFC 2483: CRLF-terminated lines).
     pub fn uri_list(&self) -> Vec<u8> {
         format!("{}\r\n", self.url).into_bytes()
+    }
+
+    /// `text/x-moz-url`: UTF-16LE `url\ntitle` (what Firefox and Chromium targets understand).
+    pub fn moz_url(&self) -> Vec<u8> {
+        let title = if self.title.is_empty() { &self.url } else { &self.title };
+        format!("{}\n{}", self.url, title).encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
     /// `text/plain`: the link itself.
@@ -33,13 +41,26 @@ impl Payload {
 pub const MIME_URI_LIST: &str = "text/uri-list";
 pub const MIME_PLAIN_UTF8: &str = "text/plain;charset=utf-8";
 pub const MIME_PLAIN: &str = "text/plain";
+pub const MIME_MOZ_URL: &str = "text/x-moz-url";
 
 /// The bytes of `mime` for `payload`, if it is one of ours.
 pub fn data_for(payload: &Payload, mime: &str) -> Option<Vec<u8>> {
     match mime {
         MIME_URI_LIST => Some(payload.uri_list()),
+        MIME_MOZ_URL => Some(payload.moz_url()),
         MIME_PLAIN_UTF8 | MIME_PLAIN | "UTF8_STRING" | "STRING" | "TEXT" => Some(payload.plain()),
         _ => None,
+    }
+}
+
+/// The MIME types to offer: `defaults`, or, for experiments with a stubborn drop target, the
+/// comma-separated list in `AXION_DRAGOUT_MIMES` (a debugging aid, not a setting).
+pub fn offered_mimes(defaults: &[&str]) -> Vec<String> {
+    match std::env::var("AXION_DRAGOUT_MIMES") {
+        Ok(list) if !list.trim().is_empty() => {
+            list.split(',').map(|m| m.trim().to_owned()).filter(|m| !m.is_empty()).collect()
+        }
+        _ => defaults.iter().map(|m| (*m).to_owned()).collect(),
     }
 }
 
@@ -79,6 +100,13 @@ impl DragOut {
         Some(Self { backend })
     }
 
+    /// Reads the events queued for the drag connection (Wayland: the latest press serial).
+    pub fn pump(&mut self) {
+        if let Backend::Wayland(source) = &mut self.backend {
+            source.pump();
+        }
+    }
+
     /// Starts the drag of `payload` from the button press that is held now. Returns whether the
     /// system took it (then the pointer belongs to the drag until it ends).
     pub fn start(&mut self, payload: Payload) -> bool {
@@ -95,7 +123,13 @@ mod tests {
 
     #[test]
     fn payload_formats() {
-        let p = Payload { url: "https://example.com/a?b=1".into() };
+        let p = Payload { url: "https://example.com/a?b=1".into(), title: "Ex".into() };
+        let moz: Vec<u16> = data_for(&p, MIME_MOZ_URL)
+            .unwrap_or_default()
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(String::from_utf16_lossy(&moz), "https://example.com/a?b=1\nEx");
         assert_eq!(data_for(&p, MIME_URI_LIST).as_deref(), Some(&b"https://example.com/a?b=1\r\n"[..]));
         assert_eq!(data_for(&p, MIME_PLAIN).as_deref(), Some(&b"https://example.com/a?b=1"[..]));
         assert_eq!(data_for(&p, "UTF8_STRING"), data_for(&p, MIME_PLAIN_UTF8));

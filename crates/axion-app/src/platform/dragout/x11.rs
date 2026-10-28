@@ -196,14 +196,19 @@ fn run(own: u32, payload: &Payload) -> Result<(), Box<dyn std::error::Error>> {
                 Event::ClientMessage(m) if m.type_ == atoms.status => {
                     if over.is_some_and(|(w, _)| w == m.data.as_data32()[0]) {
                         accepted = m.data.as_data32()[1] & 1 != 0;
+                        tracing::trace!(accepted, "drag-out XDND: status");
                     }
                 }
                 Event::ClientMessage(m) if m.type_ == atoms.finished => {
+                    tracing::debug!("drag-out XDND: finished");
                     if dropped.is_some() {
                         return finish(&conn, source);
                     }
                 }
-                Event::SelectionRequest(request) => answer(&conn, &atoms, payload, &request)?,
+                Event::SelectionRequest(request) => {
+                    tracing::debug!(target = request.target, "drag-out XDND: selection request");
+                    answer(&conn, &atoms, payload, &request)?
+                }
                 _ => {}
             }
         }
@@ -236,6 +241,7 @@ fn run(own: u32, payload: &Payload) -> Result<(), Box<dyn std::error::Error>> {
             accepted = false;
             last_sent = (i16::MIN, i16::MIN);
             if let Some((new, version)) = now {
+                tracing::debug!(window = new, version, "drag-out XDND: enter");
                 let flags = version << 24;
                 send(
                     &conn,
@@ -251,11 +257,16 @@ fn run(own: u32, payload: &Payload) -> Result<(), Box<dyn std::error::Error>> {
         if released {
             match over {
                 Some((target, _)) if accepted => {
+                    tracing::debug!(window = target, "drag-out XDND: drop");
                     send(&conn, target, source, atoms.drop, [source, 0, CURRENT_TIME, 0, 0])?;
                     dropped = Some((target, Instant::now()));
                     continue;
                 }
                 Some((target, _)) => {
+                    tracing::debug!(
+                        window = target,
+                        "drag-out XDND: released over a target that did not accept"
+                    );
                     send(&conn, target, source, atoms.leave, [source, 0, 0, 0, 0])?;
                     break Ok(());
                 }

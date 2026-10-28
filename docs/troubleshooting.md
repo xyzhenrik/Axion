@@ -324,3 +324,30 @@ The Chrome Web Store cannot install extensions in Axion: its install dialog need
 and would crash the browser, so the store shows a notice instead. Install extensions from the
 extensions button in the toolbar (an unpacked folder or a `.crx` file); see
 [Chrome extensions](features/extensions.md).
+
+## Dragging a tab into another app does nothing
+
+Dragging a tab out of the window drops its address into the app under the pointer
+(`Settings › Tabs › Drag tabs out as links`, `tabs.drag_out_links`). If the tab just stays
+at the window edge, or the drop pastes nothing, start Axion from a terminal with the drag
+logging on, repeat the drag once, and send the lines that mention `dragout`:
+
+```bash
+RUST_LOG=axion=info,axion::platform::dragout=trace,axion::browser=debug,axion::tabdrag=debug axion 2>&1 | grep -E "dragout|drag out|tab drag"
+```
+
+What the lines mean (Wayland):
+
+| Line | Meaning |
+|---|---|
+| `tab drags: connected to the Wayland seat` | the drag source is ready (without it: `... not available (yet)` and the reason above it) |
+| `drag-out pointer: button serial=N ... Pressed` | the press that may start a drag was seen |
+| `starting wl_data_device.start_drag serial=N` | the request that was sent; `focus=None` means the compositor never told us the window has pointer focus |
+| `drag-out source: target accepts mime_type=...` | the app under the pointer accepts the data |
+| `dnd_drop_performed`, `send mime_type=...`, `dnd_finished` | the drop happened and the app read the link |
+| `cancelled` without a drop | the compositor ended the drag (dropped on nothing, Esc, or a refused start) |
+
+`AXION_DRAGOUT_MIMES=text/plain` (a comma-separated list) changes which formats are offered, for
+finding out what a stubborn app accepts. Browsers (Chromium, Firefox) and Electron apps handle a
+dropped link in a text field their own way: some open it instead of pasting it; that is their
+behaviour, the same as when dragging a link from any other app.
