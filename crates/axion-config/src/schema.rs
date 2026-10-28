@@ -461,10 +461,12 @@ pub struct Glass {
     /// Largest stretch of glass pulled by a held pointer (0.08 = 8%): the asymptote of the
     /// drag curve, reached only far from the glass's rest position.
     pub drag_stretch_max: f32,
-    /// Distance in logical pixels at which a pulled glass has reached about two thirds of
-    /// `drag_stretch_max`: the larger, the harder it is to pull (it still responds from the
-    /// first pixel, but with growing resistance).
+    /// Deprecated and ignored (kept so old config files still load): the drag curve is now
+    /// UIScrollView's rubber band over the element's size, see `rubber_band_c`.
     pub drag_resistance: f32,
+    /// Advanced: the rubber-band constant `c` of `f(x, d) = (1 - 1/(x·c/d + 1))·d`; Apple's
+    /// UIScrollView uses 0.55 (smaller: stiffer, the pull saturates later).
+    pub rubber_band_c: f32,
     /// Smooth-union radius in logical pixels of the broad glass bridge that joins a popover
     /// or menu to the bar or button it flows out of: how wide the concave fillets at the
     /// junction's ends are (at most `merge_distance` has no extra effect).
@@ -515,9 +517,9 @@ impl Glass {
         if self.reduce_motion || self.is_flat() { 0.0 } else { self.drag_stretch_max.max(0.0) }
     }
 
-    /// Distance scale of the drag curve in logical px (at least 1).
-    pub fn drag_resistance(&self) -> f32 {
-        self.drag_resistance.max(1.0)
+    /// The rubber-band constant (clamped to a usable range; default exactly 0.55).
+    pub fn rubber_band_c(&self) -> f32 {
+        self.rubber_band_c.clamp(0.05, 2.0)
     }
 
     /// Smooth-union radius of a popover's bridge (0 in flat mode: no bridges).
@@ -559,6 +561,7 @@ impl Default for Glass {
             squash: 0.08,
             drag_stretch_max: 0.08,
             drag_resistance: 40.0,
+            rubber_band_c: 0.55,
             popover_bridge_fillet: 30.0,
             menu_plate_opacity: 0.6,
             button_opacity: 0.04,
@@ -668,10 +671,15 @@ pub struct SpringSpec {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Motion {
-    /// Tabs, toggles, buttons.
+    /// Apple `.snappy` (`Spring(duration: 0.5, bounce: 0.15)`): tabs, toggles, buttons.
     pub snappy: SpringSpec,
-    /// Sidebar, sheets, settings.
+    /// Apple `.smooth` (duration 0.5, bounce 0): sidebar, sheets, settings.
     pub smooth: SpringSpec,
+    /// Apple `.bouncy` (duration 0.5, bounce 0.3): glass springing back after being pulled.
+    pub bouncy: SpringSpec,
+    /// Apple `interactiveSpring` (response 0.15, dampingFraction 0.86): following the pointer
+    /// while dragging.
+    pub interactive: SpringSpec,
     /// Glass merge and split, popover drip.
     pub liquid: SpringSpec,
     /// A closing popover or sheet draining back into the glass it came from: its far edge
@@ -699,8 +707,10 @@ pub struct Motion {
 impl Default for Motion {
     fn default() -> Self {
         Self {
-            snappy: SpringSpec { response: 0.28, damping: 0.90 },
-            smooth: SpringSpec { response: 0.45, damping: 1.00 },
+            snappy: SpringSpec { response: 0.50, damping: 0.85 },
+            smooth: SpringSpec { response: 0.50, damping: 1.00 },
+            bouncy: SpringSpec { response: 0.50, damping: 0.70 },
+            interactive: SpringSpec { response: 0.15, damping: 0.86 },
             liquid: SpringSpec { response: 0.50, damping: 0.62 },
             drain: SpringSpec { response: 0.42, damping: 0.55 },
             drain_neck: SpringSpec { response: 0.34, damping: 1.00 },
@@ -2559,8 +2569,7 @@ mod glass_style_tests {
         glass.reduce_motion = false;
         glass.style = GlassStyle::Flat;
         assert_eq!(glass.drag_stretch_max(), 0.0);
-        glass.drag_resistance = 0.0;
-        assert_eq!(glass.drag_resistance(), 1.0);
+        assert_eq!(Glass::default().rubber_band_c(), 0.55, "Apple's UIScrollView constant");
     }
 
     #[test]

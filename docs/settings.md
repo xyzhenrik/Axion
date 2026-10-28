@@ -117,13 +117,14 @@ Fine-tune the glass material. These settings only matter with **Glass** set to *
 |---|---|---|---|
 | **Reduce transparency** | Replaces glass with opaque surfaces. | Off | `glass.reduce_transparency` |
 | **Reduce motion** | Replaces springs and stretching with short fades. | Off | `glass.reduce_motion` |
+| Motion springs | Apple's presets, `response` = SwiftUI duration, `damping` = damping fraction (`bounce` = 1 - damping): `snappy` 0.5 / 0.85 (bounce 0.15), `smooth` 0.5 / 1.0, `bouncy` 0.5 / 0.7, `interactive` 0.15 / 0.86 (following the pointer). `liquid`, `drain*`, `fling`, `tab_close`, `switch` are Axion's own (see docs/physics.md). `speed` scales every response. | see left | `motion.*` |
 | Switch animation | The spring of a switch's knob (travel, and swelling into a glass lens while held) and of segmented controls: `response` is the period in seconds, `damping` the damping ratio. The default settles in about 0.2 s with a small bounce. Edit in `config.toml`; Reduce motion snaps it. | `response` 0.18, `damping` 0.80 | `motion.switch` |
 | **Refraction** | How strongly the glass bends what is behind it. 0 to 100 %. | 55 % | `glass.light.refraction`, `glass.dark.refraction` |
 | **Blur** | How much the backdrop is blurred, as a share of the normal amount for each glass thickness. 0 to 200 %. | 100 % | `glass.light.blur`, `glass.dark.blur` (`thin`, `regular`, `thick`) |
 | **Colour dispersion** | Colour fringes along the glass rim. 0 to 40 %. | 12 % (10 % in dark mode) | `glass.light.dispersion`, `glass.dark.dispersion` |
 | **Squash when moving** | How far glass stretches along the direction you drag it. 0 to 20 %. | 8 % | `glass.squash` |
 | **Drag stretch (maximum)** | The most a glass control (a held button, a switch or slider knob) stretches when you pull it far from where it rests; the icon or label stays in place and stretches the same way. 0 to 20 %. Off with Reduce motion and in flat mode. | 8 % | `glass.drag_stretch_max` |
-| **Drag resistance** | Distance at which a pulled control has reached about two thirds of its maximum stretch: it responds at once, but pulling further gets progressively harder. 5 to 200 px. | 40 px | `glass.drag_resistance` |
+| Rubber-band constant | Advanced, `config.toml` only. The drag curve is UIScrollView's rubber band `(1 - 1/(x·c/d + 1))·d` over the control's size `d`; the maximum stays **Drag stretch (maximum)**. Smaller `c` is stiffer. | 0.55 (Apple's) | `glass.rubber_band_c` (`glass.drag_resistance` is deprecated: still accepted, ignored) |
 | **Merge distance** | How close two glass shapes must be before they flow together. 0 to 40 px. | 20 px | `glass.merge_distance` |
 | Button shadow | Share of the glass drop shadow that a glass button casts. 0 (the default) means buttons are pure refractive glass with nothing dark around them; panels, sheets and popovers keep their shadow. Edit in `config.toml`. | 0 | `glass.button_shadow` |
 
