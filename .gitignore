@@ -8,6 +8,7 @@ design-prompts.md
 plan.md
 *.md
 !README.md
+!CHANGELOG.md
 !docs/
 !docs/**/*.md
 /docs/design/
