@@ -29,6 +29,9 @@ pub struct BridgeOptions {
     pub own_fullscreen: bool,
     /// Sites (and their subdomains) whose players are kept as they are, also in fullscreen.
     pub trusted_sites: Vec<String>,
+    /// Sites (and their subdomains) whose media elements are calls or chats, not media: the
+    /// bridge reports nothing for them.
+    pub ignored_sites: Vec<String>,
 }
 
 /// The bridge script. `secret` keeps the frames' postMessage traffic apart from the page's.
@@ -36,7 +39,10 @@ pub fn bridge_script(secret: &str, options: &BridgeOptions) -> String {
     let secret: String = secret.chars().filter(char::is_ascii_alphanumeric).collect();
     let trusted: Vec<String> = options.trusted_sites.iter().map(|s| s.trim().to_ascii_lowercase()).collect();
     let trusted = serde_json::to_string(&trusted).unwrap_or_else(|_| "[]".into());
+    let ignored: Vec<String> = options.ignored_sites.iter().map(|s| s.trim().to_ascii_lowercase()).collect();
+    let ignored = serde_json::to_string(&ignored).unwrap_or_else(|_| "[]".into());
     SOURCE
+        .replace("__AXION_IGNORED__", &ignored)
         .replace("__AXION_SECRET__", &secret)
         .replace("__AXION_TRUSTED__", &trusted)
         .replace("__AXION_OWN_FULLSCREEN__", if options.own_fullscreen { "true" } else { "false" })
@@ -300,6 +306,8 @@ pub enum Action {
     NextTrack,
     /// Log the element's loading state from its own frame (debugging).
     Probe,
+    /// Stop: pause and go back to the start (a live stream just pauses).
+    Stop,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -317,7 +325,7 @@ impl Command {
     /// sound are refused otherwise. Commands come from the user's clicks and keys, so this
     /// only passes their gesture on.
     pub fn needs_gesture(&self) -> bool {
-        !matches!(self.action, Action::Takeover(_) | Action::Pause | Action::Probe)
+        !matches!(self.action, Action::Takeover(_) | Action::Pause | Action::Stop | Action::Probe)
     }
 
     /// JavaScript for the top frame.
@@ -337,6 +345,7 @@ impl Command {
             Action::PreviousTrack => ("prev", serde_json::Value::Null),
             Action::NextTrack => ("next", serde_json::Value::Null),
             Action::Probe => ("probe", serde_json::Value::Null),
+            Action::Stop => ("stop", serde_json::Value::Null),
         };
         let command = serde_json::json!({ "id": self.player, "action": name, "value": value });
         format!("window.__axionMedia && window.__axionMedia.cmd({command});")
@@ -371,11 +380,16 @@ mod tests {
 
     #[test]
     fn script_is_filled_in() {
-        let options = BridgeOptions { own_fullscreen: true, trusted_sites: vec!["YouTube.com".into()] };
+        let options = BridgeOptions {
+            own_fullscreen: true,
+            trusted_sites: vec!["YouTube.com".into()],
+            ignored_sites: vec!["Discord.com".into()],
+        };
         let s = bridge_script("abc'; alert(1)//", &options);
         assert!(s.contains(r#"})(location.hostname, ["youtube.com"]);"#));
         assert!(s.contains("var SECRET = 'abcalert1';"), "secret must be sanitised");
         assert!(s.contains("var OWN_FULLSCREEN = true;"));
+        assert!(s.contains(r#"["discord.com"]"#));
         assert!(!s.contains("__AXION_"));
     }
 

@@ -186,6 +186,12 @@ pub enum EngineEvent {
         view: ViewId,
         url: String,
     },
+    /// The view's renderer process crashed or was killed (out of memory …): the page is dead
+    /// until it is loaded again.
+    RendererGone {
+        view: ViewId,
+        reason: String,
+    },
     /// The [`RequestPolicy`] stopped the view's page from navigating (a redirect).
     NavigationBlocked {
         view: ViewId,

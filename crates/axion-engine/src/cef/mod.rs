@@ -10,6 +10,7 @@ mod download;
 mod drag;
 mod gpu;
 mod input;
+mod mediaproxy;
 mod network;
 mod paste;
 mod permission;
@@ -272,6 +273,8 @@ pub struct CefEngine {
     dark: Option<bool>,
     schedule: Arc<PumpSchedule>,
     shut_down: bool,
+    /// How long `shutdown` waits for the pages to close.
+    close_timeout: Duration,
 }
 
 impl CefEngine {
@@ -321,6 +324,7 @@ impl CefEngine {
             dark: None,
             schedule,
             shut_down: false,
+            close_timeout: SHUTDOWN_TIMEOUT,
         })
     }
 
@@ -532,7 +536,8 @@ impl CefEngine {
                 }
             }
         }
-        let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+        let started = Instant::now();
+        let deadline = started + self.close_timeout;
         while !self.views.is_empty() && Instant::now() < deadline {
             self.pump();
             std::thread::sleep(Duration::from_millis(5));
@@ -541,7 +546,18 @@ impl CefEngine {
             tracing::warn!(open = self.views.len(), "views did not close in time");
         }
         self.views.clear();
+        let closed = started.elapsed();
         cef::shutdown();
+        tracing::info!(
+            pages_ms = closed.as_millis() as u64,
+            total_ms = started.elapsed().as_millis() as u64,
+            "Chromium shut down"
+        );
+    }
+
+    /// How long quitting waits for the pages to close before it stops waiting for them.
+    pub fn set_close_timeout(&mut self, timeout: Duration) {
+        self.close_timeout = timeout;
     }
 }
 
@@ -1183,6 +1199,7 @@ impl Engine for CefEngine {
                 | EngineEvent::RequestBlocked { view, .. }
                 | EngineEvent::MediaSniffed { view, .. }
                 | EngineEvent::NavigationBlocked { view, .. }
+                | EngineEvent::RendererGone { view, .. }
                 | EngineEvent::FindResult { view, .. }
                 | EngineEvent::PermissionRequest { view, .. }
                 | EngineEvent::PermissionCancelled { view, .. }
