@@ -20,7 +20,7 @@ use axion_compositor::{Content, IconDraw, ImageDraw, Layer, Quad, Rect};
 use axion_config::{Key, Modifiers};
 use axion_glass::GlassShape;
 use axion_physics::{Animated, Spring};
-use glam::Vec2;
+use glam::{Mat2, Vec2};
 pub use taffy;
 use taffy::prelude::*;
 
@@ -1847,21 +1847,22 @@ impl Ui {
             let limit = glass
                 .drag_stretch_max()
                 .min(PULL_STRETCH * PULL_LIMIT * s / bg_px.size.max_element().max(1.0));
-            // UIScrollView's rubber band over the glass's own size (its "range").
-            let range = bg_px.size.max_element().max(1.0) / s;
+            // UIScrollView's rubber band over the glass's own size, but at least
+            // `glass.drag_range_min` (its "range"): small buttons need a long pull.
+            let range = (bg_px.size.max_element() / s).max(glass.drag_range_min());
             let e = axion_physics::drag_stretch(press.distance.value, limit, range, glass.rubber_band_c());
-            let (angle, content) = stretch_content(press.dir, e);
-            // The icons and labels stay at the glass's rest centre and are deformed with the
-            // same stretch as the glass (never carried off with the pointer): `carry` maps
-            // the centre onto itself and `content_scale` is the shared transform.
-            let carry = press.lens.then(|| Carry { from: px.center(), to: px.center() });
+            let (angle, lin) = stretch_matrix(press.dir, e, press.scale.value);
+            // Everything inside the glass (icons, labels, nested glass, at any depth) is a
+            // texture painted on it: it undergoes the glass's own transform about the glass's
+            // centre (`lin`: swell and stretch) and moves with the glass's centre (`offset`).
             PressXf {
                 scale: press.scale.value,
                 offset,
                 stretch: Vec2::new(1.0 + e, 1.0 / (1.0 + e)),
                 angle,
-                content_scale: press.scale.value * content,
-                carry,
+                lin,
+                text_scale: lin.x_axis.x.abs(),
+                carry: Some(Carry { from: bg_px.center(), to: bg_px.center() + offset }),
             }
         });
         // How far a lens has formed (0 at rest, 1 held): it lightens with it.
@@ -1896,7 +1897,8 @@ impl Ui {
                     offset: Vec2::ZERO,
                     stretch: Vec2::ONE,
                     angle: 0.0,
-                    content_scale: ratio,
+                    lin: Mat2::from_diagonal(ratio),
+                    text_scale: ratio.min_element(),
                     carry: Some(Carry { from: px.center(), to: bg_px.center() }),
                 };
                 let t = ((ratio.min_element() - CONTENT_REVEAL_FROM)
@@ -2202,14 +2204,15 @@ impl Ui {
             stacks[child_depth].after.extend(layers);
             return;
         }
+        let glass_mark = press_xf.as_ref().map(|_| marks(stacks));
         for child in self.tree.children(node).unwrap_or_default() {
             self.paint_node(child, child_depth, dim, child_fade, stacks);
         }
         if let (Some(xf), Some(mark)) = (frame_xf, frame_mark) {
-            transform_since(stacks, &mark, &xf, child_depth);
+            transform_since(stacks, &mark, None, &xf, child_depth);
         }
         if let (Some(xf), Some(mark)) = (press_xf, mark) {
-            transform_since(stacks, &mark, &xf, child_depth);
+            transform_since(stacks, &mark, glass_mark.as_deref(), &xf, child_depth);
         }
     }
 
@@ -2281,7 +2284,7 @@ impl Ui {
         let by_pull = axion_physics::drag_stretch(
             over_px,
             glass.drag_stretch_max() * LENS_SQUASH_RATIO,
-            travel_px / self.scale,
+            (travel_px / self.scale).max(glass.drag_range_min()),
             glass.rubber_band_c(),
         );
         by_speed.max(by_pull)
@@ -2455,23 +2458,30 @@ struct PressXf {
     offset: Vec2,
     stretch: Vec2,
     angle: f32,
-    /// The content's own deformation: every icon, label and fill stays where it is and
-    /// stretches about its own centre with the glass (per axis), so it looks distorted by
-    /// the glass rather than moved.
-    content_scale: Vec2,
+    /// The glass's own linear transform (swell × stretch along its pull axis), also applied to
+    /// everything inside it about the glass's centre: positions map exactly, sizes by the
+    /// matrix's diagonal (exact for pulls along an axis).
+    lin: Mat2,
+    /// Text can only scale uniformly: it follows the horizontal scale, so a line of text
+    /// grows and shrinks in width with the glass.
+    text_scale: f32,
     /// Set for an animated frame (popover growing): the whole subtree is mapped from the
     /// layout frame onto the visual one, so items move with it instead of staying put.
     carry: Option<Carry>,
 }
 
 /// The shared stretch transform of glass and its content: `e` along the unit direction `dir`
-/// (the glass's own shader: `(1 + e, 1 / (1 + e))` along/across, area preserving). Returns the
-/// stretch angle and that scaling as seen on the screen axes (exact for pulls along an axis,
-/// the nearest axis-aligned scaling for diagonal ones), for quads, icons and text boxes.
-fn stretch_content(dir: Vec2, e: f32) -> (f32, Vec2) {
+/// (the glass's own shader: `(1 + e, 1 / (1 + e))` along/across, area preserving) after the
+/// uniform `swell`. Returns the stretch angle and the full 2×2 matrix `swell · R·diag·Rᵀ`
+/// the glass applies to its own points about its centre.
+fn stretch_matrix(dir: Vec2, e: f32, swell: f32) -> (f32, Mat2) {
     let (along, across) = (1.0 + e, 1.0 / (1.0 + e));
-    let (c2, s2) = (dir.x * dir.x, dir.y * dir.y);
-    (dir.y.atan2(dir.x), Vec2::new(along * c2 + across * s2, along * s2 + across * c2))
+    let (c, s) = (dir.x, dir.y);
+    let m = Mat2::from_cols(
+        Vec2::new(along * c * c + across * s * s, (along - across) * c * s),
+        Vec2::new((along - across) * c * s, along * s * s + across * c * c),
+    );
+    (dir.y.atan2(dir.x), m * swell)
 }
 
 /// Maps the layout frame's centre onto the visual frame's.
@@ -2481,22 +2491,27 @@ struct Carry {
 }
 
 impl PressXf {
-    /// Where an item centred at `c` ends up.
+    /// Where an item centred at `c` ends up (the glass's transform about its centre).
     fn place(&self, c: Vec2) -> Vec2 {
         match &self.carry {
-            Some(carry) => carry.to + (c - carry.from) * self.content_scale,
+            Some(carry) => carry.to + self.lin * (c - carry.from),
             None => c,
         }
     }
 
+    /// Per-axis scale of a box.
+    fn diag(&self) -> Vec2 {
+        Vec2::new(self.lin.x_axis.x.abs(), self.lin.y_axis.y.abs())
+    }
+
     fn rect(&self, r: Rect) -> Rect {
-        let size = r.size * self.content_scale;
+        let size = r.size * self.diag();
         Rect { origin: self.place(r.center()) - size / 2.0, size }
     }
 
-    /// For text, which only scales uniformly.
+    /// For corner radii: the smaller scale.
     fn uniform(&self) -> f32 {
-        self.content_scale.min_element()
+        self.diag().min_element()
     }
 }
 
@@ -2508,10 +2523,12 @@ struct Mark {
     text: usize,
     /// Layers of clipped subtrees.
     after: usize,
+    /// Glass shapes of the pass (see `glass_marks`: taken after the node's own shape).
+    glass: usize,
 }
 
 impl Mark {
-    const NONE: Mark = Mark { quads: 0, images: 0, icons: 0, text: 0, after: 0 };
+    const NONE: Mark = Mark { quads: 0, images: 0, icons: 0, text: 0, after: 0, glass: 0 };
 }
 
 fn marks(stacks: &[Stack<'_>]) -> Vec<Mark> {
@@ -2523,15 +2540,32 @@ fn marks(stacks: &[Stack<'_>]) -> Vec<Mark> {
             icons: s.content.icons.len(),
             text: s.content.text.len(),
             after: s.after.len(),
+            glass: s.glass.len(),
         })
         .collect()
 }
 
 /// Moves what a held glass's subtree painted (from `from_depth` on) along with the glass,
 /// clipped lists (a sheet's scrolled page) and their clip included.
-fn transform_since(stacks: &mut [Stack<'_>], mark: &[Mark], xf: &PressXf, from_depth: usize) {
+fn transform_since(
+    stacks: &mut [Stack<'_>],
+    mark: &[Mark],
+    glass_mark: Option<&[Mark]>,
+    xf: &PressXf,
+    from_depth: usize,
+) {
     for (d, stack) in stacks.iter_mut().enumerate().skip(from_depth) {
         let m = mark.get(d).unwrap_or(&Mark::NONE);
+        // Glass nested in the subtree is deformed like everything else on the held glass.
+        if let Some(gm) = glass_mark {
+            let from = gm.get(d).map_or(0, |g| g.glass);
+            for item in stack.glass.iter_mut().skip(from) {
+                let shape = &mut item.shape;
+                shape.center = xf.place(shape.center);
+                shape.half_size *= xf.diag();
+                shape.corner_radius *= xf.uniform();
+            }
+        }
         transform_content(&mut stack.content, m, xf);
         for layer in stack.after.iter_mut().skip(m.after) {
             if let Layer::Content(c) = layer {
@@ -2557,7 +2591,7 @@ fn transform_content(c: &mut Content<'_>, m: &Mark, xf: &PressXf) {
         // Text scales uniformly about the centre of its box.
         let b = &mut t.bounds;
         let center = Vec2::new(b.left as f32 + b.right as f32, b.top as f32 + b.bottom as f32) / 2.0;
-        let u = xf.uniform();
+        let u = xf.text_scale;
         let placed = xf.place(center);
         let about = |p: Vec2| placed + (p - center) * u;
         let p = about(Vec2::new(t.left, t.top));
@@ -3564,9 +3598,9 @@ mod tests {
             .filter_map(|l| if let Layer::Content(c) = l { c.icons.first().copied() } else { None })
             .next_back()
             .expect("the icon");
-        // Same transform as the glass: scaled by the same amount, but it stays at the rest
-        // centre while the lens follows the pointer a little.
-        assert!((icon.rect.center() - Vec2::splat(28.0)).length() < 0.01);
+        // Same transform as the glass: scaled by the same amount and carried along with the
+        // lens as it follows the pointer a little.
+        assert!((icon.rect.center() - lens.center).length() < 0.01);
         assert!(lens.center.x > 28.5);
         assert!(icon.rect.size.x > 20.0 * 1.2, "scaled with the lens: {:?}", icon.rect.size);
         // Stretched along the pull (x) and narrower across it, like the glass.
@@ -3614,18 +3648,210 @@ mod tests {
     }
 
     #[test]
-    fn the_drag_stretch_grows_with_distance_but_saturates_at_the_old_maximum() {
+    fn the_drag_stretch_grows_with_distance_but_saturates_at_the_maximum() {
         let max = 1.0 + axion_config::Config::default().glass.drag_stretch_max;
         let (_, near) = pulled(5.0);
         let (_, mid) = pulled(30.0);
         let (_, far) = pulled(150.0);
-        let (icon_far, huge) = pulled(5000.0);
+        let (icon_far, huge) = pulled(1.0e6);
         assert!(near > 1.0 && near < mid && mid < far && far <= huge, "{near} {mid} {far} {huge}");
         // Resistance: the second 25 px add less than the first 25.
         assert!((mid - near) / 25.0 < (near - 1.0) / 5.0, "per-px gain falls");
         assert!((huge - max).abs() < 0.002, "asymptote {huge} vs {max}");
         // The icon is deformed by the same amount (its aspect, not just its place).
         assert!(icon_far > 1.0 + (max - 1.0) * 0.8, "{icon_far}");
+    }
+
+    #[test]
+    fn small_buttons_need_a_long_pull_to_approach_the_maximum() {
+        let max = axion_config::Config::default().glass.drag_stretch_max;
+        let (_, at_80) = pulled(80.0);
+        let (_, at_300) = pulled(300.0);
+        let (_, at_5000) = pulled(1.0e6);
+        // 44 px buttons use the 120 px minimum range: 80 px is still far from saturated.
+        assert!((at_80 - 1.0) < max * 0.4, "{at_80}");
+        assert!((at_300 - 1.0) < max * 0.8 && at_300 > at_80, "{at_300}");
+        assert!((at_5000 - 1.0) > max * 0.95, "{at_5000}");
+    }
+
+    /// Half extents of a glass shape's bounding box as drawn (the shader's stretch about the
+    /// centre along `stretch_angle`).
+    fn shape_half_extents(shape: &GlassShape) -> Vec2 {
+        let (c, s) = (shape.stretch_angle.cos(), shape.stretch_angle.sin());
+        let (a, b) = (shape.stretch.x, shape.stretch.y);
+        let m00 = a * c * c + b * s * s;
+        let m11 = a * s * s + b * c * c;
+        let m01 = (a - b) * c * s;
+        Vec2::new(
+            shape.half_size.x * m00.abs() + shape.half_size.y * m01.abs(),
+            shape.half_size.x * m01.abs() + shape.half_size.y * m11.abs(),
+        )
+    }
+
+    /// Pointer pulls of the numerical checks: along x and along y, at several distances.
+    const PULLS: [f32; 6] = [0.0, 6.0, 25.0, 80.0, 300.0, 600.0];
+
+    #[test]
+    fn a_held_buttons_icon_deforms_exactly_like_its_glass() {
+        for axis in [Vec2::X, Vec2::Y] {
+            let mut rest: Option<(Vec2, Vec2)> = None;
+            for distance in PULLS {
+                let mut ui = ui();
+                let (_, button, _) = row(&mut ui);
+                ui.add(button, Widget::icon(axion_compositor::Icon::Back, 20.0), Style::default());
+                let mut style = ui.style(button);
+                style.justify_content = JustifyContent::CENTER;
+                style.align_items = AlignItems::CENTER;
+                ui.set_style(button, style);
+                ui.layout();
+                let start = Vec2::new(28.0, 28.0);
+                ui.handle(UiInput::PointerMove(start));
+                ui.handle(UiInput::PointerDown);
+                ui.handle(UiInput::PointerMove(start + axis * distance));
+                for _ in 0..240 {
+                    ui.animate(1.0 / 120.0);
+                }
+                let (shapes, icons, _) = glass_and_icons(&ui);
+                let (glass, icon) = (shape_half_extents(&shapes[1]) * 2.0, icons[0]);
+                // The held glass is bigger than at rest by its swell; compare against the
+                // unpressed 44 px lens and 20 px icon.
+                let (gw, gh) = (glass.x / 44.0, glass.y / 44.0);
+                let (iw, ih) = (icon.size.x / 20.0, icon.size.y / 20.0);
+                println!("{axis:?} pull {distance:>4}: glass {gw:.4} x {gh:.4}, icon {iw:.4} x {ih:.4}");
+                assert!((gw - iw).abs() < 0.01 * gw, "width ratio: glass {gw} icon {iw}");
+                assert!((gh - ih).abs() < 0.01 * gh, "height ratio: glass {gh} icon {ih}");
+                // Where it sits inside the glass is where it sits at rest: still centred.
+                assert!((icon.center() - shapes[1].center).length() < 0.01);
+                if distance == 0.0 {
+                    rest = Some((glass, icon.size));
+                } else if let Some((g0, i0)) = rest {
+                    // It really changes with the pull: the glass's growth is the icon's.
+                    assert!(glass.x != g0.x || glass.y != g0.y);
+                    assert!(icon.size.x != i0.x || icon.size.y != i0.y);
+                }
+            }
+        }
+    }
+
+    /// A glass capsule of three icon buttons (`press_whole`, like the toolbar's nav group).
+    fn group(ui: &mut Ui) -> Vec<NodeId> {
+        let root = ui.root();
+        let group = ui.add(
+            root,
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thin))
+                .with_radius(CAPSULE)
+                .pressed_whole(),
+            Style {
+                size: Size { width: length(148.0), height: length(44.0) },
+                padding: taffy::Rect {
+                    left: length(4.0),
+                    right: length(4.0),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
+                gap: Size { width: length(2.0), height: length(0.0) },
+                ..Default::default()
+            },
+        );
+        (0..3)
+            .map(|i| {
+                let button = ui.add(
+                    group,
+                    Widget::container().with_action(ActionId(10 + i)).with_radius(CAPSULE),
+                    Style {
+                        size: Size { width: length(44.0), height: length(44.0) },
+                        justify_content: JustifyContent::CENTER,
+                        align_items: AlignItems::CENTER,
+                        ..Default::default()
+                    },
+                );
+                ui.add(button, Widget::icon(axion_compositor::Icon::Back, 20.0), Style::default());
+                button
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_icon_of_a_pulled_glass_group_deforms_with_the_group() {
+        let mut rest_icons: Vec<Rect> = Vec::new();
+        let mut rest_glass = Vec2::ZERO;
+        for axis in [Vec2::X, Vec2::Y] {
+            for distance in PULLS {
+                let mut ui = ui();
+                group(&mut ui);
+                ui.layout();
+                let start = Vec2::new(72.0, 22.0);
+                if distance == 0.0 && axis == Vec2::X {
+                    // The unpressed group.
+                    let (shapes, icons, _) = glass_and_icons(&ui);
+                    rest_glass = shape_half_extents(&shapes[0]) * 2.0;
+                    rest_icons = icons;
+                }
+                ui.handle(UiInput::PointerMove(start));
+                ui.handle(UiInput::PointerDown);
+                ui.handle(UiInput::PointerMove(start + axis * distance));
+                for _ in 0..240 {
+                    ui.animate(1.0 / 120.0);
+                }
+                let (shapes, icons, _) = glass_and_icons(&ui);
+                assert_eq!(shapes.len(), 1, "one glass for the whole group");
+                let glass = &shapes[0];
+                let g = shape_half_extents(glass) * 2.0 / rest_glass;
+                assert_eq!(icons.len(), 3);
+                for (rest, held) in rest_icons.iter().zip(&icons) {
+                    // Each icon keeps its place inside the glass, scaled by the glass's own
+                    // stretch about the group's centre.
+                    let rest_off = rest.center() - Vec2::new(74.0, 22.0);
+                    let want = glass.center + rest_off * g;
+                    let (iw, ih) = (held.size.x / rest.size.x, held.size.y / rest.size.y);
+                    println!(
+                        "{axis:?} pull {distance:>4}: glass {:.4} x {:.4}, icon size {iw:.4} x {ih:.4}, \
+                         offset err {:.3} px",
+                        g.x,
+                        g.y,
+                        (held.center() - want).length()
+                    );
+                    assert!((iw - g.x).abs() < 0.01 * g.x && (ih - g.y).abs() < 0.01 * g.y);
+                    assert!((held.center() - want).length() < 0.6, "{:?} vs {want:?}", held.center());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn glass_nested_in_a_pulled_group_is_deformed_with_it() {
+        let mut ui = ui();
+        let buttons = group(&mut ui);
+        // A small glass pill inside the group's last button slot.
+        let pill = ui.add(
+            buttons[2],
+            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
+            Style {
+                position: Position::Absolute,
+                inset: taffy::Rect { left: length(4.0), top: length(10.0), right: auto(), bottom: auto() },
+                size: Size { width: length(36.0), height: length(24.0) },
+                ..Default::default()
+            },
+        );
+        ui.layout();
+        let at_rest = ui.frame(pill).center();
+        let (rest_shapes, _, _) = glass_and_icons(&ui);
+        let start = Vec2::new(72.0, 22.0);
+        ui.handle(UiInput::PointerMove(start));
+        ui.handle(UiInput::PointerDown);
+        ui.handle(UiInput::PointerMove(start + Vec2::new(600.0, 0.0)));
+        for _ in 0..240 {
+            ui.animate(1.0 / 120.0);
+        }
+        let (shapes, _, _) = glass_and_icons(&ui);
+        assert_eq!(shapes.len(), rest_shapes.len());
+        let group = shapes.iter().max_by(|a, b| a.half_size.x.total_cmp(&b.half_size.x)).expect("group");
+        let inner = shapes.iter().min_by(|a, b| a.half_size.x.total_cmp(&b.half_size.x)).expect("pill");
+        let g = shape_half_extents(group) / (Vec2::new(148.0, 44.0) / 2.0);
+        let want = group.center + (at_rest - Vec2::new(74.0, 22.0)) * g;
+        assert!((inner.center - want).length() < 0.6, "{:?} vs {want:?}", inner.center);
+        assert!((inner.half_size.x / 18.0 - g.x).abs() < 0.01, "{} vs {}", inner.half_size.x / 18.0, g.x);
     }
 
     #[test]
@@ -3688,10 +3914,10 @@ mod tests {
         assert!(lens.glow > 0.0, "it is lighter");
         // No plain highlight: the lens is the feedback.
         assert_eq!(quads, 0);
-        // The icon grows and stretches with the glass but stays at its rest place.
+        // The icon grows and stretches with the glass and moves with it.
         let (rest, held) = (rest_icons[0], icons[0]);
         assert!((rest.center() - Vec2::splat(28.0)).length() < 1.0);
-        assert!((held.center() - rest.center()).length() < 0.01, "stays: {:?}", held.center());
+        assert!((held.center() - lens.center).length() < 0.01, "rides: {:?}", held.center());
         assert!(held.size.x > rest.size.x * 1.3);
         // Released, it springs back into the bar.
         ui.handle(UiInput::PointerUp);
@@ -3751,10 +3977,10 @@ mod tests {
         assert!(lens.center.x > 70.5, "it follows the pointer");
         assert!(lens.glow > 0.0, "it is lighter");
         assert_eq!(quads, 0, "no plain highlight on the pressed button");
-        // Every icon stays at its rest place (about the capsule's rest centre): it swells and
-        // stretches with the glass but is never carried along with the pointer.
+        // Every icon keeps its place inside the glass: scaled about the capsule's centre with
+        // the glass and moving with it.
         for (rest, held) in rest_icons.iter().zip(&icons) {
-            let expected = 70.0 + (rest.center().x - 70.0) * (lens.half_size.x / 70.0);
+            let expected = lens.center.x + (rest.center().x - 70.0) * (lens.half_size.x / 70.0);
             assert!((held.center().x - expected).abs() < 3.0, "{rest:?} → {held:?}");
             assert!((held.center().y - rest.center().y).abs() < 0.5);
         }
