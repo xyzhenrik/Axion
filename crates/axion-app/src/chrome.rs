@@ -136,8 +136,6 @@ pub enum ChromeAction {
     Playlist,
     /// The Playlist button in the address field: Add to Playlist (or what is saved).
     PlaylistButton,
-    /// The Reader button in the address field: Reader view and its Aa menu.
-    Reader,
     /// The Translate button in the address field.
     Translate,
     /// The toolbar's download button (opens the downloads popover).
@@ -259,7 +257,7 @@ const TAB_GROUP_BASE: u32 = 100_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 38] = [
+    const SIMPLE: [ChromeAction; 37] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -295,7 +293,6 @@ impl ChromeAction {
         ChromeAction::Playlist,
         ChromeAction::PlaylistButton,
         ChromeAction::Capture,
-        ChromeAction::Reader,
         ChromeAction::Translate,
         ChromeAction::ZoomIndicator,
     ];
@@ -567,7 +564,6 @@ pub struct Chrome {
     /// may still hide them, see `apply_address_fit`).
     audio_wanted: bool,
     playlist_wanted: bool,
-    reader_wanted: bool,
     translate_wanted: bool,
     /// The zoom indicator: its button and label, and the text it wants (`None`: hidden).
     zoom_button: NodeId,
@@ -578,9 +574,7 @@ pub struct Chrome {
     /// The Playlist button in the address field, and its glyph.
     playlist_button: NodeId,
     playlist_icon: NodeId,
-    /// The Reader and Translate buttons in the address field, and their glyphs.
-    reader_button: NodeId,
-    reader_icon: NodeId,
+    /// The Translate button in the address field, and its glyph.
     translate_button: NodeId,
     translate_icon: NodeId,
     /// The toolbar's right group (Share, New Tab, Overview …).
@@ -1445,11 +1439,7 @@ impl Chrome {
         );
         tip(ui, playlist_button, tr("Add to Playlist"), Some(Action::PlaylistAdd));
         ui.set_visible(playlist_button, false);
-        // Pages with an article: Reader view. Pages in another language: Translate.
-        let (reader_button, reader_icon) =
-            icon_button(ui, address, ChromeAction::Reader, Widget::icon(Icon::TextSize, 18.0), 30.0);
-        tip(ui, reader_button, tr("Reader View"), None);
-        ui.set_visible(reader_button, false);
+        // Pages in another language: Translate. (Reader view lives in the page menu.)
         let (translate_button, translate_icon) =
             icon_button(ui, address, ChromeAction::Translate, Widget::icon(Icon::Translate, 18.0), 30.0);
         tip(ui, translate_button, tr("Translate"), None);
@@ -1710,7 +1700,6 @@ impl Chrome {
             capture_wanted: false,
             audio_wanted: false,
             playlist_wanted: false,
-            reader_wanted: false,
             translate_wanted: false,
             zoom_button,
             zoom_label,
@@ -1718,8 +1707,6 @@ impl Chrome {
             editing: false,
             playlist_button,
             playlist_icon,
-            reader_button,
-            reader_icon,
             translate_button,
             translate_icon,
             actions,
@@ -2806,16 +2793,6 @@ impl Chrome {
         }
     }
 
-    /// The Reader button of the address field: hidden (`None`), or shown (`Some(active)`, lit
-    /// while Reader view is up).
-    pub fn set_reader_button(&mut self, ui: &mut Ui, state: Option<bool>) {
-        self.reader_wanted = state.is_some();
-        ui.set_visible(self.reader_button, self.reader_wanted && self.extras_fit());
-        if let (Some(active), Some(w)) = (state, ui.widget_mut(self.reader_icon)) {
-            w.set_paint(if active { Paint::Accent } else { Paint::Label });
-        }
-    }
-
     /// The Translate button: hidden (`None`), or shown (`Some(active)`, lit while the page is
     /// translated).
     pub fn set_translate_button(&mut self, ui: &mut Ui, state: Option<bool>) {
@@ -2824,10 +2801,6 @@ impl Chrome {
         if let (Some(active), Some(w)) = (state, ui.widget_mut(self.translate_icon)) {
             w.set_paint(if active { Paint::Accent } else { Paint::Label });
         }
-    }
-
-    pub fn reader_button_frame(&self, ui: &Ui) -> Frame {
-        ui.frame(self.reader_button)
     }
 
     pub fn translate_button_frame(&self, ui: &Ui) -> Frame {
@@ -3907,7 +3880,6 @@ impl Chrome {
         ui.set_visible(self.address_field, editing);
         ui.set_visible(self.audio_button, self.audio_wanted && fit.extras);
         ui.set_visible(self.playlist_button, self.playlist_wanted && fit.extras && !capture);
-        ui.set_visible(self.reader_button, self.reader_wanted && fit.extras && !capture);
         ui.set_visible(self.translate_button, self.translate_wanted && fit.extras && !capture);
         ui.set_visible(self.zoom_button, self.zoom_wanted.is_some() && fit.extras);
         let icon_only = !fit.text;

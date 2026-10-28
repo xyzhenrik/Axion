@@ -2033,7 +2033,8 @@ pub enum ReaderTheme {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Reader {
-    /// Show the Reader button in the address field on pages that have an article.
+    /// Offer Reader View in the page menu (on pages that have an article). The key kept its
+    /// name from when this was a button in the address field.
     pub button: bool,
     pub font: ReaderFont,
     /// Text size in CSS pixels.

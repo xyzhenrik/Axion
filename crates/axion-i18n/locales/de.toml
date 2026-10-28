@@ -955,6 +955,9 @@
 
 # Reader view and page translation (crates/axion-app/src/reader_popover.rs, translate_popover.rs, browser/reading.rs, settings.rs)
 "Reader View" = "Leseansicht"
+"Show Reader View" = "Leseansicht anzeigen"
+"Hide Reader View" = "Leseansicht ausblenden"
+"Reader Options…" = "Leseansicht-Optionen…"
 "Exit Reader View" = "Leseansicht beenden"
 "Column width" = "Spaltenbreite"
 "Font" = "Schrift"
@@ -966,10 +969,10 @@
 "Remembered for this site." = "Für diese Website gemerkt."
 "Used on every site." = "Gilt für alle Websites."
 "This page has no article to show in Reader View" = "Diese Seite hat keinen Artikel für die Leseansicht"
-"Reader button in the address field" = "Lesen-Knopf im Adressfeld"
+"Reader View in the page menu" = "Leseansicht im Seitenmenü"
 "Remember Reader View’s look for each site" = "Aussehen der Leseansicht pro Website merken"
 "Reading & Translation" = "Lesen & Übersetzen"
-"Text size and column width are in the Aa menu of the address field." = "Textgröße und Spaltenbreite findest du im Aa-Menü des Adressfelds."
+"Text size and column width are in Reader Options of the page menu." = "Textgröße und Spaltenbreite findest du unter „Leseansicht-Optionen“ im Seitenmenü."
 "Toggle reader view" = "Leseansicht umschalten"
 "Translate page" = "Seite übersetzen"
 "Translate" = "Übersetzen"

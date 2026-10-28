@@ -324,7 +324,7 @@ impl Setting {
             Setting::PlaylistQuickAction => tr_mark("Playlist button in the address field"),
             Setting::PlaylistAutoDownload => tr_mark("Download videos when adding them to the Playlist"),
             Setting::PlaylistDeleteFiles => tr_mark("Delete downloaded files when removing videos"),
-            Setting::ReaderButton => tr_mark("Reader button in the address field"),
+            Setting::ReaderButton => tr_mark("Reader View in the page menu"),
             Setting::ReaderRememberPerSite => tr_mark("Remember Reader View’s look for each site"),
             Setting::TranslateOffer => tr_mark("Offer to translate pages in other languages"),
             Setting::TranslatePrompt => tr_mark("Open the offer by itself"),
@@ -3008,7 +3008,7 @@ impl SettingsSheet {
             .collect();
         let current = READER_THEMES.iter().position(|(_, t)| *t == config.reader.theme);
         segmented(ui, row_node, &options, current);
-        self.note(ui, tr("Text size and column width are in the Aa menu of the address field."));
+        self.note(ui, tr("Text size and column width are in Reader Options of the page menu."));
 
         self.section(ui, tr("Translation"));
         for setting in [Setting::TranslateOffer, Setting::TranslatePrompt, Setting::TranslateChanges] {

@@ -2,17 +2,18 @@
 
 ## Reader View
 
-On a page with an article, the **Aa** button appears in the address field. Click it to replace the
-page with the article alone: title, author, text and pictures on a clean sheet. Click it again to
-open the **Aa menu**: text size, column width, font (Serif, Sans, Mono) and theme (Auto, Light,
-Sepia, Dark), and **Exit Reader View**. The shortcut is **Ctrl+Alt+R** (`toggle_reader`).
+On a page with an article, the page menu (the **≡** button in the address field) offers **Show
+Reader View**; it replaces the page with the article alone: title, author, text and pictures on a
+clean sheet. In Reader View the menu shows **Hide Reader View** and **Reader Options…**: text
+size, column width, font (Serif, Sans, Mono) and theme (Auto, Light, Sepia, Dark), and **Exit
+Reader View**. The shortcut is **Ctrl+Alt+R** (`toggle_reader`).
 
 - The look is remembered for each site (Settings › Reading & Translation turns that off, then it
   is the same everywhere).
 - Axion keeps the original page aside, so leaving Reader View is instant and keeps your place.
 - The text is found on the page itself with a compact text-density method; no third-party code is
   involved and nothing is sent anywhere.
-- Pages without a clear article (start pages, apps, search results) don't show the button.
+- Pages without a clear article (start pages, apps, search results) have a dimmed Reader row.
 
 ## Translating pages
 

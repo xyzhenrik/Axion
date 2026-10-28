@@ -80,8 +80,9 @@ pub(super) struct ReadingUi {
     /// Batches in flight: job tag → (view, batch id).
     jobs: HashMap<u64, (ViewId, u32)>,
     next_tag: u64,
-    shown_reader: Option<Option<bool>>,
     shown_translate: Option<Option<bool>>,
+    /// Reader view was up last frame (its Aa popover closes when it goes).
+    reader_was_active: bool,
     last_dark: bool,
     /// Capture aid (`--open=translate-auto`): agrees to the download by itself.
     auto_consent: bool,
@@ -110,8 +111,8 @@ impl ReadingUi {
             helper_busy: Instant::now(),
             jobs: HashMap::new(),
             next_tag: 1,
-            shown_reader: None,
             shown_translate: None,
+            reader_was_active: false,
             last_dark: false,
             auto_consent: false,
         }
@@ -327,19 +328,18 @@ impl Browser {
         }
     }
 
-    /// The Reader button: enters Reader view, and once in it opens the Aa menu.
-    pub(super) fn reader_button_clicked(&mut self) {
-        let Some(view) = self.active_view() else { return };
-        let active = self.reading.pages.get(&view).is_some_and(|t| t.reader_active);
-        if !active {
-            self.close_popups();
-            self.toggle_reader();
-        } else if self.reading.reader_popover.is_open() {
-            self.reading.reader_popover.close(&mut self.ui, &self.config);
-        } else {
-            self.close_popups();
-            self.open_reader_popover();
-        }
+    /// The page menu's Reader row: enters Reader view, or leaves it again.
+    pub(super) fn reader_menu_toggle(&mut self) {
+        self.close_popups();
+        self.toggle_reader();
+    }
+
+    /// Whether the page menu offers Reader view for the active tab: `None` when it doesn't
+    /// (dimmed row), else `Some(active)`.
+    pub(super) fn reader_state(&self) -> Option<bool> {
+        let view = self.active_view().filter(|_| !self.is_locked())?;
+        let tools = self.reading.pages.get(&view)?;
+        (self.reader_enabled_here() && (tools.readable || tools.reader_active)).then_some(tools.reader_active)
     }
 
     /// Capture aid (`--open=translate-auto`): translates, agreeing to any download.
@@ -363,7 +363,7 @@ impl Browser {
         let site = self.reader_site();
         let (stored, per_site) = self.reader_look(site.as_deref());
         let look = self.reading.pages.get(&view).and_then(|t| t.look).unwrap_or(stored);
-        let anchor = self.chrome.reader_button_frame(&self.ui);
+        let anchor = self.chrome.page_menu_frame(&self.ui);
         let width = self.logical_size().x;
         self.reading.reader_popover.open(&mut self.ui, &self.config, anchor, width, &look, per_site);
     }
@@ -612,19 +612,12 @@ impl Browser {
             }
         }
 
-        // The Reader button.
-        let reader_state = active.and_then(|view| {
-            let tools = self.reading.pages.get(&view)?;
-            (self.reader_enabled_here() && (tools.readable || tools.reader_active))
-                .then_some(tools.reader_active)
-        });
-        if Some(reader_state) != self.reading.shown_reader {
-            self.reading.shown_reader = Some(reader_state);
-            self.chrome.set_reader_button(&mut self.ui, reader_state);
-            if reader_state != Some(true) {
-                self.reading.reader_popover.close(&mut self.ui, &self.config);
-            }
+        // Leaving Reader view (or a page without an article) closes its Aa popover.
+        let reader_active = self.reader_state() == Some(true);
+        if self.reading.reader_was_active && !reader_active {
+            self.reading.reader_popover.close(&mut self.ui, &self.config);
         }
+        self.reading.reader_was_active = reader_active;
 
         // Translation: models, backends, results.
         self.update_translation(active);

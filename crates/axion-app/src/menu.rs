@@ -63,6 +63,10 @@ pub enum MenuAction {
     /// Chromium's developer tools for the page.
     DevTools,
     FindOnPage,
+    /// Reader view on or off for the page.
+    Reader,
+    /// The Aa options (text size, font, theme) while in Reader view.
+    ReaderOptions,
     /// Print / Save as PDF.
     Print,
     /// The screenshot tool.

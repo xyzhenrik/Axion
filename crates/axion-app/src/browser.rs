@@ -3038,6 +3038,22 @@ impl Browser {
             MenuItem::new(Icon::Settings, tr("Settings"), MenuAction::Settings),
         ];
         let mut items = items;
+        // Reader view: right after Find on Page; its options follow while it is up.
+        let reader = self.reader_state();
+        let mut reader_rows = vec![
+            MenuItem::new(
+                Icon::Book,
+                if reader == Some(true) { tr("Hide Reader View") } else { tr("Show Reader View") },
+                MenuAction::Reader,
+            )
+            .with_detail(self.shortcut_label(Action::ToggleReader))
+            .enabled(reader.is_some()),
+        ];
+        if reader == Some(true) {
+            reader_rows.push(MenuItem::new(Icon::TextSize, tr("Reader Options…"), MenuAction::ReaderOptions));
+        }
+        let at = items.iter().position(|i| i.action == MenuAction::FindOnPage).map_or(0, |i| i + 1);
+        items.splice(at..at, reader_rows);
         if !self.playlist_ui.candidates.is_empty() {
             let add = MenuItem::new(
                 Icon::PlaylistAdd,
@@ -3269,6 +3285,15 @@ impl Browser {
             MenuAction::FindOnPage => {
                 self.menu.close(&mut self.ui, &self.config);
                 self.run(Action::Find);
+            }
+            MenuAction::Reader => {
+                self.menu.close(&mut self.ui, &self.config);
+                self.reader_menu_toggle();
+            }
+            MenuAction::ReaderOptions => {
+                self.menu.close(&mut self.ui, &self.config);
+                self.close_popups();
+                self.open_reader_popover();
             }
             MenuAction::Print => {
                 self.menu.close(&mut self.ui, &self.config);
@@ -3981,7 +4006,6 @@ impl Browser {
                         }
                     }
                     Some(ChromeAction::PlaylistButton) => self.toggle_playlist_popover(),
-                    Some(ChromeAction::Reader) => self.reader_button_clicked(),
                     Some(ChromeAction::Translate) => self.translate_button_clicked(),
                     Some(ChromeAction::ZoomIndicator) => self.run(Action::ZoomReset),
                     Some(ChromeAction::DownloadsButton) => self.toggle_downloads_popover(),
@@ -6022,7 +6046,6 @@ impl Browser {
         if pressed
             && self.reading.popovers_open()
             && !self.reading.contains(&self.ui, p)
-            && !self.chrome.reader_button_frame(&self.ui).contains(p)
             && !self.chrome.translate_button_frame(&self.ui).contains(p)
         {
             self.reading.close_popovers(&mut self.ui, &self.config);

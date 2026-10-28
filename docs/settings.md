@@ -204,16 +204,16 @@ Reader View and page translation. See [Reading and translation](features/reading
 
 | Setting | What it does | Default | Config key |
 |---|---|---|---|
-| **Reader button in the address field** | Shows the Reader button on pages that have an article. | On | `reader.button` |
-| **Remember Reader View's look for each site** | The Aa menu's choices belong to the site you are on (kept in the profile). Off: they are the same everywhere and saved in `config.toml`. | On | `reader.remember_per_site` |
+| **Reader View in the page menu** | Offers Reader View in the page menu (≡) on pages that have an article. Off: the Reader row is dimmed and the shortcut does nothing. The key kept its old name from when this was an Aa button in the address field. | On | `reader.button` |
+| **Remember Reader View's look for each site** | Reader Options' choices belong to the site you are on (kept in the profile). Off: they are the same everywhere and saved in `config.toml`. | On | `reader.remember_per_site` |
 | **Font** | Serif, Sans or Mono. | Serif | `reader.font` |
 | **Theme** | Auto (light or dark like Axion), Light, Sepia or Dark. | Auto | `reader.theme` |
-| *(Aa menu)* Text size | Size of the text in pixels. | 20 | `reader.font_size` |
-| *(Aa menu)* Column width | Width of the text column in pixels. | 680 | `reader.width` |
+| *(Reader Options)* Text size | Size of the text in pixels. | 20 | `reader.font_size` |
+| *(Reader Options)* Column width | Width of the text column in pixels. | 680 | `reader.width` |
 | *(file only)* Line height | Multiple of the text size. | 1.6 | `reader.line_height` |
 | *(file only)* Article threshold | A page counts as readable with at least this many characters of text. | 600 | `reader.min_chars` |
 | *(file only)* Check delay | Milliseconds after loading before a page is checked for an article. | 700 | `reader.detect_delay_ms` |
-| *(file only)* Aa menu limits | Smallest, largest and step of text size and column width. | 14 / 36 / 2 and 480 / 1000 / 80 | `reader.min_font_size`, `reader.max_font_size`, `reader.font_step`, `reader.min_width`, `reader.max_width`, `reader.width_step` |
+| *(file only)* Reader Options limits | Smallest, largest and step of text size and column width. | 14 / 36 / 2 and 480 / 1000 / 80 | `reader.min_font_size`, `reader.max_font_size`, `reader.font_step`, `reader.min_width`, `reader.max_width`, `reader.width_step` |
 
 ### Translation
 
