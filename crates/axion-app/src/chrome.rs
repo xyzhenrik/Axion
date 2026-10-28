@@ -196,7 +196,7 @@ const GROUP_BASE: u32 = 11_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 35] = [
+    const SIMPLE: [ChromeAction; 36] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
