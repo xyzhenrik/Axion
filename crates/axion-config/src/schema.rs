@@ -1820,6 +1820,9 @@ pub enum TranslationBackend {
 pub struct Translation {
     /// Offer to translate pages written in another language than `target_language`.
     pub offer: bool,
+    /// The offer opens by itself once such a page has loaded (otherwise only the Translate
+    /// button appears in the address field).
+    pub prompt: bool,
     /// ISO 639-1 code pages are translated into; empty: the interface language.
     pub target_language: String,
     pub backend: TranslationBackend,
@@ -1845,12 +1848,16 @@ pub struct Translation {
     pub detect_min_chars: u32,
     /// How long an endpoint may take for one request (seconds).
     pub endpoint_timeout_seconds: u32,
+    /// The hidden page that runs the local engine is closed after this many seconds without
+    /// work, which frees the memory of the models.
+    pub engine_idle_seconds: u32,
 }
 
 impl Default for Translation {
     fn default() -> Self {
         Self {
             offer: true,
+            prompt: true,
             target_language: String::new(),
             backend: TranslationBackend::Local,
             endpoint_url: String::new(),
@@ -1865,6 +1872,7 @@ impl Default for Translation {
             translate_changes: true,
             detect_min_chars: 120,
             endpoint_timeout_seconds: 30,
+            engine_idle_seconds: 120,
         }
     }
 }

@@ -10,5 +10,5 @@ separate file, under the Mozilla Public License, v. 2.0:
 The rest of Axion is MIT-licensed; the MPL applies to this file only. The engine's
 WebAssembly binary (release v0.6.0) and the translation models are not part of this
 repository: Axion downloads them from Mozilla's Remote Settings on the user's request.
-The models are published by Mozilla (https://github.com/mozilla/firefox-translations-models)
-and trained on open data; see that project for their licence terms.
+The models are published by Mozilla (https://github.com/mozilla/firefox-translations-models,
+licensed MPL-2.0 as a repository; trained on open data).

@@ -53,6 +53,8 @@ changes. The names in the last column are what you use in `keymap.toml` (see
 | Show history | Ctrl+H | `show_history` |
 | Open the Playlist | Ctrl+Shift+P | `open_playlist` |
 | Add the page's video to the Playlist | Ctrl+Shift+D | `playlist_add` |
+| Reader view on or off | Ctrl+Alt+R | `toggle_reader` |
+| Translate the page, or show the original | not bound | `translate_page` |
 | Open Passwords | Ctrl+P | `open_passwords` |
 | Show or hide the sidebar | Ctrl+Shift+L | `toggle_sidebar` |
 

@@ -55,11 +55,22 @@ pub fn report_script() -> &'static str {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Message {
     /// The page's language code as declared (`declared`) or guessed; empty when unknown.
-    Lang { lang: String, declared: bool },
+    Lang {
+        lang: String,
+        declared: bool,
+    },
     /// Text to translate.
-    Batch { id: u32, texts: Vec<String> },
-    Progress { done: u32, total: u32 },
-    State { active: bool },
+    Batch {
+        id: u32,
+        texts: Vec<String>,
+    },
+    Progress {
+        done: u32,
+        total: u32,
+    },
+    State {
+        active: bool,
+    },
 }
 
 #[derive(Deserialize)]

@@ -86,6 +86,7 @@ mod onboarding;
 mod page_context;
 mod permissions;
 mod playlist;
+mod reading;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
 /// `AXION_RESIZE_LOG`: a resize's timings are logged once no resize came for this long.
@@ -292,6 +293,8 @@ pub struct Browser {
     /// like the page's: the app owning the clipboard may take long to send it.
     field_paste: ClipboardReader<axion_ui::taffy::NodeId>,
     player: PlayerOverlay,
+    /// Reader view and page translation: buttons, popovers, backends.
+    reading: reading::ReadingUi,
     /// The Playlist: its videos, and its page, popover and thumbnails.
     playlist: crate::playlist::Playlist,
     playlist_ui: playlist::PlaylistUi,
@@ -703,6 +706,7 @@ impl Browser {
         // In the sidebar's plane, rising from the account button at its bottom.
         let account_menu = Menu::build(&mut ui, chrome.sidebar_node(), ACCOUNT_MENU_BASE, Placement::Above);
         let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
+        let reading = reading::ReadingUi::build(&mut ui, chrome.bar_node(), &profile, &config);
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
         let permissions = permissions::PermissionsUi::build(&mut ui, chrome.bar_node(), store.as_ref());
         let toast = Toast::build(&mut ui, chrome.bar_node());
@@ -740,6 +744,7 @@ impl Browser {
         engine.set_internal_pages(Some(Arc::new(crate::media_view::Chain(vec![
             home.service(),
             media_service.clone(),
+            reading.engine_pages(),
         ]))));
         // Built after the chrome so it draws above it.
         let overview = Overview::build(&mut ui);
@@ -788,6 +793,7 @@ impl Browser {
             menu,
             shields,
             shields_popover,
+            reading,
             downloads_popover,
             permissions,
             toast,
@@ -1199,6 +1205,8 @@ impl Browser {
                 }
             }
             Action::PlaylistAdd => self.playlist_add_action(),
+            Action::ToggleReader => self.toggle_reader(),
+            Action::TranslatePage => self.translate_page_action(),
             Action::FocusAddressBar => self.edit_address(),
             Action::NewTab => {
                 let home = self.config.general.effective_homepage().to_owned();
@@ -1775,6 +1783,9 @@ impl Browser {
     fn page_message(&mut self, view: ViewId, message: &str) {
         if axion_vault::autofill::is_message(message) {
             self.autofill_message(view, message);
+            return;
+        }
+        if self.reading_message(view, message) {
             return;
         }
         let message = match axion_media::parse(message) {
@@ -3114,6 +3125,7 @@ impl Browser {
         self.context_menus.close(&mut self.ui, &self.config);
         self.account_menu.close(&mut self.ui, &self.config);
         self.shields_popover.close(&mut self.ui, &self.config);
+        self.reading.close_popovers(&mut self.ui, &self.config);
         self.downloads_popover.close(&mut self.ui, &self.config);
         self.permissions.capture.close(&mut self.ui, &self.config);
         self.suggestions.hide(&mut self.ui, &self.config);
@@ -3400,6 +3412,16 @@ impl Browser {
                     if let Some(MenuClick { action: MenuAction::Playlist(command), .. }) = click {
                         self.playlist_ui.page.menu().close(&mut self.ui, &self.config);
                         self.playlist_command(command);
+                    }
+                }
+                UiEvent::Clicked { action, .. } if self.reading.reader_action(action).is_some() => {
+                    if let Some(action) = self.reading.reader_action(action) {
+                        self.reader_popover_action(action);
+                    }
+                }
+                UiEvent::Clicked { action, .. } if self.reading.translate_action(action).is_some() => {
+                    if let Some(action) = self.reading.translate_action(action) {
+                        self.translate_popover_action(action);
                     }
                 }
                 UiEvent::Clicked { action, .. } if self.playlist_ui.popover.action(action).is_some() => {
@@ -3710,6 +3732,8 @@ impl Browser {
                         }
                     }
                     Some(ChromeAction::PlaylistButton) => self.toggle_playlist_popover(),
+                    Some(ChromeAction::Reader) => self.reader_button_clicked(),
+                    Some(ChromeAction::Translate) => self.translate_button_clicked(),
                     Some(ChromeAction::DownloadsButton) => self.toggle_downloads_popover(),
                     Some(ChromeAction::PanelButton(i, k)) => {
                         self.downloads.row_button(List::Panel, i, k, &mut self.engine);
@@ -3948,6 +3972,13 @@ impl Browser {
                 EngineEvent::PageMessage { view, message } if axion_vault::autofill::is_message(message) => {
                     tracing::debug!(?view, "engine: autofill message");
                 }
+                // Page text goes by here: not into the log.
+                EngineEvent::PageMessage { view, message }
+                    if message.starts_with(axion_translate::page::MARKER)
+                        || message.starts_with(axion_translate::local::MARKER) =>
+                {
+                    tracing::trace!(?view, "engine: translation message");
+                }
                 event => tracing::debug!(?event, "engine"),
             }
             match event {
@@ -3976,6 +4007,7 @@ impl Browser {
                 EngineEvent::LoadingStateChanged { view, loading, can_go_back, can_go_forward } => {
                     if loading {
                         self.playlist_forget_sniffed(view);
+                        self.reading_navigated(view);
                     }
                     if !loading
                         && let (Some(store), Some(tab)) = (
@@ -4159,6 +4191,7 @@ impl Browser {
                     self.permissions_closed(view);
                     self.playlist.sniffed.remove(&view);
                     self.page_colors.closed(view);
+                    self.reading_view_closed(view);
                 }
                 EngineEvent::DownloadUpdated(info) => {
                     let playlist_download = self.playlist_download_update(&info);
@@ -4383,6 +4416,10 @@ impl Browser {
                 }
                 self.sync_backgrounds();
             }
+            Outcome::RemoveTranslationModels => {
+                self.remove_translation_models();
+                self.settings_outcome(Outcome::Changed);
+            }
             Outcome::ClearBrowsingData => {
                 downloads::clear_browsing_data(
                     &self.config,
@@ -4467,6 +4504,7 @@ impl Browser {
             || self.account_menu.is_open()
             || self.context_menus.is_open()
             || self.shields_popover.is_open()
+            || self.reading.popovers_open()
             || self.downloads_popover.is_open()
             || self.permissions.prompt.is_open()
             || self.permissions.capture.is_open()
@@ -5406,6 +5444,15 @@ impl Browser {
             return;
         }
         if pressed
+            && self.reading.popovers_open()
+            && !self.reading.contains(&self.ui, p)
+            && !self.chrome.reader_button_frame(&self.ui).contains(p)
+            && !self.chrome.translate_button_frame(&self.ui).contains(p)
+        {
+            self.reading.close_popovers(&mut self.ui, &self.config);
+            return;
+        }
+        if pressed
             && self.playlist_ui.popover.is_open()
             && !self.playlist_ui.popover.contains(&self.ui, p)
             && !self.chrome.playlist_button_frame(&self.ui).contains(p)
@@ -5584,6 +5631,10 @@ impl Browser {
         if pressed && self.shields_popover.is_open() && input::key(event) == Some(Key::Named("Escape".into()))
         {
             self.shields_popover.close(&mut self.ui, &self.config);
+            return false;
+        }
+        if pressed && self.reading.popovers_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.reading.close_popovers(&mut self.ui, &self.config);
             return false;
         }
         if pressed
@@ -5906,6 +5957,12 @@ impl Browser {
                 // video, playing row N, a search, a row's menu, edit mode, the player's menus.
                 "playlist" => self.open_playlist(),
                 "playlist-popover" => self.toggle_playlist_popover(),
+                // Capture aids for Reader view and translation.
+                "reader" => self.toggle_reader(),
+                "reader-popover" => self.capture_reader_popover(),
+                "translate" => self.translate_page_action(),
+                "translate-auto" => self.capture_translate_auto(),
+                "translate-popover" => self.translate_button_clicked(),
                 "playlist-add" => self.run(Action::PlaylistAdd),
                 "playlist-edit" => self.playlist_action(crate::playlist_page::PageAction::Edit),
                 "playlist-speed" => self.playlist_action(crate::playlist_page::PageAction::Speed),
@@ -6615,7 +6672,9 @@ impl Browser {
         self.animate_permissions(dt, address);
         self.update_player(dt);
         self.update_playlist_buttons();
+        self.update_reading();
         self.playlist_ui.popover.animate(&mut self.ui, dt);
+        self.reading.animate(&mut self.ui, dt);
         if self.playlist_open() {
             self.update_playlist_page(dt);
         } else if self.playlist.playback.is_some() {
@@ -7471,10 +7530,16 @@ fn letterbox(tex: Vec2, aspect: f32) -> Rect {
     Rect { origin: (Vec2::ONE - size) / 2.0, size }
 }
 
-/// What runs in every document: the media bridge and the password autofill script.
+/// What runs in every document: the media bridge, the password autofill, Reader view and
+/// translation scripts.
 fn page_script(config: &Config) -> String {
     let bridge = axion_media::bridge_script(&bridge_secret(), &media_replace(config));
-    format!("{bridge}\n{}", axion_vault::autofill::page_script())
+    format!(
+        "{bridge}\n{}\n{}\n{}",
+        axion_vault::autofill::page_script(),
+        axion_reader::page_script(&config.reader),
+        axion_translate::page::page_script(&config.translation)
+    )
 }
 
 /// A per-run secret that keeps the media bridge's frame messages apart from the page's.

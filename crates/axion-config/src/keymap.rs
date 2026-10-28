@@ -50,6 +50,10 @@ pub enum Action {
     OpenPlaylist,
     /// Add the page's video to the Playlist.
     PlaylistAdd,
+    /// Show the page's article in Reader view, or the page again.
+    ToggleReader,
+    /// Translate the page, or show the original again.
+    TranslatePage,
     OpenPasswords,
     /// Locks private tabs and password filling (the account menu's Lock).
     Lock,
@@ -126,6 +130,8 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::ShowHistory, "show_history"),
     (Action::OpenPlaylist, "open_playlist"),
     (Action::PlaylistAdd, "playlist_add"),
+    (Action::ToggleReader, "toggle_reader"),
+    (Action::TranslatePage, "translate_page"),
     (Action::OpenPasswords, "open_passwords"),
     (Action::Lock, "lock"),
     (Action::Find, "find"),
@@ -402,6 +408,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::ShowHistory, &["Ctrl+H"]);
     bind(Action::OpenPlaylist, &["Ctrl+Shift+P"]);
     bind(Action::PlaylistAdd, &["Ctrl+Shift+D"]);
+    bind(Action::ToggleReader, &["Ctrl+Alt+R"]);
     bind(Action::OpenPasswords, &["Ctrl+P"]);
     bind(Action::Lock, &["Ctrl+L"]);
     bind(Action::Find, &["Ctrl+F"]);

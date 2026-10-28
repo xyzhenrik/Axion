@@ -230,9 +230,7 @@ impl ModelStore {
             if meta.is_file() {
                 return meta.len();
             }
-            std::fs::read_dir(path)
-                .map(|dir| dir.flatten().map(|e| size(&e.path())).sum())
-                .unwrap_or(0)
+            std::fs::read_dir(path).map(|dir| dir.flatten().map(|e| size(&e.path())).sum()).unwrap_or(0)
         }
         size(&self.root)
     }
@@ -253,14 +251,22 @@ pub enum Phase {
     /// Looking up what is needed.
     Planning,
     /// Waiting for the user's consent to download `bytes`.
-    NeedsConsent { bytes: u64 },
-    Downloading { done: u64, total: u64 },
+    NeedsConsent {
+        bytes: u64,
+    },
+    Downloading {
+        done: u64,
+        total: u64,
+    },
     Ready,
     Failed(String),
 }
 
+/// A file to fetch, where it goes, and the pair it belongs to (`None`: the engine).
+type Item = (PathBuf, FileSpec, Option<(String, String)>);
+
 struct Plan {
-    files: Vec<(PathBuf, FileSpec, Option<(String, String)>)>,
+    files: Vec<Item>,
     pairs: Vec<(String, String, PathBuf)>,
     bytes: u64,
 }
@@ -463,7 +469,9 @@ fn download_plan(
     }
     for (from, to, dir) in &plan.pairs {
         let find = |role| {
-            plan.files.iter().find(|(_, f, p)| f.role == role && p.as_ref().is_some_and(|(a, b)| a == from && b == to))
+            plan.files
+                .iter()
+                .find(|(_, f, p)| f.role == role && p.as_ref().is_some_and(|(a, b)| a == from && b == to))
         };
         let Some((_, model, _)) = find(Role::Model) else { continue };
         let manifest = Manifest {

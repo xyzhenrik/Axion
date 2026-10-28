@@ -81,10 +81,7 @@ mod tests {
     #[test]
     fn routes_through_english() {
         assert_eq!(route("de", "en"), Some(vec![("de".into(), "en".into())]));
-        assert_eq!(
-            route("de", "fr"),
-            Some(vec![("de".into(), "en".into()), ("en".into(), "fr".into())])
-        );
+        assert_eq!(route("de", "fr"), Some(vec![("de".into(), "en".into()), ("en".into(), "fr".into())]));
         assert_eq!(route("de", "de"), None);
         assert_eq!(route("de", "xx"), None);
     }

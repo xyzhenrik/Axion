@@ -370,6 +370,31 @@ pub const INDEX: &[Entry] = &[
         S::PlaylistDeleteFiles,
         &["playlist", "remove", "delete files", "löschen", "dateien löschen", "wiedergabeliste", "entfernen"],
     ),
+    control(
+        C::Reading,
+        S::ReaderButton,
+        &["reader", "article", "reading", "lesen", "leseansicht", "artikel"],
+    ),
+    control(C::Reading, S::ReaderRememberPerSite, &["reader", "site", "remember", "website", "merken"]),
+    page(C::Reading, tr_mark("Font"), &["reader", "serif", "sans", "mono", "schrift", "font", "typeface"]),
+    page(C::Reading, tr_mark("Theme"), &["reader", "sepia", "dark", "light", "design", "dunkel", "hell"]),
+    control(
+        C::Reading,
+        S::TranslateOffer,
+        &["translate", "translation", "language", "übersetzen", "übersetzung", "sprache"],
+    ),
+    control(C::Reading, S::TranslatePrompt, &["translate", "prompt", "offer", "übersetzen", "angebot"]),
+    control(C::Reading, S::TranslateChanges, &["translate", "dynamic", "übersetzen", "später"]),
+    page(
+        C::Reading,
+        tr_mark("Translate pages into"),
+        &["translate", "target", "language", "übersetzen", "zielsprache"],
+    ),
+    page(
+        C::Reading,
+        tr_mark("Downloaded language data"),
+        &["translate", "models", "bergamot", "download", "remove", "sprachdaten", "modelle", "löschen"],
+    ),
     page(
         C::Media,
         tr_mark("Playlist sort"),

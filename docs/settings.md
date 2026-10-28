@@ -22,6 +22,7 @@ Pages, in the order of the list:
 [Liquid Glass](#liquid-glass) -
 [Tabs & Memory](#tabs--memory) -
 [Media](#media) -
+[Reading & Translation](#reading--translation) -
 [Keyboard](#keyboard) -
 [Shields](#shields) -
 [Privacy](#privacy) -
@@ -187,6 +188,49 @@ a site. Changes apply to pages loaded next.
 |---|---|---|---|
 | **Hardware video decoding (after restart)** | Decodes video on the graphics card (VA-API). The same switch is on the Hardware page. | On | `media.hardware_decoding` |
 | **Desktop media controls and media keys (after restart)** | Shows what is playing in your desktop's media widgets and reacts to your keyboard's media keys (MPRIS). | On | `media.desktop_integration` |
+
+## Reading & Translation
+
+Reader View and page translation. See [Reading and translation](features/reading-and-translation.md).
+
+### Reader View
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| **Reader button in the address field** | Shows the Reader button on pages that have an article. | On | `reader.button` |
+| **Remember Reader View's look for each site** | The Aa menu's choices belong to the site you are on (kept in the profile). Off: they are the same everywhere and saved in `config.toml`. | On | `reader.remember_per_site` |
+| **Font** | Serif, Sans or Mono. | Serif | `reader.font` |
+| **Theme** | Auto (light or dark like Axion), Light, Sepia or Dark. | Auto | `reader.theme` |
+| *(Aa menu)* Text size | Size of the text in pixels. | 20 | `reader.font_size` |
+| *(Aa menu)* Column width | Width of the text column in pixels. | 680 | `reader.width` |
+| *(file only)* Line height | Multiple of the text size. | 1.6 | `reader.line_height` |
+| *(file only)* Article threshold | A page counts as readable with at least this many characters of text. | 600 | `reader.min_chars` |
+| *(file only)* Check delay | Milliseconds after loading before a page is checked for an article. | 700 | `reader.detect_delay_ms` |
+| *(file only)* Aa menu limits | Smallest, largest and step of text size and column width. | 14 / 36 / 2 and 480 / 1000 / 80 | `reader.min_font_size`, `reader.max_font_size`, `reader.font_step`, `reader.min_width`, `reader.max_width`, `reader.width_step` |
+
+### Translation
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| **Offer to translate pages in other languages** | Shows the Translate button when a page is in a language other than the target and can be translated. | On | `translation.offer` |
+| **Open the offer by itself** | The offer opens once when such a page has loaded. | On | `translation.prompt` |
+| **Translate text that appears later** | New text on a translated page (feeds, comments) is translated too. | On | `translation.translate_changes` |
+| **Translate pages into** | The target language: Interface (Axion's own language), English, German, French or Spanish. Any other code from the list below can be set in the file. | Interface | `translation.target_language` (empty = interface) |
+| **Translate** | Where translating runs: **On this computer** (Bergamot models, nothing leaves the computer) or **Your server** (a LibreTranslate-compatible server; page text is sent to it). | On this computer | `translation.backend` (`local` or `endpoint`) |
+| **Downloaded language data** | Deletes the models downloaded for local translation. | - | - |
+| *(file only)* Server address | LibreTranslate-compatible endpoint, for example `http://localhost:5000/translate`. Only used with `backend = "endpoint"`; empty by default. | empty | `translation.endpoint_url` |
+| *(file only)* Server API key | Sent with each request when set. | empty | `translation.endpoint_api_key` |
+| *(file only)* Server timeout | Seconds one request may take. | 30 | `translation.endpoint_timeout_seconds` |
+| *(Translate popover)* Never for this site | Sites (and their subdomains) that are never offered. | none | `translation.never_sites` |
+| *(file only)* Known languages | Languages you read: pages in them are not offered. | none | `translation.known_languages` |
+| *(file only)* Batch size | At most this many characters and pieces of text are translated per request. | 4000 / 60 | `translation.batch_chars`, `translation.batch_pieces` |
+| *(file only)* Language detection | Pages without a declared language are guessed from at least this many characters. | 120 | `translation.detect_min_chars` |
+| *(file only)* Engine idle time | The hidden page that runs the local engine closes after this many seconds without work, which frees the models' memory. | 120 | `translation.engine_idle_seconds` |
+| *(file only)* Model sources | Where the model list and the files come from (Mozilla Remote Settings). | Mozilla's servers | `translation.models_records_url`, `translation.models_attachments_url` |
+
+Local translation covers English, German, French, Spanish, Italian, Portuguese, Dutch, Polish,
+Russian, Ukrainian, Czech, Swedish, Danish, Norwegian, Finnish, Hungarian, Romanian, Bulgarian,
+Greek, Turkish, Arabic, Japanese and Korean. Pairs without English go through English.
 
 ## Keyboard
 

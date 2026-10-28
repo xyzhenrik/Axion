@@ -32,8 +32,14 @@ pub struct Job {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     /// One translation per text of the job, in order.
-    Done { tag: u64, texts: Vec<String> },
-    Failed { tag: u64, reason: String },
+    Done {
+        tag: u64,
+        texts: Vec<String>,
+    },
+    Failed {
+        tag: u64,
+        reason: String,
+    },
 }
 
 impl Outcome {

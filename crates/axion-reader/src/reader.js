@@ -33,6 +33,18 @@
     "H5", "H6", "FIGURE", "TABLE", "DL", "HEADER", "HR", "ADDRESS", "DETAILS", "SUMMARY", "TR",
   ]);
 
+  const TABLE_PARTS = new Set(["TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TD", "TH", "CAPTION"]);
+  const layoutCache = new WeakMap();
+  const isLayoutTable = (table) => {
+    if (!table) return false;
+    if (!layoutCache.has(table)) {
+      const data = table.querySelector("th, caption, thead");
+      const big = Array.from(table.querySelectorAll("td")).some((td) => text(td).length > 600);
+      layoutCache.set(table, !data && (table.rows.length <= 2 || big));
+    }
+    return layoutCache.get(table);
+  };
+
   let original = null; // the page's <html>, kept while Reader view shows
   let sheet = null;
   let scrollBefore = 0;
@@ -125,6 +137,10 @@
       if (p.querySelector("p, pre, blockquote, li")) continue;
       chars += text(p).length;
     }
+    // Text broken with <br> instead of paragraphs (old table layouts) counts by its length.
+    if (chars < MIN_CHARS) {
+      chars = Math.max(chars, Math.round(text(el).length * (1 - linkDensity(el))));
+    }
     return { el, chars };
   };
 
@@ -200,8 +216,14 @@
         if (holder.textContent.trim() || holder.querySelector("img")) out.appendChild(holder);
         continue;
       }
+      if (TABLE_PARTS.has(tag) && isLayoutTable(child.closest("table"))) {
+        // Tables that only lay the page out are unwrapped; data tables stay.
+        build(child, out, ctx);
+        continue;
+      }
       if (KEEP.has(tag)) {
         if (tag === "H1" && ctx.title && text(child) === ctx.title) continue;
+        if (ctx.byline && text(child) === ctx.byline) continue;
         const el = document.createElement(tag.toLowerCase());
         if ((tag === "TD" || tag === "TH") && child.colSpan > 1) el.colSpan = child.colSpan;
         if (tag === "OL" && child.start > 1) el.start = child.start;
@@ -251,7 +273,7 @@
       if (!isNaN(d)) when = d.toLocaleDateString(document.documentElement.lang || undefined, { dateStyle: "long" });
     }
     const body = document.createElement("div");
-    build(el, body, { title: title.trim(), top: el });
+    build(el, body, { title: title.trim(), top: el, byline: byline.trim() });
     // Whitespace-only text between blocks and a leading duplicate of the title go.
     if (body.textContent.trim().length < MIN_CHARS / 2) return null;
     return {

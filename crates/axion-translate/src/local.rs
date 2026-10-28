@@ -19,16 +19,29 @@ pub const MARKER: &str = "\u{1}axion:trh:";
 pub enum HelperMessage {
     /// The page is loaded and can take jobs.
     Ready,
-    Done { tag: u64, texts: Vec<String> },
-    Error { tag: u64, reason: String },
+    Done {
+        tag: u64,
+        texts: Vec<String>,
+    },
+    Error {
+        tag: u64,
+        reason: String,
+    },
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
 enum Wire {
     Ready,
-    Done { tag: u64, texts: Vec<String> },
-    Error { tag: u64, #[serde(default)] message: String },
+    Done {
+        tag: u64,
+        texts: Vec<String>,
+    },
+    Error {
+        tag: u64,
+        #[serde(default)]
+        message: String,
+    },
 }
 
 /// Parses a console message of the engine page (`None` for any other).

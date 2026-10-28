@@ -65,7 +65,8 @@ impl InternalPages for HelperService {
                 if !safe(from) || !safe(to) {
                     return None;
                 }
-                let mime = if file.ends_with(".json") { "application/json" } else { "application/octet-stream" };
+                let mime =
+                    if file.ends_with(".json") { "application/json" } else { "application/octet-stream" };
                 read(self.store.pair_dir(from, to).join(file), mime)
             }
         }

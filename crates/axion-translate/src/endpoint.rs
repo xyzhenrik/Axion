@@ -119,9 +119,14 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
             let mut buf = vec![0u8; 8192];
-            let n = stream.read(&mut buf).unwrap();
-            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            // The headers and the body may arrive in separate reads.
+            while !request.contains(r#""target""#) {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0, "the request ended early");
+                request.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
             let body = r#"{"translatedText":["Hello","World"]}"#;
             write!(
                 stream,
@@ -136,7 +141,12 @@ mod tests {
             ..Translation::default()
         };
         let mut t = EndpointTranslator::new(&settings).unwrap();
-        t.submit(Job { tag: 9, from: "de".into(), to: "en".into(), texts: vec!["Hallo".into(), "Welt".into()] });
+        t.submit(Job {
+            tag: 9,
+            from: "de".into(),
+            to: "en".into(),
+            texts: vec!["Hallo".into(), "Welt".into()],
+        });
         let mut got = Vec::new();
         for _ in 0..100 {
             got = t.poll();

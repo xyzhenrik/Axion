@@ -22,6 +22,7 @@ These pages explain what it can do and, above all, what each setting does.
 | [Site permissions](features/site-permissions.md) | Microphone, camera, screen sharing (Discord, Meet), notifications, location; the recording indicator. |
 | [Passwords](features/passwords.md) | Saving, filling, cards, addresses, notes, import and export. |
 | [Media and Playlist](features/media-and-playlist.md) | The video player, Picture in Picture, media keys, the Playlist. |
+| [Reading and translation](features/reading-and-translation.md) | Reader View, translating pages on this computer. |
 | [Start page](features/start-page.md) | Clock, top sites, search, backgrounds and statistics. |
 | [Appearance and Liquid Glass](features/appearance-and-glass.md) | Themes, accent colours, glass or flat, layout options. |
 | [Developer tools](features/developer-tools.md) | F12, view source, Inspect. |
