@@ -3603,6 +3603,9 @@ impl Browser {
                         None => {}
                     }
                 }
+                UiEvent::Clicked { action, .. }
+                    if self.permissions.prompt.is_picker()
+                        && self.permissions.prompt.picker_click(&mut self.ui, action) => {}
                 UiEvent::Clicked { action, .. } if self.permissions.prompt.action(action).is_some() => {
                     if let Some(choice) = self.permissions.prompt.action(action) {
                         self.answer_permission_prompt(choice);
@@ -4150,6 +4153,9 @@ impl Browser {
                 }
                 EngineEvent::PermissionRequest { view, id, origin, kinds } => {
                     self.permission_requested(view, id, origin, kinds);
+                }
+                EngineEvent::ScreenPickRequested { view, token, origin, audio } => {
+                    self.screen_pick_requested(view, token, origin, audio);
                 }
                 EngineEvent::PermissionCancelled { view, id } => self.permission_cancelled(view, id),
                 EngineEvent::CaptureChanged { view, audio, video } => {

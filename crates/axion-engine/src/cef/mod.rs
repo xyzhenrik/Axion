@@ -822,6 +822,7 @@ impl Engine for CefEngine {
         // Events of the closed page (its `Closed` included) no longer match and are dropped.
         state.browser_id = NO_BROWSER;
         self.shared.permissions.drop_view(view);
+        self.shared.screen_approvals.borrow_mut().remove(&view);
         if let Some(host) = browser.host() {
             host.close_browser(1);
         }
@@ -1097,6 +1098,31 @@ impl Engine for CefEngine {
         screen_cast_portal() && !on_x11()
     }
 
+    fn set_screen_picker(&mut self, on: bool) {
+        self.shared.own_screen_picker.set(on);
+    }
+
+    fn answer_screen_pick(&mut self, view: ViewId, token: u64, pick: Option<crate::ScreenPick>) {
+        let (id, audio) = match &pick {
+            // The id is a desktop media id; anything that could leave the string is dropped.
+            Some(p) => (format!("'{}'", p.id.replace(['\\', '\''], "")), p.audio),
+            None => ("null".to_owned(), false),
+        };
+        if pick.is_some() {
+            *self.shared.screen_approvals.borrow_mut().entry(view).or_insert(0) += 1;
+        }
+        let script = format!("window.__axionPicked && window.__axionPicked({token}, {id}, {audio});");
+        let Some(browser) = self.browser(view) else { return };
+        let mut ids = CefStringList::new();
+        browser.frame_identifiers(Some(&mut ids));
+        for frame_id in client::string_list(&mut ids) {
+            if let Some(frame) = browser.frame_by_identifier(Some(&frame_id.as_str().into())) {
+                frame.execute_java_script(Some(&script.as_str().into()), None, 0);
+            }
+        }
+        tracing::info!(?view, token, shared = pick.is_some(), "screen pick answered");
+    }
+
     fn request_frame(&mut self, _view: ViewId) {
         // Chromium renders on its own timer (see `create_browser`).
     }
@@ -1174,6 +1200,7 @@ impl Engine for CefEngine {
                 | EngineEvent::RendererGone { view, .. }
                 | EngineEvent::FindResult { view, .. }
                 | EngineEvent::PermissionRequest { view, .. }
+                | EngineEvent::ScreenPickRequested { view, .. }
                 | EngineEvent::PermissionCancelled { view, .. }
                 | EngineEvent::CaptureChanged { view, .. }
                 | EngineEvent::Closed { view } => *view,
@@ -1194,6 +1221,7 @@ impl Engine for CefEngine {
                 EngineEvent::Closed { .. } => {
                     self.net.set_media_view(view, None);
                     self.shared.permissions.drop_view(view);
+                    self.shared.screen_approvals.borrow_mut().remove(&view);
                     self.views.remove(&view);
                     if let Some(inspected) = tools_of.and_then(|v| self.views.get_mut(&v)) {
                         inspected.devtools = None;

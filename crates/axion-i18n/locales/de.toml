@@ -954,3 +954,9 @@
 
 "Add Axion to the application menu" = "Axion zum Anwendungsmenü hinzufügen"
 "Gives Axion its icon in the taskbar and the application menu. Applies after restarting Axion." = "Gibt Axion sein Symbol in der Taskleiste und im Anwendungsmenü. Wird nach einem Neustart von Axion übernommen."
+
+# crates/axion-app/src/permission_prompt.rs (screen picker), platform/screens.rs
+"wants to share a screen or window:" = "möchte einen Bildschirm oder ein Fenster teilen:"
+"No screens or windows to share were found." = "Es wurden keine Bildschirme oder Fenster zum Teilen gefunden."
+"All Screens" = "Alle Bildschirme"
+"Entire Screen" = "Ganzer Bildschirm"
