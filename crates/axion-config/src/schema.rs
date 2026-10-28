@@ -1268,11 +1268,13 @@ pub struct Toast {
     pub duration_seconds: f32,
     /// How long a toast with a button ("Axion 0.2.0 is available" – Update) stays (seconds).
     pub action_duration_seconds: f32,
+    /// Gap kept between a toast and a popover, menu or sheet it would otherwise overlap (px).
+    pub clearance: f32,
 }
 
 impl Default for Toast {
     fn default() -> Self {
-        Self { duration_seconds: 2.0, action_duration_seconds: 8.0 }
+        Self { duration_seconds: 2.0, action_duration_seconds: 8.0, clearance: 12.0 }
     }
 }
 

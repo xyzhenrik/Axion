@@ -217,6 +217,7 @@ impl AddAccountSheet {
         );
         capsule_button(ui, buttons, CANCEL, tr("Cancel"), false);
         capsule_button(ui, buttons, CREATE, tr("Add and Switch"), true);
+        ui.claim_space(alert);
         ui.set_visible(root, false);
         Self {
             root,

@@ -149,6 +149,7 @@ impl UpdateAlert {
                 ..Default::default()
             },
         );
+        ui.claim_space(alert);
         ui.set_visible(root, false);
         Self {
             root,

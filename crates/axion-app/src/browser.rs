@@ -1859,7 +1859,13 @@ impl Browser {
     /// from the account button the card is lifted by as much.
     fn sync_now_playing_lift(&mut self) {
         let account = self.chrome.account_frame(&self.ui).origin.y;
-        let lift = self.account_menu.top().map_or(0.0, |top| account - top);
+        let mut lift = self.account_menu.top().map_or(0.0, |top| account - top);
+        // And clear of a toast pushed down below a popover into its place.
+        if let Some(toast) = self.toast.area()
+            && let Some(card) = self.chrome.now_playing_rest_frame(&self.ui)
+        {
+            lift = lift.max(crate::toast::lift_over(card, toast, self.config.toast.clearance.max(0.0)));
+        }
         self.chrome.set_now_playing_lift(&mut self.ui, lift);
     }
 
@@ -4346,8 +4352,8 @@ impl Browser {
         if anchor.size.x <= 0.0 {
             anchor = self.chrome.address_frame(&self.ui);
         }
-        let width = self.logical_size().x;
-        self.toast.show(&mut self.ui, &self.config, anchor, width, icon, text);
+        let window = self.logical_size();
+        self.toast.show(&mut self.ui, &self.config, anchor, window, icon, text);
     }
 
     /// A toast with a button, like [`Self::show_toast`].
@@ -4356,8 +4362,8 @@ impl Browser {
         if anchor.size.x <= 0.0 {
             anchor = self.chrome.address_frame(&self.ui);
         }
-        let width = self.logical_size().x;
-        self.toast.show_with_action(&mut self.ui, &self.config, anchor, width, icon, text, Some(action));
+        let window = self.logical_size();
+        self.toast.show_with_action(&mut self.ui, &self.config, anchor, window, icon, text, Some(action));
     }
 
     /// Tooltips stay away while a menu, popover, sheet or drag is active.
@@ -5666,6 +5672,8 @@ impl Browser {
                 // Test aids: the Share button's toast, and the sidebar list's search text
                 // ("panel-search:TEXT", after "history" / "bookmarks").
                 "share" => self.copy_link(),
+                // Capture aid: a toast without needing the clipboard.
+                "toast" => self.show_toast(Icon::Check, tr("Link copied")),
                 query if query.starts_with("panel-search:") => {
                     let field = self.chrome.panel_search_field();
                     self.ui.set_field_text(field, &query["panel-search:".len()..]);

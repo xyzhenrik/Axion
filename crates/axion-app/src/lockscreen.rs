@@ -199,6 +199,7 @@ impl LockScreen {
         );
         capsule_button(ui, buttons, CANCEL, tr("Cancel"), false);
         capsule_button(ui, buttons, UNLOCK, tr("Unlock"), true);
+        ui.claim_space(alert);
         ui.set_visible(alert_layer, false);
         ui.set_visible(root, false);
         Self {

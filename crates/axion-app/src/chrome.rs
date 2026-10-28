@@ -2535,6 +2535,10 @@ impl Chrome {
     }
 
     /// Lifts the card out of the account menu's way (logical px).
+    pub fn now_playing_rest_frame(&self, ui: &Ui) -> Option<axion_compositor::Rect> {
+        self.now_playing.rest_frame(ui)
+    }
+
     pub fn set_now_playing_lift(&self, ui: &mut Ui, lift: f32) {
         self.now_playing.set_lift(ui, lift);
     }
