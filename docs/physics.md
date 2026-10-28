@@ -33,9 +33,13 @@ the well-established reverse-engineered result. Checks: `f(d) = 0.3548·d`, `f(2
 slope `c` at the boundary (unit tests).
 
 Use in Axion:
-- Dragged glass stretch: `drag_stretch = max · f(distance, d, c) / d`, `d` = the glass's
-  largest side. `glass.drag_stretch_max` (our earlier 8 %) is the asymptote. **Reconstructed**
-  choice (Apple's glass stretch magnitude is not documented).
+- Dragged glass stretch: `drag_stretch = max · f(distance, d, c) / d`, `d` = max(the glass's
+  largest side, `glass.drag_range_min` = 120 px), so the curve stays nearly linear for a long pull.
+  `glass.drag_stretch_max` (now 5 %) is the asymptote. **Reconstructed** choice (Apple's glass
+  stretch magnitude is not documented). Content (icons, labels, nested glass, any depth) undergoes
+  the glass's own transform: `p' = C + offset + swell·R·diag(1+e, 1/(1+e))·Rᵀ·(p - C)` about the
+  glass centre `C` (positions exact; sizes by the matrix diagonal, exact for axis pulls; text only
+  scales uniformly, by the horizontal factor).
 - Knob over-pull: `f` with `d = 0.18` of the travel (**Reconstructed** limit).
 - Config: `glass.rubber_band_c` (default 0.55, advanced). `glass.drag_resistance` (px scale of
   the old exponential curve) is deprecated and ignored.

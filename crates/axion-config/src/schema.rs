@@ -458,9 +458,13 @@ pub struct Glass {
     pub merge_distance: f32,
     /// Maximum squash along the direction of motion (0.08 = 8%).
     pub squash: f32,
-    /// Largest stretch of glass pulled by a held pointer (0.08 = 8%): the asymptote of the
+    /// Largest stretch of glass pulled by a held pointer (0.05 = 5%): the asymptote of the
     /// drag curve, reached only far from the glass's rest position.
     pub drag_stretch_max: f32,
+    /// Smallest range `d` (logical px) of the drag curve's rubber band: the band's range is the
+    /// element's size, but at least this, so small buttons need a long pull to approach the
+    /// maximum (the curve stays nearly linear much longer).
+    pub drag_range_min: f32,
     /// Deprecated and ignored (kept so old config files still load): the drag curve is now
     /// UIScrollView's rubber band over the element's size, see `rubber_band_c`.
     pub drag_resistance: f32,
@@ -521,6 +525,11 @@ impl Glass {
         if self.reduce_motion || self.is_flat() { 0.0 } else { self.drag_stretch_max.max(0.0) }
     }
 
+    /// Smallest range of the drag curve in logical px (at least 1).
+    pub fn drag_range_min(&self) -> f32 {
+        self.drag_range_min.max(1.0)
+    }
+
     /// The rubber-band constant (clamped to a usable range; default exactly 0.55).
     pub fn rubber_band_c(&self) -> f32 {
         self.rubber_band_c.clamp(0.05, 2.0)
@@ -563,7 +572,8 @@ impl Default for Glass {
             bezel_width: 22.0,
             merge_distance: 20.0,
             squash: 0.08,
-            drag_stretch_max: 0.08,
+            drag_stretch_max: 0.05,
+            drag_range_min: 120.0,
             drag_resistance: 40.0,
             rubber_band_c: 0.55,
             popover_bridge_fillet: 30.0,
@@ -2568,7 +2578,8 @@ mod glass_style_tests {
     fn drag_stretch_is_off_in_flat_mode_and_under_reduce_motion() {
         let mut glass = Glass::default();
         assert_eq!(glass.drag_stretch_max(), glass.drag_stretch_max);
-        assert_eq!(glass.drag_stretch_max, 0.08, "the old maximum");
+        assert_eq!(glass.drag_stretch_max, 0.05, "subtle, like iOS");
+        assert_eq!(glass.drag_range_min(), 120.0);
         glass.reduce_motion = true;
         assert_eq!(glass.drag_stretch_max(), 0.0);
         glass.reduce_motion = false;
