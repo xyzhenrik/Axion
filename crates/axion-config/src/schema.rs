@@ -665,6 +665,9 @@ pub struct Motion {
     /// A closing tab shrinking and fading away (tab bar, sidebar, overview). The tabs beside it
     /// slide into the gap on `snappy`.
     pub tab_close: SpringSpec,
+    /// A switch's knob travelling (and the knob swelling into a glass lens), also segmented
+    /// controls. Quick: settles in about 0.2 s with a small bounce.
+    pub switch: SpringSpec,
     /// Multiplies every spring response (0.5 = twice as fast).
     pub speed: f32,
 }
@@ -681,6 +684,7 @@ impl Default for Motion {
             drain_drop: 18.0,
             fling: SpringSpec { response: 0.60, damping: 0.85 },
             tab_close: SpringSpec { response: 0.34, damping: 0.95 },
+            switch: SpringSpec { response: 0.18, damping: 0.80 },
             speed: 1.0,
         }
     }

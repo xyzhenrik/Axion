@@ -141,4 +141,28 @@ mod tests {
         assert!(k.pos.value < 0.0 && k.pos.value > -OVERPULL);
         assert!(k.release(0.0), "a drag");
     }
+
+    #[test]
+    fn default_switch_spring_settles_quickly() {
+        let spec = axion_config::Config::default().motion.switch;
+        let mut k = Knob::new(0.0, Spring::new(spec.response, spec.damping));
+        k.press(0.0);
+        k.release(1.0);
+        let mut t = 0.0;
+        let mut peak: f32 = 0.0;
+        let mut visible = None;
+        while !k.is_settled() && t < 2.0 {
+            k.step(1.0 / 240.0);
+            peak = peak.max(k.pos.value);
+            if (k.pos.value - 1.0).abs() > 0.02 {
+                visible = None;
+            } else if visible.is_none() {
+                visible = Some(t);
+            }
+            t += 1.0 / 240.0;
+        }
+        assert!(visible.is_some_and(|v| v < 0.2), "visually settled at {visible:?}");
+        assert!(t < 0.4, "fully settled after {t} s");
+        assert!(peak < 1.08, "overshoot {peak}");
+    }
 }

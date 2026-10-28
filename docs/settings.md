@@ -117,6 +117,7 @@ Fine-tune the glass material. These settings only matter with **Glass** set to *
 |---|---|---|---|
 | **Reduce transparency** | Replaces glass with opaque surfaces. | Off | `glass.reduce_transparency` |
 | **Reduce motion** | Replaces springs and stretching with short fades. | Off | `glass.reduce_motion` |
+| Switch animation | The spring of a switch's knob (travel, and swelling into a glass lens while held) and of segmented controls: `response` is the period in seconds, `damping` the damping ratio. The default settles in about 0.2 s with a small bounce. Edit in `config.toml`; Reduce motion snaps it. | `response` 0.18, `damping` 0.80 | `motion.switch` |
 | **Refraction** | How strongly the glass bends what is behind it. 0 to 100 %. | 55 % | `glass.light.refraction`, `glass.dark.refraction` |
 | **Blur** | How much the backdrop is blurred, as a share of the normal amount for each glass thickness. 0 to 200 %. | 100 % | `glass.light.blur`, `glass.dark.blur` (`thin`, `regular`, `thick`) |
 | **Colour dispersion** | Colour fringes along the glass rim. 0 to 40 %. | 12 % (10 % in dark mode) | `glass.light.dispersion`, `glass.dark.dispersion` |

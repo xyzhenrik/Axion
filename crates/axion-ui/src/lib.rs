@@ -1263,8 +1263,8 @@ impl Ui {
             Spring::new(0.15, 1.0)
         } else {
             Spring::new(
-                motion.liquid.response * motion.speed,
-                self.theme.config().glass.damping(motion.liquid.damping),
+                motion.switch.response * motion.speed,
+                self.theme.config().glass.damping(motion.switch.damping),
             )
         }
     }
@@ -1960,9 +1960,14 @@ impl Ui {
             }
         }
 
-        // Buttons: selected / hover / pressed feedback.
+        // Buttons: selected / hover / pressed feedback. Switches, segmented controls and sliders
+        // have their own knob as feedback: no highlight plate behind them, even with an action.
         let content = &mut stacks[child_depth].content;
-        if widget.action.is_some() && widget.enabled {
+        let own_feedback = matches!(
+            widget.kind,
+            WidgetKind::Toggle { .. } | WidgetKind::Segmented { .. } | WidgetKind::Slider { .. }
+        );
+        if widget.action.is_some() && widget.enabled && !own_feedback {
             let label = theme.color(Paint::Label);
             if widget.selected {
                 let surface = theme.color(Paint::Surface);
@@ -3481,6 +3486,20 @@ mod tests {
             }
         }
         (shapes, icons, quads)
+    }
+
+    #[test]
+    fn a_switch_with_an_action_has_no_highlight_plate() {
+        let mut ui = ui();
+        let (_, parent, _) = row(&mut ui);
+        let toggle = ui.add(parent, Widget::toggle(true).with_action(ActionId(7)), Style::default());
+        ui.layout();
+        let rest = glass_and_icons(&ui).2;
+        let c = ui.frame(toggle).center();
+        ui.handle(UiInput::PointerMove(c));
+        assert_eq!(glass_and_icons(&ui).2, rest, "hover adds no fill");
+        ui.handle(UiInput::PointerDown);
+        assert!(glass_and_icons(&ui).2 <= rest, "pressed adds no fill");
     }
 
     #[test]
