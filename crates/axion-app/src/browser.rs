@@ -57,6 +57,7 @@ use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
 use crate::perf_log::{FrameOutcome, PerfLog};
 use crate::pip::{PipControl, PipOutcome, PipWindow};
 use crate::platform::clipboard::ClipboardReader;
+use crate::platform::dragout::{DragOut, Payload};
 use crate::platform::pointer::PointerProbe;
 use crate::player::{
     Context as PlayerContext, Control as PlayerControl, Mode as PlayerMode, Outcome as PlayerOutcome,
@@ -272,6 +273,11 @@ pub struct Browser {
     find: FindBar,
     /// Files dragged over the window from the desktop.
     file_drop: FileDrop,
+    /// Starts drags of a tab's link into other apps (see `platform::dragout`); `None` before it
+    /// was connected or where the display server does not allow it.
+    drag_out: Option<DragOut>,
+    /// Connecting `drag_out` was tried (once).
+    drag_out_tried: bool,
     /// Asks the X server where the pointer is during such a drag (made on first use).
     pointer_probe: Option<PointerProbe>,
     /// Test aid: where a simulated file drag is (window, logical px), instead of the pointer.
@@ -750,6 +756,8 @@ impl Browser {
             panel_query: String::new(),
             find,
             file_drop: FileDrop::default(),
+            drag_out: None,
+            drag_out_tried: false,
             pointer_probe: None,
             file_drag_at: None,
             clipboard_reader: ClipboardReader::default(),
@@ -3106,6 +3114,7 @@ impl Browser {
 
     /// The drag's per-frame step before layout (the slot follows the pointer).
     fn update_tab_drag(&mut self, dt: f32) {
+        self.connect_drag_out();
         self.tab_drag.update(&mut self.ui, &mut self.chrome, &self.config, dt);
     }
 
@@ -4995,6 +5004,9 @@ impl Browser {
             WindowEvent::CursorLeft { .. } => {
                 // A held slider keeps following the pointer outside the window (the compositor
                 // grabs it, the button-up still arrives), so the pointer position stays.
+                if self.tab_drag.is_dragging() && self.drag_tab_out() {
+                    return Ok(true);
+                }
                 if self.ui.dragging().is_none() {
                     self.pointer = None;
                     self.ui.handle(UiInput::PointerLeave);
@@ -5076,6 +5088,11 @@ impl Browser {
             // The dragged tab follows (see `update_tab_drag`); nothing else reacts meanwhile.
             let (chrome, favicons) = (&self.chrome, &self.favicons);
             self.tab_drag.pointer_moved(&mut self.ui, chrome, &self.config, None, favicons, p);
+            let margin = self.config.tabs.drag_out_distance.max(0.0);
+            let window = self.logical_size();
+            if p.x < -margin || p.y < -margin || p.x > window.x + margin || p.y > window.y + margin {
+                self.drag_tab_out();
+            }
             return;
         }
         let pressed_tab = self.tab_drag_tab();
@@ -5133,6 +5150,45 @@ impl Browser {
         if let Some(icon) = icon {
             self.window.set_cursor(icon);
         }
+    }
+
+    /// Connects the drag-out source on the first frame (Wayland needs to listen to the pointer
+    /// from before a drag starts, to know the serial of its press).
+    fn connect_drag_out(&mut self) {
+        if self.drag_out_tried || !self.config.tabs.drag_out_links {
+            return;
+        }
+        self.drag_out_tried = true;
+        self.drag_out = DragOut::connect(&self.window);
+        if self.drag_out.is_none() {
+            tracing::debug!("dragging tabs out as links is not available on this display server");
+        }
+    }
+
+    /// The tab being dragged left the window: the drag goes on as a system drag of its link
+    /// (dropped in a text field it pastes the address) and the in-app drag ends where it was,
+    /// nothing moved. Returns whether the system drag started; if not, the tab drag goes on.
+    fn drag_tab_out(&mut self) -> bool {
+        if !self.config.tabs.drag_out_links {
+            return false;
+        }
+        let Some(item) = self.tab_drag.dragged() else { return false };
+        let Some(url) = find_tab(&self.tabs, &self.parked, item.view)
+            .map(|t| t.url.clone())
+            .filter(|url| shareable_url(url))
+        else {
+            return false;
+        };
+        let Some(drag_out) = &mut self.drag_out else { return false };
+        if !drag_out.start(Payload { url }) {
+            return false;
+        }
+        self.tab_drag.cancel(&mut self.ui);
+        self.tabs_changed = true;
+        // The system has the pointer now: the button-up never reaches the window.
+        self.pointer_captured_by_ui = false;
+        let _ = self.ui.handle(UiInput::PointerUp);
+        true
     }
 
     /// Lets go of whatever the pointer holds in the UI (a slider drag, a held glass button)
@@ -7162,6 +7218,12 @@ fn chrome_allowed_while_locked(action: ChromeAction) -> bool {
 }
 
 /// A tab by view, in either tab group.
+/// Whether a tab's address is worth dropping into another app (not Axion's own pages).
+fn shareable_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    ["http://", "https://", "file://", "ftp://"].iter().any(|scheme| lower.starts_with(scheme))
+}
+
 fn find_tab<'a>(tabs: &'a Tabs, parked: &'a Tabs, view: ViewId) -> Option<&'a Tab> {
     tabs.all().iter().chain(parked.all()).find(|t| t.view == view)
 }
@@ -7354,5 +7416,20 @@ mod tests {
         ] {
             assert!(chrome_allowed_while_locked(action), "{action:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod drag_out_tests {
+    use super::shareable_url;
+
+    #[test]
+    fn only_web_and_file_addresses_are_dropped_out() {
+        assert!(shareable_url("https://example.com/a"));
+        assert!(shareable_url(" HTTP://example.com"));
+        assert!(shareable_url("file:///tmp/a.html"));
+        assert!(!shareable_url("axion://home"));
+        assert!(!shareable_url("about:blank"));
+        assert!(!shareable_url(""));
     }
 }

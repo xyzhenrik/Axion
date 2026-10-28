@@ -145,6 +145,11 @@ impl TabDrag {
         self.active.is_some()
     }
 
+    /// The tab being dragged, while dragging.
+    pub fn dragged(&self) -> Option<TabItem> {
+        self.active.as_ref().map(|a| a.item)
+    }
+
     /// A press on a tab: it may become a drag.
     pub fn press(&mut self, item: TabItem, at: Vec2) {
         self.pending = Some(Pending { item, start: at });

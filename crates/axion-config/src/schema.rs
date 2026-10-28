@@ -1411,6 +1411,8 @@ pub struct Tabs {
     pub restore_session: bool,
     /// Tabs opened from links start in the background.
     pub open_links_in_background: bool,
+    /// A middle click on a tab (in the tab bar, the sidebar or the tab overview) closes it.
+    pub middle_click_closes_tab: bool,
     /// Close tabs not looked at for this many days (0: never).
     pub close_after_days: u32,
     /// How often memory use is measured and the tab rules are applied.
@@ -1418,6 +1420,12 @@ pub struct Tabs {
     /// A press on a tab turns into dragging it (to reorder, or to move it between normal and
     /// private tabs) once the pointer moved this far (logical px); shorter moves are clicks.
     pub drag_threshold: f32,
+    /// Dragging a tab out of the window into another app drops its link there (a text field gets
+    /// the address).
+    pub drag_out_links: bool,
+    /// A dragged tab counts as leaving the window once the pointer is this far outside it
+    /// (logical px).
+    pub drag_out_distance: f32,
     /// Pages draw at most this many frames per second; 0 follows the display's refresh rate.
     pub max_frame_rate: u32,
     /// Following the display (`max_frame_rate = 0`), pages draw at most this many frames per
@@ -1444,9 +1452,12 @@ impl Default for Tabs {
             keep_media_awake: true,
             restore_session: true,
             open_links_in_background: true,
+            middle_click_closes_tab: true,
             close_after_days: 0,
             check_interval_seconds: 5.0,
             drag_threshold: 6.0,
+            drag_out_links: true,
+            drag_out_distance: 12.0,
             max_frame_rate: 0,
             max_frame_rate_cap: 120,
             gpu_frame_settle_ms: 6.0,
