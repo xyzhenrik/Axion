@@ -3040,6 +3040,7 @@ impl Browser {
     // ---- command palette ----
 
     fn open_palette(&mut self) {
+        self.reading.close_popovers(&mut self.ui, &self.config);
         self.menu.close(&mut self.ui, &self.config);
         self.account_menu.close(&mut self.ui, &self.config);
         self.suggestions.hide(&mut self.ui, &self.config);
