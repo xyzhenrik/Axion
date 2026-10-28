@@ -2355,11 +2355,17 @@ impl SettingsSheet {
                 ..row(16.0)
             },
         );
+        // The logo is a rounded glass tile with its own soft edge: no plate or clip behind it
+        // (the accent plate is only the fallback symbol's ground).
         let icon_box = ui.add(
             header,
-            Widget::container()
-                .with_background(Background::Fill(Paint::Accent, 0.14))
-                .with_radius(ABOUT_ICON_RADIUS),
+            if about.icon.is_some() {
+                Widget::container()
+            } else {
+                Widget::container()
+                    .with_background(Background::Fill(Paint::Accent, 0.14))
+                    .with_radius(ABOUT_ICON_RADIUS)
+            },
             Style {
                 size: Size { width: length(ABOUT_ICON), height: length(ABOUT_ICON) },
                 flex_shrink: 0.0,
@@ -2372,7 +2378,7 @@ impl SettingsSheet {
             Some(picture) => {
                 let node = ui.add(
                     icon_box,
-                    Widget::image().with_radius(ABOUT_ICON_RADIUS),
+                    Widget::image(),
                     Style {
                         position: Position::Absolute,
                         inset: Rect { left: length(0.0), right: auto(), top: length(0.0), bottom: auto() },
