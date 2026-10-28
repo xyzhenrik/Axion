@@ -954,3 +954,12 @@
 
 "Add Axion to the application menu" = "Axion zum Anwendungsmenü hinzufügen"
 "Gives Axion its icon in the taskbar and the application menu. Applies after restarting Axion." = "Gibt Axion sein Symbol in der Taskleiste und im Anwendungsmenü. Wird nach einem Neustart von Axion übernommen."
+
+# crates/axion-app/src/palette.rs
+"Command palette" = "Befehlspalette"
+"Search commands" = "Befehle suchen"
+"No matching commands" = "Keine passenden Befehle"
+
+# zoom indicator and selection menu
+"Reset Zoom" = "Zoom zurücksetzen"
+"Share…" = "Teilen…"

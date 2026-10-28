@@ -53,6 +53,7 @@ use crate::now_playing::{Art, ArtStore, first_web_url};
 use crate::onboarding::Onboarding;
 use crate::overview::{Overview, OverviewAction};
 use crate::page_color::{PageTint, TintParams, lightness};
+use crate::palette::CommandPalette;
 use crate::passwords::{Outcome as PasswordsOutcome, Passwords};
 use crate::perf_log::{FrameOutcome, PerfLog};
 use crate::pip::{PipControl, PipOutcome, PipWindow};
@@ -274,6 +275,7 @@ pub struct Browser {
     /// What the sidebar panel's search field held when the list was last built.
     panel_query: String,
     find: FindBar,
+    palette: CommandPalette,
     /// Files dragged over the window from the desktop.
     file_drop: FileDrop,
     /// Starts drags of a tab's link into other apps (see `platform::dragout`); `None` before it
@@ -708,6 +710,7 @@ impl Browser {
         let permissions = permissions::PermissionsUi::build(&mut ui, chrome.bar_node(), store.as_ref());
         let toast = Toast::build(&mut ui, chrome.bar_node());
         let find = FindBar::build(&mut ui, chrome.bar_node());
+        let palette = CommandPalette::build(&mut ui, chrome.bar_node());
         let lock_screen = LockScreen::build(&mut ui);
         let mut settings = SettingsSheet::build(&mut ui);
         settings.set_hardware(hardware_status.clone());
@@ -802,6 +805,7 @@ impl Browser {
             tooltip,
             panel_query: String::new(),
             find,
+            palette,
             file_drop: FileDrop::default(),
             drag_out: None,
             drag_out_tried: false,
@@ -1188,6 +1192,10 @@ impl Browser {
     /// zoom settings changed).
     fn sync_tab_zoom(&mut self, view: ViewId) {
         let Some(tab) = find_tab(&self.tabs, &self.parked, view) else { return };
+        // Pages without a site (files, internal pages) keep the zoom the tab has.
+        if axion_shields::site::host(&tab.url).is_none() {
+            return;
+        }
         let want = self.site_zoom.level(&self.config, &tab.url);
         if (want - tab.zoom).abs() > 1e-6 {
             self.set_tab_zoom(view, want);
@@ -1378,7 +1386,14 @@ impl Browser {
                     self.clipboard_reader.read(view, action == Action::PastePlainText, max);
                 }
             }
-            Action::Quit => {}
+            Action::Quit => self.quit_at = Some(Instant::now()),
+            Action::CommandPalette => {
+                if self.palette.is_open() {
+                    self.close_palette();
+                } else {
+                    self.open_palette();
+                }
+            }
             media if self.playlist_open() => self.playlist_media_key(media),
             media => {
                 if let Some((view, command)) = self.player.key_command(media, &self.config) {
@@ -2938,6 +2953,43 @@ impl Browser {
         self.menu.open(&mut self.ui, &self.config, anchor, window, items);
     }
 
+    // ---- command palette ----
+
+    fn open_palette(&mut self) {
+        self.menu.close(&mut self.ui, &self.config);
+        self.account_menu.close(&mut self.ui, &self.config);
+        self.suggestions.hide(&mut self.ui, &self.config);
+        let anchor = self.chrome.address_frame(&self.ui);
+        let width = self.logical_size().x;
+        let top = self.page_rect().origin.y;
+        self.palette.open(&mut self.ui, &self.config, &self.keymap, anchor, width, top);
+        let events = self.ui.focus(self.palette.field());
+        self.handle_ui_events(events);
+    }
+
+    fn close_palette(&mut self) {
+        if !self.palette.is_open() {
+            return;
+        }
+        self.palette.close(&mut self.ui, &self.config);
+        if self.ui.focused() == Some(self.palette.field()) {
+            let events = self.ui.blur();
+            self.handle_ui_events(events);
+        }
+        if self.ui.focused().is_none()
+            && let Some(view) = self.active_view()
+        {
+            self.engine.set_focus(view, true);
+        }
+    }
+
+    /// Runs the palette's command at visible row `row` (the selected one for `None`).
+    fn run_palette_command(&mut self, row: Option<usize>) {
+        let Some(action) = self.palette.command_at(row).map(|c| c.action) else { return };
+        self.close_palette();
+        self.run(action);
+    }
+
     // ---- find on page ----
 
     /// Opens the find bar out of the address field with the field focused, or focuses it
@@ -3464,6 +3516,13 @@ impl Browser {
                         self.find_action(action);
                     }
                 }
+                UiEvent::Clicked { action, .. } if CommandPalette::row_action(action).is_some() => {
+                    self.run_palette_command(CommandPalette::row_action(action));
+                }
+                UiEvent::Submitted { node, .. } if node == self.palette.field() => {
+                    self.run_palette_command(None);
+                }
+                UiEvent::Cancelled { node } if node == self.palette.field() => self.close_palette(),
                 UiEvent::Submitted { node, .. } if node == self.find.field() => {
                     // Enter: the next match; Shift+Enter: the previous one. The field keeps
                     // the focus.
@@ -4506,6 +4565,7 @@ impl Browser {
             || self.permissions.capture.is_open()
             || self.suggestions.is_visible()
             || self.find.is_open()
+            || self.palette.is_open()
             || self.overview.is_open()
             || self.settings.is_open()
             || self.passwords.is_open()
@@ -5435,6 +5495,10 @@ impl Browser {
         if pressed && self.permissions_press(p) {
             return;
         }
+        if pressed && self.palette.is_open() && !self.palette.contains(&self.ui, p) {
+            self.close_palette();
+            return;
+        }
         if pressed && self.shields_popover.is_open() && !self.shields_popover.contains(&self.ui, p) {
             self.shields_popover.close(&mut self.ui, &self.config);
             return;
@@ -5545,6 +5609,10 @@ impl Browser {
         if pressed && self.passwords.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.close_passwords();
             let _ = self.ui.blur();
+            return false;
+        }
+        if pressed && self.palette.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.close_palette();
             return false;
         }
         // Escape closes Find on Page wherever the focus is (the page after a click on it too).
@@ -5667,6 +5735,15 @@ impl Browser {
             if pressed && input::key(event) == Some(Key::Named("Escape".into())) {
                 self.close_overview(self.tabs.active_index());
             }
+            return false;
+        }
+
+        if pressed
+            && self.palette.is_open()
+            && let Some(Key::Named(name)) = input::key(event)
+            && (name == "Up" || name == "Down")
+        {
+            self.palette.move_selection(&mut self.ui, if name == "Up" { -1 } else { 1 });
             return false;
         }
 
@@ -5879,6 +5956,15 @@ impl Browser {
                 // and closing every popup at once (mid-animation with --lead / frame sequences).
                 "zoom-menu" => self.menu.open_first_submenu(&mut self.ui, &self.config),
                 "zoom-in" => self.menu_action(MenuAction::ZoomIn),
+                // Capture aids: a zoom step as the shortcut does it, and the command palette
+                // (with "palette:TEXT": TEXT typed into it).
+                "zoom-step" => self.run(Action::ZoomIn),
+                "palette" => self.open_palette(),
+                typed if typed.starts_with("palette:") => {
+                    self.open_palette();
+                    let (_, events) = self.ui.handle(UiInput::Text(typed["palette:".len()..].to_owned()));
+                    self.handle_ui_events(events);
+                }
                 "close-popups" => self.close_popups(),
                 "shields" => self.toggle_shields_popover(),
                 // Test aids: answer the permission prompt, open the recording indicator's
@@ -6641,6 +6727,8 @@ impl Browser {
         let top = self.page_rect().origin.y;
         self.find.follow(&mut self.ui, address, width, top);
         self.find.animate(&mut self.ui, dt, &mut self.engine);
+        self.palette.follow(&mut self.ui, address, width, top);
+        self.palette.animate(&mut self.ui, dt);
         self.lock_screen.animate(&mut self.ui, dt);
         self.onboarding.animate(&mut self.ui, &self.config, dt);
         self.settings.animate(&mut self.ui, dt);

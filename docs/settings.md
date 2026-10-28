@@ -193,6 +193,23 @@ a site. Changes apply to pages loaded next.
 A searchable list of all shortcuts, grouped by area. To change one, edit `keymap.toml`; edits
 apply immediately. See [Keyboard shortcuts](keyboard-shortcuts.md).
 
+### Command palette and page zoom
+
+Both are controlled in `config.toml` only (no Settings page yet).
+
+| Setting | What it does | Default | Config key |
+|---|---|---|---|
+| Command palette (**Ctrl+K**) | A search sheet over every browser action with its shortcut; Up/Down choose, Enter runs, Esc closes. New actions appear in it by themselves. | - | keymap action `command_palette` |
+| Palette rows | How many commands are listed at once. | 8 | `command_palette.max_rows` |
+| Palette shortcuts | Shows each command's shortcut. | On | `command_palette.show_shortcuts` |
+| Palette width | Width of the sheet in logical pixels (shrinks with the window). | 560 | `command_palette.width` |
+| Default zoom | Zoom of sites without a zoom of their own (percent). | 100 | `zoom.default_percent` |
+| Zoom step | One **Ctrl +** / **Ctrl -** step, in Chromium zoom levels (each level is 1.2x; 0.5 gives 100, 110, 120, 131 ...). | 0.5 | `zoom.step` |
+| Zoom limits | Smallest and largest zoom (percent). | 25 / 500 | `zoom.min_percent`, `zoom.max_percent` |
+| Remember zoom per site | Zoom set with **Ctrl +/-/0** is remembered for the site (all its pages and tabs; not in private tabs). Off: it belongs to the tab and resets when the next page loads. | On | `zoom.remember_per_site` |
+| Zoom indicator | Shows the zoom in the address field while it is not the default; a click resets it. | On | `zoom.show_indicator` |
+| Share selected text | The page menu's **Share...** row for selected text opens a new e-mail with the text and the page's address. | On | `ui.page_context_menu_share` |
+
 ## Shields
 
 Blocking of ads, trackers, popups and redirects. See [Shields](features/shields.md).

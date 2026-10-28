@@ -48,6 +48,7 @@ mod onboarding;
 mod overview;
 mod page_color;
 mod page_menu;
+mod palette;
 mod passwords;
 mod perf_log;
 mod permission_prompt;
