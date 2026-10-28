@@ -578,6 +578,9 @@ impl PlaylistPage {
                 .with_radius(VIDEO_RADIUS)
                 .with_clip(),
             Style {
+                // The containing block of the loading ring's overlay (a static box is none:
+                // the overlay would resolve against the page).
+                position: Position::Relative,
                 flex_grow: 1.0,
                 flex_shrink: 1.0,
                 size: Size { width: percent(1.0), height: auto() },
@@ -1274,6 +1277,12 @@ impl PlaylistPage {
         ui.frame(self.video_box)
     }
 
+    /// The loading ring's disc on screen (logical px).
+    #[cfg(test)]
+    pub fn spinner_frame(&self, ui: &Ui) -> Frame {
+        self.spinner.frame(ui)
+    }
+
     pub fn scroll_by(&mut self, ui: &mut Ui, dy: f32) {
         self.scroll += -dy;
         self.clamp_scroll(ui);
@@ -1515,6 +1524,27 @@ mod tests {
         assert_eq!(PageAction::from_id(ActionId(BASE - 1)), None);
         assert_eq!(PageAction::from_id(ActionId(ROW_BASE + 5)), None);
         assert!(MENU_BASE > ROW_BASE + ROW_KINDS * (MAX_ROWS as u32 - 1) + 4);
+    }
+
+    #[test]
+    fn loading_ring_is_centred_over_the_video_area() {
+        for (w, h) in [(1440.0, 900.0), (900.0, 700.0), (1100.0, 500.0)] {
+            let mut config = Config::default();
+            config.glass.reduce_motion = true;
+            let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+            ui.set_viewport(Vec2::new(w, h), 1.0);
+            let mut page = PlaylistPage::build(&mut ui, &config);
+            let rect = Frame { origin: Vec2::new(50.0, 20.0), size: Vec2::new(w - 100.0, h - 40.0) };
+            page.open(&mut ui, &config, rect, 0.0);
+            page.loading = true;
+            page.animate(&mut ui, &config, 0.016);
+            ui.layout();
+            let video = page.video_frame(&ui);
+            let ring = page.spinner_frame(&ui);
+            assert!(ring.size.x > 1.0, "the ring is laid out at {w}x{h}");
+            let d = (video.origin + video.size / 2.0) - (ring.origin + ring.size / 2.0);
+            assert!(d.length() < 0.6, "{w}x{h}: ring {ring:?} video {video:?}");
+        }
     }
 
     #[test]

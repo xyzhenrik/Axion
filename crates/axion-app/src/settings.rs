@@ -216,6 +216,7 @@ enum Setting {
     ShowAudioIndicator,
     RememberSiteMute,
     DragOutLinks,
+    DragOutImage,
     HomeButton,
     OwnFullscreenControls,
     HideControlsAfter,
@@ -300,6 +301,7 @@ impl Setting {
             Setting::ShowAudioIndicator => tr_mark("Show a speaker on tabs playing sound"),
             Setting::RememberSiteMute => tr_mark("Remember muted sites"),
             Setting::DragOutLinks => tr_mark("Drag tabs out as links"),
+            Setting::DragOutImage => tr_mark("Show a preview while dragging a tab out"),
             Setting::HomeButton => tr_mark("Show home button"),
             Setting::OwnFullscreenControls => tr_mark("Axion's player in fullscreen"),
             Setting::HideControlsAfter => tr_mark("Hide controls while playing after"),
@@ -368,6 +370,7 @@ impl Setting {
                 | Setting::ShowAudioIndicator
                 | Setting::RememberSiteMute
                 | Setting::DragOutLinks
+                | Setting::DragOutImage
                 | Setting::OwnFullscreenControls
                 | Setting::HardwareDecoding
                 | Setting::HardwareEnabled
@@ -506,6 +509,7 @@ impl Setting {
             Setting::ShowAudioIndicator => return c.tabs.show_audio_indicator as u8 as f32,
             Setting::RememberSiteMute => return c.tabs.remember_site_mute as u8 as f32,
             Setting::DragOutLinks => return c.tabs.drag_out_links as u8 as f32,
+            Setting::DragOutImage => return c.tabs.drag_out_image as u8 as f32,
             Setting::HomeButton => return c.layout.home_button as u8 as f32,
             Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
@@ -597,6 +601,7 @@ impl Setting {
             Setting::ShowAudioIndicator => c.tabs.show_audio_indicator = on,
             Setting::RememberSiteMute => c.tabs.remember_site_mute = on,
             Setting::DragOutLinks => c.tabs.drag_out_links = on,
+            Setting::DragOutImage => c.tabs.drag_out_image = on,
             Setting::HomeButton => c.layout.home_button = on,
             Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
@@ -1972,6 +1977,7 @@ impl SettingsSheet {
                 self.control(ui, config, Setting::ShowAudioIndicator);
                 self.control(ui, config, Setting::RememberSiteMute);
                 self.control(ui, config, Setting::DragOutLinks);
+                self.control(ui, config, Setting::DragOutImage);
                 let row_node = self.row(ui, tr("Close tabs"));
                 let options: Vec<(&str, ActionId)> = CLOSE_AFTER
                     .iter()

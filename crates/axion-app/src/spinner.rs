@@ -46,6 +46,12 @@ impl Spinner {
         Self { root, glyph, angle: 0.0, opacity: Animated::new(0.0, Spring::SNAPPY) }
     }
 
+    /// The disc's frame on screen (logical px, after layout).
+    #[cfg(test)]
+    pub fn frame(&self, ui: &Ui) -> axion_compositor::Rect {
+        ui.frame(self.root)
+    }
+
     /// Whether the disc is on screen (still fading out counts).
     pub fn is_shown(&self) -> bool {
         self.opacity.value > SETTLED || self.opacity.target > 0.5

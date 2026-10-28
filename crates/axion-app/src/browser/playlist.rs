@@ -466,7 +466,12 @@ impl Browser {
     }
 
     /// Copies the part `uv` of `texture` to the CPU, scaled so its long side is `max_px`.
-    fn read_texture(&self, texture: &wgpu::Texture, uv: Rect, max_px: u32) -> Option<image::RgbaImage> {
+    pub(super) fn read_texture(
+        &self,
+        texture: &wgpu::Texture,
+        uv: Rect,
+        max_px: u32,
+    ) -> Option<image::RgbaImage> {
         let (tw, th) = (texture.width(), texture.height());
         let x0 = ((uv.origin.x * tw as f32).floor() as u32).min(tw.saturating_sub(1));
         let y0 = ((uv.origin.y * th as f32).floor() as u32).min(th.saturating_sub(1));
