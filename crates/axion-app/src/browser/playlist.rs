@@ -2026,7 +2026,21 @@ impl Browser {
     /// being searched); `true` if it was one of those.
     pub(super) fn playlist_playback_media(&mut self, view: ViewId, media: &PageMedia) -> bool {
         if let Some(pb) = self.playlist.playback.as_mut().filter(|p| p.view == view) {
-            pb.media = Some(media.clone());
+            // Axion's own view: its video is never a "muted preview" (muting must not unload it).
+            let media = media.clone().in_own_view();
+            if media.primary().is_none() {
+                tracing::debug!(players = media.players.len(), "Playlist view reports no primary player");
+            } else if let Some(p) = media.primary()
+                && pb.player().is_some_and(|old| old.muted != p.muted || (old.volume - p.volume).abs() > 1e-6)
+            {
+                tracing::debug!(
+                    muted = p.muted,
+                    volume = p.volume,
+                    paused = p.paused,
+                    "Playlist video volume changed"
+                );
+            }
+            pb.media = Some(media);
             return true;
         }
         if let Some(r) = self.playlist.resolving.as_mut().filter(|r| r.view == view) {

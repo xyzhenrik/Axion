@@ -208,6 +208,16 @@ impl PageMedia {
             .or_else(|| self.players.iter().find(|p| !p.preview))
     }
 
+    /// The state of a view Axion plays a video in itself (the Playlist's): nothing there is a
+    /// hover preview, whatever its muted state says. Muting its video must never make the
+    /// view lose its player.
+    pub fn in_own_view(mut self) -> Self {
+        for player in &mut self.players {
+            player.preview = false;
+        }
+        self
+    }
+
     pub fn get(&self, id: &str) -> Option<&Player> {
         self.players.iter().find(|p| p.id == id)
     }
@@ -473,6 +483,34 @@ mod tests {
         assert!(m.primary().is_none());
         m.players.push(Player { id: "real".into(), kind: Kind::Audio, paused: true, ..Default::default() });
         assert_eq!(m.primary().map(|p| p.id.as_str()), Some("real"));
+    }
+
+    #[test]
+    fn bridge_never_flags_muted_own_videos_as_previews() {
+        // Guards in `isPreview`: Axion's own view, a heard video and a video the user's
+        // volume/mute commands touched are never previews.
+        assert!(SOURCE.contains("location.protocol === 'axion:' || el.__axOwn"));
+        assert!(SOURCE.contains("if (c.action === 'volume' || c.action === 'mute') el.__axOwn = true;"));
+    }
+
+    #[test]
+    fn muting_the_playlists_video_keeps_its_player() {
+        // The media view's video: muted, no controls, no media session -- what the bridge
+        // calls a preview. In Axion's own view it stays the primary player, playing and muted.
+        let muted = Player {
+            id: "v:1".into(),
+            paused: false,
+            muted: true,
+            preview: true,
+            w: 640.0,
+            h: 360.0,
+            ..Default::default()
+        };
+        let state = PageMedia { players: vec![muted], ..Default::default() };
+        assert!(state.primary().is_none(), "a page's muted tile is not a player");
+        let own = state.in_own_view();
+        let p = own.primary().expect("the Playlist's video is still its player");
+        assert!(p.muted && p.is_playing());
     }
 
     #[test]

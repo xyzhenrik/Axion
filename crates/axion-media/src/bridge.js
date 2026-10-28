@@ -169,9 +169,13 @@
   // Hover previews and autoplaying tiles (YouTube's home page): muted, no controls, and the
   // page says nothing about them (no media session). They are not what the Now Playing card
   // or the desktop's media controls are about.
+  // Never one that Axion's own view plays, one that was heard (audible and playing) or one the
+  // user muted through Axion's controls: muting a video does not make it a preview.
   function isPreview(el) {
+    if (location.protocol === 'axion:' || el.__axOwn) return false;
+    if (!el.muted && !el.paused && el.volume > 0) el.__axOwn = true;
     var meta = navigator.mediaSession && navigator.mediaSession.metadata;
-    return !!el.muted && !meta && !el.controls;
+    return !!el.muted && !meta && !el.controls && !el.__axOwn;
   }
 
   function describe(el) {
@@ -311,6 +315,8 @@
 
   function apply(el, c) {
     var v = c.value;
+    // The user's volume controls: this is their video now, not a hover preview.
+    if (c.action === 'volume' || c.action === 'mute') el.__axOwn = true;
     switch (c.action) {
       case 'play': holdUntil = 0; ownPlay = true; try { el.play(); } finally { ownPlay = false; } break;
       case 'pause': el.pause(); break;
