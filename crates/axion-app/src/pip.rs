@@ -403,6 +403,9 @@ pub struct PipWindow {
     controls: NodeId,
     buttons: [Button; 5],
     play_icon: NodeId,
+    /// The loading ring over the middle of the picture (always shown while loading, also when
+    /// the controls are hidden).
+    spinner: crate::spinner::Spinner,
     bar: NodeId,
     progress: NodeId,
     /// The volume: a capsule with the speaker (mute) and a slider that opens when the pointer
@@ -491,6 +494,18 @@ impl PipWindow {
             make(&mut ui, PipControl::SkipForward, Icon::SkipForward, Some("10")),
         ];
         let play_icon = buttons[3].glyph;
+        let ring_overlay = ui.add(
+            root,
+            Widget::container(),
+            Style {
+                position: Position::Absolute,
+                size: Size { width: percent(1.0), height: percent(1.0) },
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        let spinner = crate::spinner::Spinner::build(&mut ui, ring_overlay, SPINNER_SIDE);
         // The progress bar: a glass capsule as tall as a button around the slider, so the
         // whole capsule is the thing to grab (not a thin line).
         let bar = ui.add(
@@ -561,6 +576,7 @@ impl PipWindow {
             controls,
             buttons,
             play_icon,
+            spinner,
             bar,
             progress,
             volume_capsule,
@@ -1007,6 +1023,8 @@ impl PipWindow {
         self.controls_opacity.step(dt);
         self.ui.set_opacity(self.controls, self.controls_opacity.value.clamp(0.0, 1.0));
         self.ui.set_visible(self.controls, self.controls_opacity.value > 0.01);
+        let loading = self.player.as_ref().is_some_and(|p| p.loading && !p.paused);
+        self.spinner.update(&mut self.ui, config, loading, dt);
         self.apply_layout();
         self.place_volume();
         self.ui.animate(dt);
@@ -1088,6 +1106,9 @@ impl PipWindow {
         }
     }
 }
+
+/// Side (logical px) of the loading ring's disc.
+const SPINNER_SIDE: f32 = 52.0;
 
 /// Aspects closer than this (relative) count as the same.
 const ASPECT_TOLERANCE: f32 = 0.005;

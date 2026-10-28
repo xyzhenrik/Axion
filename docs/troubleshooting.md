@@ -19,6 +19,27 @@ This takes **several hours and about 100 GB of disk space**, so start it and let
 `CEF_BUILD_DIR` to choose where it works (default `~/cef-build`). When it is done, point `CEF_PATH`
 at the result before you build or run Axion.
 
+## A video shows a black picture (the sound and the time run), or says its picture can't be decoded
+
+Two different causes look alike.
+
+**The picture's format is not supported.** Axion's engine plays H.264 / AAC (when built with the
+codecs, see above), VP8, VP9 and AV1, but **not HEVC (H.265)**: such a file plays its sound and shows
+nothing. The Playlist notices this (no decodable picture after about two seconds) and says
+*This video's picture can't be decoded (unsupported format)*, with **Open page** and **Retry**.
+Files named `…x265…`, `…HEVC…` or `…10bit…` are usually HEVC; `…x264…` is H.264 and plays.
+
+**Hardware decoding or GPU frame sharing misbehaves** (a picture that is black although the video
+decodes, typically on NVIDIA with the native Wayland session). To tell: start Axion with
+`AXION_OSR=software axion`, or turn **Settings › Media › Hardware decoding** off, and play the video
+again. If the picture comes back, leave that setting off; please report your driver (`vainfo`,
+`nvidia-smi`) so it can be handled automatically.
+
+To see what happened, start Axion from a terminal with `RUST_LOG=info,axion_app=debug,axion_engine=debug axion`
+and play the video from the Playlist: each step of the media view's loading is logged as `media probe`
+(ready state, size, decoded frames, error) and each request of the stream as `media view fetch`
+(status, range, cookies, bytes).
+
 ## Microphone, camera or screen sharing do not work
 
 First check the site's permission: click the address field's recording icon or open **Settings >
