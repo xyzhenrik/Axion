@@ -453,7 +453,8 @@ the [Chromium Embedded Framework](https://bitbucket.org/chromiumembedded/cef) an
 [taffy](https://github.com/DioxusLabs/taffy), [glyphon](https://github.com/grovesNL/glyphon),
 Brave's [adblock-rust](https://github.com/brave/adblock-rust),
 [rusqlite](https://github.com/rusqlite/rusqlite) and SQLite, [hls.js](https://github.com/video-dev/hls.js)
-(Apache-2.0) and the wider Rust ecosystem.
+(Apache-2.0), the [Lucide](https://lucide.dev) icons (ISC, see [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES))
+and the wider Rust ecosystem.
 
 Axion's design is inspired by Apple's Safari on iPadOS, but it contains **no Apple assets, code or
 branding**. Safari is a trademark of Apple Inc. Axion is an independent project and is not
