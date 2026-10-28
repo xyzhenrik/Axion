@@ -568,6 +568,10 @@ impl Browser {
             None if placement.as_ref().is_some_and(|p| p.position.is_some()) => {}
             None => place_on_monitor(event_loop, &window),
         }
+        // Test runs go straight to the taskbar: neither focus nor a visible window for the user.
+        if options.capture.is_some() || std::env::var_os("AXION_NO_FOCUS").is_some() {
+            window.set_minimized(true);
+        }
         let hardware_env = crate::hardware::Overrides::from_env();
         let adapter_choice = crate::hardware::adapter_choice(&config.hardware, &hardware_env);
         let (instance, surface, adapter, device, queue) =
