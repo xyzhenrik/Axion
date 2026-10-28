@@ -5724,6 +5724,11 @@ impl Browser {
                     };
                     self.playlist_command(crate::playlist::Command::Sort(sort));
                 }
+                "playlist-mute" => self.playlist_action(crate::playlist_page::PageAction::Mute),
+                volume if volume.starts_with("playlist-volume:") => {
+                    let value = volume["playlist-volume:".len()..].parse().unwrap_or(0.0);
+                    self.playlist_set_volume(value);
+                }
                 "playlist-sleep" => self.playlist_action(crate::playlist_page::PageAction::Sleep),
                 "playlist-popout" => self.playlist_action(crate::playlist_page::PageAction::Fullscreen),
                 "playlist-pip" => self.playlist_action(crate::playlist_page::PageAction::PictureInPicture),
