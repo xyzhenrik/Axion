@@ -1353,28 +1353,32 @@ impl PlaylistPage {
     ) {
         self.menu.set_placement(placement);
         self.menu.set_covered_nodes(ui, cover);
+        if matches!(placement, Placement::AboveStart | Placement::AboveCentered) {
+            let candidates = self.control_glass(ui);
+            self.menu.set_covered_if_under(candidates);
+        }
         self.menu.open(ui, config, anchor, window, items);
     }
 
+    /// The player's glass controls (play, speed, volume, sleep, fullscreen): content on glass
+    /// lies in the menu's own layer, so where a menu lies on one the control has to fade out.
+    fn control_glass(&self, ui: &Ui) -> Vec<NodeId> {
+        let mut nodes: Vec<NodeId> = ui.parent(self.play_icon).into_iter().collect();
+        // sleep icon -> sleep button -> its slot -> the bottom row, whose slots hold the rest.
+        let bottom = ui.parent(self.sleep_icon).and_then(|b| ui.parent(b)).and_then(|s| ui.parent(s));
+        for slot in bottom.map(|b| ui.children(b)).unwrap_or_default() {
+            nodes.extend(ui.children(slot));
+        }
+        nodes
+    }
+
     /// Placement and covered node for the menu of a button of the player.
-    pub fn menu_at(&self, ui: &Ui, action: PageAction) -> (Placement, Vec<NodeId>) {
-        let parent = |n: NodeId| ui.parent(n);
+    pub fn menu_at(&self, action: PageAction) -> (Placement, Vec<NodeId>) {
         match action {
-            PageAction::Sleep => {
-                // The sleep button and the whole transport row it grows over.
-                let transport = parent(self.play_icon).and_then(parent);
-                let mut nodes: Vec<NodeId> = transport.map(|t| ui.children(t)).unwrap_or_default();
-                nodes.extend(parent(self.sleep_icon));
-                (Placement::OverCentered, nodes)
-            }
-            PageAction::Speed => {
-                // The speed button, and the shuffle and previous buttons it grows over.
-                let transport = parent(self.play_icon).and_then(parent);
-                let mut nodes: Vec<NodeId> =
-                    transport.map(|t| ui.children(t).into_iter().take(2).collect()).unwrap_or_default();
-                nodes.extend(parent(self.speed_label));
-                (Placement::Over, nodes)
-            }
+            // Above the button, clear of the controls beside it (the volume capsule next to the
+            // speed button): a menu over the bottom row would lie on top of them.
+            PageAction::Speed => (Placement::AboveStart, Vec::new()),
+            PageAction::Sleep => (Placement::AboveCentered, Vec::new()),
             // The sort button, which the menu grows out of.
             PageAction::Sort => (Placement::Over, vec![self.sort_button]),
             _ => (Placement::BelowStart, Vec::new()),

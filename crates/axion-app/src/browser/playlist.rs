@@ -1694,7 +1694,7 @@ impl Browser {
                     })
                     .collect();
                 let window = self.logical_size();
-                let at = self.playlist_ui.page.menu_at(&self.ui, PageAction::Sort);
+                let at = self.playlist_ui.page.menu_at(PageAction::Sort);
                 self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items, at);
             }
             PageAction::Search => {
@@ -1762,7 +1762,7 @@ impl Browser {
                     })
                     .collect();
                 let window = self.logical_size();
-                let at = self.playlist_ui.page.menu_at(&self.ui, PageAction::Speed);
+                let at = self.playlist_ui.page.menu_at(PageAction::Speed);
                 self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items, at);
             }
             PageAction::Sleep => {
@@ -1783,7 +1783,7 @@ impl Browser {
                 end.checked = sleep == Sleep::EndOfVideo;
                 items.push(end);
                 let window = self.logical_size();
-                let at = self.playlist_ui.page.menu_at(&self.ui, PageAction::Sleep);
+                let at = self.playlist_ui.page.menu_at(PageAction::Sleep);
                 self.playlist_ui.page.open_menu(&mut self.ui, &self.config, anchor, window, items, at);
             }
             PageAction::SelectAll => {

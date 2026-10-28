@@ -186,3 +186,69 @@ fn glass_panels_keep_their_shadow() {
     let (diff, _) = worst_outside(&frame, &baseline, origin, size, RIM_ALLOWANCE);
     assert!(diff > 8, "a panel's drop shadow vanished (difference {diff})");
 }
+
+/// A glass pill (a control group: a panel without an action, as the Playlist's volume capsule)
+/// with a round glass button inside it, or, for the baseline, the same layout with a plain empty
+/// slot where the button is. Returns the button's frame.
+fn nested(config: &Config, dark: bool, button: bool, level: GlassLevel) -> (Ui, Vec2, Vec2) {
+    let mut ui = Ui::new(Theme::new(config, dark), 1.0);
+    ui.set_viewport(Vec2::new(SIZE.0 as f32, SIZE.1 as f32), 1.0);
+    let root = ui.root();
+    let pill = ui.add(
+        root,
+        Widget::container()
+            .with_radius(CAPSULE)
+            .with_background(Background::Glass(GlassLevel::Thin))
+            .with_button_tint(),
+        Style {
+            position: Position::Absolute,
+            inset: Rect { left: length(100.0), top: length(80.0), right: auto(), bottom: auto() },
+            size: Size { width: length(280.0), height: length(80.0) },
+            align_items: AlignItems::CENTER,
+            justify_content: JustifyContent::CENTER,
+            ..Default::default()
+        },
+    );
+    let mut slot = Widget::container().with_radius(CAPSULE);
+    if button {
+        slot = slot.with_background(Background::Glass(level)).with_action(ActionId(9));
+    }
+    let node = ui.add(
+        pill,
+        slot,
+        Style { size: Size { width: length(64.0), height: length(64.0) }, ..Default::default() },
+    );
+    ui.layout();
+    let frame = ui.frame(node);
+    (ui, frame.origin, frame.size)
+}
+
+/// A glass button inside a glass container (the Playlist's play button on a glass row, a button
+/// in a popover) must not mark anything outside its own shape either: no second darker lens,
+/// halo or plate around it, in the container or beyond.
+#[test]
+fn glass_buttons_inside_glass_leave_the_container_untouched_outside_their_shape() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter: skipped");
+        return;
+    };
+    let config = Config::default();
+    let mut failures = Vec::new();
+    for dark in [true, false] {
+        for backdrop in [0.0_f32, 0.12, 0.5, 1.0] {
+            for level in [GlassLevel::Thin, GlassLevel::Regular, GlassLevel::Thick] {
+                let (base_ui, ..) = nested(&config, dark, false, level);
+                let baseline = render(&gpu, Some(&base_ui), backdrop);
+                let (ui, origin, size) = nested(&config, dark, true, level);
+                let frame = render(&gpu, Some(&ui), backdrop);
+                let (diff, at) = worst_outside(&frame, &baseline, origin, size, RIM_ALLOWANCE);
+                if diff > TOLERANCE {
+                    failures.push(format!(
+                        "{level:?} (dark={dark}, backdrop {backdrop}): pixel {at:?} differs by {diff} outside the nested button"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "nested glass leaves marks outside its shape:\n{}", failures.join("\n"));
+}
