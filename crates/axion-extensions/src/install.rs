@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::crx::verify_crx3;
 use crate::manifest::{extension_id_for_key, extension_id_for_path};
 use crate::unpack::unzip;
 use crate::{ExtensionError, MAX_BYTES, Manifest, Result, io};
@@ -16,6 +17,8 @@ pub struct Installed {
     pub id: String,
     pub dir: PathBuf,
     pub manifest: Manifest,
+    /// Permissions Axion removed from the copy (see `compat`), once [`crate::disable_request_apis`] ran.
+    pub stripped: Vec<String>,
 }
 
 /// Installs the unpacked extension in `source` (a folder with a `manifest.json`) by copying it
@@ -41,9 +44,29 @@ pub fn install_file(file: &Path, root: &Path) -> Result<Installed> {
         return Err(ExtensionError::TooLarge(MAX_BYTES / (1024 * 1024)));
     }
     let data = std::fs::read(file).map_err(io(file))?;
-    let staging = staging_dir(root, file)?;
+    unpack_package(&data, root, &file.to_string_lossy())
+}
+
+/// Installs a package downloaded from the Chrome Web Store: a CRX3 whose signature must be
+/// valid and whose id must be `expected_id`. Unpacks below `root` like [`install_file`]; the
+/// extension gets the id the store knows it by.
+pub fn install_store_package(data: &[u8], expected_id: &str, root: &Path) -> Result<Installed> {
+    if data.len() as u64 > MAX_BYTES {
+        return Err(ExtensionError::TooLarge(MAX_BYTES / (1024 * 1024)));
+    }
+    let verified = verify_crx3(data, Some(expected_id))?;
+    let installed = unpack_package(data, root, expected_id)?;
+    if installed.id != verified.id {
+        let _ = std::fs::remove_dir_all(&installed.dir);
+        return Err(ExtensionError::Package("the extension's key does not match its id".into()));
+    }
+    Ok(installed)
+}
+
+fn unpack_package(data: &[u8], root: &Path, origin: &str) -> Result<Installed> {
+    let staging = staging_dir(root, Path::new(origin))?;
     let result = (|| {
-        let key = unzip(&data, &staging)?;
+        let key = unzip(data, &staging)?;
         if let Some(key) = key {
             // Chromium would store the key with the installed copy; an unpacked folder keeps
             // the extension's id only if the manifest has it.
@@ -89,7 +112,7 @@ fn finish(dir: &Path, _root: &Path) -> Result<Installed> {
     let id =
         manifest.key.as_deref().and_then(extension_id_for_key).unwrap_or_else(|| extension_id_for_path(dir));
     tracing::info!(%id, name = %manifest.name, "extension unpacked");
-    Ok(Installed { id, dir: dir.to_owned(), manifest })
+    Ok(Installed { id, dir: dir.to_owned(), manifest, stripped: Vec::new() })
 }
 
 /// Writes `key` into the manifest's `key` field (if it has none).
@@ -169,6 +192,40 @@ mod tests {
         let key = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"pub key bytes");
         assert_eq!(installed.manifest.key.as_deref(), Some(key.as_str()));
         assert_eq!(Some(installed.id), extension_id_for_key(&key));
+    }
+
+    #[test]
+    fn a_store_package_needs_its_signature_and_its_id() {
+        let manifest: &[u8] = br#"{"manifest_version":3,"name":"Store","version":"2.0"}"#;
+        let crx = crate::crx::tests::signed_crx3(&make_zip(&[("manifest.json", manifest)]), false);
+        let id = crate::verify_crx3(&crx, None).unwrap().id;
+        let root = tempfile::tempdir().unwrap();
+
+        let installed = install_store_package(&crx, &id, root.path()).unwrap();
+        assert_eq!(installed.id, id, "the extension keeps the id the store knows it by");
+        assert_eq!(installed.manifest.version, "2.0");
+
+        let other = "a".repeat(32);
+        assert!(install_store_package(&crx, &other, root.path()).is_err());
+        let mut tampered = crx.clone();
+        let last = tampered.len() - 25;
+        tampered[last] ^= 1;
+        assert!(install_store_package(&tampered, &id, root.path()).is_err());
+        // Only the one good install is left behind.
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_manifest_v2_store_package_is_refused() {
+        let manifest: &[u8] = br#"{"manifest_version":2,"name":"Old","version":"1"}"#;
+        let crx = crate::crx::tests::signed_crx3(&make_zip(&[("manifest.json", manifest)]), false);
+        let id = crate::verify_crx3(&crx, None).unwrap().id;
+        let root = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            install_store_package(&crx, &id, root.path()),
+            Err(ExtensionError::UnsupportedManifest(2))
+        ));
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 
     #[test]

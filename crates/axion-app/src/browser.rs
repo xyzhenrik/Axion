@@ -684,7 +684,7 @@ impl Browser {
         let muted_sites = tabgroups::load_muted_sites(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
         let downloads = Downloads::new(profile.clone());
-        let extensions = Extensions::new(&profile, store.as_ref());
+        let extensions = Extensions::new(&profile, store.as_ref(), &config.extensions);
         let vault_path = profile.join("vault.sqlite");
         let mut engine = CefEngine::new(
             device.clone(),
@@ -713,6 +713,7 @@ impl Browser {
                 extra_switches: crate::hardware::chromium_switches(&config.hardware),
                 extensions_enabled: config.extensions.enabled,
                 load_extensions: extensions.load_dirs(),
+                block_web_store: !config.extensions.web_store,
                 waker: options.waker.clone(),
             },
         )?;
@@ -721,7 +722,7 @@ impl Browser {
         Downloads::prune(store.as_ref(), &config, unix_now());
         // What the last quit should have removed, in case it didn't get to (a crash).
         Downloads::on_quit(store.as_ref(), &config, &mut engine);
-        engine.set_page_script(Some(page_script(&config)));
+        engine.set_page_script(Some(page_script(&config, &extensions.ids())));
 
         let desktop_theme = DesktopTheme::start();
         let dark = is_dark(&config, &window, desktop_theme.dark());
@@ -1883,6 +1884,10 @@ impl Browser {
 
     fn page_message(&mut self, view: ViewId, message: &str) {
         if self.shot_metrics(view, message) {
+            return;
+        }
+        if message.starts_with(axion_extensions::PAGE_MARKER) {
+            self.web_store_message(view, message);
             return;
         }
         if axion_vault::autofill::is_message(message) {
@@ -3472,7 +3477,7 @@ impl Browser {
     fn apply_shields_config(&mut self) {
         self.shields.apply_config(&self.config);
         // Pages loaded from now on get the media bridge with the current setting.
-        self.engine.set_page_script(Some(page_script(&self.config)));
+        self.engine.set_page_script(Some(page_script(&self.config, &self.extensions.ids())));
     }
 
     /// Fetches the icons of the search engines the start page offers that aren't cached yet,
@@ -4814,6 +4819,10 @@ impl Browser {
                 self.avatars.get(&format!("extension:{}", e.id), || path)
             })
             .collect();
+        let pending_icon = self.extensions.pending().and_then(|p| {
+            let path = p.view.icon.clone();
+            self.avatars.get(&format!("extension-pending:{}:{}", p.view.id, p.view.version), || path)
+        });
         let content = crate::extensions_popover::Content {
             extensions: self.extensions.views(),
             icons: &icons,
@@ -4821,6 +4830,15 @@ impl Browser {
             installing: self.extensions.is_installing(),
             details: self.extensions_details.as_deref(),
             confirm_remove: self.extensions_confirm_remove,
+            pending: self.extensions.pending().map(|p| crate::extensions_popover::Pending {
+                extension: &p.view,
+                icon: pending_icon.as_ref(),
+                replaces: p.replaces.as_deref(),
+                update: p.update,
+                unsupported: p.unsupported(),
+            }),
+            checking: self.extensions.is_checking(),
+            has_store_extensions: self.extensions.has_store_extensions(),
         };
         let anchor = self.chrome.extensions_frame(&self.ui);
         let width = self.logical_size().x;
@@ -4867,6 +4885,23 @@ impl Browser {
                     return;
                 }
             }
+            ExtensionsAction::ConfirmInstall => {
+                if let Some(event) = self.extensions.confirm_pending(self.store.as_ref()) {
+                    self.extension_event(event);
+                }
+            }
+            ExtensionsAction::CancelInstall => self.extensions.cancel_pending(),
+            ExtensionsAction::CheckUpdates => {
+                let started = self.extensions.check_updates(
+                    self.store.as_ref(),
+                    &self.config.extensions,
+                    &axion_engine::cef::cef_version(),
+                    unix_now(),
+                );
+                if !started {
+                    self.show_toast(Icon::Extensions, tr("Nothing to update right now."));
+                }
+            }
             ExtensionsAction::Remove => {
                 if !self.extensions_confirm_remove {
                     self.extensions_confirm_remove = true;
@@ -4874,34 +4909,132 @@ impl Browser {
                     self.extensions.remove(&id, self.store.as_ref());
                     self.extensions_details = None;
                     self.extensions_confirm_remove = false;
+                    self.web_store_configure_all();
                 }
             }
         }
         self.open_extensions_popover();
     }
 
-    /// Results of extension installs; keeps an open popover current.
+    /// Results of extension installs and updates; keeps an open popover current.
     fn extensions_pump(&mut self) {
-        use crate::extensions::Event;
+        self.extensions.tick_updates(
+            self.store.as_ref(),
+            &self.config.extensions,
+            &axion_engine::cef::cef_version(),
+            unix_now(),
+        );
         let events = self.extensions.poll(self.store.as_ref());
         if events.is_empty() {
             return;
         }
         for event in events {
-            match event {
-                Event::Installed(name) => {
-                    let text = axion_i18n::tr_fmt!("Installed {name}. Relaunch to use it.", name = name);
-                    self.show_toast(Icon::Extensions, &text);
-                }
-                Event::Failed(why) => {
-                    tracing::warn!("installing the extension failed: {why}");
-                    let text = axion_i18n::tr_fmt!("Could not install the extension: {why}", why = why);
-                    self.show_toast(Icon::Info, &text);
-                }
-            }
+            self.extension_event(event);
         }
         if self.extensions_popover.is_open() {
             self.open_extensions_popover();
+        }
+    }
+
+    /// Tells the user what happened to an extension install or update.
+    fn extension_event(&mut self, event: crate::extensions::Event) {
+        use crate::extensions::Event;
+        match event {
+            Event::Installed(name) => {
+                let text = axion_i18n::tr_fmt!("Installed {name}. Relaunch to use it.", name = name);
+                self.show_toast(Icon::Extensions, &text);
+                self.web_store_configure_all();
+            }
+            Event::Failed(why) => {
+                tracing::warn!("installing the extension failed: {why}");
+                let text = axion_i18n::tr_fmt!("Could not install the extension: {why}", why = why);
+                self.show_toast(Icon::Info, &text);
+            }
+            Event::StoreReady if std::env::var_os("AXION_AUTO_CONFIRM_STORE_INSTALL").is_some() => {
+                // Test aid: automated runs cannot click the dialog.
+                tracing::warn!("AXION_AUTO_CONFIRM_STORE_INSTALL: the install question is answered with yes");
+                if let Some(event) = self.extensions.confirm_pending(self.store.as_ref()) {
+                    self.extension_event(event);
+                }
+            }
+            Event::StoreReady => {
+                // The question comes up under the extensions button, whatever else was open.
+                self.shields_popover.close(&mut self.ui, &self.config);
+                self.downloads_popover.close(&mut self.ui, &self.config);
+                self.menu.close(&mut self.ui, &self.config);
+                self.extensions_confirm_remove = false;
+                self.open_extensions_popover();
+            }
+            Event::Updated(names) => {
+                let text = axion_i18n::tr_fmt!(
+                    "Updated {names}. Relaunch to use the new version.",
+                    names = names.join(", ")
+                );
+                self.show_toast(Icon::Extensions, &text);
+            }
+        }
+    }
+
+    /// A message of the Web Store script (see `axion-extensions`): any page can print one, so it
+    /// counts only for a tab that shows the store, and installing still needs a yes in
+    /// Axion's own dialog.
+    fn web_store_message(&mut self, view: ViewId, message: &str) {
+        use axion_extensions::PageMessage;
+        let Some(parsed) = axion_extensions::parse_page_message(message) else { return };
+        let on_store = tab_mut(&mut self.tabs, &mut self.parked, view)
+            .is_some_and(|tab| axion_extensions::is_store_url(&tab.url));
+        if !on_store || !self.config.extensions.enabled || !self.config.extensions.web_store {
+            return;
+        }
+        match parsed {
+            PageMessage::Ready => self.web_store_configure(view),
+            PageMessage::Probe(found) => tracing::info!(%found, "Web Store page script"),
+            PageMessage::Install(id) => {
+                match self.extensions.request_store_install(
+                    &id,
+                    &axion_engine::cef::cef_version(),
+                    &self.config.extensions,
+                ) {
+                    Ok(()) => self.show_toast(Icon::Download, tr("Getting the extension…")),
+                    Err(why) => self.show_toast(Icon::Info, &why),
+                }
+            }
+            PageMessage::Remove(id) => {
+                // Removing goes through the popover's details, with its own second click.
+                if self.extensions.get(&id).is_some() {
+                    self.extensions_details = Some(id);
+                    self.extensions_confirm_remove = false;
+                    self.shields_popover.close(&mut self.ui, &self.config);
+                    self.downloads_popover.close(&mut self.ui, &self.config);
+                    self.menu.close(&mut self.ui, &self.config);
+                    self.open_extensions_popover();
+                }
+            }
+        }
+    }
+
+    /// Tells a Web Store page which extensions are installed (its button reads "Remove" then).
+    fn web_store_configure(&mut self, view: ViewId) {
+        let script = axion_extensions::configure_script(
+            &self.extensions.ids(),
+            tr("Add to Axion"),
+            tr("Remove from Axion"),
+        );
+        self.engine.run_script(view, &script, false);
+    }
+
+    fn web_store_configure_all(&mut self) {
+        // Store pages opened from now on know the installed extensions from the start.
+        self.engine.set_page_script(Some(page_script(&self.config, &self.extensions.ids())));
+        let views: Vec<ViewId> = self
+            .tabs
+            .all()
+            .iter()
+            .filter(|t| axion_extensions::is_store_url(&t.url))
+            .map(|t| t.view)
+            .collect();
+        for view in views {
+            self.web_store_configure(view);
         }
     }
 
@@ -8132,11 +8265,17 @@ fn letterbox(tex: Vec2, aspect: f32) -> Rect {
 }
 
 /// What runs in every document: the media bridge, the password autofill, Reader view and
-/// translation scripts.
-fn page_script(config: &Config) -> String {
+/// translation scripts, and (when installing from the Web Store is on) the script that takes
+/// over "Add to Chrome" on the store's own pages.
+fn page_script(config: &Config, installed_extensions: &[String]) -> String {
     let bridge = axion_media::bridge_script(&bridge_secret(), &media_replace(config));
+    let store = if config.extensions.enabled && config.extensions.web_store {
+        axion_extensions::page_script(installed_extensions, tr("Add to Axion"), tr("Remove from Axion"))
+    } else {
+        String::new()
+    };
     format!(
-        "{bridge}\n{}\n{}\n{}",
+        "{bridge}\n{}\n{}\n{}\n{store}",
         axion_vault::autofill::page_script(),
         axion_reader::page_script(&config.reader),
         axion_translate::page::page_script(&config.translation)

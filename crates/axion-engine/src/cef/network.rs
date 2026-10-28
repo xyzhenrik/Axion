@@ -15,7 +15,8 @@ use crate::{
 /// State shared by every view's network hooks.
 #[derive(Default)]
 pub(super) struct Network {
-    /// Refuse the Chrome Web Store (its install dialog crashes in off-screen mode; see `cef::extension_switches`).
+    /// Refuse the Chrome Web Store (`extensions.web_store` is off). Its own install dialog crashes in
+    /// off-screen mode; when the store is open, Axion's page script takes the install over.
     pub block_web_store: std::sync::atomic::AtomicBool,
     pub policy: RwLock<Option<Arc<dyn RequestPolicy>>>,
     /// Events raised off the main thread, tagged with the CEF browser like [`super::Shared`]'s.
@@ -371,7 +372,7 @@ wrap_request_handler! {
             if self.net.block_web_store.load(std::sync::atomic::Ordering::Relaxed) {
                 let to = CefString::from(&request.url()).to_string();
                 if is_web_store_url(&to) {
-                    tracing::info!(%to, "the Chrome Web Store is not available: install extensions from the extensions button");
+                    tracing::info!(%to, "the Chrome Web Store is switched off (extensions.web_store)");
                     if frame.is_main() == 1 {
                         frame.load_url(Some(&EXTENSIONS_NOTICE.into()));
                     }
@@ -436,10 +437,10 @@ wrap_request_handler! {
     }
 }
 
-/// Shown instead of the Chrome Web Store while extensions are not supported.
-const EXTENSIONS_NOTICE: &str = "data:text/html;charset=utf-8,<!doctype html><meta name=color-scheme content='light dark'><title>Extensions</title><body style='font:16px system-ui;max-width:32em;margin:20vh auto;padding:0 1em;line-height:1.5'><h1>The Chrome Web Store cannot install extensions here</h1><p>Axion runs Chrome extensions, but installs them itself: use the extensions button in the toolbar to install an unpacked folder or a .crx file.</p>";
+/// Shown instead of the Chrome Web Store while installing from it is switched off.
+const EXTENSIONS_NOTICE: &str = "data:text/html;charset=utf-8,<!doctype html><meta name=color-scheme content='light dark'><title>Extensions</title><body style='font:16px system-ui;max-width:32em;margin:20vh auto;padding:0 1em;line-height:1.5'><h1>The Chrome Web Store is switched off</h1><p>Installing extensions from the Chrome Web Store is off in Axion's settings (extensions.web_store). You can still install an unpacked folder or a .crx file with the extensions button in the toolbar.</p>";
 
-/// The Chrome Web Store: `chrome.webstorePrivate` (the install API) is offered to its pages.
+/// The Chrome Web Store (whose pages get `chrome.webstorePrivate`, the install API).
 fn is_web_store_url(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) else {
         return false;

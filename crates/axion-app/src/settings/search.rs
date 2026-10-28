@@ -643,6 +643,16 @@ pub const INDEX: &[Entry] = &[
         &["extension", "extensions", "erweiterung", "erweiterungen", "chrome", "add-on", "addon", "plugin"],
     ),
     control(
+        C::Privacy,
+        S::ExtensionsWebStore,
+        &["web store", "webstore", "chrome web store", "extension", "erweiterung", "tampermonkey", "install"],
+    ),
+    control(
+        C::Privacy,
+        S::ExtensionsAutoUpdate,
+        &["update", "aktualisieren", "extension", "erweiterung", "automatic", "automatisch"],
+    ),
+    control(
         C::Passwords,
         S::OfferToSavePasswords,
         &["save password", "passwort speichern", "remember", "merken", "login"],

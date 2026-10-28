@@ -320,9 +320,19 @@ Do not include passwords, vault files or the contents of `device.key`.
 
 ## Chrome Web Store: "Add to Chrome" does nothing
 
-The Chrome Web Store cannot install extensions in Axion: its install dialog needs a native window
-and would crash the browser, so the store shows a notice instead. Install extensions from the
-extensions button in the toolbar (an unpacked folder or a `.crx` file); see
+Axion installs from the store with its own dialog: after you press the store's button, the
+extension is downloaded and checked, and a window under the extensions button shows what it can
+do (**Add Extension** / **Cancel**). If that window does not appear:
+
+- Check **Settings > Privacy > Extensions**: **Install from the Chrome Web Store** must be on
+  (it needs a restart), and so must **Chrome extensions**.
+- Open the extensions button: a download or install in progress is shown there, and only one runs
+  at a time.
+- A Manifest V2 extension is refused with a message: current Chromium no longer runs them.
+- Run `axion` from a terminal; the log says why a download was refused (the signature of the
+  package did not match the extension id, the store answered with an error, no connection).
+
+You can also download a `.crx` yourself and use **Install from .crx File…**; see
 [Chrome extensions](features/extensions.md).
 
 ## Dragging a tab into another app does nothing
@@ -351,3 +361,9 @@ What the lines mean (Wayland):
 finding out what a stubborn app accepts. Browsers (Chromium, Firefox) and Electron apps handle a
 dropped link in a text field their own way: some open it instead of pasting it; that is their
 behaviour, the same as when dragging a link from any other app.
+
+## A website never finishes loading after installing an extension
+
+Extensions that use `webRequest` or `declarativeNetRequest` stall page loads in Axion today, so
+Axion removes those permissions from the extensions it installs (`extensions.block_request_apis`).
+If a site hangs anyway, switch the newest extension off in the extensions button and restart.

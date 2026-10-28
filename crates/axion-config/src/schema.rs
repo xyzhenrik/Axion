@@ -857,18 +857,48 @@ impl Default for Privacy {
     }
 }
 
-/// Chrome extensions (Manifest V3, installed from an unpacked folder or a `.crx` file).
+/// Chrome extensions (Manifest V3, installed from the Chrome Web Store, an unpacked folder or a
+/// `.crx` file).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Extensions {
     /// Run Chromium's extension system and show the extensions button in the toolbar. Off: no
     /// extension loads and the button is hidden. Applies after a restart. Default: on.
     pub enabled: bool,
+    /// "Add to Chrome" on the Chrome Web Store installs extensions (after a confirmation in
+    /// Axion's own dialog). Off: the store opens as a normal website and cannot install.
+    /// Needs `enabled`. Default: on.
+    pub web_store: bool,
+    /// Check Web Store extensions for newer versions in the background (no other site is
+    /// contacted; an update runs after the next restart). Default: on.
+    pub auto_update: bool,
+    /// Turn on Chromium's "Allow User Scripts" switch for extensions that ask for the
+    /// `userScripts` permission (Tampermonkey, Violentmonkey: they need it to run scripts).
+    /// Default: on.
+    pub allow_user_scripts: bool,
+    /// Remove the `webRequest` and `declarativeNetRequest` permissions from installed
+    /// extensions. Today they make Chromium stall every navigation to a website in Axion's
+    /// off-screen browser, so extensions that hold them (and most blockers do) would break
+    /// browsing. Userscript managers, content scripts and the other APIs are not affected.
+    /// Turn off to test once the engine handles them. Default: on.
+    pub block_request_apis: bool,
+    /// Hours between two update checks. At least 1. Default: 24.
+    pub update_interval_hours: u32,
+    /// Seconds a Web Store request (a download or an update check) may take. Default: 60.
+    pub timeout_seconds: u32,
 }
 
 impl Default for Extensions {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            web_store: true,
+            auto_update: true,
+            allow_user_scripts: true,
+            block_request_apis: true,
+            update_interval_hours: 24,
+            timeout_seconds: 60,
+        }
     }
 }
 

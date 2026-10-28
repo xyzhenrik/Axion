@@ -2,13 +2,15 @@
 //! button and lists the installed extensions with their icon, what they can reach and an on/off
 //! switch. A click on a row shows the extension's details: every permission, and Open Popup /
 //! Options / Remove. At the bottom: install from a folder or a `.crx` file, and a Relaunch row
-//! while a change waits for a restart. Built like the downloads popover.
+//! while a change waits for a restart. Built like the downloads popover. A Web Store install
+//! that waits for the user's yes (name, icon, every permission) replaces the list until it is
+//! answered.
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{Color, Config};
 use axion_i18n::{tr, tr_n};
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, CAPSULE, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
 
 use crate::extensions::{ExtensionView, access_summary, api_label};
@@ -24,6 +26,9 @@ const DETAIL_TOGGLE: ActionId = ActionId(ACTION_BASE + 4);
 const DETAIL_POPUP: ActionId = ActionId(ACTION_BASE + 5);
 const DETAIL_OPTIONS: ActionId = ActionId(ACTION_BASE + 6);
 const DETAIL_REMOVE: ActionId = ActionId(ACTION_BASE + 7);
+const CONFIRM_ADD: ActionId = ActionId(ACTION_BASE + 8);
+const CONFIRM_CANCEL: ActionId = ActionId(ACTION_BASE + 9);
+const CHECK_UPDATES: ActionId = ActionId(ACTION_BASE + 20);
 const ROW_BASE: u32 = ACTION_BASE + 10;
 const TOGGLE_BASE: u32 = ACTION_BASE + 30;
 /// How many extensions the list shows (the rest are reachable from Settings).
@@ -44,6 +49,10 @@ const SECTION: f32 = 24.0;
 const ICON: f32 = 30.0;
 /// Permission lines the detail view shows before "and N more".
 const MAX_LINES: usize = 10;
+/// The install question shows more: the user decides on what they see there.
+const MAX_CONFIRM_LINES: usize = 16;
+/// Height of the question's buttons.
+const BUTTON: f32 = 40.0;
 const ERROR: Color = Color::rgb(0xFF6A5C);
 
 /// A click in the popover.
@@ -64,6 +73,12 @@ pub enum ExtensionsAction {
     OpenOptions,
     /// Removes the extension of the details (the first click only asks).
     Remove,
+    /// The Web Store install may go ahead.
+    ConfirmInstall,
+    /// The Web Store install is cancelled.
+    CancelInstall,
+    /// Look for newer versions of the Web Store extensions now.
+    CheckUpdates,
 }
 
 /// What the popover shows.
@@ -77,6 +92,24 @@ pub struct Content<'a> {
     pub details: Option<&'a str>,
     /// The Remove button has been clicked once.
     pub confirm_remove: bool,
+    /// A Web Store install waiting for the user's yes.
+    pub pending: Option<Pending<'a>>,
+    /// An update check is running.
+    pub checking: bool,
+    /// Whether any extension comes from the Web Store (the list offers "Check for Updates").
+    pub has_store_extensions: bool,
+}
+
+/// What the confirmation shows.
+pub struct Pending<'a> {
+    pub extension: &'a ExtensionView,
+    pub icon: Option<&'a Image>,
+    /// The version installed now, when this replaces it.
+    pub replaces: Option<&'a str>,
+    /// An update that asks for more than before.
+    pub update: bool,
+    /// Permissions Axion switched off in the copy.
+    pub unsupported: &'a [String],
 }
 
 pub struct ExtensionsPopover {
@@ -119,9 +152,13 @@ impl ExtensionsPopover {
     ) {
         ui.clear_children(self.plate);
         let mut heights = Vec::new();
-        match content.details.and_then(|id| content.extensions.iter().position(|e| e.id == id)) {
-            Some(i) => self.fill_details(ui, content, i, &mut heights),
-            None => self.fill_list(ui, content, &mut heights),
+        if let Some(pending) = &content.pending {
+            self.fill_confirm(ui, pending, &mut heights);
+        } else {
+            match content.details.and_then(|id| content.extensions.iter().position(|e| e.id == id)) {
+                Some(i) => self.fill_details(ui, content, i, &mut heights),
+                None => self.fill_list(ui, content, &mut heights),
+            }
         }
         let height = 2.0 * (PADDING + INSET) + heights.iter().sum::<f32>() + (heights.len() - 1) as f32 * GAP;
         let right = anchor.origin.x + anchor.size.x + PADDING + 8.0;
@@ -180,6 +217,61 @@ impl ExtensionsPopover {
         action_row(ui, self.plate, INSTALL_FOLDER, Icon::Folder, folder, false);
         action_row(ui, self.plate, INSTALL_PACKAGE, Icon::Plus, package, false);
         heights.extend([ACTION, ACTION]);
+        if content.has_store_extensions {
+            let text = if content.checking { tr("Checking for Updates…") } else { tr("Check for Updates") };
+            action_row(ui, self.plate, CHECK_UPDATES, Icon::Reload, text, false);
+            heights.push(ACTION);
+        }
+    }
+
+    /// The question before a Web Store extension is installed: what it is and everything it
+    /// may do.
+    fn fill_confirm(&mut self, ui: &mut Ui, pending: &Pending, heights: &mut Vec<f32>) {
+        let ext = pending.extension;
+        let head = ui.add(
+            self.plate,
+            Widget::container(),
+            Style { padding: padding(4.0, 0.0), ..fixed_row(HEADER, 8.0) },
+        );
+        icon_of(ui, head, ext, pending.icon);
+        ui.add_label(head, &ext.name, TextStyle::BodyEmphasis, shrinking());
+        heights.push(HEADER);
+        let source = tr("Chrome Web Store");
+        let sub = match (pending.update, pending.replaces) {
+            (true, Some(old)) => format!("{} → {} · {source}", old, ext.version),
+            _ if ext.version.is_empty() => source.to_owned(),
+            _ => format!("{} · {source}", ext.version),
+        };
+        line(ui, self.plate, &sub, TextStyle::Footnote, true);
+        heights.push(LINE);
+        if !ext.description.is_empty() {
+            line(ui, self.plate, &ext.description, TextStyle::Footnote, false);
+            heights.push(LINE);
+        }
+        let question = if pending.update {
+            tr("This update asks for more permissions. It can:")
+        } else {
+            tr("If you add it, it can:")
+        };
+        let title = ui.add(self.plate, Widget::container(), fixed_row(SECTION, 0.0));
+        ui.add_label(title, question, TextStyle::Callout, Style::default());
+        heights.push(SECTION);
+        self.permission_lines(ui, ext, MAX_CONFIRM_LINES, heights);
+        if !pending.unsupported.is_empty() {
+            line(ui, self.plate, tr("Network request APIs are off in Axion"), TextStyle::Footnote, true);
+            heights.push(LINE);
+        }
+        line(ui, self.plate, tr("It starts after Axion is relaunched."), TextStyle::Footnote, true);
+        heights.push(LINE);
+        let buttons = ui.add(
+            self.plate,
+            Widget::container(),
+            Style { gap: Size { width: length(8.0), height: length(0.0) }, ..fixed_row(BUTTON, 8.0) },
+        );
+        let add = if pending.update { tr("Update Extension") } else { tr("Add Extension") };
+        capsule_button(ui, buttons, CONFIRM_CANCEL, tr("Cancel"), false);
+        capsule_button(ui, buttons, CONFIRM_ADD, add, true);
+        heights.push(BUTTON);
     }
 
     fn fill_details(&mut self, ui: &mut Ui, content: &Content, i: usize, heights: &mut Vec<f32>) {
@@ -197,6 +289,10 @@ impl ExtensionsPopover {
         let ident = format!("{version}· {}", ext.id);
         line(ui, self.plate, &ident, TextStyle::Footnote, true);
         heights.push(LINE);
+        if ext.store {
+            line(ui, self.plate, tr("Installed from the Chrome Web Store"), TextStyle::Footnote, true);
+            heights.push(LINE);
+        }
         if !ext.description.is_empty() {
             line(ui, self.plate, &ext.description, TextStyle::Footnote, false);
             heights.push(LINE);
@@ -212,37 +308,7 @@ impl ExtensionsPopover {
         let title = ui.add(self.plate, Widget::container(), fixed_row(SECTION, 0.0));
         ui.add_label(title, tr("Permissions"), TextStyle::Callout, Style::default());
         heights.push(SECTION);
-        let permissions = &ext.permissions;
-        let mut lines: Vec<(String, bool)> = Vec::new();
-        if permissions.broad() {
-            lines.push((tr("Read and change your data on all websites").to_owned(), true));
-        }
-        lines.extend(permissions.hosts.iter().filter(|h| !axion_extensions::is_broad_host(h)).map(|h| {
-            let text = format!("{} {h}", tr("Read and change data on"));
-            (text, false)
-        }));
-        lines.extend(permissions.apis.iter().map(|p| (api_label(p), false)));
-        if lines.is_empty() {
-            lines.push((tr("It asks for no permissions").to_owned(), false));
-        }
-        let more = lines.len().saturating_sub(MAX_LINES);
-        for (text, warning) in lines.into_iter().take(MAX_LINES) {
-            let label = line(ui, self.plate, &format!("•  {text}"), TextStyle::Footnote, !warning);
-            if warning && let Some(w) = ui.widget_mut(label) {
-                w.set_paint(Paint::Fixed(ERROR));
-            }
-            heights.push(LINE);
-        }
-        if more > 0 {
-            let text = tr_n("and {n} more", "and {n} more", more);
-            line(ui, self.plate, &format!("•  {text}"), TextStyle::Footnote, true);
-            heights.push(LINE);
-        }
-        if !permissions.optional.is_empty() {
-            let names = permissions.optional.iter().map(|p| api_label(p)).collect::<Vec<_>>().join(", ");
-            line(ui, self.plate, &format!("{} {names}", tr("May ask later:")), TextStyle::Footnote, true);
-            heights.push(LINE);
-        }
+        self.permission_lines(ui, ext, MAX_LINES, heights);
         if !ext.broken && ext.enabled {
             if ext.popup.is_some() {
                 action_row(ui, self.plate, DETAIL_POPUP, Icon::Extensions, tr("Open Popup in a Tab"), false);
@@ -260,6 +326,45 @@ impl ExtensionsPopover {
             w.set_paint(Paint::Fixed(ERROR));
         }
         heights.push(ACTION);
+    }
+
+    /// Every permission of `ext`, one line each (sites in red when that is all of them), and
+    /// what it may ask for later.
+    fn permission_lines(&mut self, ui: &mut Ui, ext: &ExtensionView, limit: usize, heights: &mut Vec<f32>) {
+        let permissions = &ext.permissions;
+        let mut lines: Vec<(String, bool)> = Vec::new();
+        if permissions.broad() {
+            lines.push((tr("Read and change your data on all websites").to_owned(), true));
+        }
+        lines.extend(permissions.hosts.iter().filter(|h| !axion_extensions::is_broad_host(h)).map(|h| {
+            let text = format!("{} {h}", tr("Read and change data on"));
+            (text, false)
+        }));
+        lines.extend(permissions.apis.iter().map(|p| (api_label(p), false)));
+        // Several permissions say the same in words ("webRequest", "webNavigation"): once.
+        let mut seen = std::collections::HashSet::new();
+        lines.retain(|(text, _)| seen.insert(text.clone()));
+        if lines.is_empty() {
+            lines.push((tr("It asks for no permissions").to_owned(), false));
+        }
+        let more = lines.len().saturating_sub(limit);
+        for (text, warning) in lines.into_iter().take(limit) {
+            let label = line(ui, self.plate, &format!("•  {text}"), TextStyle::Footnote, !warning);
+            if warning && let Some(w) = ui.widget_mut(label) {
+                w.set_paint(Paint::Fixed(ERROR));
+            }
+            heights.push(LINE);
+        }
+        if more > 0 {
+            let text = tr_n("and {n} more", "and {n} more", more);
+            line(ui, self.plate, &format!("•  {text}"), TextStyle::Footnote, true);
+            heights.push(LINE);
+        }
+        if !permissions.optional.is_empty() {
+            let names = permissions.optional.iter().map(|p| api_label(p)).collect::<Vec<_>>().join(", ");
+            line(ui, self.plate, &format!("{} {names}", tr("May ask later:")), TextStyle::Footnote, true);
+            heights.push(LINE);
+        }
     }
 
     pub fn close(&mut self, ui: &mut Ui, config: &Config) {
@@ -309,6 +414,32 @@ fn icon_of(ui: &mut Ui, parent: NodeId, ext: &ExtensionView, image: Option<&Imag
             );
             ui.add(node, Widget::icon(Icon::Extensions, 24.0).with_paint(paint), Style::default());
         }
+    }
+}
+
+/// A capsule button of the install question; `primary` is the accent one.
+fn capsule_button(ui: &mut Ui, parent: NodeId, id: ActionId, text: &str, primary: bool) {
+    let background = if primary {
+        Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
+    } else {
+        Background::Glass(GlassLevel::Thin)
+    };
+    let node = ui.add(
+        parent,
+        Widget::container().with_action(id).with_radius(CAPSULE).with_background(background),
+        Style {
+            flex_grow: 1.0,
+            flex_basis: length(0.0),
+            min_size: Size { width: length(0.0), height: length(BUTTON) },
+            justify_content: JustifyContent::CENTER,
+            align_items: AlignItems::CENTER,
+            ..Default::default()
+        },
+    );
+    let label = ui.add_label(node, text, TextStyle::BodyEmphasis, Style::default());
+    ui.set_label_lines(label, 1);
+    if primary && let Some(w) = ui.widget_mut(label) {
+        w.set_paint(Paint::OnAccent);
     }
 }
 
@@ -369,6 +500,9 @@ fn action_of(id: ActionId) -> Option<ExtensionsAction> {
         DETAIL_POPUP => ExtensionsAction::OpenPopup,
         DETAIL_OPTIONS => ExtensionsAction::OpenOptions,
         DETAIL_REMOVE => ExtensionsAction::Remove,
+        CONFIRM_ADD => ExtensionsAction::ConfirmInstall,
+        CONFIRM_CANCEL => ExtensionsAction::CancelInstall,
+        CHECK_UPDATES => ExtensionsAction::CheckUpdates,
         _ if (ROW_BASE..ROW_BASE + ROWS as u32).contains(&n) => {
             ExtensionsAction::Details((n - ROW_BASE) as usize)
         }
@@ -430,6 +564,9 @@ mod tests {
     #[test]
     fn action_ids() {
         assert_eq!(action_of(INSTALL_FOLDER), Some(ExtensionsAction::InstallFolder));
+        assert_eq!(action_of(CONFIRM_ADD), Some(ExtensionsAction::ConfirmInstall));
+        assert_eq!(action_of(CONFIRM_CANCEL), Some(ExtensionsAction::CancelInstall));
+        assert_eq!(action_of(CHECK_UPDATES), Some(ExtensionsAction::CheckUpdates));
         assert_eq!(action_of(DETAIL_REMOVE), Some(ExtensionsAction::Remove));
         assert_eq!(action_of(ActionId(ROW_BASE + 3)), Some(ExtensionsAction::Details(3)));
         assert_eq!(action_of(ActionId(TOGGLE_BASE + 2)), Some(ExtensionsAction::Toggle(2)));

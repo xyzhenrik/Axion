@@ -28,6 +28,14 @@ impl Permissions {
     pub fn is_empty(&self) -> bool {
         self.apis.is_empty() && self.hosts.is_empty()
     }
+
+    /// Whether `self` (a new version) asks for something `old` did not: an API permission, a
+    /// site, or all sites. Optional permissions do not count, they are asked for when used.
+    pub fn grows_over(&self, old: &Permissions) -> bool {
+        self.apis.iter().any(|a| !old.apis.contains(a))
+            || self.hosts.iter().any(|h| !old.hosts.contains(h))
+            || (self.broad() && !old.broad())
+    }
 }
 
 /// The parts of a manifest Axion uses.
@@ -276,6 +284,19 @@ mod tests {
         .unwrap();
         assert_eq!(m.name, "Dunkelmodus");
         assert_eq!(m.description, "__MSG_missing__");
+    }
+
+    #[test]
+    fn growing_permissions() {
+        let old =
+            Permissions { apis: vec!["tabs".into()], hosts: vec!["https://a/*".into()], optional: vec![] };
+        assert!(!old.grows_over(&old));
+        let fewer = Permissions { apis: vec![], hosts: vec![], optional: vec![] };
+        assert!(!fewer.grows_over(&old));
+        assert!(Permissions { apis: vec!["tabs".into(), "cookies".into()], ..old.clone() }.grows_over(&old));
+        assert!(Permissions { hosts: vec!["https://b/*".into()], ..old.clone() }.grows_over(&old));
+        assert!(Permissions { hosts: vec!["<all_urls>".into()], ..old.clone() }.grows_over(&old));
+        assert!(!Permissions { optional: vec!["history".into()], ..old.clone() }.grows_over(&old));
     }
 
     #[test]

@@ -156,8 +156,9 @@ wrap_app! {
 /// The Chromium switches for the extension system. Off: the whole system is off (external
 /// extensions, e.g. a desktop's browser integration, stay unloaded). On: Chromium runs the
 /// extensions Axion installed, loaded unpacked with `--load-extension` (CEF 156 has no
-/// `LoadExtension` call, and the Web Store install flow needs a native window: it stays
-/// blocked, see `network.rs`). Extensions can only be added or removed by restarting.
+/// `LoadExtension` call). The Web Store's own install dialog needs a native window, so Axion's
+/// page script replaces it, or the store is blocked, see `network.rs`. Extensions can only be
+/// added or removed by restarting.
 fn extension_switches(enabled: bool, load: &[PathBuf]) -> Vec<(&'static str, Option<String>)> {
     if !enabled {
         return vec![
@@ -255,6 +256,8 @@ pub struct CefOptions {
     pub extensions_enabled: bool,
     /// Folders of the unpacked extensions to load; ignored unless `extensions_enabled`.
     pub load_extensions: Vec<PathBuf>,
+    /// Refuse to open the Chrome Web Store (installing from it is switched off).
+    pub block_web_store: bool,
     /// More Chromium command line switches (name, value), e.g. from Settings › Hardware.
     pub extra_switches: Vec<(String, Option<String>)>,
     /// Wakes the embedder's event loop when Chromium has work (see [`Engine::next_pump`]).
@@ -326,8 +329,10 @@ impl CefEngine {
         tracing::info!(accelerated = options.accelerated, render_node = ?options.render_node, "Chromium ready");
         let net = Arc::<Network>::default();
         scheme::install(&net, None, false);
-        // Always: the Web Store's install dialog crashes without a native window.
-        net.block_web_store.store(true, std::sync::atomic::Ordering::Relaxed);
+        // The Web Store's own install dialog crashes without a native window. Axion's page script
+        // intercepts "Add to Chrome" (see `axion-extensions`); with that switched off the store
+        // is not opened at all.
+        net.block_web_store.store(options.block_web_store, std::sync::atomic::Ordering::Relaxed);
         Ok(Self {
             device,
             queue,

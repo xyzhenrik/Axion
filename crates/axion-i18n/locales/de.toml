@@ -1096,7 +1096,6 @@
 
 # crates/axion-app/src/settings.rs
 "Chrome extensions (after restart)" = "Chrome-Erweiterungen (nach Neustart)"
-"Manifest V3 extensions are installed from the extensions button in the toolbar (an unpacked folder or a .crx file). Each extension's permissions are listed there. The Chrome Web Store cannot install them." = "Manifest-V3-Erweiterungen werden über die Erweiterungen-Schaltfläche in der Symbolleiste installiert (entpackter Ordner oder .crx-Datei). Die Berechtigungen jeder Erweiterung stehen dort. Der Chrome Web Store kann sie nicht installieren."
 # crates/axion-app/src/tabs.rs, context_menu.rs, group_sheet.rs, tab_search.rs (tab groups, tab search, muting)
 "Blue" = "Blau"
 "Red" = "Rot"
@@ -1171,3 +1170,54 @@
 
 "This video’s picture can’t be decoded (unsupported format)." = "Das Bild dieses Videos lässt sich nicht dekodieren (Format nicht unterstützt)."
 "Retry" = "Erneut versuchen"
+
+# crates/axion-app/src/browser.rs
+"Add to Axion" = "Zu Axion hinzufügen"
+"Getting the extension…" = "Erweiterung wird geholt…"
+"Nothing to update right now." = "Im Moment gibt es nichts zu aktualisieren."
+"Remove from Axion" = "Aus Axion entfernen"
+"Updated {names}. Relaunch to use the new version." = "{names} aktualisiert. Zum Verwenden der neuen Version Axion neu starten."
+
+# crates/axion-app/src/extensions.rs
+"Another extension is being installed." = "Es wird gerade eine andere Erweiterung installiert."
+"Extensions cannot be installed without a profile." = "Ohne Profil lassen sich keine Erweiterungen installieren."
+"Installing from the Chrome Web Store is switched off in Settings." = "Das Installieren aus dem Chrome Web Store ist in den Einstellungen ausgeschaltet."
+"It uses Manifest V{version}, which current Chromium no longer runs. Only Manifest V3 extensions work." = "Sie verwendet Manifest V{version}, das aktuelles Chromium nicht mehr ausführt. Nur Manifest-V3-Erweiterungen funktionieren."
+"That is not a valid extension." = "Das ist keine gültige Erweiterung."
+
+# crates/axion-app/src/extensions_popover.rs
+"Add Extension" = "Hinzufügen"
+"Checking for Updates…" = "Suche nach Updates…"
+"Chrome Web Store" = "Chrome Web Store"
+"Installed from the Chrome Web Store" = "Aus dem Chrome Web Store installiert"
+"If you add it, it can:" = "Wenn du sie hinzufügst, kann sie:"
+"It starts after Axion is relaunched." = "Sie startet, sobald Axion neu gestartet wurde."
+"This update asks for more permissions. It can:" = "Dieses Update fordert mehr Berechtigungen an. Es kann:"
+"Update Extension" = "Aktualisieren"
+
+# crates/axion-app/src/settings.rs
+"Install from the Chrome Web Store (after restart)" = "Aus dem Chrome Web Store installieren (nach Neustart)"
+"Manifest V3 extensions install from the Chrome Web Store (Axion asks first and shows every permission), or from the extensions button in the toolbar (an unpacked folder or a .crx file). Updates for Web Store extensions are downloaded in the background and apply after a restart." = "Manifest-V3-Erweiterungen lassen sich aus dem Chrome Web Store installieren (Axion fragt vorher nach und zeigt jede Berechtigung) oder über die Erweiterungen-Schaltfläche in der Symbolleiste (entpackter Ordner oder .crx-Datei). Updates für Web-Store-Erweiterungen werden im Hintergrund geladen und gelten nach einem Neustart."
+"Update Web Store extensions automatically" = "Web-Store-Erweiterungen automatisch aktualisieren"
+
+# crates/axion-app/src/extensions.rs
+"Act on pages by their content" = "Je nach Inhalt auf Seiten reagieren"
+"Answer sign-in requests of sites" = "Anmeldeanfragen von Websites beantworten"
+"Change font settings" = "Schrifteinstellungen ändern"
+"Change what pages load before they load" = "Ändern, was Seiten laden, bevor sie laden"
+"Keep running in the background" = "Im Hintergrund weiterlaufen"
+"Know when you are away from the computer" = "Wissen, wann du nicht am Computer bist"
+"Manage your tab groups" = "Deine Tabgruppen verwalten"
+"Open and arrange windows" = "Fenster öffnen und anordnen"
+"Open your downloads" = "Deine Downloads öffnen"
+"Read and change your reading list" = "Deine Leseliste lesen und ändern"
+"Record your screen or tabs" = "Deinen Bildschirm oder Tabs aufnehmen"
+"Run at set times in the background" = "Zu festen Zeiten im Hintergrund laufen"
+"Save pages as MHTML" = "Seiten als MHTML speichern"
+"See details of your computer" = "Details deines Computers sehen"
+"See the icons of sites" = "Die Symbole von Websites sehen"
+"See the sites you visit most" = "Die Websites sehen, die du am häufigsten besuchst"
+"Use hidden pages to do its work" = "Versteckte Seiten für ihre Arbeit verwenden"
+
+# crates/axion-app/src/extensions_popover.rs
+"Network request APIs are off in Axion" = "Netzwerk-Request-APIs sind in Axion aus"
