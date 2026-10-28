@@ -1118,6 +1118,7 @@ impl Engine for CefEngine {
         let started = Instant::now();
         self.schedule.pumping();
         do_message_loop_work();
+        dispatch_glib_sources();
         self.shared.stats.pump(started.elapsed());
         self.adopt_devtools_browsers();
         self.fall_back_to_software_if_needed();
@@ -1198,6 +1199,26 @@ impl Engine for CefEngine {
             events.push(EngineEvent::SiteData(sites));
         }
         events
+    }
+}
+
+#[link(name = "glib-2.0")]
+unsafe extern "C" {
+    fn g_main_context_iteration(context: *mut std::ffi::c_void, may_block: i32) -> i32;
+}
+
+/// Runs whatever is ready on GLib's default main context without blocking. Chromium's
+/// Wayland connection (windows it opens itself, like DevTools) is watched by a GLib source
+/// that only fires when somebody iterates that context; CEF's external message pump does
+/// not, so without this such windows never receive a configure event and never appear.
+fn dispatch_glib_sources() {
+    // Bounded: a source that is always ready must not stall the pump.
+    for _ in 0..16 {
+        // SAFETY: a null context means the default one; may_block = 0 never blocks. Called
+        // on the UI thread, which owns the default context's iteration here.
+        if unsafe { g_main_context_iteration(std::ptr::null_mut(), 0) } == 0 {
+            break;
+        }
     }
 }
 
