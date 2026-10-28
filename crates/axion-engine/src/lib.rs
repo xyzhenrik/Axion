@@ -13,6 +13,7 @@ mod input;
 pub mod internal;
 mod permission;
 mod policy;
+mod snapshot;
 mod transfer;
 
 pub use context_menu::{ContextCommand, ContextMedia, ContextMenuParams, EditFlags};
@@ -23,6 +24,7 @@ pub use permission::{PermissionAnswer, PermissionId, PermissionKind};
 pub use policy::{
     MediaViewOptions, NavigationRequest, RequestPolicy, RequestVerdict, ResourceKind, ResourceRequest,
 };
+pub use snapshot::{PdfOptions, ShotArea, ShotRequest};
 pub use transfer::{DropData, FindRequest, PasteData, PastedFile};
 
 use glam::Vec2;
@@ -253,6 +255,24 @@ pub enum EngineEvent {
         audio: bool,
         video: bool,
     },
+    /// [`Engine::print_to_pdf`] finished: the file is at `path` (`ok`), or it failed.
+    PdfSaved {
+        view: ViewId,
+        path: std::path::PathBuf,
+        ok: bool,
+    },
+    /// A screenshot requested with [`Engine::capture_screenshot`] (`id` is the caller's):
+    /// a PNG file's bytes.
+    ScreenshotReady {
+        view: ViewId,
+        id: u32,
+        png: Vec<u8>,
+    },
+    /// A screenshot could not be taken.
+    ScreenshotFailed {
+        view: ViewId,
+        id: u32,
+    },
     /// The view is gone (after [`Engine::close_view`], or the engine had to drop it).
     Closed {
         view: ViewId,
@@ -379,6 +399,12 @@ pub trait Engine {
     /// stack, with the page's cookies; images over `max_px` on a side are scaled down. Arrives
     /// as [`EngineEvent::ImageReady`] or [`EngineEvent::ImageFailed`].
     fn fetch_image(&mut self, view: ViewId, url: &str, max_px: u32);
+
+    /// Prints the view's page to a PDF file; answers with [`EngineEvent::PdfSaved`].
+    fn print_to_pdf(&mut self, view: ViewId, path: std::path::PathBuf, options: &PdfOptions);
+    /// Takes a screenshot of the view's page; answers with [`EngineEvent::ScreenshotReady`]
+    /// or [`EngineEvent::ScreenshotFailed`] carrying `id`.
+    fn capture_screenshot(&mut self, view: ViewId, id: u32, request: &ShotRequest);
 
     /// Runs an editing command of the page's context menu in the view's focused frame.
     fn context_command(&mut self, view: ViewId, command: ContextCommand);

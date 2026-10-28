@@ -474,9 +474,11 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "axion-media",
+ "base64 0.22.1",
  "cef",
  "glam",
  "libc",
+ "serde_json",
  "thiserror 2.0.21",
  "tracing",
  "wgpu",
