@@ -10,13 +10,15 @@
 
 use std::ffi::c_void;
 use std::io::Write;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use wayland_backend::client::{Backend, ObjectId};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::wl_buffer::WlBuffer;
+use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_data_device::{self, WlDataDevice};
 use wayland_client::protocol::wl_data_device_manager::{DndAction, WlDataDeviceManager};
 use wayland_client::protocol::wl_data_offer::WlDataOffer;
@@ -24,10 +26,12 @@ use wayland_client::protocol::wl_data_source::{self, WlDataSource};
 use wayland_client::protocol::wl_pointer::{self, ButtonState, WlPointer};
 use wayland_client::protocol::wl_registry::WlRegistry;
 use wayland_client::protocol::wl_seat::{self, Capability, WlSeat};
+use wayland_client::protocol::wl_shm::{self, WlShm};
+use wayland_client::protocol::wl_shm_pool::WlShmPool;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, event_created_child};
 
-use super::{MIME_MOZ_URL, MIME_PLAIN, MIME_PLAIN_UTF8, MIME_URI_LIST, Payload, data_for};
+use super::{Image, MIME_MOZ_URL, MIME_PLAIN, MIME_PLAIN_UTF8, MIME_URI_LIST, Payload, data_for};
 
 /// How long the serving thread waits for a drag to end (a drop that was never finished).
 const DRAG_TIMEOUT: Duration = Duration::from_secs(120);
@@ -43,6 +47,33 @@ struct State {
     focus: Option<ObjectId>,
     /// The drag that is on: its source and what it carries.
     drag: Option<(WlDataSource, Payload)>,
+    /// The picture beside the pointer during that drag.
+    icon: Option<DragIcon>,
+}
+
+impl State {
+    /// The drag is over: its drag image goes. Returns the source, for the caller to destroy
+    /// unless an event already hands it that duty.
+    fn end_drag(&mut self) -> Option<WlDataSource> {
+        if let Some(icon) = self.icon.take() {
+            icon.destroy();
+        }
+        self.drag.take().map(|(source, _)| source)
+    }
+}
+
+/// The drag icon: a `wl_surface` (the compositor gives it the drag-icon role in `start_drag`)
+/// showing a shared-memory buffer.
+struct DragIcon {
+    surface: WlSurface,
+    buffer: WlBuffer,
+}
+
+impl DragIcon {
+    fn destroy(self) {
+        self.surface.destroy();
+        self.buffer.destroy();
+    }
 }
 
 struct Inner {
@@ -57,6 +88,9 @@ pub struct Source {
     manager: WlDataDeviceManager,
     device: WlDataDevice,
     surface: WlSurface,
+    /// For the drag image (`None` without them: the drag then has no picture).
+    compositor: Option<WlCompositor>,
+    shm: Option<WlShm>,
 }
 
 fn lock(inner: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
@@ -85,6 +119,8 @@ impl Source {
             .inspect_err(|e| tracing::debug!("tab drags: no wl_seat: {e}"))
             .ok()?;
         let device = manager.get_data_device(&seat, &qh, ());
+        let compositor: Option<WlCompositor> = globals.bind(&qh, 1..=6, ()).ok();
+        let shm: Option<WlShm> = globals.bind(&qh, 1..=1, ()).ok();
         let mut state = State::default();
         // The seat tells its capabilities, which makes it hand out the pointer.
         queue
@@ -101,7 +137,16 @@ impl Source {
             .ok()?;
         let surface = WlSurface::from_id(&conn, id).ok()?;
         tracing::debug!(surface = ?surface.id(), "tab drags: connected to the Wayland seat");
-        Some(Self { conn, qh, inner: Arc::new(Mutex::new(Inner { queue, state })), manager, device, surface })
+        Some(Self {
+            conn,
+            qh,
+            inner: Arc::new(Mutex::new(Inner { queue, state })),
+            manager,
+            device,
+            surface,
+            compositor,
+            shm,
+        })
     }
 
     /// Takes the events that winit's reads of the socket queued for this connection's own queue
@@ -116,7 +161,8 @@ impl Source {
     }
 
     /// Starts the drag from the press that is held now.
-    pub fn start(&mut self, payload: Payload) -> bool {
+    pub fn start(&mut self, payload: Payload, image: Option<Image>) -> bool {
+        let icon = image.and_then(|image| self.make_icon(&image));
         let mut guard = lock(&self.inner);
         let Inner { queue, state } = &mut *guard;
         // The press arrived with winit's read of the socket: take it from the queue.
@@ -146,12 +192,21 @@ impl Source {
         if self.manager.version() >= 3 {
             source.set_actions(DndAction::Copy);
         }
-        self.device.start_drag(Some(&source), &self.surface, None, serial);
+        self.device.start_drag(Some(&source), &self.surface, icon.as_ref().map(|i| &i.surface), serial);
+        if let Some(icon) = &icon {
+            // Now that the surface has its role, show what it holds.
+            icon.surface.commit();
+        }
         if let Err(e) = self.conn.flush() {
             tracing::warn!("starting the tab drag failed: {e}");
             source.destroy();
+            if let Some(icon) = icon {
+                icon.destroy();
+            }
             return false;
         }
+        tracing::debug!(has_image = icon.is_some(), "tab drag out (Wayland): drag image");
+        state.icon = icon;
         tracing::debug!(url = %payload.url, serial, "tab drag out started (Wayland)");
         state.drag = Some((source, payload));
         drop(guard);
@@ -163,6 +218,51 @@ impl Source {
         }
         true
     }
+
+    /// A surface showing `image`, hot-spotted so the pointer sits where the image says. `None`
+    /// if the compositor lacks `wl_compositor`/`wl_shm` or the buffer cannot be made.
+    fn make_icon(&self, image: &Image) -> Option<DragIcon> {
+        let (compositor, shm) = (self.compositor.as_ref()?, self.shm.as_ref()?);
+        let (w, h) = (i32::try_from(image.width).ok()?, i32::try_from(image.height).ok()?);
+        let size = image.bgra.len();
+        if size == 0 || size != image.width as usize * image.height as usize * 4 {
+            return None;
+        }
+        let fd = rustix::fs::memfd_create("axion-drag-image", rustix::fs::MemfdFlags::CLOEXEC)
+            .inspect_err(|e| tracing::debug!("drag image: no memfd: {e}"))
+            .ok()?;
+        rustix::fs::ftruncate(&fd, size as u64).inspect_err(|e| tracing::debug!("drag image: {e}")).ok()?;
+        let mut file = std::fs::File::from(fd);
+        file.write_all(&image.bgra)
+            .inspect_err(|e| tracing::debug!("drag image: writing it failed: {e}"))
+            .ok()?;
+        let pool = shm.create_pool(file.as_fd(), i32::try_from(size).ok()?, &self.qh, ());
+        let buffer = pool.create_buffer(0, w, h, w * 4, wl_shm::Format::Argb8888, &self.qh, ());
+        // The buffer keeps the memory; the pool object is not needed any more.
+        pool.destroy();
+        let surface = compositor.create_surface(&self.qh, ());
+        let scale = image.scale.max(1);
+        if surface.version() >= 3 {
+            surface.set_buffer_scale(scale);
+        }
+        // The icon's origin is the pointer position plus the surface offset: move it up and left
+        // by the hotspot (in surface-local units, i.e. logical px).
+        let (dx, dy) = (-image.hotspot.0 / scale, -image.hotspot.1 / scale);
+        if surface.version() >= 5 {
+            surface.attach(Some(&buffer), 0, 0);
+            surface.offset(dx, dy);
+        } else {
+            surface.attach(Some(&buffer), dx, dy);
+        }
+        if surface.version() >= 4 {
+            surface.damage_buffer(0, 0, w, h);
+        } else {
+            surface.damage(0, 0, w / scale, h / scale);
+        }
+        surface.commit();
+        tracing::debug!(w, h, scale, dx, dy, "drag image buffer made");
+        Some(DragIcon { surface, buffer })
+    }
 }
 
 /// Answers the data requests of the drag until it ends.
@@ -173,14 +273,14 @@ fn serve(inner: &Mutex<Inner>, conn: &Connection) {
         let mut guard = lock(inner);
         let Inner { queue, state } = &mut *guard;
         if queue.dispatch_pending(state).is_err() {
-            state.drag = None;
+            let _ = state.end_drag();
         }
         let _ = conn.flush();
         if state.drag.is_none() {
             return;
         }
         if Instant::now() > deadline {
-            if let Some((source, _)) = state.drag.take() {
+            if let Some(source) = state.end_drag() {
                 source.destroy();
             }
             let _ = conn.flush();
@@ -257,6 +357,25 @@ impl Dispatch<WlPointer, ()> for State {
     }
 }
 
+/// Objects of the drag image that never need to be listened to.
+macro_rules! ignore_events {
+    ($($proxy:ty),+) => {$(
+        impl Dispatch<$proxy, ()> for State {
+            fn event(
+                _: &mut Self,
+                _: &$proxy,
+                _: <$proxy as Proxy>::Event,
+                _: &(),
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+            }
+        }
+    )+};
+}
+
+ignore_events!(WlCompositor, WlShm, WlShmPool, WlBuffer, WlSurface);
+
 impl Dispatch<WlDataDeviceManager, ()> for State {
     fn event(
         _: &mut Self,
@@ -319,18 +438,22 @@ impl Dispatch<WlDataSource, ()> for State {
             // Dropped on nothing, or the compositor refused/ended it: the drag is over.
             wl_data_source::Event::Cancelled => {
                 tracing::debug!("drag-out source: cancelled");
-                state.drag = None;
+                let _ = state.end_drag();
                 source.destroy();
             }
             // The target took the data and is done with it.
             wl_data_source::Event::DndFinished => {
                 tracing::debug!("drag-out source: dnd_finished (the drop was received)");
-                state.drag = None;
+                let _ = state.end_drag();
                 source.destroy();
             }
             wl_data_source::Event::DndDropPerformed => {
                 // The data may still be requested: the source stays until `dnd_finished`.
                 tracing::debug!("drag-out source: dnd_drop_performed");
+                // The drag is over for the eye: the picture goes now.
+                if let Some(icon) = state.icon.take() {
+                    icon.destroy();
+                }
             }
             wl_data_source::Event::Target { mime_type } => {
                 tracing::debug!(?mime_type, "drag-out source: target accepts");

@@ -1695,6 +1695,13 @@ pub struct Tabs {
     /// A dragged tab counts as leaving the window once the pointer is this far outside it
     /// (logical px).
     pub drag_out_distance: f32,
+    /// A tab dragged out of the window carries a small card of the page (a preview with the
+    /// site icon and title) beside the pointer, as drag image.
+    pub drag_out_image: bool,
+    /// Width of that card (logical px).
+    pub drag_out_image_width: f32,
+    /// How opaque the card is (0 invisible .. 1 solid).
+    pub drag_out_image_opacity: f32,
     /// Pages draw at most this many frames per second; 0 follows the display's refresh rate.
     pub max_frame_rate: u32,
     /// Following the display (`max_frame_rate = 0`), pages draw at most this many frames per
@@ -1733,6 +1740,9 @@ impl Default for Tabs {
             drag_threshold: 6.0,
             drag_out_links: true,
             drag_out_distance: 12.0,
+            drag_out_image: true,
+            drag_out_image_width: 200.0,
+            drag_out_image_opacity: 0.9,
             max_frame_rate: 0,
             max_frame_rate_cap: 120,
             gpu_frame_settle_ms: 6.0,

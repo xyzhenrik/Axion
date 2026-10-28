@@ -347,6 +347,13 @@ What the lines mean (Wayland):
 | `dnd_drop_performed`, `send mime_type=...`, `dnd_finished` | the drop happened and the app read the link |
 | `cancelled` without a drop | the compositor ended the drag (dropped on nothing, Esc, or a refused start) |
 
+The dragged tab shows as a small card beside the pointer (`tabs.drag_out_image`, off in
+`Settings › Tabs`): a snapshot of the page's top with the site icon and title, or just icon, title
+and host when the tab has no picture. On Wayland it is the drag icon surface (`drag image buffer
+made` in the log); on X11 a translucent window of ours that follows the pointer (`drag-out XDND:
+drag image`; it needs a compositing manager for the transparency, else the corners show black).
+No card and no `drag image` line means the setting is off or the card could not be made.
+
 `AXION_DRAGOUT_MIMES=text/plain` (a comma-separated list) changes which formats are offered, for
 finding out what a stubborn app accepts. Browsers (Chromium, Firefox) and Electron apps handle a
 dropped link in a text field their own way: some open it instead of pasting it; that is their

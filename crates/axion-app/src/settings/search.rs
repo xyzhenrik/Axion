@@ -331,6 +331,7 @@ pub const INDEX: &[Entry] = &[
     control(C::Tabs, S::TintFromPage, &["color", "page colour", "tint", "farbe"]),
     control(C::Tabs, S::OpenInBackground, &["new tab", "links", "hintergrund", "middle click"]),
     control(C::Tabs, S::DragOutLinks, &["drag", "tab", "link", "paste", "ziehen", "text field"]),
+    control(C::Tabs, S::DragOutImage, &["drag", "tab", "preview", "image", "card", "ziehen", "vorschau"]),
     control(
         C::Tabs,
         S::MiddleClickClosesTab,

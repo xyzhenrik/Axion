@@ -5770,11 +5770,14 @@ impl Browser {
             tracing::debug!(view = ?item.view, "tab drag out: the tab's address cannot be shared");
             return false;
         };
-        let Some(drag_out) = &mut self.drag_out else {
+        if self.drag_out.is_none() {
             tracing::debug!("tab drag out: no drag source on this display server");
             return false;
-        };
-        if !drag_out.start(Payload { url, title }) {
+        }
+        let image =
+            if self.config.tabs.drag_out_image { self.drag_out_image(item.view, &url, &title) } else { None };
+        let Some(drag_out) = &mut self.drag_out else { return false };
+        if !drag_out.start(Payload { url, title }, image) {
             tracing::debug!("tab drag out: the system refused the drag; the tab drag goes on");
             return false;
         }
@@ -5784,6 +5787,52 @@ impl Browser {
         self.pointer_captured_by_ui = false;
         let _ = self.ui.handle(UiInput::PointerUp);
         true
+    }
+
+    /// The picture that follows the pointer while the tab's link is dragged out: a snapshot of
+    /// the page's top (when the tab has a frame) with its icon and title, else just those.
+    fn drag_out_image(
+        &self,
+        view: ViewId,
+        url: &str,
+        title: &str,
+    ) -> Option<crate::platform::dragout::Image> {
+        let started = Instant::now();
+        let scale = (self.scale().round() as u32).max(1);
+        let tabs = &self.config.tabs;
+        let width = tabs.drag_out_image_width.clamp(96.0, 480.0);
+        let snapshot = self.engine.frame(view).and_then(|frame| {
+            let (tw, th) = (frame.texture.width() as f32, frame.texture.height() as f32);
+            if tw < 1.0 || th < 1.0 {
+                return None;
+            }
+            // Only the top part of the page that the card shows, and not more pixels than it has.
+            let shown = (crate::dragimage::PREVIEW_ASPECT * tw / th).clamp(0.01, 1.0);
+            let max_px = (width * scale as f32 * 2.0).round() as u32;
+            self.read_texture(&frame.texture, Rect::new(0.0, 0.0, 1.0, shown), max_px)
+        });
+        let icon = self.favicons.pixels(url);
+        let spec = crate::dragimage::Spec {
+            width,
+            scale,
+            opacity: tabs.drag_out_image_opacity,
+            dark: self.dark,
+            title,
+            host: &crate::url::display_host(url),
+            snapshot: snapshot.as_ref(),
+            icon: icon.as_ref(),
+            font_family: self.ui.theme().font_family(),
+        };
+        let image = crate::dragimage::render(&spec, &mut self.ui.fonts());
+        tracing::debug!(
+            w = image.width,
+            h = image.height,
+            snapshot = snapshot.is_some(),
+            icon = icon.is_some(),
+            took_ms = started.elapsed().as_secs_f32() * 1000.0,
+            "tab drag image painted"
+        );
+        Some(image)
     }
 
     /// Lets go of whatever the pointer holds in the UI (a slider drag, a held glass button)

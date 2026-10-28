@@ -22,6 +22,7 @@ mod desktop;
 mod desktop_integration;
 mod downloads;
 mod downloads_popover;
+mod dragimage;
 mod drip;
 mod engine_icons;
 mod extensions;

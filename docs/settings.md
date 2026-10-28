@@ -141,6 +141,7 @@ How tabs look and how Axion saves memory. See [Tabs and memory](features/tabs-an
 | Closed tabs remembered | How many closed tabs **Reopen Closed Tab** and the tab search remember. | 25 | `tabs.closed_tabs_remembered` |
 | History results in the tab search | At most this many history entries in the tab search (0: none). | 8 | `tabs.tab_search_history_results` |
 | **Drag tabs out as links** | Dragging a tab out of the window into another app drops its address there (a text field gets the link). | On | `tabs.drag_out_links` (`tabs.drag_out_distance`: how far outside the window counts as out, default 12 px) |
+| **Show a preview while dragging a tab out** | The dragged tab shows as a small card (a snapshot of the page with the site icon and title; just icon, title and host when there is no snapshot) beside the pointer, like in Firefox. Wayland (native) and X11. | On | `tabs.drag_out_image` (`tabs.drag_out_image_width`: card width, default 200 logical px; `tabs.drag_out_image_opacity`: default 0.9) |
 | **Close tabs** | Closes tabs you have not looked at for a while: **Manually** (never), **After a Day**, **After a Week**, **After a Month**. Pinned tabs and tabs playing media stay. | Manually | `tabs.close_after_days` (0, 1, 7, 30) |
 | **Bookmarks bar** | When the bookmarks bar shows: **Always**, **On Home Page**, **Never**. | Always | `layout.bookmarks_bar` (`always`, `home`, `never`) |
 
