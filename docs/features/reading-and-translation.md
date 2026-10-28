@@ -34,6 +34,16 @@ inside Axion. Nothing is sent to any server while you translate.
 - Pairs without English (German to French) go through English: both directions are downloaded.
 - The engine page closes after a while without work (`translation.engine_idle_seconds`).
 
+**Speed.** The work follows what you see: the text in the window (and one screen around it,
+`translation.viewport_margin`) is translated first, in a small first request, and the rest as you
+scroll (`translation.scope = "page"` translates everything in the background instead). The popover
+shows "N of M" for what has been requested so far, not for the whole page. The engine page runs up to
+four workers in parallel (`translation.engine_workers`), compiles the engine once, keeps its
+translation service between requests, and is warmed up (started, model loaded) while the offer is
+showing (`translation.prewarm`). Equal pieces of text on a page are translated once. Only the top
+document of the tab being translated is ever read or changed; frames and other tabs are never touched.
+Timings are logged at `info` level (`translation timing: …`, `translation engine: …`).
+
 Licences: the engine glue script is Mozilla's, MPL-2.0 (kept unmodified in its own file); the
 models are Mozilla's Firefox Translations models (their repository is MPL-2.0). Axion itself stays MIT.
 

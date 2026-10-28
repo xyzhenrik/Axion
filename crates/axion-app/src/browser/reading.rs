@@ -34,6 +34,8 @@ enum Translating {
         from: String,
         to: String,
         percent: u32,
+        done: u32,
+        total: u32,
     },
     Translated {
         from: String,
@@ -85,6 +87,8 @@ pub(super) struct ReadingUi {
     last_dark: bool,
     /// Capture aid (`--open=translate-auto`): agrees to the download by itself.
     auto_consent: bool,
+    /// The language pair the engine page was last told to warm up for.
+    prewarmed: Option<(String, String)>,
 }
 
 impl ReadingUi {
@@ -114,6 +118,7 @@ impl ReadingUi {
             shown_translate: None,
             last_dark: false,
             auto_consent: false,
+            prewarmed: None,
         }
     }
 
@@ -214,11 +219,15 @@ impl Browser {
                 tools.offered = false;
             }
             page::Message::Batch { id, texts } => {
-                let Some(Translating::Running { from, to, .. }) =
+                // A translated page goes on asking while it is scrolled (and when it changes).
+                let Some(Translating::Running { from, to, .. } | Translating::Translated { from, to }) =
                     self.reading.pages.get(&view).map(|t| t.translating.clone())
                 else {
+                    // Only the tab being translated may feed the engine.
+                    tracing::debug!(?view, "ignoring text from a tab that isn't being translated");
                     return;
                 };
+                tracing::debug!(?view, batch = id, pieces = texts.len(), "translation batch");
                 let tag = self.reading.next_tag;
                 self.reading.next_tag += 1;
                 self.reading.jobs.insert(tag, (view, id));
@@ -228,12 +237,19 @@ impl Browser {
             }
             page::Message::Progress { done, total } => {
                 let Some(tools) = self.reading.pages.get_mut(&view) else { return };
-                if let Translating::Running { from, to, percent } = &mut tools.translating {
+                if let Translating::Running { from, to, percent, done: d, total: t } = &mut tools.translating
+                {
                     *percent = (done * 100).checked_div(total).map_or(100, |p| p.min(100));
-                    if total > 0 && done >= total {
+                    (*d, *t) = (done.min(total), total);
+                    // Done with everything requested so far: the visible part (more follows
+                    // while the page is scrolled).
+                    if done >= total {
                         tools.translating = Translating::Translated { from: from.clone(), to: to.clone() };
                     }
                 }
+            }
+            page::Message::Log { what, ms, n } => {
+                tracing::info!(?view, ms, ?n, "translation timing: {what}");
             }
             page::Message::State { active } => {
                 if !active && let Some(tools) = self.reading.pages.get_mut(&view) {
@@ -453,8 +469,8 @@ impl Browser {
                 Phase::Downloading { done, total } => Content::Downloading { done, total },
                 Phase::Failed(reason) => Content::Failed { reason },
             },
-            Translating::Running { from, percent, .. } => {
-                Content::Translating { from: name(from), percent: *percent }
+            Translating::Running { from, percent, done, total, .. } => {
+                Content::Translating { from: name(from), percent: *percent, done: *done, total: *total }
             }
             Translating::Translated { from, to } => Content::Translated { from: name(from), to: name(to) },
             Translating::Failed(reason) => Content::Failed { reason: reason.clone() },
@@ -503,6 +519,7 @@ impl Browser {
         let Some(url) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone()) else { return };
         let Some(from) = self.reading.pages.get(&view).and_then(|t| t.lang.clone()) else { return };
         let to = self.translate_target();
+        tracing::info!(%from, %to, ?view, "translation requested");
         let supported = if self.uses_endpoint() { from != to } else { lang::route(&from, &to).is_some() };
         let _ = url;
         let endpoint_ready = self.uses_endpoint();
@@ -520,7 +537,8 @@ impl Browser {
             return;
         }
         if endpoint_ready {
-            tools.translating = Translating::Running { from: from.clone(), to: to.clone(), percent: 0 };
+            tools.translating =
+                Translating::Running { from: from.clone(), to: to.clone(), percent: 0, done: 0, total: 0 };
             let script = page::start_script(&self.config.translation, &to);
             self.engine.run_script(view, &script, false);
         } else {
@@ -699,7 +717,8 @@ impl Browser {
             for (view, from, to) in waiting {
                 if self.reading.models.store().ready(&from, &to) {
                     if let Some(tools) = self.reading.pages.get_mut(&view) {
-                        tools.translating = Translating::Running { from, to: to.clone(), percent: 0 };
+                        tools.translating =
+                            Translating::Running { from, to: to.clone(), percent: 0, done: 0, total: 0 };
                     }
                     let script = page::start_script(&self.config.translation, &to);
                     self.engine.run_script(view, &script, false);
@@ -712,7 +731,21 @@ impl Browser {
                 }
             }
         }
-        let _ = active;
+        // Warm the engine up while the offer is showing: start it and load the model, so
+        // the first translation doesn't wait for them.
+        self.reading.local.set_workers(self.config.translation.engine_workers);
+        if self.config.translation.prewarm
+            && !self.uses_endpoint()
+            && let Some(view) = active
+            && let Some(url) = find_tab(&self.tabs, &self.parked, view).map(|t| t.url.clone())
+            && let Some((from, to)) = self.translation_offered(view, &url)
+            && self.reading.prewarmed.as_ref() != Some(&(from.clone(), to.clone()))
+            && self.reading.models.store().ready(&from, &to)
+        {
+            tracing::info!(%from, %to, "warming the translation engine up");
+            self.reading.local.prewarm(&from, &to);
+            self.reading.prewarmed = Some((from, to));
+        }
         if self.reading.auto_consent && matches!(self.reading.models.phase(), Phase::NeedsConsent { .. }) {
             self.reading.models.consent();
         }
@@ -739,6 +772,7 @@ impl Browser {
             if !self.reading.local.wants_helper() && self.reading.helper_busy.elapsed() > idle {
                 self.engine.close_view(helper);
                 self.reading.helper = None;
+                self.reading.prewarmed = None;
                 self.reading.local.helper_lost();
             }
         }

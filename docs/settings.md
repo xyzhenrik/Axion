@@ -234,6 +234,12 @@ Reader View and page translation. See [Reading and translation](features/reading
 | *(file only)* Batch size | At most this many characters and pieces of text are translated per request. | 4000 / 60 | `translation.batch_chars`, `translation.batch_pieces` |
 | *(file only)* Language detection | Pages without a declared language are guessed from at least this many characters. | 120 | `translation.detect_min_chars` |
 | *(file only)* Engine idle time | The hidden page that runs the local engine closes after this many seconds without work, which frees the models' memory. | 120 | `translation.engine_idle_seconds` |
+| *(file only)* Translation scope | `visible` (default): the part of the page you see plus the margin below is translated first, the rest while you scroll. `page`: the visible part first, then the whole page in the background. | `visible` | `translation.scope` |
+| *(file only)* Viewport margin | With `visible`: how many screens above and below the window are translated ahead of scrolling. | 1.0 | `translation.viewport_margin` |
+| *(file only)* First request size | The first request carries at most this many pieces of text, so the first translation appears quickly. | 12 | `translation.first_pieces` |
+| *(file only)* Requests in flight | Requests a page keeps waiting for the engine at once. | 2 | `translation.inflight_batches` |
+| *(file only)* Engine workers | Translation threads working in parallel (0: half the processor cores, at most 4). Each holds its own copy of the model in memory. | 0 | `translation.engine_workers` |
+| *(file only)* Warm up the engine | Starts the engine and loads the model while the offer is showing, so the first translation doesn't wait for them. | On | `translation.prewarm` |
 | *(file only)* Model sources | Where the model list and the files come from (Mozilla Remote Settings). | Mozilla's servers | `translation.models_records_url`, `translation.models_attachments_url` |
 
 Local translation covers English, German, French, Spanish, Italian, Portuguese, Dutch, Polish,

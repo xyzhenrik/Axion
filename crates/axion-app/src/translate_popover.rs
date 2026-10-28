@@ -48,6 +48,10 @@ pub enum Content {
     Translating {
         from: String,
         percent: u32,
+        /// Pieces of text translated of those requested so far (the visible part and what
+        /// scrolling has brought within reach).
+        done: u32,
+        total: u32,
     },
     Translated {
         from: String,
@@ -165,9 +169,9 @@ impl TranslatePopover {
                 Content::Translating { percent, .. } => {
                     ui.set_progress(bar, *percent as f32 / 100.0);
                     if let Some(p) = self.percent
-                        && let Content::Translating { from, .. } = content
+                        && let Content::Translating { from, done, total, .. } = content
                     {
-                        ui.set_text(p, &translating_note(from, *percent));
+                        ui.set_text(p, &translating_note(from, *done, *total));
                     }
                     self.shown = Some(content.clone());
                     return;
@@ -223,9 +227,9 @@ impl TranslatePopover {
                 Some(fraction(*done, *total)),
                 vec![(Action::Cancel, Icon::Close, tr("Cancel"), false)],
             ),
-            Content::Translating { from, percent } => (
+            Content::Translating { from, percent, done, total } => (
                 tr("Translating…").to_owned(),
-                vec![translating_note(from, *percent)],
+                vec![translating_note(from, *done, *total)],
                 Some(*percent as f32 / 100.0),
                 vec![(Action::ShowOriginal, Icon::Reload, tr("Show Original"), false)],
             ),
@@ -322,8 +326,8 @@ impl TranslatePopover {
     }
 }
 
-fn translating_note(from: &str, percent: u32) -> String {
-    axion_i18n::tr_fmt!("From {from}: {percent}%", from = from, percent = percent)
+fn translating_note(from: &str, done: u32, total: u32) -> String {
+    axion_i18n::tr_fmt!("From {from}: {done} of {total}", from = from, done = done, total = total)
 }
 
 fn fraction(done: u64, total: u64) -> f32 {

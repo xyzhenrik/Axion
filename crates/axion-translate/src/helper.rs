@@ -19,6 +19,7 @@ pub const URL: &str = "axion://translate/";
 
 const HTML: &str = include_str!("helper/index.html");
 const ENGINE_JS: &str = include_str!("helper/engine.js");
+const WORKER_JS: &str = include_str!("helper/worker.js");
 const BERGAMOT_JS: &str = include_str!("helper/bergamot-translator.js");
 
 /// Own scripts only, plus WebAssembly; nothing from the network.
@@ -53,6 +54,7 @@ impl InternalPages for HelperService {
         match request.path {
             "/" | "/index.html" => Some(InternalResponse::ok("text/html", HTML).with_csp(CSP)),
             "/engine.js" => Some(InternalResponse::ok("text/javascript", ENGINE_JS)),
+            "/worker.js" => Some(InternalResponse::ok("text/javascript", WORKER_JS).with_csp(CSP)),
             "/bergamot.js" => Some(InternalResponse::ok("text/javascript", BERGAMOT_JS)),
             "/api/wasm" => read(self.store.wasm_path(), "application/wasm"),
             path => {
@@ -100,6 +102,7 @@ mod tests {
         assert!(service.serve(&request("/")).unwrap().csp.unwrap().contains("wasm-unsafe-eval"));
         assert_eq!(service.serve(&request("/api/model/de-en/model.bin")).unwrap().body, b"MODEL");
         assert_eq!(service.serve(&request("/api/wasm")).unwrap().mime, "application/wasm");
+        assert_eq!(service.serve(&request("/worker.js")).unwrap().mime, "text/javascript");
         assert!(service.serve(&request("/api/model/de-en/..%2Fsecret.txt")).is_none());
         assert!(service.serve(&request("/api/model/../secret.txt")).is_none());
         assert!(service.serve(&request("/api/model/de-en/../../secret.txt")).is_none());

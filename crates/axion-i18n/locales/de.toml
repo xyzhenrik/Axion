@@ -986,7 +986,7 @@
 "Download and Translate" = "Laden und übersetzen"
 "Downloading language data…" = "Sprachdaten werden geladen…"
 "Translating…" = "Wird übersetzt…"
-"From {from}: {percent}%" = "Von {from}: {percent} %"
+"From {from}: {done} of {total}" = "Von {from}: {done} von {total}"
 "Page translated" = "Seite übersetzt"
 "Show Original" = "Original anzeigen"
 "Couldn’t translate" = "Übersetzung fehlgeschlagen"

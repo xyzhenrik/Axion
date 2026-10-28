@@ -6,7 +6,7 @@
 //! Browser → page: JavaScript from [`start_script`], [`apply_script`], [`fail_script`] and
 //! [`stop_script`].
 
-use axion_config::Translation;
+use axion_config::{Translation, TranslationScope};
 use serde::Deserialize;
 
 /// Console messages starting with this come from the page script.
@@ -25,6 +25,13 @@ pub fn start_script(config: &Translation, target: &str) -> String {
         "chars": config.batch_chars.max(100),
         "pieces": config.batch_pieces.max(1),
         "observe": config.translate_changes,
+        "scope": match config.scope {
+            TranslationScope::Visible => "visible",
+            TranslationScope::Page => "page",
+        },
+        "margin": config.viewport_margin.clamp(0.0, 20.0),
+        "first": config.first_pieces.max(1),
+        "inflight": config.inflight_batches.max(1),
         "target": target,
     });
     format!("window.__axionTr && window.__axionTr.start({options});")
@@ -71,6 +78,12 @@ pub enum Message {
     State {
         active: bool,
     },
+    /// A timing the page measured (for the log).
+    Log {
+        what: String,
+        ms: u64,
+        n: Option<u64>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -96,6 +109,13 @@ enum Wire {
         #[serde(default)]
         active: bool,
     },
+    Log {
+        #[serde(default)]
+        what: String,
+        #[serde(default)]
+        ms: u64,
+        n: Option<u64>,
+    },
 }
 
 /// Parses a console message (`None` for other or malformed ones).
@@ -106,6 +126,7 @@ pub fn parse(console_message: &str) -> Option<Message> {
         Wire::Batch { id, texts } => Message::Batch { id, texts },
         Wire::Progress { done, total } => Message::Progress { done, total },
         Wire::State { active } => Message::State { active },
+        Wire::Log { what, ms, n } => Message::Log { what, ms, n },
     })
 }
 
@@ -130,5 +151,23 @@ mod tests {
         let start = start_script(&Translation::default(), "en");
         assert!(start.contains(r#""target":"en""#) && start.contains(r#""chars":4000"#));
         assert!(!page_script(&Translation::default()).contains("__AXION_"));
+        assert!(start.contains(r#""scope":"visible""#) && start.contains(r#""first":12"#));
+    }
+
+    #[test]
+    fn only_top_level_documents_get_the_script() {
+        // Frames and other documents never run it: the browser only ever addresses the top
+        // document of the tab being translated.
+        let script = page_script(&Translation::default());
+        assert!(script.contains("window.top !== window"));
+    }
+
+    #[test]
+    fn parses_timings() {
+        let m = format!(r#"{MARKER}{{"t":"log","what":"first translation applied","ms":420}}"#);
+        assert_eq!(
+            parse(&m),
+            Some(Message::Log { what: "first translation applied".into(), ms: 420, n: None })
+        );
     }
 }
