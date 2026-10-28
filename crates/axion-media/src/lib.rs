@@ -91,6 +91,9 @@ pub struct Player {
     pub live: bool,
     /// Waiting for data: loading, or buffering (not enough decoded to keep playing).
     pub loading: bool,
+    /// A muted hover preview or autoplaying tile the page says nothing about: never the player
+    /// the Now Playing card or the desktop controls are about.
+    pub preview: bool,
     pub volume: f64,
     pub muted: bool,
     pub rate: f64,
@@ -189,11 +192,14 @@ impl PageMedia {
     /// else the biggest video, else any audio.
     pub fn primary(&self) -> Option<&Player> {
         let biggest = |filter: &dyn Fn(&Player) -> bool| {
-            self.players.iter().filter(|p| filter(p)).max_by(|a, b| a.area().total_cmp(&b.area()))
+            self.players
+                .iter()
+                .filter(|p| !p.preview && filter(p))
+                .max_by(|a, b| a.area().total_cmp(&b.area()))
         };
         biggest(&|p| p.is_playing())
             .or_else(|| biggest(&|p| p.kind == Kind::Video && p.area() > 0.0))
-            .or_else(|| self.players.first())
+            .or_else(|| self.players.iter().find(|p| !p.preview))
     }
 
     pub fn get(&self, id: &str) -> Option<&Player> {
@@ -444,6 +450,23 @@ mod tests {
             format!("{MARKER}{}", r#"{"t":"state","players":[{"id":"a:1","frame":"https://h/embed/1"}]}"#);
         let Ok(Some(Message::State(state))) = parse(&framed) else { panic!("{framed}") };
         assert_eq!(state.players[0].frame, "https://h/embed/1");
+    }
+
+    #[test]
+    fn previews_are_never_the_primary_player() {
+        let preview = Player {
+            id: "tile".into(),
+            paused: false,
+            muted: true,
+            preview: true,
+            w: 300.0,
+            h: 170.0,
+            ..Default::default()
+        };
+        let mut m = PageMedia { players: vec![preview], ..Default::default() };
+        assert!(m.primary().is_none());
+        m.players.push(Player { id: "real".into(), kind: Kind::Audio, paused: true, ..Default::default() });
+        assert_eq!(m.primary().map(|p| p.id.as_str()), Some("real"));
     }
 
     #[test]

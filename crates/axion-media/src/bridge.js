@@ -166,6 +166,14 @@
     return false;
   }
 
+  // Hover previews and autoplaying tiles (YouTube's home page): muted, no controls, and the
+  // page says nothing about them (no media session). They are not what the Now Playing card
+  // or the desktop's media controls are about.
+  function isPreview(el) {
+    var meta = navigator.mediaSession && navigator.mediaSession.metadata;
+    return !!el.muted && !meta && !el.controls;
+  }
+
   function describe(el) {
     var r = el.getBoundingClientRect();
     var buffered = 0;
@@ -189,6 +197,7 @@
       fit: el.tagName === 'VIDEO' ? (getComputedStyle(el).objectFit || '') : '',
       paused: el.paused, ended: el.ended, time: el.currentTime || 0,
       duration: isFinite(el.duration) ? el.duration : 0, live: isLive(el),
+      preview: isPreview(el),
       loading: !el.ended && !el.error && el.readyState < 3 && (!el.paused || el.networkState === 2),
       volume: el.volume, muted: el.muted, rate: el.playbackRate, buffered: buffered,
       captions: captions, caption: caption, native: !!el.__axNative,
@@ -229,6 +238,9 @@
     var list = [];
     media.forEach(function (el) {
       if (isCall(el)) return;
+      // Nothing loaded (a page that cleared its element when the track or the page changed):
+      // there is nothing to show or control.
+      if (el.paused && !el.currentSrc && !el.src && !el.srcObject) return;
       if (el.isConnected) { el.__axGoneAt = 0; el.__axDetached = false; list.push(describe(el)); return; }
       if (!el.paused) { list.push(describe(el)); return; }
       var hasSource = !!(el.currentSrc || el.src || el.srcObject);
@@ -421,6 +433,24 @@
       event(d.event);
     }
   });
+
+  // Single-page sites change the page without loading one: what the old page had removed
+  // (and left paused) is gone for good then, with no grace period.
+  function navigated() {
+    media.forEach(function (el) { if (!el.isConnected && !el.__axDetached) media.delete(el); });
+    schedule();
+  }
+  ['pushState', 'replaceState'].forEach(function (name) {
+    var original = history[name];
+    history[name] = function () {
+      var result = original.apply(this, arguments);
+      setTimeout(navigated, 0);
+      return result;
+    };
+  });
+  window.addEventListener('popstate', navigated);
+  window.addEventListener('hashchange', navigated);
+  window.addEventListener('yt-navigate-finish', navigated);
 
   document.addEventListener('fullscreenchange', function () {
     if (!document.fullscreenElement) setTakeover(null, false);

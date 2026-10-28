@@ -1000,11 +1000,31 @@ impl Browser {
                 aspect,
             }
         });
+        // Sound without a picture (music, a podcast, a "video" that is only its audio track): the
+        // area shows the item's cover instead of black.
+        let audio_only = player.as_ref().is_some_and(|p| p.vw <= 0.0 && p.time > 1.0 && p.is_playing());
+        let mut cover_pending = false;
+        let picture = if audio_only {
+            let cover = self.playlist_ui.thumbs.get(item.id, &item.thumbnail, &mut cover_pending);
+            cover.map(|(view, size)| VideoPicture {
+                view,
+                size,
+                uv: Rect { origin: Vec2::ZERO, size: Vec2::ONE },
+                aspect: size.0 as f32 / size.1.max(1) as f32,
+            })
+        } else {
+            picture
+        };
+        if cover_pending {
+            self.playlist.dirty = true;
+        }
         let (elapsed, duration, playing) =
             player.as_ref().map_or((item.position, item.duration, false), |p| {
                 (p.time, if p.live { 0.0 } else { p.duration.max(item.duration) }, p.is_playing())
             });
-        let note = if picture.is_none() || (player.is_none() && opened.elapsed() < Duration::from_secs(1)) {
+        let note = if audio_only && picture.is_none() {
+            Some(tr("Audio only"))
+        } else if picture.is_none() || (player.is_none() && opened.elapsed() < Duration::from_secs(1)) {
             Some(tr("Loading…"))
         } else {
             None
@@ -1015,7 +1035,7 @@ impl Browser {
             elapsed,
             duration,
             live: player.as_ref().is_some_and(|p| p.live),
-            loading: player.as_ref().is_none_or(|p| p.loading),
+            loading: !audio_only && player.as_ref().is_none_or(|p| p.loading),
             playing,
             shuffle: self.playlist.shuffle,
             repeat: self.playlist.repeat,
