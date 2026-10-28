@@ -176,6 +176,7 @@ enum Setting {
     HomeTopSites,
     HomeStats,
     HomeLive,
+    HomeGlassGround,
     HomeLiveIgnoreReduceMotion,
     DevTools,
     HomeDim,
@@ -244,6 +245,7 @@ impl Setting {
             Setting::HomeSearch => tr_mark("Search field"),
             Setting::HomeTopSites => tr_mark("Top sites"),
             Setting::HomeStats => tr_mark("Shields statistics"),
+            Setting::HomeGlassGround => tr_mark("Chrome colour as default background"),
             Setting::HomeLive => tr_mark("Live wallpapers (animated images and videos)"),
             Setting::HomeLiveIgnoreReduceMotion => tr_mark("Play live wallpapers with Reduce Motion"),
             Setting::DevTools => tr_mark("Developer tools"),
@@ -310,6 +312,7 @@ impl Setting {
                 | Setting::HomeTopSites
                 | Setting::HomeStats
                 | Setting::HomeLive
+                | Setting::HomeGlassGround
                 | Setting::HomeLiveIgnoreReduceMotion
                 | Setting::DevTools
                 | Setting::TintFromPage
@@ -428,6 +431,7 @@ impl Setting {
             Setting::HomeSearch => return c.home.show_search as u8 as f32,
             Setting::HomeTopSites => return c.home.show_top_sites as u8 as f32,
             Setting::HomeStats => return c.home.show_stats as u8 as f32,
+            Setting::HomeGlassGround => return c.home.glass_ground as u8 as f32,
             Setting::HomeLive => return c.home.live_wallpapers as u8 as f32,
             Setting::HomeLiveIgnoreReduceMotion => {
                 return c.home.live_wallpapers_ignore_reduce_motion as u8 as f32;
@@ -501,6 +505,7 @@ impl Setting {
             Setting::HomeSearch => c.home.show_search = on,
             Setting::HomeTopSites => c.home.show_top_sites = on,
             Setting::HomeStats => c.home.show_stats = on,
+            Setting::HomeGlassGround => c.home.glass_ground = on,
             Setting::HomeLive => c.home.live_wallpapers = on,
             Setting::HomeLiveIgnoreReduceMotion => c.home.live_wallpapers_ignore_reduce_motion = on,
             Setting::DevTools => c.devtools.enabled = on,
@@ -1691,6 +1696,7 @@ impl SettingsSheet {
                     self.control_labeled(ui, config, Setting::HomeDim, tr("Dim"));
                     self.control_labeled(ui, config, Setting::HomeBlur, tr("Blur"));
                 }
+                self.control(ui, config, Setting::HomeGlassGround);
                 self.control(ui, config, Setting::HomeLive);
                 self.control(ui, config, Setting::HomeLiveIgnoreReduceMotion);
                 self.note(ui, tr("Off: wallpapers show a still frame while Reduce Motion is on."));

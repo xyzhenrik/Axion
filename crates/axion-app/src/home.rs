@@ -229,6 +229,7 @@ struct Inputs {
     dark: bool,
     contrast: FaviconContrast,
     accent: Color,
+    colors: axion_config::Colors,
     reduce_motion: bool,
     flat: bool,
 }
@@ -431,6 +432,7 @@ impl HomePage {
             dark,
             contrast: config.appearance.favicon_contrast,
             accent: config.appearance.accent,
+            colors: config.colors.clone(),
             reduce_motion: config.glass.reduce_motion,
             flat: config.glass.is_flat(),
         };
@@ -831,6 +833,13 @@ fn state_json(
         "i18n": page_translations(),
         "icons": icons_version,
         "accent": css_color(config.appearance.accent),
+        "ground": {
+            "enabled": config.home.glass_ground,
+            "light": css_color(config.colors.light.ground),
+            "dark": css_color(config.colors.dark.ground),
+            "lightSurface": css_color(config.colors.light.surface),
+            "darkSurface": css_color(config.colors.dark.surface),
+        },
         "flat": config.glass.is_flat(),
         "reduceMotion": config.glass.reduce_motion,
         "clock": { "show": home.show_clock, "h24": h24, "format": match home.clock_format {

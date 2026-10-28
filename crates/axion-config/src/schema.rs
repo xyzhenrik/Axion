@@ -224,8 +224,12 @@ pub struct Home {
     pub show_stats: bool,
     /// The selected background image: a file name in the account's backgrounds directory
     /// (`<profile>/home/backgrounds/`, where added images are copied). Empty: none, the
-    /// background is plain white or black with the theme.
+    /// background is the chrome's own neutral ground (see `glass_ground`).
     pub background: String,
+    /// Without a background image the start page takes the chrome's neutral ground colour
+    /// (`colors.*.ground`, the tone around the page card and behind the bars), in light and
+    /// dark. Off: plain white or black with the theme. Private tabs stay dark either way.
+    pub glass_ground: bool,
     /// At most this many backgrounds are kept (adding more is refused).
     pub max_backgrounds: u32,
     /// Larger files are refused as backgrounds (MB). Live wallpapers (videos) are big.
@@ -271,6 +275,7 @@ impl Default for Home {
             top_sites_pages: None,
             show_stats: true,
             background: String::new(),
+            glass_ground: true,
             max_backgrounds: 24,
             max_background_mb: 200,
             live_wallpapers: true,
