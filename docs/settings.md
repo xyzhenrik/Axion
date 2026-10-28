@@ -119,6 +119,8 @@ Fine-tune the glass material. These settings only matter with **Glass** set to *
 | **Blur** | How much the backdrop is blurred, as a share of the normal amount for each glass thickness. 0 to 200 %. | 100 % | `glass.light.blur`, `glass.dark.blur` (`thin`, `regular`, `thick`) |
 | **Colour dispersion** | Colour fringes along the glass rim. 0 to 40 %. | 12 % (10 % in dark mode) | `glass.light.dispersion`, `glass.dark.dispersion` |
 | **Squash when moving** | How far glass stretches along the direction you drag it. 0 to 20 %. | 8 % | `glass.squash` |
+| **Drag stretch (maximum)** | The most a glass control (a held button, a switch or slider knob) stretches when you pull it far from where it rests; the icon or label stays in place and stretches the same way. 0 to 20 %. Off with Reduce motion and in flat mode. | 8 % | `glass.drag_stretch_max` |
+| **Drag resistance** | Distance at which a pulled control has reached about two thirds of its maximum stretch: it responds at once, but pulling further gets progressively harder. 5 to 200 px. | 40 px | `glass.drag_resistance` |
 | **Merge distance** | How close two glass shapes must be before they flow together. 0 to 40 px. | 20 px | `glass.merge_distance` |
 
 ## Tabs & Memory

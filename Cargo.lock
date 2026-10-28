@@ -572,6 +572,7 @@ dependencies = [
  "axion-physics",
  "glam",
  "glyphon",
+ "image",
  "pollster",
  "taffy",
  "wgpu",

@@ -180,6 +180,20 @@ pub fn rubber_band(offset: f32, limit: f32) -> f32 {
     banded.copysign(offset)
 }
 
+/// How much glass stretches when pulled `distance` away from its rest position: grows from the
+/// first pixel but with growing resistance, and never exceeds `max` (the asymptote).
+/// `scale` is the distance at which it reaches `1 - 1/e` (about 63 %) of `max`.
+pub fn drag_stretch(distance: f32, max: f32, scale: f32) -> f32 {
+    if max <= 0.0 {
+        return 0.0;
+    }
+    let d = distance.max(0.0);
+    if scale <= 0.0 {
+        return if d > 0.0 { max } else { 0.0 };
+    }
+    max * (1.0 - (-d / scale).exp())
+}
+
 /// Rubber-banding applied to a 2D offset along its own direction.
 pub fn rubber_band_vec(offset: Vec2, limit: f32) -> Vec2 {
     let len = offset.length();
@@ -195,6 +209,26 @@ pub fn decay(velocity: Vec2, dt: f32, rate: f32) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drag_stretch_is_monotonic_saturating_and_capped() {
+        let (max, scale) = (0.08, 40.0);
+        assert_eq!(drag_stretch(0.0, max, scale), 0.0);
+        let mut last = 0.0;
+        let mut last_gain = f32::MAX;
+        for i in 1..=200 {
+            let v = drag_stretch(i as f32 * 5.0, max, scale);
+            assert!(v >= last && v <= max, "{v}");
+            let gain = v - last;
+            assert!(gain <= last_gain + 1e-6, "resistance grows: gain {gain}");
+            last_gain = gain;
+            last = v;
+        }
+        assert!((drag_stretch(100000.0, max, scale) - max).abs() < 1e-6, "asymptote is the maximum");
+        assert!(drag_stretch(5.0, max, scale) > 0.0, "responds from the first pixels");
+        assert_eq!(drag_stretch(50.0, 0.0, scale), 0.0);
+        assert_eq!(drag_stretch(-3.0, max, scale), 0.0);
+    }
 
     #[test]
     fn spring_converges_to_target() {

@@ -446,6 +446,13 @@ pub struct Glass {
     pub merge_distance: f32,
     /// Maximum squash along the direction of motion (0.08 = 8%).
     pub squash: f32,
+    /// Largest stretch of glass pulled by a held pointer (0.08 = 8%): the asymptote of the
+    /// drag curve, reached only far from the glass's rest position.
+    pub drag_stretch_max: f32,
+    /// Distance in logical pixels at which a pulled glass has reached about two thirds of
+    /// `drag_stretch_max`: the larger, the harder it is to pull (it still responds from the
+    /// first pixel, but with growing resistance).
+    pub drag_resistance: f32,
     /// Smooth-union radius in logical pixels of the broad glass bridge that joins a popover
     /// or menu to the bar or button it flows out of: how wide the concave fillets at the
     /// junction's ends are (at most `merge_distance` has no extra effect).
@@ -487,6 +494,16 @@ impl Glass {
         if self.reduce_motion || self.is_flat() { 0.0 } else { self.squash.max(0.0) }
     }
 
+    /// Largest stretch of pulled glass and of its content (0 under Reduce Motion and in flat mode).
+    pub fn drag_stretch_max(&self) -> f32 {
+        if self.reduce_motion || self.is_flat() { 0.0 } else { self.drag_stretch_max.max(0.0) }
+    }
+
+    /// Distance scale of the drag curve in logical px (at least 1).
+    pub fn drag_resistance(&self) -> f32 {
+        self.drag_resistance.max(1.0)
+    }
+
     /// Smooth-union radius of a popover's bridge (0 in flat mode: no bridges).
     pub fn popover_bridge_fillet(&self) -> f32 {
         if self.is_flat() { 0.0 } else { self.popover_bridge_fillet.max(0.0) }
@@ -524,6 +541,8 @@ impl Default for Glass {
             bezel_width: 22.0,
             merge_distance: 20.0,
             squash: 0.08,
+            drag_stretch_max: 0.08,
+            drag_resistance: 40.0,
             popover_bridge_fillet: 30.0,
             menu_plate_opacity: 0.6,
             button_opacity: 0.04,
@@ -1907,6 +1926,20 @@ mod glass_style_tests {
         assert!(l.margin <= FLAT_MARGIN);
         assert_eq!((l.page_margin, l.page_corner_radius), (0.0, 0.0));
         assert_eq!(l.sidebar_width, c.layout.sidebar_width, "everything else is as configured");
+    }
+
+    #[test]
+    fn drag_stretch_is_off_in_flat_mode_and_under_reduce_motion() {
+        let mut glass = Glass::default();
+        assert_eq!(glass.drag_stretch_max(), glass.drag_stretch_max);
+        assert_eq!(glass.drag_stretch_max, 0.08, "the old maximum");
+        glass.reduce_motion = true;
+        assert_eq!(glass.drag_stretch_max(), 0.0);
+        glass.reduce_motion = false;
+        glass.style = GlassStyle::Flat;
+        assert_eq!(glass.drag_stretch_max(), 0.0);
+        glass.drag_resistance = 0.0;
+        assert_eq!(glass.drag_resistance(), 1.0);
     }
 
     #[test]
