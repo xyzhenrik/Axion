@@ -69,6 +69,18 @@ const BOOKMARK_FAVICON: f32 = 16.0;
 
 /// The recording dot of a tab row (logical px).
 const CAPTURE_DOT: f32 = 8.0;
+/// The speaker of a playing or muted tab, and a tab group's markers (logical px).
+const TAB_SPEAKER: f32 = 14.0;
+const GROUP_MARKER_HEIGHT: f32 = 3.0;
+/// The colour line's share of its tab's width.
+const GROUP_MARKER_SHARE: f32 = 0.7;
+const GROUP_BAR_WIDTH: f32 = 3.0;
+const GROUP_BAR_INSET: f32 = 4.0;
+const GROUP_BAR_MARGIN: f32 = 10.0;
+const GROUP_HEADER_HEIGHT: f32 = 34.0;
+const GROUP_DOT: f32 = 10.0;
+const GROUP_CHIP_HEIGHT: f32 = 24.0;
+const GROUP_CHIP_MAX_WIDTH: f32 = 140.0;
 
 /// What a click in the chrome means.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,6 +152,12 @@ pub enum ChromeAction {
     CollapsePrivate,
     /// The heading of the `i`th folding group (a history day) in the open panel.
     ToggleGroup(usize),
+    /// The speaker of the `i`th tab of the shown list: mutes or unmutes it.
+    MuteTabAt(usize),
+    /// The speaker of the `i`th tab of the other list.
+    MuteOtherTabAt(usize),
+    /// A tab group's header or chip (by group id): folds or unfolds its tabs.
+    ToggleTabGroup(u32),
 }
 
 /// The sidebar's sections that fold away.
@@ -169,16 +187,54 @@ pub struct TabItem {
     /// Its index in that group.
     pub index: usize,
     pub surface: Surface,
+    /// The tab group it belongs to.
+    pub group: Option<u32>,
+}
+
+/// A tab row of the sidebar as laid out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SidebarRow {
+    pub view: ViewId,
+    pub frame: Frame,
+    /// The tab's index in its list (rows of tabs folded away in a group are missing).
+    pub index: usize,
+    pub group: Option<u32>,
+}
+
+/// A tab group's header row as laid out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SidebarHeader {
+    pub group: u32,
+    pub frame: Frame,
+    /// The index of the group's first tab.
+    pub first: usize,
+}
+
+/// What the tab lists show, from the config (`tabs.*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabOptions {
+    /// A speaker on tabs that play sound or are muted.
+    pub audio_indicator: bool,
+    /// Tab groups get a named chip in the tab bar (else only a colour marker).
+    pub group_chips: bool,
+}
+
+impl Default for TabOptions {
+    fn default() -> Self {
+        Self { audio_indicator: true, group_chips: true }
+    }
 }
 
 /// The sidebar's lists as laid out when a drag starts (logical px): a drop's place is decided
 /// against these, so the rows sliding aside don't move the targets.
 #[derive(Clone, Debug, Default)]
 pub struct SidebarLayout {
-    /// The "Private" row, and each list's rows: (view, frame).
+    /// The "Private" row, and each list's rows.
     pub private_header: Frame,
-    pub normal: Vec<(ViewId, Frame)>,
-    pub private: Vec<(ViewId, Frame)>,
+    pub normal: Vec<SidebarRow>,
+    pub private: Vec<SidebarRow>,
+    /// The tab groups' header rows (in the normal tabs' list).
+    pub headers: Vec<SidebarHeader>,
     /// Whether the lists are shown (folded away, or private tabs locked).
     pub normal_open: bool,
     pub private_open: bool,
@@ -192,6 +248,9 @@ const SELECT_OTHER_TAB_BASE: u32 = 12_000;
 const PANEL_BUTTON_BASE: u32 = 13_000;
 const BOOKMARK_BASE: u32 = 18_000;
 const GROUP_BASE: u32 = 11_000;
+const TAB_MUTE_BASE: u32 = 60_000;
+const TAB_MUTE_OTHER_BASE: u32 = 61_000;
+const TAB_GROUP_BASE: u32 = 100_000;
 /// Trailing buttons a panel entry can have.
 pub const PANEL_BUTTONS: usize = 4;
 
@@ -245,6 +304,9 @@ impl ChromeAction {
             ChromeAction::PanelButton(i, k) => PANEL_BUTTON_BASE + (i * PANEL_BUTTONS + k) as u32,
             ChromeAction::OpenBookmark(i) => BOOKMARK_BASE + i as u32,
             ChromeAction::ToggleGroup(i) => GROUP_BASE + i as u32,
+            ChromeAction::MuteTabAt(i) => TAB_MUTE_BASE + i as u32,
+            ChromeAction::MuteOtherTabAt(i) => TAB_MUTE_OTHER_BASE + i as u32,
+            ChromeAction::ToggleTabGroup(g) => TAB_GROUP_BASE + g,
             simple => 1 + Self::SIMPLE.iter().position(|&a| a == simple).unwrap_or(0) as u32,
         })
     }
@@ -252,6 +314,13 @@ impl ChromeAction {
     pub fn from_id(id: ActionId) -> Option<Self> {
         match id.0 {
             n if (1..=Self::SIMPLE.len() as u32).contains(&n) => Some(Self::SIMPLE[n as usize - 1]),
+            n if n >= TAB_GROUP_BASE => Some(ChromeAction::ToggleTabGroup(n - TAB_GROUP_BASE)),
+            n if (TAB_MUTE_BASE..TAB_MUTE_BASE + 1000).contains(&n) => {
+                Some(ChromeAction::MuteTabAt((n - TAB_MUTE_BASE) as usize))
+            }
+            n if (TAB_MUTE_OTHER_BASE..TAB_MUTE_OTHER_BASE + 1000).contains(&n) => {
+                Some(ChromeAction::MuteOtherTabAt((n - TAB_MUTE_OTHER_BASE) as usize))
+            }
             n if (GROUP_BASE..GROUP_BASE + 1000).contains(&n) => {
                 Some(ChromeAction::ToggleGroup((n - GROUP_BASE) as usize))
             }
@@ -387,6 +456,12 @@ pub struct Chrome {
     private_section_open: bool,
     /// The tab rows of the sidebar and the bar, as built by `sync_tabs`.
     items: Vec<TabItem>,
+    tab_options: TabOptions,
+    /// The tab groups' headers (sidebar) and chips (bar), as built by `sync_tabs`: group, node,
+    /// index of its first tab, whether it is a sidebar header.
+    group_nodes: Vec<(u32, NodeId, usize, bool)>,
+    /// The colour lines under the bar's grouped tabs and the tabs they belong to.
+    group_markers: Vec<(NodeId, NodeId)>,
     /// The row under the pointer, lit with a glass highlight (`update_hover`).
     hovered_row: Option<NodeId>,
     /// Private tabs are the current group (listed under "Private" instead of "N Tabs").
@@ -1544,6 +1619,9 @@ impl Chrome {
             private_chevron_icon,
             private_section_open: true,
             items: Vec::new(),
+            tab_options: TabOptions::default(),
+            group_nodes: Vec::new(),
+            group_markers: Vec::new(),
             hovered_row: None,
             private_mode: false,
             normal_count: 0,
@@ -2287,6 +2365,24 @@ impl Chrome {
         }
     }
 
+    /// Sizes each grouped tab's colour line to the tab as laid out: insets and percentages of
+    /// an absolute child resolve against the tab's unsqueezed width.
+    fn fit_group_markers(&self, ui: &mut Ui) {
+        for &(marker, pill) in &self.group_markers {
+            let width = ui.frame(pill).size.x;
+            if width <= 1.0 {
+                continue;
+            }
+            let wanted = length(width * GROUP_MARKER_SHARE);
+            let mut style = ui.style(marker);
+            if style.size.width != wanted {
+                style.size.width = wanted;
+                style.inset.left = length(width * (1.0 - GROUP_MARKER_SHARE) / 2.0);
+                ui.set_style(marker, style);
+            }
+        }
+    }
+
     /// Advances the sidebar's slide (and the tabs' widths, the bookmarks bar's fit). Call
     /// every frame.
     pub fn animate(&mut self, ui: &mut Ui, dt: f32) {
@@ -2295,6 +2391,7 @@ impl Chrome {
         self.animate_tab_widths(ui, dt);
         self.fit_bookmarks(ui);
         self.fit_progress(ui);
+        self.fit_group_markers(ui);
         if self.slide.is_settled(SLIDE_SETTLED) {
             if self.slide.target < 0.0 && ui.is_visible(self.sidebar) {
                 ui.set_visible(self.sidebar, false);
@@ -2788,17 +2885,23 @@ impl Chrome {
 
     /// The sidebar's lists as laid out now (see [`SidebarLayout`]).
     pub fn sidebar_layout(&self, ui: &Ui) -> SidebarLayout {
-        let rows = |private: bool| -> Vec<(ViewId, Frame)> {
+        let rows = |private: bool| -> Vec<SidebarRow> {
             self.items
                 .iter()
                 .filter(|i| i.surface == Surface::Sidebar && i.private == private)
-                .map(|i| (i.view, ui.frame(i.node)))
+                .map(|i| SidebarRow { view: i.view, frame: ui.frame(i.node), index: i.index, group: i.group })
                 .collect()
         };
         SidebarLayout {
             private_header: ui.frame(self.private_row),
             normal: rows(false),
             private: rows(true),
+            headers: self
+                .group_nodes
+                .iter()
+                .filter(|g| g.3)
+                .map(|&(group, node, first, _)| SidebarHeader { group, frame: ui.frame(node), first })
+                .collect(),
             normal_open: self.tabs_section_open,
             private_open: self.private_list_open(),
         }
@@ -2812,13 +2915,29 @@ impl Chrome {
         ui: &mut Ui,
         view: ViewId,
         surface: Surface,
-        target: Option<(bool, usize)>,
+        target: Option<(bool, usize, Option<u32>)>,
     ) {
         let Some(source) = self.items.iter().copied().find(|i| i.view == view && i.surface == surface) else {
             return;
         };
         ui.set_opacity(source.node, 0.0);
-        let Some((private, index)) = target else { return };
+        let Some((private, index, header)) = target else { return };
+        // The place among the other tabs of the list it goes to: before the first shown tab
+        // whose rank (its index among the others) reaches `index`, or right behind a header.
+        let place = |ui: &Ui, order: &[NodeId], items: &[TabItem], same_list: bool| -> usize {
+            if let Some(group) = header
+                && let Some(&(_, node, _, _)) = self.group_nodes.iter().find(|g| g.0 == group && g.3)
+                && let Some(at) = order.iter().position(|&n| n == node)
+            {
+                return at + 1;
+            }
+            let _ = ui;
+            let before = items.iter().find(|i| {
+                let rank = if same_list && source.index < i.index { i.index - 1 } else { i.index };
+                rank >= index
+            });
+            before.and_then(|i| order.iter().position(|&n| n == i.node)).unwrap_or(order.len())
+        };
         match surface {
             Surface::Sidebar => {
                 let (normal, private_list) = self.group_lists();
@@ -2831,14 +2950,28 @@ impl Chrome {
                 }
                 let mut order: Vec<NodeId> =
                     ui.children(into).into_iter().filter(|&n| n != source.node).collect();
-                order.insert(index.min(order.len()), source.node);
+                let items: Vec<TabItem> = self
+                    .items
+                    .iter()
+                    .copied()
+                    .filter(|i| i.surface == Surface::Sidebar && i.private == private && i.view != view)
+                    .collect();
+                let at = place(ui, &order, &items, from == into);
+                order.insert(at.min(order.len()), source.node);
                 ui.set_children(into, &order);
             }
             Surface::Bar => {
                 let Some(parent) = ui.parent(source.node) else { return };
                 let mut order: Vec<NodeId> =
                     ui.children(parent).into_iter().filter(|&n| n != source.node).collect();
-                order.insert(index.min(order.len()), source.node);
+                let items: Vec<TabItem> = self
+                    .items
+                    .iter()
+                    .copied()
+                    .filter(|i| i.surface == Surface::Bar && i.view != view)
+                    .collect();
+                let at = place(ui, &order, &items, true);
+                order.insert(at.min(order.len()), source.node);
                 ui.set_children(parent, &order);
             }
         }
@@ -2849,6 +2982,7 @@ impl Chrome {
     pub fn moving_nodes(&self, ui: &Ui) -> Vec<(MoveKey, NodeId)> {
         let mut out: Vec<(MoveKey, NodeId)> =
             self.items.iter().map(|i| (MoveKey::Tab(i.view, i.surface), i.node)).collect();
+        out.extend(self.group_nodes.iter().map(|&(g, node, _, side)| (MoveKey::Group(g, side), node)));
         let lists = [self.sidebar_tabs, self.sidebar_other];
         for node in ui.children(self.sections) {
             if !lists.contains(&node) {
@@ -2903,8 +3037,31 @@ impl Chrome {
         let mut order = Vec::with_capacity(tabs.len());
         let private = self.private_mode;
         ui.set_opacity(self.address, 1.0);
+        self.group_nodes.clear();
+        self.group_markers.clear();
+        let chips = self.tab_options.group_chips;
+        let mut last_group: Option<u32> = None;
         for (i, tab) in tabs.all().iter().enumerate() {
             let active = i == tabs.active_index();
+            // A tab group's chip stands before its first tab.
+            if tab.group != last_group {
+                last_group = tab.group;
+                if chips
+                    && (separate || !narrow)
+                    && let Some(group) = tab.group.and_then(|id| tabs.group(id))
+                {
+                    let parent = if separate { self.tab_strip } else { self.tab_capsule };
+                    let count = tabs.group_range(group.id).map_or(0, |r| r.len());
+                    let chip = group_chip(ui, parent, group, count);
+                    self.group_nodes.push((group.id, chip, i, false));
+                    self.pills.push(chip);
+                    order.push(chip);
+                }
+            }
+            // Folded away in a collapsed group (the chip unfolds it).
+            if chips && !tabs.is_shown(i) {
+                continue;
+            }
             if active && !separate {
                 // Compact: the persistent address segment sits at the active tab's position.
                 order.push(self.address);
@@ -2915,6 +3072,7 @@ impl Chrome {
                         private,
                         index: i,
                         surface: Surface::Bar,
+                        group: tab.group,
                     };
                     self.items.push(item);
                 }
@@ -2968,6 +3126,31 @@ impl Chrome {
             {
                 self.tab_widths.hideable.push(dot);
             }
+            if !tab.pinned && self.tab_options.audio_indicator && (tab.playing_media || tab.muted) {
+                let speaker = audio_button(ui, pill, tab, ChromeAction::MuteTabAt(i));
+                self.tab_widths.hideable.push(speaker);
+            }
+            // The tab group's colour under the tab.
+            if let Some(group) = tab.group.and_then(|id| tabs.group(id)) {
+                let marker = ui.add(
+                    pill,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Fixed(group.color.color()), 1.0))
+                        .with_radius(CAPSULE),
+                    Style {
+                        position: Position::Absolute,
+                        inset: Rect {
+                            left: length(0.0),
+                            right: auto(),
+                            top: length(height - GROUP_MARKER_HEIGHT - 1.0),
+                            bottom: auto(),
+                        },
+                        size: Size { width: length(0.0), height: length(GROUP_MARKER_HEIGHT) },
+                        ..Default::default()
+                    },
+                );
+                self.group_markers.push((marker, pill));
+            }
             if separate {
                 // A hairline before every tab but the first (shown by `update_separators`).
                 let separator = (!order.is_empty()).then(|| {
@@ -3001,6 +3184,7 @@ impl Chrome {
                     private,
                     index: i,
                     surface: Surface::Bar,
+                    group: tab.group,
                 });
             }
         }
@@ -3047,34 +3231,91 @@ impl Chrome {
         // Locked private tabs aren't listed at all (not even hidden): nothing to drag or read.
         let hide_current = private && (self.private_hidden || self.locked);
         let hide_other = !private && self.private_hidden;
-        for (i, tab) in tabs.all().iter().enumerate() {
-            if hide_current {
-                break;
-            }
+        if !hide_current {
             // While the Playlist page is up, the highlight is on its row instead.
-            let active = i == tabs.active_index() && !self.playlist_page;
-            let node =
-                sidebar_tab_row(ui, self.sidebar_tabs, tab, active, ChromeAction::SelectTab(i), favicons);
-            self.items.push(TabItem { node, view: tab.view, private, index: i, surface: Surface::Sidebar });
+            let highlight = !self.playlist_page;
+            self.fill_sidebar_list(ui, self.sidebar_tabs, tabs, private, false, highlight, favicons);
         }
         ui.clear_children(self.sidebar_other);
-        for (i, tab) in other.all().iter().enumerate() {
-            if hide_other {
-                break;
-            }
-            let action = ChromeAction::SelectOtherTab(i);
-            let node = sidebar_tab_row(ui, self.sidebar_other, tab, false, action, favicons);
-            self.items.push(TabItem {
-                node,
-                view: tab.view,
-                private: !private,
-                index: i,
-                surface: Surface::Sidebar,
-            });
+        if !hide_other {
+            self.fill_sidebar_list(ui, self.sidebar_other, other, !private, true, false, favicons);
         }
         self.update_tab_lists(ui);
         ui.set_text(self.tab_count_label, &count.to_string());
         self.sync_active(ui, tabs);
+    }
+
+    /// Lists `tabs` under `list`: a header before each tab group, the rows of the tabs not
+    /// folded away in a collapsed group. `other`: the list of the group not shown.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_sidebar_list(
+        &mut self,
+        ui: &mut Ui,
+        list: NodeId,
+        tabs: &Tabs,
+        private: bool,
+        other: bool,
+        highlight_active: bool,
+        favicons: &Favicons,
+    ) {
+        let mut last_group: Option<u32> = None;
+        for (i, tab) in tabs.all().iter().enumerate() {
+            if tab.group != last_group {
+                last_group = tab.group;
+                if let Some(group) = tab.group.and_then(|id| tabs.group(id)) {
+                    let count = tabs.group_range(group.id).map_or(0, |r| r.len());
+                    let header = group_header_row(ui, list, group, count);
+                    self.group_nodes.push((group.id, header, i, true));
+                }
+            }
+            if !tabs.is_shown(i) {
+                continue;
+            }
+            let active = highlight_active && i == tabs.active_index();
+            let (select, mute) = if other {
+                (ChromeAction::SelectOtherTab(i), ChromeAction::MuteOtherTabAt(i))
+            } else {
+                (ChromeAction::SelectTab(i), ChromeAction::MuteTabAt(i))
+            };
+            let extras = RowExtras {
+                mute: self.tab_options.audio_indicator.then_some(mute),
+                group: tab.group.and_then(|id| tabs.group(id)).map(|g| g.color.color()),
+            };
+            let node = sidebar_tab_row(ui, list, tab, active, select, extras, favicons);
+            self.items.push(TabItem {
+                node,
+                view: tab.view,
+                private,
+                index: i,
+                surface: Surface::Sidebar,
+                group: tab.group,
+            });
+        }
+    }
+
+    /// Capture aid: the first tab group's header (the sidebar's, else the bar's chip): its id,
+    /// node and whether it is in the sidebar.
+    pub fn first_group_header(&self) -> Option<(u32, NodeId, bool)> {
+        let g = self.group_nodes.iter().find(|g| g.3).or_else(|| self.group_nodes.first())?;
+        Some((g.0, g.1, g.3))
+    }
+
+    /// What the tab lists show (applied by the next `sync_tabs`).
+    pub fn set_tab_options(&mut self, options: TabOptions) -> bool {
+        std::mem::replace(&mut self.tab_options, options) != options
+    }
+
+    /// The tab group's header or chip at `node` or one of its parents: the group's id and the
+    /// header's node.
+    pub fn tab_group_at(&self, ui: &Ui, node: NodeId) -> Option<(u32, NodeId)> {
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if let Some(&(group, header, _, _)) = self.group_nodes.iter().find(|g| g.1 == n) {
+                return Some((group, header));
+            }
+            at = ui.parent(n);
+        }
+        None
     }
 
     /// Updates the active segment (address, back/forward, reload/stop, progress).
@@ -3156,6 +3397,8 @@ impl Chrome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MoveKey {
     Tab(ViewId, Surface),
+    /// A tab group's header (sidebar) or chip (bar): `true` for the sidebar header.
+    Group(u32, bool),
     Node(NodeId),
 }
 
@@ -3167,6 +3410,7 @@ fn sidebar_tab_row(
     tab: &Tab,
     active: bool,
     select: ChromeAction,
+    extras: RowExtras,
     favicons: &Favicons,
 ) -> NodeId {
     let background = if active { Background::Glass(GlassLevel::Thin) } else { Background::None };
@@ -3203,10 +3447,145 @@ fn sidebar_tab_row(
     layout.margin = Rect { left: length(6.0), right: length(0.0), top: length(0.0), bottom: length(0.0) };
     ui.set_style(label, layout);
     capture_dot(ui, row_node, tab);
+    if let Some(mute) = extras.mute
+        && (tab.playing_media || tab.muted)
+    {
+        audio_button(ui, row_node, tab, mute);
+    }
     if tab.pinned {
         ui.add(row_node, Widget::icon(Icon::Pin, 14.0).with_paint(Paint::Secondary), Style::default());
     }
+    // A tab group's colour: a bar along the row's left edge.
+    if let Some(color) = extras.group {
+        ui.add(
+            row_node,
+            Widget::container()
+                .with_background(Background::Fill(Paint::Fixed(color), 1.0))
+                .with_radius(CAPSULE),
+            Style {
+                position: Position::Absolute,
+                inset: Rect {
+                    left: length(GROUP_BAR_INSET),
+                    right: auto(),
+                    top: length(GROUP_BAR_MARGIN),
+                    bottom: auto(),
+                },
+                size: Size {
+                    width: length(GROUP_BAR_WIDTH),
+                    height: length(ROW_HEIGHT - 2.0 * GROUP_BAR_MARGIN),
+                },
+                ..Default::default()
+            },
+        );
+    }
     row_node
+}
+
+/// What a sidebar tab row shows besides the tab itself.
+#[derive(Clone, Copy)]
+struct RowExtras {
+    /// The speaker's action (`None`: no speaker).
+    mute: Option<ChromeAction>,
+    /// The colour of the tab's group.
+    group: Option<Color>,
+}
+
+/// The speaker of a tab that plays sound or is muted: a click mutes or unmutes it.
+fn audio_button(ui: &mut Ui, parent: NodeId, tab: &Tab, action: ChromeAction) -> NodeId {
+    let button = ui.add(
+        parent,
+        Widget::container().with_action(action.id()).with_radius(CAPSULE),
+        Style {
+            size: square(TAB_SPEAKER + 8.0),
+            justify_content: JustifyContent::CENTER,
+            flex_shrink: 0.0,
+            ..row(0.0)
+        },
+    );
+    let (icon, paint) =
+        if tab.muted { (Icon::Muted, Paint::Secondary) } else { (Icon::Volume, Paint::Label) };
+    ui.add(button, Widget::icon(icon, TAB_SPEAKER).with_paint(paint), Style::default());
+    tip(ui, button, if tab.muted { tr("Unmute Tab") } else { tr("Mute Tab") }, None);
+    button
+}
+
+/// A tab group's name as shown.
+pub fn group_title(group: &crate::tabs::TabGroup) -> String {
+    if group.name.trim().is_empty() { tr("Untitled Group").to_owned() } else { group.name.clone() }
+}
+
+/// A tab group's header in the sidebar's list: a chevron, the group's colour, its name and tab
+/// count. A click folds or unfolds the group.
+fn group_header_row(ui: &mut Ui, parent: NodeId, group: &crate::tabs::TabGroup, count: usize) -> NodeId {
+    let row_node = ui.add(
+        parent,
+        Widget::container()
+            .with_action(ChromeAction::ToggleTabGroup(group.id).id())
+            .with_radius(CAPSULE)
+            .without_feedback(),
+        Style {
+            size: Size { width: auto(), height: length(GROUP_HEADER_HEIGHT) },
+            padding: padding(TAB_INDENT, 12.0, 0.0, 0.0),
+            ..row(8.0)
+        },
+    );
+    let chevron = if group.collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
+    ui.add(
+        row_node,
+        Widget::icon(chevron, 12.0).with_icon_weight(IconWeight::Bold).with_paint(Paint::Secondary),
+        Style {
+            margin: Rect { left: length(4.0), right: length(0.0), top: length(0.0), bottom: length(0.0) },
+            ..Default::default()
+        },
+    );
+    ui.add(
+        row_node,
+        Widget::container()
+            .with_background(Background::Fill(Paint::Fixed(group.color.color()), 1.0))
+            .with_radius(CAPSULE),
+        Style { size: square(GROUP_DOT), flex_shrink: 0.0, ..Default::default() },
+    );
+    ui.add_label(row_node, &group_title(group), TextStyle::BodyEmphasis, shrinking_label());
+    let counter = ui.add_label(row_node, &count.to_string(), TextStyle::Footnote, Style::default());
+    if let Some(w) = ui.widget_mut(counter) {
+        w.set_paint(Paint::Secondary);
+    }
+    row_node
+}
+
+/// A tab group's chip in the tab bar: its name on glass tinted with its colour. A click folds
+/// or unfolds the group.
+fn group_chip(ui: &mut Ui, parent: NodeId, group: &crate::tabs::TabGroup, count: usize) -> NodeId {
+    let color = group.color.color();
+    let chip = ui.add(
+        parent,
+        Widget::container()
+            .with_action(ChromeAction::ToggleTabGroup(group.id).id())
+            .with_radius(CAPSULE)
+            .with_background(Background::TintedGlass(GlassLevel::Thin, Paint::Fixed(color))),
+        Style {
+            size: Size { width: auto(), height: length(GROUP_CHIP_HEIGHT) },
+            max_size: Size { width: length(GROUP_CHIP_MAX_WIDTH), height: auto() },
+            padding: padding(10.0, 10.0, 0.0, 0.0),
+            ..row(4.0)
+        },
+    );
+    let text =
+        if group.collapsed { format!("{} \u{b7} {count}", group_title(group)) } else { group_title(group) };
+    let label = ui.add_label(
+        chip,
+        &text,
+        TextStyle::Footnote,
+        Style {
+            flex_shrink: 1.0,
+            min_size: Size { width: length(0.0), height: auto() },
+            ..Default::default()
+        },
+    );
+    if let Some(w) = ui.widget_mut(label) {
+        w.set_paint(Paint::OnColor(color));
+    }
+    chip
 }
 
 /// The recording indicator of a tab in the tab bar and the sidebar: a small dot after the
@@ -3531,6 +3910,18 @@ impl Chrome {
             at = ui.parent(n);
         }
         None
+    }
+
+    /// Whether `node` is inside the sidebar (a tab group's header, not its chip in the bar).
+    pub fn sidebar_contains(&self, ui: &Ui, node: NodeId) -> bool {
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if n == self.sidebar {
+                return true;
+            }
+            at = ui.parent(n);
+        }
+        false
     }
 
     /// The plane a tab item lies in (its context menu flows out of it there).
@@ -4003,6 +4394,19 @@ mod tests {
         for action in
             [ChromeAction::OpenBookmark(0), ChromeAction::OpenBookmark(42), ChromeAction::BookmarksOverflow]
         {
+            assert_eq!(ChromeAction::from_id(action.id()), Some(action));
+        }
+    }
+
+    #[test]
+    fn tab_group_and_speaker_actions_round_trip() {
+        for action in [
+            ChromeAction::MuteTabAt(0),
+            ChromeAction::MuteTabAt(57),
+            ChromeAction::MuteOtherTabAt(3),
+            ChromeAction::ToggleTabGroup(1),
+            ChromeAction::ToggleTabGroup(4242),
+        ] {
             assert_eq!(ChromeAction::from_id(action.id()), Some(action));
         }
     }

@@ -1536,6 +1536,19 @@ pub struct Tabs {
     pub open_links_in_background: bool,
     /// A middle click on a tab (in the tab bar, the sidebar or the tab overview) closes it.
     pub middle_click_closes_tab: bool,
+    /// A tab opened from a tab of a tab group (a link, New Tab to the Right) joins that group.
+    pub new_tab_joins_group: bool,
+    /// Tab groups show as a coloured chip with their name in the compact tab bar and the
+    /// separate tab row (off: only a colour marker on their tabs).
+    pub group_chips_in_bar: bool,
+    /// Tabs that play sound show a speaker (click to mute) in the tab bar and the sidebar.
+    pub show_audio_indicator: bool,
+    /// "Mute Site" is remembered: new tabs of a muted site start muted.
+    pub remember_site_mute: bool,
+    /// How many closed tabs the tab search (and Reopen Closed Tab) remembers.
+    pub closed_tabs_remembered: u32,
+    /// How many history entries the tab search lists at most.
+    pub tab_search_history_results: u32,
     /// Close tabs not looked at for this many days (0: never).
     pub close_after_days: u32,
     /// How often memory use is measured and the tab rules are applied.
@@ -1576,6 +1589,12 @@ impl Default for Tabs {
             restore_session: true,
             open_links_in_background: true,
             middle_click_closes_tab: true,
+            new_tab_joins_group: true,
+            group_chips_in_bar: true,
+            show_audio_indicator: true,
+            remember_site_mute: true,
+            closed_tabs_remembered: 25,
+            tab_search_history_results: 8,
             close_after_days: 0,
             check_interval_seconds: 5.0,
             drag_threshold: 6.0,

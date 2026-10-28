@@ -16,7 +16,9 @@ use axion_ui::taffy::prelude::*;
 use axion_ui::{Background, CAPSULE, GlassLevel, TextStyle, Ui, Widget};
 use glam::Vec2;
 
-use crate::chrome::{Chrome, MoveKey, SidebarLayout, Surface, TabItem};
+#[cfg(test)]
+use crate::chrome::SidebarHeader;
+use crate::chrome::{Chrome, MoveKey, SidebarLayout, SidebarRow, Surface, TabItem};
 use crate::favicons::{Favicons, favicon_node};
 use crate::tabs::Tab;
 
@@ -29,12 +31,16 @@ const DROP_MARGIN: f32 = 48.0;
 /// A row closer than this to its place stops being moved (logical px).
 const SETTLED_PX: f32 = 0.5;
 
-/// Where a dragged tab would go: its group, and its index there (among the group's other
-/// tabs; `usize::MAX` for the end).
+/// Where a dragged tab would go: its group (normal or private), its index there (among the
+/// list's other tabs; `usize::MAX` for the end) and its tab group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Target {
     pub private: bool,
     pub index: usize,
+    /// The tab group it joins (`None`: it is ungrouped there).
+    pub tab_group: Option<u32>,
+    /// Dropped onto the tab group's header (it becomes the group's first tab).
+    pub on_header: bool,
 }
 
 /// A finished drag.
@@ -57,8 +63,8 @@ struct Active {
     pointer: Vec2,
     target: Option<Target>,
     sidebar: SidebarLayout,
-    /// The bar's tabs (view, frame) when the drag started.
-    bar: Vec<(ViewId, Frame)>,
+    /// The bar's tabs when the drag started.
+    bar: Vec<SidebarRow>,
     /// The sidebar's or bar's frame, for drops near it.
     area: Frame,
     lens: Animated<Vec2>,
@@ -74,29 +80,75 @@ pub struct TabDrag {
     moving: HashMap<MoveKey, Animated<Vec2>>,
 }
 
-/// How many of `centers` lie before `pos`: the index a dragged item at `pos` goes to.
-pub fn insertion_index(centers: &[f32], pos: f32) -> usize {
-    centers.iter().filter(|&&c| c < pos).count()
+/// A row's index among the list's other tabs once the dragged tab (at `source`, when it is
+/// in the list) is out of it.
+fn rank(row: &SidebarRow, source: Option<usize>) -> usize {
+    if source.is_some_and(|s| s < row.index) { row.index - 1 } else { row.index }
+}
+
+/// The index and tab group of a drop before the `k`th of `rows`, the list's rows without the
+/// dragged one. `stays` says whether a drop right behind the last tab of a group's run keeps
+/// the tab in that group.
+fn drop_among(
+    rows: &[&SidebarRow],
+    source: Option<usize>,
+    k: usize,
+    stays: impl Fn(&SidebarRow) -> bool,
+) -> (usize, Option<u32>) {
+    let index = match rows.get(k) {
+        Some(next) => rank(next, source),
+        None => rows.last().map_or(0, |last| rank(last, source) + 1),
+    };
+    let prev = k.checked_sub(1).and_then(|i| rows.get(i));
+    let next = rows.get(k);
+    let group = match (prev.and_then(|p| p.group), next.and_then(|n| n.group)) {
+        (Some(a), Some(b)) if a == b => Some(a),
+        (Some(a), _) if prev.is_some_and(|p| stays(p)) => Some(a),
+        _ => None,
+    };
+    (index, group)
 }
 
 /// The sidebar target for a dragged row whose centre is at `y`: the normal list above
 /// "Private", the private list from it on (onto "Private" itself: the private tabs' start).
-/// A folded or locked list takes the tab at its end.
+/// A folded or locked list takes the tab at its end. In the normal list, a tab group's
+/// header takes the tab as the group's first one, and rows in the middle of a group (or
+/// over the last row of one) put it into the group.
 pub fn sidebar_target(layout: &SidebarLayout, source: ViewId, y: f32) -> Target {
-    let centers = |rows: &[(ViewId, Frame)]| -> Vec<f32> {
-        rows.iter().filter(|(v, _)| *v != source).map(|(_, f)| f.center().y).collect()
-    };
     let private = y >= layout.private_header.origin.y;
     let (open, rows) =
         if private { (layout.private_open, &layout.private) } else { (layout.normal_open, &layout.normal) };
-    let index = if open { insertion_index(&centers(rows), y) } else { usize::MAX };
-    Target { private, index }
+    let plain = |index| Target { private, index, tab_group: None, on_header: false };
+    if !open {
+        return plain(usize::MAX);
+    }
+    let source_index = rows.iter().find(|r| r.view == source).map(|r| r.index);
+    if !private
+        && let Some(h) =
+            layout.headers.iter().find(|h| y >= h.frame.origin.y && y < h.frame.origin.y + h.frame.size.y)
+    {
+        let index = if source_index.is_some_and(|s| s < h.first) { h.first - 1 } else { h.first };
+        return Target { private, index, tab_group: Some(h.group), on_header: true };
+    }
+    let others: Vec<&SidebarRow> = rows.iter().filter(|r| r.view != source).collect();
+    let k = others.iter().filter(|r| r.frame.center().y < y).count();
+    if private {
+        return plain(drop_among(&others, source_index, k, |_| false).0);
+    }
+    // Over the lower half of a group's last row the tab stays in the group; further down it
+    // leaves.
+    let (index, tab_group) = drop_among(&others, source_index, k, |p| y <= p.frame.origin.y + p.frame.size.y);
+    Target { private, index, tab_group, on_header: false }
 }
 
-/// The bar target for a dragged segment whose centre is at `x`.
-pub fn bar_target(items: &[(ViewId, Frame)], source: ViewId, x: f32) -> usize {
-    let centers: Vec<f32> = items.iter().filter(|(v, _)| *v != source).map(|(_, f)| f.center().x).collect();
-    insertion_index(&centers, x)
+/// The bar target for a dragged segment whose centre is at `x`: its index among the other
+/// tabs and its tab group. `group` is the dragged tab's own: reordering inside it keeps it
+/// there.
+pub fn bar_target(items: &[SidebarRow], source: ViewId, group: Option<u32>, x: f32) -> (usize, Option<u32>) {
+    let source_index = items.iter().find(|r| r.view == source).map(|r| r.index);
+    let others: Vec<&SidebarRow> = items.iter().filter(|r| r.view != source).collect();
+    let k = others.iter().filter(|r| r.frame.center().x < x).count();
+    drop_among(&others, source_index, k, |p| group.is_some() && p.group == group)
 }
 
 fn spring(config: &Config) -> Spring {
@@ -186,7 +238,11 @@ impl TabDrag {
             Surface::Sidebar => ui.frame(chrome.sidebar_node()),
             Surface::Bar => ui.parent(item.node).map(|n| ui.frame(n)).unwrap_or(frame),
         };
-        let bar = chrome.tab_items(Surface::Bar).iter().map(|i| (i.view, ui.frame(i.node))).collect();
+        let bar = chrome
+            .tab_items(Surface::Bar)
+            .iter()
+            .map(|i| SidebarRow { view: i.view, frame: ui.frame(i.node), index: i.index, group: i.group })
+            .collect();
         let mut lens = Animated::new(frame.origin, spring(config));
         lens.target = p - (pending.start - frame.origin);
         self.active = Some(Active {
@@ -233,13 +289,15 @@ impl TabDrag {
         .contains(active.pointer);
         active.target = near.then(|| match active.item.surface {
             Surface::Sidebar => sidebar_target(&active.sidebar, active.item.view, centre.y),
-            Surface::Bar => Target {
-                private: active.item.private,
-                index: bar_target(&active.bar, active.item.view, centre.x),
-            },
+            Surface::Bar => {
+                let (index, tab_group) =
+                    bar_target(&active.bar, active.item.view, active.item.group, centre.x);
+                Target { private: active.item.private, index, tab_group, on_header: false }
+            }
         });
         // Between the groups the index counts the target group's own rows only.
-        let preview = active.target.map(|t| (t.private, t.index));
+        let preview =
+            active.target.map(|t| (t.private, t.index, t.on_header.then_some(t.tab_group).flatten()));
         chrome.preview_drag(ui, active.item.view, active.item.surface, preview);
 
         active.lens.spring = spring(config);
@@ -334,11 +392,16 @@ impl TabDrag {
 mod tests {
     use super::*;
 
-    fn rows(views: &[u32], top: f32) -> Vec<(ViewId, Frame)> {
+    fn rows(views: &[u32], top: f32) -> Vec<SidebarRow> {
         views
             .iter()
             .enumerate()
-            .map(|(i, &v)| (ViewId(v), Frame::new(0.0, top + i as f32 * 44.0, 200.0, 42.0)))
+            .map(|(i, &v)| SidebarRow {
+                view: ViewId(v),
+                frame: Frame::new(0.0, top + i as f32 * 44.0, 200.0, 42.0),
+                index: i,
+                group: None,
+            })
             .collect()
     }
 
@@ -347,46 +410,109 @@ mod tests {
             normal: rows(&[1, 2, 3], 44.0),
             private_header: Frame::new(0.0, 176.0, 200.0, 42.0),
             private: rows(&[7, 8], 220.0),
+            headers: Vec::new(),
             normal_open: true,
             private_open: true,
         }
     }
 
-    #[test]
-    fn index_counts_the_items_before() {
-        assert_eq!(insertion_index(&[10.0, 30.0, 50.0], 0.0), 0);
-        assert_eq!(insertion_index(&[10.0, 30.0, 50.0], 31.0), 2);
-        assert_eq!(insertion_index(&[10.0, 30.0, 50.0], 99.0), 3);
+    fn at(l: &SidebarLayout, source: u32, y: f32) -> (bool, usize, Option<u32>, bool) {
+        let t = sidebar_target(l, ViewId(source), y);
+        (t.private, t.index, t.tab_group, t.on_header)
     }
 
     #[test]
     fn reordering_within_the_normal_list() {
         let l = layout();
         // Row 1 (first) dragged below row 2's centre: it goes after it.
-        assert_eq!(sidebar_target(&l, ViewId(1), 44.0 + 44.0 + 22.0), Target { private: false, index: 1 });
+        assert_eq!(at(&l, 1, 44.0 + 44.0 + 22.0), (false, 1, None, false));
         // Above everything: the top.
-        assert_eq!(sidebar_target(&l, ViewId(3), 10.0), Target { private: false, index: 0 });
+        assert_eq!(at(&l, 3, 10.0), (false, 0, None, false));
         // Just above "Private": the normal list's end.
-        assert_eq!(sidebar_target(&l, ViewId(1), 170.0), Target { private: false, index: 2 });
+        assert_eq!(at(&l, 1, 170.0), (false, 2, None, false));
     }
 
     #[test]
     fn dropping_into_the_private_list() {
         let mut l = layout();
         // Onto "Private": the private tabs' start; between its rows: in between.
-        assert_eq!(sidebar_target(&l, ViewId(2), 190.0), Target { private: true, index: 0 });
-        assert_eq!(sidebar_target(&l, ViewId(2), 250.0), Target { private: true, index: 1 });
+        assert_eq!(at(&l, 2, 190.0), (true, 0, None, false));
+        assert_eq!(at(&l, 2, 250.0), (true, 1, None, false));
         // Locked (or folded) private tabs take it at their end.
         l.private_open = false;
-        assert_eq!(sidebar_target(&l, ViewId(2), 250.0), Target { private: true, index: usize::MAX });
+        assert_eq!(at(&l, 2, 250.0), (true, usize::MAX, None, false));
+    }
+
+    /// Tabs 1 and 2 ungrouped, 3 and 4 in group 9 (header between 2 and 3), 5 ungrouped.
+    fn grouped() -> SidebarLayout {
+        let mut l = layout();
+        l.normal = rows(&[1, 2, 3, 4, 5], 44.0);
+        l.normal[2].group = Some(9);
+        l.normal[3].group = Some(9);
+        // The header takes a place between 2 and 3.
+        for r in l.normal.iter_mut().skip(2) {
+            r.frame.origin.y += 34.0;
+        }
+        l.headers =
+            vec![SidebarHeader { group: 9, frame: Frame::new(0.0, 44.0 + 88.0, 200.0, 34.0), first: 2 }];
+        l.private_header = Frame::new(0.0, 400.0, 200.0, 42.0);
+        l
+    }
+
+    #[test]
+    fn tab_groups_take_drops_on_their_header_and_inside() {
+        let l = grouped();
+        // Onto the header: the group's first place.
+        assert_eq!(at(&l, 1, 44.0 + 88.0 + 10.0), (false, 1, Some(9), true));
+        assert_eq!(at(&l, 5, 44.0 + 88.0 + 10.0), (false, 2, Some(9), true));
+        // Between the group's two rows: inside it.
+        let between = l.normal[2].frame.center().y + 1.0;
+        assert_eq!(at(&l, 1, between), (false, 2, Some(9), false));
+        // Over the lower half of its last row: still in the group, at its end.
+        let last = l.normal[3].frame;
+        assert_eq!(at(&l, 1, last.center().y + 5.0), (false, 3, Some(9), false));
+        // Below that row: out of it.
+        assert_eq!(at(&l, 3, last.origin.y + last.size.y + 2.0), (false, 3, None, false));
+        // Between ungrouped rows: ungrouped.
+        assert_eq!(at(&l, 5, 100.0), (false, 1, None, false));
+    }
+
+    #[test]
+    fn folded_tabs_do_not_shift_the_index() {
+        // Tab 3 of group 9 is folded away: its row is missing, the others keep their indices.
+        let mut l = grouped();
+        l.normal.remove(2);
+        let last = l.normal[2].frame;
+        assert_eq!(at(&l, 1, last.origin.y + last.size.y + 2.0), (false, 3, None, false));
+    }
+
+    fn bar(groups: [Option<u32>; 4]) -> Vec<SidebarRow> {
+        (0..4)
+            .map(|i| SidebarRow {
+                view: ViewId(i),
+                frame: Frame::new(i as f32 * 100.0, 0.0, 96.0, 36.0),
+                index: i as usize,
+                group: groups[i as usize],
+            })
+            .collect()
     }
 
     #[test]
     fn bar_segments_reorder_by_centre() {
-        let items: Vec<(ViewId, Frame)> =
-            (0..3).map(|i| (ViewId(i), Frame::new(i as f32 * 100.0, 0.0, 96.0, 36.0))).collect();
-        assert_eq!(bar_target(&items, ViewId(0), 160.0), 1);
-        assert_eq!(bar_target(&items, ViewId(2), 10.0), 0);
-        assert_eq!(bar_target(&items, ViewId(1), 260.0), 2);
+        let items = bar([None; 4]);
+        assert_eq!(bar_target(&items, ViewId(0), None, 160.0).0, 1);
+        assert_eq!(bar_target(&items, ViewId(2), None, 10.0).0, 0);
+        assert_eq!(bar_target(&items, ViewId(1), None, 260.0).0, 2);
+    }
+
+    #[test]
+    fn bar_drops_between_group_tabs_join_the_group() {
+        let items = bar([None, Some(5), Some(5), None]);
+        // Tab 3 between the group's two tabs.
+        assert_eq!(bar_target(&items, ViewId(3), None, 150.0), (2, Some(5)));
+        // A group tab reordered past its group's end stays in it.
+        assert_eq!(bar_target(&items, ViewId(1), Some(5), 260.0), (2, Some(5)));
+        // An ungrouped tab behind the group stays out.
+        assert_eq!(bar_target(&items, ViewId(0), None, 300.0), (2, None));
     }
 }

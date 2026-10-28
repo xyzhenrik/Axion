@@ -40,6 +40,8 @@ pub enum Action {
     Forward,
     ToggleSidebar,
     TabOverview,
+    /// Search open tabs, recently closed tabs and history.
+    SearchTabs,
     /// Pin or unpin the current tab.
     PinTab,
     /// Bookmark the current page (or remove its bookmark).
@@ -128,6 +130,7 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::Forward, "forward"),
     (Action::ToggleSidebar, "toggle_sidebar"),
     (Action::TabOverview, "tab_overview"),
+    (Action::SearchTabs, "search_tabs"),
     (Action::PinTab, "pin_tab"),
     (Action::BookmarkPage, "bookmark_page"),
     (Action::ShowBookmarks, "show_bookmarks"),
@@ -407,6 +410,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::Forward, &["Alt+Right", "Ctrl+]"]);
     bind(Action::ToggleSidebar, &["Ctrl+Shift+L"]);
     bind(Action::TabOverview, &["Alt+O", "F9"]);
+    bind(Action::SearchTabs, &["Ctrl+Shift+A"]);
     bind(Action::BookmarkPage, &["Ctrl+D"]);
     bind(Action::ShowBookmarks, &["Ctrl+B"]);
     bind(Action::ShowHistory, &["Ctrl+H"]);

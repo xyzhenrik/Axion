@@ -40,6 +40,7 @@ use crate::favicons::{FETCH_SIZE, Favicons};
 use crate::filedrop::{DropOutcome, FileDrop};
 use crate::find::{FindAction, FindBar};
 use crate::frame_rate::{self, RefreshWatch};
+use crate::group_sheet::{GroupSheet, GroupSheetAction};
 use crate::home::{HomeAction, HomePage, REFRESH_SCRIPT, is_home_url};
 use crate::import::Importer;
 use crate::input::{self, ClickCounter};
@@ -72,6 +73,7 @@ use crate::settings::{AccountInfo, Category, Outcome, SettingsAction, SettingsSh
 use crate::shields::ShieldsState;
 use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
 use crate::suggestions::{SuggestionList, suggest};
+use crate::tab_search::TabSearch;
 use crate::tabdrag::{TabDrag, Target};
 use crate::tabs::{Tab, Tabs};
 use crate::toast::Toast;
@@ -90,6 +92,7 @@ mod onboarding;
 mod page_context;
 mod permissions;
 mod playlist;
+mod tabgroups;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
 /// `AXION_RESIZE_LOG`: a resize's timings are logged once no resize came for this long.
@@ -360,6 +363,15 @@ pub struct Browser {
     account_id: String,
     account_menu: Menu,
     add_account: AddAccountSheet,
+    /// The sheet that names a tab group, and tab search (Ctrl+Shift+A).
+    group_sheet: GroupSheet,
+    tab_search: TabSearch,
+    /// What tab search last searched for (`None`: not yet).
+    tab_search_query: Option<String>,
+    /// Sites muted by "Mute Site" (hosts).
+    muted_sites: std::collections::HashSet<String>,
+    /// The tab group whose header menu is open.
+    context_group: Option<u32>,
     /// The first-run introduction (see `crate::onboarding`), and the interface language this
     /// run started in (a different one at the end relaunches Axion).
     onboarding: Onboarding,
@@ -659,6 +671,7 @@ impl Browser {
         }
         let store_path = store.as_ref().map(|_| profile.join("axion.sqlite"));
         PrivateLock::drop_old_password(store.as_ref());
+        let muted_sites = tabgroups::load_muted_sites(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
         let downloads = Downloads::new(profile.clone());
         let extensions = Extensions::new(&profile, store.as_ref());
@@ -763,6 +776,8 @@ impl Browser {
         let playlist_ui =
             playlist::PlaylistUi::build(&mut ui, &config, chrome.bar_node(), device.clone(), queue.clone());
         let add_account = AddAccountSheet::build(&mut ui);
+        let group_sheet = GroupSheet::build(&mut ui);
+        let tab_search = TabSearch::build(&mut ui);
         let onboarding = Onboarding::build(&mut ui);
         let update_alert = UpdateAlert::build(&mut ui);
         let update_check_at = axion_update::auto_check_due(&config.updates, &axion_update::SystemClock)
@@ -880,6 +895,11 @@ impl Browser {
             account_id,
             account_menu,
             add_account,
+            group_sheet,
+            tab_search,
+            tab_search_query: None,
+            muted_sites,
+            context_group: None,
             onboarding,
             start_language,
             avatars,
@@ -1313,6 +1333,7 @@ impl Browser {
                 }
             }
             Action::ToggleFullscreen => self.set_presentation(!self.chrome.presentation()),
+            Action::SearchTabs => self.toggle_tab_search(),
             Action::TabOverview => {
                 if self.overview.is_open() {
                     self.close_overview(self.tabs.active_index());
@@ -2344,6 +2365,9 @@ impl Browser {
             return false;
         }
         let size = self.view_size();
+        let saved_groups = self.store.as_ref().and_then(|s| s.session_groups().ok()).unwrap_or_default();
+        // Restored tabs keep their saved groups (a tab next to a grouped one does not join it).
+        self.tabs.inherit_group = false;
         // Tabs not looked at for longer than the setting allows don't come back.
         let max_age = i64::from(self.config.tabs.close_after_days) * DAY_SECONDS;
         let now = unix_now();
@@ -2377,6 +2401,7 @@ impl Browser {
             let mut tab = Tab::new(view, url);
             tab.title.clone_from(title);
             tab.pinned = i < pinned;
+            tab.group = saved_tab.group.filter(|_| i >= pinned);
             if saved_tab.last_viewed > 0 {
                 tab.last_viewed = saved_tab.last_viewed;
             }
@@ -2386,6 +2411,8 @@ impl Browser {
             }
             self.tabs.insert(tab, true);
         }
+        self.tabs.inherit_group = self.config.tabs.new_tab_joins_group;
+        self.restore_groups(saved_groups);
         if kept == 0 {
             return false;
         }
@@ -2409,13 +2436,16 @@ impl Browser {
                 url: t.url.clone(),
                 title: t.title.clone(),
                 last_viewed: t.last_viewed,
+                group: t.group,
             })
             .collect();
+        let groups = Self::session_groups(normal);
         let active = normal.active_index();
         let pinned = normal.pinned_count().to_string();
         if let Some(store) = &mut self.store
             && let Err(e) = store
                 .save_session(&tabs, active)
+                .and_then(|()| store.save_session_groups(&groups))
                 .and_then(|()| store.set_meta(SESSION_PINNED_KEY, Some(&pinned)))
         {
             tracing::warn!("saving the session failed: {e}");
@@ -3120,6 +3150,7 @@ impl Browser {
             MenuAction::AccountSettings => return self.open_account_settings(),
             MenuAction::LockAccount => return self.lock_account(),
             MenuAction::Tab(command) => return self.tab_command(command),
+            MenuAction::Group(command) => return self.tab_group_command(command),
             MenuAction::Bookmark(command) => return self.bookmark_command(command),
             MenuAction::Playlist(command) => return self.playlist_command(command),
             MenuAction::Page(command) => return self.page_command(command),
@@ -3190,6 +3221,7 @@ impl Browser {
             | MenuAction::AccountSettings
             | MenuAction::LockAccount
             | MenuAction::Tab(_)
+            | MenuAction::Group(_)
             | MenuAction::Playlist(_)
             | MenuAction::Page(_)
             | MenuAction::Bookmark(_) => {}
@@ -3248,7 +3280,13 @@ impl Browser {
         let Some(from) = self.group(item.private).index_of(item.view) else { return };
         match crate::private::drop_into(item.private, target.private, self.private_locked()) {
             TabDrop::Reorder => {
-                if self.group_mut(item.private).move_tab(from, target.index) {
+                let tabs = self.group_mut(item.private);
+                let moved = if item.private || tabs.all()[from].pinned {
+                    tabs.move_tab(from, target.index)
+                } else {
+                    tabs.place(from, target.index, target.tab_group).is_some()
+                };
+                if moved {
                     tracing::info!(from, to = target.index, private = item.private, "tab moved");
                 }
             }
@@ -3650,6 +3688,29 @@ impl Browser {
                     let outcome = self.settings.action(&mut self.ui, action, &mut self.config, &self.keymap);
                     self.settings_outcome(outcome);
                 }
+                UiEvent::Submitted { node, .. } if node == self.group_sheet.field() => {
+                    self.group_sheet_action(GroupSheetAction::Save);
+                }
+                UiEvent::Clicked { action, .. } if self.group_sheet.action(action).is_some() => {
+                    let Some(action) = self.group_sheet.action(action) else { continue };
+                    let on_sheet = self.pointer.is_some_and(|p| self.group_sheet.contains(&self.ui, p));
+                    if action == GroupSheetAction::Cancel && on_sheet {
+                        continue;
+                    }
+                    self.group_sheet_action(action);
+                }
+                UiEvent::Submitted { node, .. } if node == self.tab_search.field() => {
+                    self.choose_search_result(None);
+                }
+                UiEvent::Clicked { action, .. }
+                    if TabSearch::is_backdrop(action) || TabSearch::row_of(action).is_some() =>
+                {
+                    if let Some(row) = TabSearch::row_of(action) {
+                        self.choose_search_result(Some(row));
+                    } else if !self.pointer.is_some_and(|p| self.tab_search.contains(&self.ui, p)) {
+                        self.tab_search.close(&mut self.ui);
+                    }
+                }
                 UiEvent::Submitted { node, .. } if node == self.add_account.field() => {
                     self.add_account_action(SheetAction::Create);
                 }
@@ -3852,11 +3913,17 @@ impl Browser {
                     Some(ChromeAction::Private) => self.chrome.toggle_section(&mut self.ui, Section::Private),
                     Some(ChromeAction::Capture) => self.toggle_capture_popover(),
                     Some(ChromeAction::MuteTab) => {
-                        if let Some(tab) = self.tabs.active_mut() {
-                            tab.muted = !tab.muted;
-                            let (view, muted) = (tab.view, tab.muted);
-                            self.engine.set_audio_muted(view, muted);
-                            self.tabs_changed = true;
+                        if let Some(tab) = self.tabs.active() {
+                            let (view, muted) = (tab.view, !tab.muted);
+                            self.set_tab_muted(view, muted);
+                        }
+                    }
+                    Some(ChromeAction::MuteTabAt(i)) => self.toggle_tab_mute_at(false, i),
+                    Some(ChromeAction::MuteOtherTabAt(i)) => self.toggle_tab_mute_at(true, i),
+                    Some(ChromeAction::ToggleTabGroup(id)) => {
+                        self.toggle_tab_group(id);
+                        if self.overview.is_open() {
+                            self.rebuild_overview();
                         }
                     }
                     Some(ChromeAction::NowPlaying) => {
@@ -4080,6 +4147,7 @@ impl Browser {
                         self.tabs_changed = true;
                     }
                     self.sync_tab_zoom(view);
+                    self.apply_site_mute(view);
                 }
                 EngineEvent::TitleChanged { view, title } => {
                     if let (Some(store), Some(tab)) = (
@@ -4603,6 +4671,8 @@ impl Browser {
             || self.settings.is_open()
             || self.passwords.is_open()
             || self.add_account.is_open()
+            || self.group_sheet.is_open()
+            || self.tab_search.is_open()
             || self.onboarding.is_open()
             || self.update_alert.is_open()
             || self.lock_screen.is_alert_open()
@@ -5833,6 +5903,22 @@ impl Browser {
             self.add_account.close(&mut self.ui);
             return false;
         }
+        if pressed && self.group_sheet.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.group_sheet.close(&mut self.ui);
+            return false;
+        }
+        if pressed && self.tab_search.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
+            self.tab_search.close(&mut self.ui);
+            return false;
+        }
+        if pressed
+            && self.tab_search.is_open()
+            && let Some(Key::Named(name)) = input::key(event)
+            && (name == "Up" || name == "Down")
+        {
+            self.tab_search.move_selection(&mut self.ui, if name == "Up" { -1 } else { 1 });
+            return false;
+        }
         if pressed
             && self.extensions_popover.is_open()
             && input::key(event) == Some(Key::Named("Escape".into()))
@@ -6059,6 +6145,9 @@ impl Browser {
             let started = Instant::now();
             self.update_layout();
             self.frame_times.layout += ms_since(started);
+        }
+        if self.sync_tab_options() {
+            self.tabs_changed = true;
         }
         let tabs_changed = self.tabs_changed;
         if std::mem::take(&mut self.tabs_changed) {
@@ -6736,6 +6825,28 @@ impl Browser {
                     }
                 }
                 "account-menu" => self.toggle_account_menu(),
+                // Capture aids for tab groups and tab search: the search card (type into it with
+                // "ui-text:"), the sheet naming a new group for the active tab, and the menus of
+                // the first group's header and of sidebar tab N.
+                "tab-search" => self.toggle_tab_search(),
+                "group-sheet" => {
+                    if let Some(view) = self.active_view() {
+                        self.open_group_sheet(crate::group_sheet::GroupSheetPurpose::New(view));
+                    }
+                }
+                "group-menu" => {
+                    if let Some((id, node, sidebar)) = self.chrome.first_group_header() {
+                        self.open_tab_group_menu(id, node, sidebar);
+                    }
+                }
+                menu if menu.starts_with("tab-menu:") => {
+                    let n = menu["tab-menu:".len()..].parse::<usize>().ok();
+                    if let Some(item) =
+                        n.and_then(|n| self.chrome.tab_items(Surface::Sidebar).get(n).copied())
+                    {
+                        self.open_tab_menu(item);
+                    }
+                }
                 "add-account" => self.open_add_account(),
                 // Capture aid: type "add-account-name:NAME" into the open Add Account sheet.
                 name if name.starts_with("add-account-name:") => {
@@ -6893,6 +7004,9 @@ impl Browser {
         self.sync_page_menu();
         self.context_menus.animate(&mut self.ui, &self.config, dt);
         self.add_account.animate(&mut self.ui, dt);
+        self.group_sheet.animate(&mut self.ui, dt);
+        self.tab_search.animate(&mut self.ui, dt);
+        self.poll_tab_search();
         self.shields_popover.animate(&mut self.ui, dt);
         self.downloads_popover.animate(&mut self.ui, dt);
         self.extensions_popover.animate(&mut self.ui, dt);
@@ -7723,6 +7837,7 @@ fn chrome_allowed_while_locked(action: ChromeAction) -> bool {
             | ChromeAction::Share
             | ChromeAction::NewTab
             | ChromeAction::MuteTab
+            | ChromeAction::MuteTabAt(_)
             | ChromeAction::DownloadsButton
             | ChromeAction::ExtensionsButton
             | ChromeAction::SelectTab(_)

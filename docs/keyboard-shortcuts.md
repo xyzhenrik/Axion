@@ -20,6 +20,7 @@ changes. The names in the last column are what you use in `keymap.toml` (see
 | Select last tab | Alt+9 | `select_last_tab` |
 | Pin or unpin tab | Alt+P | `pin_tab` |
 | Tab overview | Alt+O, F9 | `tab_overview` |
+| Search tabs, recently closed tabs and history | Ctrl+Shift+A | `search_tabs` |
 
 ## Navigation
 
