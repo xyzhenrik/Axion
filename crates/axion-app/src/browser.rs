@@ -526,7 +526,9 @@ impl Browser {
                 options.size.unwrap_or(DEFAULT_WINDOW_SIZE),
             ))
             .with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 360.0))
-            .with_maximized(options.maximized);
+            .with_maximized(options.maximized)
+            // Test runs (`--capture`, `AXION_NO_FOCUS=1`) must not steal the focus from the user.
+            .with_active(options.capture.is_none() && std::env::var_os("AXION_NO_FOCUS").is_none());
         // Wayland app id / X11 class: matches `axion.desktop`, so the shell shows our icon.
         #[cfg(target_os = "linux")]
         let attributes = {
