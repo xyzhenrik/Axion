@@ -490,6 +490,11 @@ pub struct Glass {
     /// so a button is pure refractive glass with nothing dark around it; panels, sheets and
     /// popovers keep their shadow.
     pub button_shadow: f32,
+    /// Reduce Transparency: tint opacity (0-1) of a held knob's lens (switch, slider, the pill of
+    /// a segmented control). Panels turn opaque, but a lens lies over the label or track it
+    /// highlights, so it stays a see-through highlight (no blur, no refraction) that never hides
+    /// what is under it.
+    pub reduced_lens_opacity: f32,
     /// Tint opacity (0–1) of tinted (primary, destructive) glass buttons: how much of the accent
     /// colour the glass takes. The rest is the backdrop, refracted, with the rim light on top.
     pub tinted_opacity: f32,
@@ -581,6 +586,7 @@ impl Default for Glass {
             menu_plate_opacity: 0.6,
             button_opacity: 0.04,
             button_shadow: 0.0,
+            reduced_lens_opacity: 0.22,
             tinted_opacity: 0.65,
             tinted_rim: 1.6,
             adaptive_opacity: 0.12,
@@ -717,6 +723,10 @@ pub struct Motion {
     pub switch: SpringSpec,
     /// Multiplies every spring response (0.5 = twice as fast).
     pub speed: f32,
+    /// A click (press and release without moving, a touchpad tap) holds the press swell of a
+    /// glass button at least this long (seconds) before it springs back, so a tap that is over
+    /// within one frame still animates. 0 turns the minimum off.
+    pub tap_hold: f32,
 }
 
 impl Default for Motion {
@@ -735,6 +745,7 @@ impl Default for Motion {
             tab_close: SpringSpec { response: 0.34, damping: 0.95 },
             switch: SpringSpec { response: 0.18, damping: 0.80 },
             speed: 1.0,
+            tap_hold: 0.09,
         }
     }
 }

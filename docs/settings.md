@@ -119,6 +119,7 @@ Fine-tune the glass material. These settings only matter with **Glass** set to *
 | **Reduce motion** | Replaces springs and stretching with short fades. | Off | `glass.reduce_motion` |
 | Motion springs | Apple's presets, `response` = SwiftUI duration, `damping` = damping fraction (`bounce` = 1 - damping): `snappy` 0.5 / 0.85 (bounce 0.15), `smooth` 0.5 / 1.0, `bouncy` 0.5 / 0.7, `interactive` 0.15 / 0.86 (following the pointer). `liquid`, `drain*`, `fling`, `tab_close`, `switch` are Axion's own (see docs/physics.md). `speed` scales every response. | see left | `motion.*` |
 | Switch animation | The spring of a switch's knob (travel, and swelling into a glass lens while held) and of segmented controls: `response` is the period in seconds, `damping` the damping ratio. The default settles in about 0.2 s with a small bounce. Edit in `config.toml`; Reduce motion snaps it. | `response` 0.18, `damping` 0.80 | `motion.switch` |
+| Tap hold | The shortest time (seconds) a click or touchpad tap holds the press swell of a glass button before it springs back, so even a tap that is over within one frame animates. 0 turns it off; Reduce motion has no swell anyway. Edit in `config.toml`. | 0.09 | `motion.tap_hold` |
 | **Refraction** | How strongly the glass bends what is behind it. 0 to 100 %. | 55 % | `glass.light.refraction`, `glass.dark.refraction` |
 | **Blur** | How much the backdrop is blurred, as a share of the normal amount for each glass thickness. 0 to 200 %. | 100 % | `glass.light.blur`, `glass.dark.blur` (`thin`, `regular`, `thick`) |
 | **Colour dispersion** | Colour fringes along the glass rim. 0 to 40 %. | 12 % (10 % in dark mode) | `glass.light.dispersion`, `glass.dark.dispersion` |
@@ -129,6 +130,7 @@ Fine-tune the glass material. These settings only matter with **Glass** set to *
 | **Merge distance** | How close two glass shapes must be before they flow together. 0 to 40 px. | 20 px | `glass.merge_distance` |
 | Menu gap | Clear space between a menu that stands apart from its button (the Playlist's speed and sleep menus, above their buttons) and that button. Such a menu is a card of its own: no liquid bridge, its glass never flows into the button's. Edit in `config.toml`. | 10 px | `glass.menu_anchor_gap` |
 | Button shadow | Share of the glass drop shadow that a glass button casts. 0 (the default) means buttons are pure refractive glass with nothing dark around them; panels, sheets and popovers keep their shadow. Edit in `config.toml`. | 0 | `glass.button_shadow` |
+| Reduced lens opacity | Reduce Transparency: how strongly a held knob's lens (switch, slider, segmented pill) is tinted. Stays see-through so the label or track under it remains visible. Edit in `config.toml`. | 0.22 | `glass.reduced_lens_opacity` |
 
 ## Tabs & Memory
 

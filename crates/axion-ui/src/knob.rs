@@ -33,6 +33,9 @@ pub(crate) struct Knob {
     /// Where the knob would come to rest if flung with the release velocity (travel units),
     /// set by `release`: `position + project(velocity, fast deceleration)`.
     pub projected: f32,
+    /// A slider's knob follows its value exactly (the pointer drags it); otherwise (a click on
+    /// the track) it springs to the value.
+    pub follow: bool,
 }
 
 struct Drag {
@@ -51,6 +54,7 @@ impl Knob {
             speed: 0.0,
             over: 0.0,
             projected: pos,
+            follow: false,
         }
     }
 
@@ -98,6 +102,7 @@ impl Knob {
         // UIKit/SwiftUI springs do), unless the pointer had stopped before letting go.
         let fresh = drag.as_ref().is_some_and(|d| d.last.1.elapsed().as_secs_f32() < STALE_VELOCITY);
         let v = if moved && fresh { self.speed } else { 0.0 };
+        self.follow = false;
         self.pos.velocity = v;
         self.projected = self.pos.value + project(v, DECELERATION_FAST);
         self.pos.target = target;
@@ -121,6 +126,11 @@ impl Knob {
             }
         }
         self.lens.step(dt);
+    }
+
+    /// The pointer is still down on it.
+    pub fn is_held(&self) -> bool {
+        self.drag.is_some()
     }
 
     /// Nothing left to animate.

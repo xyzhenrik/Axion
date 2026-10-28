@@ -99,6 +99,8 @@ const CONTENT_REVEAL_FROM: f32 = 0.55;
 const CONTENT_REVEAL_TO: f32 = 0.9;
 /// Fading glass is grouped into this many opacity steps (each step is one glass pass).
 const GLASS_FADE_STEPS: f32 = 24.0;
+/// A rebuilt control this close (logical px) to where a moving one was takes its knob over.
+const KNOB_ADOPT_DISTANCE: f32 = 40.0;
 /// The resting pill of a segmented control, relative to the surface colour.
 const SEGMENT_PILL_OPACITY: f32 = 0.92;
 
@@ -191,6 +193,10 @@ pub struct Ui {
     clip_stack: RefCell<Vec<Rect>>,
     /// Switch and slider knobs that are held or still animating.
     knobs: HashMap<NodeId, Knob>,
+    /// Knobs that were still moving when their control was rebuilt (a settings page is rebuilt
+    /// after every change): the rebuilt control at the same place takes over, so a click
+    /// animates instead of jumping (see `Ui::adopt_retired_knobs`).
+    retired_knobs: Vec<RetiredKnob>,
     focus: Option<NodeId>,
     /// A slider being dragged.
     dragging: Option<NodeId>,
@@ -231,6 +237,7 @@ impl Ui {
             painting_clipped: Cell::new(0),
             clip_stack: RefCell::new(Vec::new()),
             knobs: HashMap::new(),
+            retired_knobs: Vec::new(),
             caret_epoch: Instant::now(),
             needs_layout: true,
             stale_hoists: Vec::new(),
@@ -411,7 +418,9 @@ impl Ui {
             if self.field_select.is_some_and(|(f, _)| f == n) {
                 self.field_select = None;
             }
-            self.knobs.remove(&n);
+            if let Some(knob) = self.knobs.remove(&n) {
+                self.retire_knob(n, knob);
+            }
             let _ = self.tree.remove(n);
         }
         self.needs_layout = true;
@@ -722,6 +731,7 @@ impl Ui {
         self.refresh_stale_hoists();
         self.compute_layout();
         self.update_frames(self.root, Vec2::ZERO);
+        self.adopt_retired_knobs();
     }
 
     /// Debug aid for translations: every visible label whose text does not fit its box (cut by
@@ -1094,6 +1104,13 @@ impl Ui {
                         }
                     } else {
                         events.extend(self.slide_to(node, p));
+                        // Dragged: the knob is under the pointer, not on its way there.
+                        if let Some(value) = self.slider_value(node)
+                            && let Some(knob) = self.knobs.get_mut(&node)
+                        {
+                            knob.follow = true;
+                            knob.pos.snap(value);
+                        }
                     }
                     return (true, events);
                 }
@@ -1251,6 +1268,70 @@ impl Ui {
         matches!(self.widget(node).map(|w| &w.kind), Some(WidgetKind::Toggle { .. }))
     }
 
+    /// Which kind of knob control `node` is: 0 switch, 1 segmented control, 2 slider.
+    fn knob_kind(&self, node: NodeId) -> Option<u8> {
+        match self.widget(node).map(|w| &w.kind) {
+            Some(WidgetKind::Toggle { .. }) => Some(0),
+            Some(WidgetKind::Segmented { .. }) => Some(1),
+            Some(WidgetKind::Slider { .. }) => Some(2),
+            _ => None,
+        }
+    }
+
+    /// Where the knob of `node` rests (its value): 0–1 along the travel.
+    fn knob_rest(&self, node: NodeId) -> f32 {
+        match self.widget(node).map(|w| &w.kind) {
+            Some(WidgetKind::Toggle { on }) => f32::from(u8::from(*on)),
+            Some(WidgetKind::Segmented { selected }) => self.segment_pos(node, *selected),
+            Some(WidgetKind::Slider { value, .. }) => *value,
+            _ => 0.0,
+        }
+    }
+
+    /// A control about to be removed keeps its moving knob for a rebuilt twin.
+    fn retire_knob(&mut self, node: NodeId, knob: Knob) {
+        if self.theme.config().glass.reduce_motion || knob.is_settled() {
+            return;
+        }
+        if let Some(kind) = self.knob_kind(node) {
+            self.retired_knobs.push(RetiredKnob { kind, center: self.frame(node).center(), knob });
+        }
+    }
+
+    /// After a rebuild: a new control of the same kind at (nearly) the place of a retired one
+    /// continues its knob, which now springs to the new value from where it was.
+    fn adopt_retired_knobs(&mut self) {
+        if self.retired_knobs.is_empty() {
+            return;
+        }
+        let mut retired = std::mem::take(&mut self.retired_knobs);
+        let mut stack = vec![self.root];
+        while let Some(node) = stack.pop() {
+            stack.extend(self.tree.children(node).unwrap_or_default());
+            let Some(kind) = self.knob_kind(node) else { continue };
+            if self.knobs.contains_key(&node) {
+                continue;
+            }
+            let at = self.frame(node).center();
+            let best = retired
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.kind == kind && r.center.distance(at) < KNOB_ADOPT_DISTANCE)
+                .min_by(|a, b| a.1.center.distance(at).total_cmp(&b.1.center.distance(at)))
+                .map(|(i, _)| i);
+            if let Some(i) = best {
+                let mut knob = retired.swap_remove(i).knob;
+                let rest = self.knob_rest(node);
+                if knob.is_held() {
+                    knob.release(rest);
+                } else {
+                    knob.pos.target = rest;
+                }
+                self.knobs.insert(node, knob);
+            }
+        }
+    }
+
     /// The knob state of a switch or slider, created at `pos` if it isn't animating yet.
     fn knob(&mut self, node: NodeId, pos: f32) -> &mut Knob {
         let spring = self.knob_spring();
@@ -1388,6 +1469,14 @@ impl Ui {
             *on = now_on;
         }
         Some(UiEvent::ValueChanged { node, value })
+    }
+
+    /// The value of `node` if it is a slider.
+    fn slider_value(&self, node: NodeId) -> Option<f32> {
+        match self.widget(node).map(|w| &w.kind) {
+            Some(WidgetKind::Slider { value, .. }) => Some(*value),
+            _ => None,
+        }
     }
 
     /// Moves a slider's knob under the pointer.
@@ -1574,7 +1663,11 @@ impl Ui {
             pull,
             distance: Animated::new(0.0, spring),
             dir: Vec2::X,
+            held_for: 0.0,
+            releasing: false,
         });
+        press.held_for = 0.0;
+        press.releasing = false;
         press.scale.spring = spring;
         press.offset.spring = spring;
         press.distance.spring = spring;
@@ -1587,11 +1680,14 @@ impl Ui {
 
     /// Lets held glass (or a lens) spring back.
     fn release_press(&mut self, node: NodeId) {
+        let hold = self.theme.config().motion.tap_hold.max(0.0);
         if let Some(press) = self.press_scale.get_mut(&node) {
-            press.scale.target = 1.0;
-            press.offset.target = Vec2::ZERO;
-            press.held.target = 0.0;
-            press.distance.target = 0.0;
+            if press.held_for < hold && !self.theme.config().glass.reduce_motion {
+                // A tap, over within a frame or two: the swell is shown first (see `animate`).
+                press.releasing = true;
+            } else {
+                press.release();
+            }
         }
     }
 
@@ -1669,7 +1765,12 @@ impl Ui {
 
     /// Advances UI animations (glass press feedback). Call once per frame.
     pub fn animate(&mut self, dt: f32) {
+        let hold = self.theme.config().motion.tap_hold.max(0.0);
         self.press_scale.retain(|_, press| {
+            press.held_for += dt;
+            if press.releasing && press.held_for >= hold {
+                press.release();
+            }
             press.scale.step(dt);
             press.offset.step(dt);
             press.held.step(dt);
@@ -1683,18 +1784,18 @@ impl Ui {
                 && press.distance.target == 0.0
                 && press.distance.is_settled(0.05))
         });
-        // A slider's knob sits where its value is; only the lens animates.
-        let sliders: Vec<(NodeId, f32)> = self
-            .knobs
-            .keys()
-            .filter_map(|&n| match self.widget(n).map(|w| &w.kind) {
-                Some(WidgetKind::Slider { value, .. }) => Some((n, *value)),
-                _ => None,
-            })
-            .collect();
+        // A slider's knob is under the pointer while dragged; after a click on the track (or a
+        // value set from outside) it springs to the value (snapping under Reduce Motion).
+        let snap = self.theme.config().glass.reduce_motion;
+        let sliders: Vec<(NodeId, f32)> =
+            self.knobs.keys().filter_map(|&n| self.slider_value(n).map(|v| (n, v))).collect();
         for (node, value) in sliders {
             if let Some(knob) = self.knobs.get_mut(&node) {
-                knob.pos.snap(value);
+                if knob.follow || snap {
+                    knob.pos.snap(value);
+                } else {
+                    knob.pos.target = value;
+                }
             }
         }
         let tree = &self.tree;
@@ -2145,6 +2246,8 @@ impl Ui {
             WidgetKind::Slider { value, line: true } => {
                 let held = self.knobs.get(&node);
                 let lens = held.map_or(0.0, |k| k.lens.value.clamp(0.0, 1.0));
+                // Where the knob is (it springs to a clicked place), not only the value.
+                let value = &held.map_or(*value, |k| k.pos.value.clamp(0.0, 1.0));
                 let rest = widget.track.unwrap_or(LINE_SLIDER);
                 let swollen = widget.track.map_or(LINE_SLIDER_HELD, |t| t * LINE_SLIDER_SWELL);
                 let h = (rest + (swollen - rest) * lens) * s;
@@ -2175,10 +2278,12 @@ impl Ui {
                     track_h / 2.0,
                     faded([label[0], label[1], label[2], 0.15]),
                 ));
-                let filled = Rect { size: Vec2::new(width * value, track_h), ..track };
-                content.quads.push(Quad::fill(filled, track_h / 2.0, faded(theme.color(Paint::Accent))));
                 let held = self.knobs.get(&node);
                 let lens = held.map_or(0.0, |k| k.lens.value.clamp(0.0, 1.0));
+                // Where the knob is (it springs to a clicked place), not only the value.
+                let value = &held.map_or(*value, |k| k.pos.value.clamp(0.0, 1.0));
+                let filled = Rect { size: Vec2::new(width * value, track_h), ..track };
+                content.quads.push(Quad::fill(filled, track_h / 2.0, faded(theme.color(Paint::Accent))));
                 let stretch = self.knob_stretch(held, width);
                 let center = Vec2::new(px.origin.x + inset + width * value, y);
                 self.paint_knob(center, Vec2::splat(knob), lens, stretch, fade, depth, true, stacks);
@@ -2447,6 +2552,29 @@ struct Press {
     distance: Animated<f32>,
     /// Unit direction of the pull (kept while the stretch springs back).
     dir: Vec2,
+    /// How long it has been held (s, summed frame times): a tap still shows its swell for
+    /// `motion.tap_hold` before it springs back.
+    held_for: f32,
+    /// Let go, but still waiting out `motion.tap_hold`.
+    releasing: bool,
+}
+
+impl Press {
+    /// Everything springs back to rest.
+    fn release(&mut self) {
+        self.releasing = false;
+        self.scale.target = 1.0;
+        self.offset.target = Vec2::ZERO;
+        self.held.target = 0.0;
+        self.distance.target = 0.0;
+    }
+}
+
+/// A moving knob whose control was removed (see `Ui::retire_knob`).
+struct RetiredKnob {
+    kind: u8,
+    center: Vec2,
+    knob: Knob,
 }
 
 struct GlassItem {
@@ -2813,8 +2941,10 @@ mod tests {
                 ];
                 if reduce {
                     let lens = theme.glass(GlassLevel::Lens, 1.0).tint;
-                    assert!((lens[3] - 1.0).abs() < 1e-6, "an opaque lens");
-                    surfaces.push(("lens", [lens[0], lens[1], lens[2]]));
+                    // A see-through highlight over the label it lies on: the label's own colour
+                    // must stay legible on it (the lens never hides what it lies over).
+                    assert!(lens[3] < 0.5, "a see-through lens");
+                    surfaces.push(("lens", over(lens, lens[3], panel)));
                 }
                 for (name, bg) in surfaces {
                     for (what, fg, min) in
@@ -4018,5 +4148,141 @@ mod tests {
         assert_ne!(ui.hit(Vec2::new(50.0, 80.0)), Some(join));
         assert_eq!(ui.glass_at(ui.root(), p, &[]).map(|g| g.0), Some(ui.frame(bar)));
         assert!(ui.glass_at(ui.root(), Vec2::new(50.0, 80.0), &[]).is_none());
+    }
+
+    /// A segmented control with three 100 x 30 segments at the top left.
+    fn segmented_three(ui: &mut Ui, selected: usize) -> (NodeId, Vec<NodeId>) {
+        let root = ui.root();
+        let seg = ui.add(
+            root,
+            Widget::segmented(selected),
+            Style { flex_direction: FlexDirection::Row, ..Default::default() },
+        );
+        let cell =
+            || Style { size: Size { width: length(100.0), height: length(30.0) }, ..Default::default() };
+        let cells = (0..3).map(|_| ui.add(seg, Widget::container(), cell())).collect();
+        ui.layout();
+        (seg, cells)
+    }
+
+    /// A plain click (press and release, no movement) on a segment makes the pill travel there
+    /// on a spring: it starts where it was, is in between a few frames later and settles.
+    #[test]
+    fn a_click_on_a_segment_animates_the_pill() {
+        let mut ui = ui();
+        let (seg, cells) = segmented_three(&mut ui, 0);
+        ui.handle(UiInput::PointerMove(ui.frame(cells[2]).center()));
+        ui.handle(UiInput::PointerDown);
+        let (_, events) = ui.handle(UiInput::PointerUp);
+        assert_eq!(events, vec![UiEvent::ValueChanged { node: seg, value: 2.0 }]);
+        let pos = |ui: &Ui| ui.knobs.get(&seg).map(|k| k.pos.value);
+        assert_eq!(pos(&ui), Some(0.0), "the knob starts at the old segment");
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            ui.animate(1.0 / 120.0);
+            seen.push(pos(&ui).expect("still animating"));
+        }
+        assert!(seen.windows(2).all(|w| w[1] > w[0]), "moving right every frame: {seen:?}");
+        assert!(seen[7] > 0.05 && seen[7] < 0.95, "in between after 8 frames: {seen:?}");
+        for _ in 0..240 {
+            ui.animate(1.0 / 120.0);
+        }
+        assert!(!ui.knobs.contains_key(&seg), "settled: the knob is gone");
+        assert_eq!(ui.segment_pos(seg, 2), 1.0);
+    }
+
+    /// Settings rebuilds its page after every change: the rebuilt control takes the moving knob
+    /// over, so the pill still travels instead of jumping.
+    #[test]
+    fn a_rebuilt_segmented_control_continues_the_pills_motion() {
+        let mut ui = ui();
+        let root = ui.root();
+        let page = ui.add(root, Widget::container(), Style::default());
+        let row_style = || Style { flex_direction: FlexDirection::Row, ..Default::default() };
+        let cell =
+            || Style { size: Size { width: length(100.0), height: length(30.0) }, ..Default::default() };
+        let seg = ui.add(page, Widget::segmented(0), row_style());
+        let cells: Vec<NodeId> = (0..3).map(|_| ui.add(seg, Widget::container(), cell())).collect();
+        ui.layout();
+        ui.handle(UiInput::PointerMove(ui.frame(cells[2]).center()));
+        ui.handle(UiInput::PointerDown);
+        ui.handle(UiInput::PointerUp);
+        for _ in 0..6 {
+            ui.animate(1.0 / 120.0);
+        }
+        let before = ui.knobs.get(&seg).expect("moving").pos.value;
+        assert!(before > 0.0 && before < 0.9);
+        // The page is rebuilt with the new selection.
+        ui.clear_children(page);
+        let seg2 = ui.add(page, Widget::segmented(2), row_style());
+        for _ in 0..3 {
+            ui.add(seg2, Widget::container(), cell());
+        }
+        ui.layout();
+        let adopted = ui.knobs.get(&seg2).expect("the rebuilt control took the knob over");
+        assert!((adopted.pos.value - before).abs() < 1e-6, "continues from where it was");
+        assert_eq!(adopted.pos.target, 1.0);
+        ui.animate(1.0 / 120.0);
+        let after = ui.knobs.get(&seg2).expect("still moving").pos.value;
+        assert!(after > before && after < 1.0, "{before} -> {after}");
+        assert!(ui.retired_knobs.is_empty());
+    }
+
+    /// A click on a slider's track makes the knob spring to that place (the value is set at
+    /// once); dragging keeps it under the pointer.
+    #[test]
+    fn a_click_on_a_slider_track_animates_the_knob() {
+        let mut ui = ui();
+        let root = ui.root();
+        let slider = ui.add(
+            root,
+            Widget::slider(0.0),
+            Style { size: Size { width: length(200.0), height: length(24.0) }, ..Default::default() },
+        );
+        ui.layout();
+        let frame = ui.frame(slider);
+        let at = |x: f32| Vec2::new(frame.origin.x + x, frame.center().y);
+        ui.handle(UiInput::PointerMove(at(188.0)));
+        let (_, events) = ui.handle(UiInput::PointerDown);
+        assert!(matches!(events[..], [UiEvent::ValueChanged { value, .. }] if value > 0.9));
+        ui.handle(UiInput::PointerUp);
+        assert_eq!(ui.knobs.get(&slider).map(|k| k.pos.value), Some(0.0), "starts at the old value");
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            ui.animate(1.0 / 120.0);
+            seen.push(ui.knobs.get(&slider).expect("moving").pos.value);
+        }
+        assert!(seen.windows(2).all(|w| w[1] > w[0]) && seen[5] < 0.9, "{seen:?}");
+        for _ in 0..240 {
+            ui.animate(1.0 / 120.0);
+        }
+        assert!(!ui.knobs.contains_key(&slider), "settled");
+        // Dragging: the knob is where the pointer is, at once.
+        ui.handle(UiInput::PointerMove(at(100.0)));
+        ui.handle(UiInput::PointerDown);
+        ui.handle(UiInput::PointerMove(at(40.0)));
+        let value = ui.slider_value(slider).expect("slider");
+        assert_eq!(ui.knobs.get(&slider).map(|k| k.pos.value), Some(value));
+    }
+
+    /// A tap that is over within one frame (touchpad tap) still shows the press swell for
+    /// `motion.tap_hold` before it springs back.
+    #[test]
+    fn a_tap_shows_its_press_swell_before_springing_back() {
+        let mut ui = ui();
+        let (_, button, _) = row(&mut ui);
+        ui.layout();
+        ui.handle(UiInput::PointerMove(Vec2::new(28.0, 28.0)));
+        ui.handle(UiInput::PointerDown);
+        ui.handle(UiInput::PointerUp);
+        let size = |ui: &Ui| ui.press_scale.get(&button).map(|p| p.scale.value);
+        for _ in 0..4 {
+            ui.animate(1.0 / 120.0);
+        }
+        assert!(size(&ui).is_some_and(|s| s > 1.0), "still swelling after 33 ms: {:?}", size(&ui));
+        for _ in 0..240 {
+            ui.animate(1.0 / 120.0);
+        }
+        assert!(size(&ui).is_none(), "sprung back and settled");
     }
 }

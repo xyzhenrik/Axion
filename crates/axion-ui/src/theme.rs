@@ -249,7 +249,9 @@ impl Theme {
         let bezel = LENS_BEZEL * scale;
         let tint = if glass.reduce_transparency {
             let rgb = self.reduced_lens_color();
-            [rgb[0], rgb[1], rgb[2], 1.0]
+            // A lens lies over the label or track it highlights (a knob, a segmented pill): it
+            // stays a see-through highlight, panels are the opaque ones.
+            [rgb[0], rgb[1], rgb[2], glass.reduced_lens_opacity.clamp(0.0, 1.0)]
         } else {
             [1.0, 1.0, 1.0, LENS_TINT]
         };
