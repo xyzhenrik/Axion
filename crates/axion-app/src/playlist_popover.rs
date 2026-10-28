@@ -229,7 +229,7 @@ fn button(ui: &mut Ui, parent: NodeId, id: ActionId, icon: Icon, text: &str, pri
     let (background, paint) = if primary {
         (Background::TintedGlass(GlassLevel::Thin, Paint::Accent), Paint::OnAccent)
     } else {
-        (Background::Fill(Paint::Label, 0.08), Paint::Label)
+        (Background::Glass(GlassLevel::Thin), Paint::Label)
     };
     let node = ui.add(
         parent,

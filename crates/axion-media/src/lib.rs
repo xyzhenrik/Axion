@@ -86,6 +86,8 @@ pub struct Player {
     /// Seconds; 0 while unknown.
     pub duration: f64,
     pub live: bool,
+    /// Waiting for data: loading, or buffering (not enough decoded to keep playing).
+    pub loading: bool,
     pub volume: f64,
     pub muted: bool,
     pub rate: f64,

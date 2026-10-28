@@ -495,7 +495,10 @@ impl PipWindow {
         // whole capsule is the thing to grab (not a thin line).
         let bar = ui.add(
             controls,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(CAPSULE),
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thick))
+                .with_button_tint()
+                .with_radius(CAPSULE),
             Style {
                 position: Position::Absolute,
                 flex_direction: FlexDirection::Row,
@@ -523,6 +526,7 @@ impl PipWindow {
             controls,
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thick))
+                .with_button_tint()
                 .with_radius(CAPSULE)
                 .with_clip(),
             Style { position: Position::Absolute, ..Default::default() },

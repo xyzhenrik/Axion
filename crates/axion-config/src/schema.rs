@@ -1805,6 +1805,10 @@ pub struct Media {
     pub now_playing_marquee: bool,
     /// Scroll speed of that title (logical px per second).
     pub now_playing_marquee_speed: f32,
+    /// Show a turning ring on the players while a video loads or buffers.
+    pub loading_indicator: bool,
+    /// Seconds for one turn of that ring.
+    pub loading_spin_seconds: f32,
 }
 
 impl Media {
@@ -1872,6 +1876,8 @@ impl Default for Media {
             now_playing_artwork: true,
             now_playing_marquee: true,
             now_playing_marquee_speed: 28.0,
+            loading_indicator: true,
+            loading_spin_seconds: 0.9,
         }
     }
 }
