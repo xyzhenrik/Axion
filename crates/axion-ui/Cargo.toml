@@ -21,3 +21,4 @@ workspace = true
 
 [dev-dependencies]
 pollster.workspace = true
+image.workspace = true

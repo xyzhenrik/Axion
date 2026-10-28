@@ -24,6 +24,9 @@ pub(crate) struct Knob {
     drag: Option<Drag>,
     /// Smoothed speed along the travel (units per second), for the squash.
     pub speed: f32,
+    /// How far the pointer is beyond the travel's ends (units of the travel, unbanded; 0 inside
+    /// it): the glass is pulled by that much, and stretches with it on the drag curve.
+    pub over: f32,
 }
 
 struct Drag {
@@ -35,7 +38,13 @@ struct Drag {
 
 impl Knob {
     pub fn new(pos: f32, spring: Spring) -> Self {
-        Self { pos: Animated::new(pos, spring), lens: Animated::new(0.0, spring), drag: None, speed: 0.0 }
+        Self {
+            pos: Animated::new(pos, spring),
+            lens: Animated::new(0.0, spring),
+            drag: None,
+            speed: 0.0,
+            over: 0.0,
+        }
     }
 
     /// Pointer down at `x` (logical px): the knob swells into the lens.
@@ -55,6 +64,7 @@ impl Knob {
             return;
         }
         let raw = drag.start_pos + (x - drag.start_x) / travel.max(1.0);
+        self.over = if raw < 0.0 { -raw } else { (raw - 1.0).max(0.0) };
         let pos = if raw < 0.0 {
             rubber_band(raw, OVERPULL)
         } else if raw > 1.0 {
@@ -90,6 +100,7 @@ impl Knob {
         self.pos.step(dt);
         if self.drag.is_none() {
             self.speed *= 1.0 - VELOCITY_SMOOTHING;
+            self.over *= 1.0 - VELOCITY_SMOOTHING;
             if (self.pos.value - self.pos.target).abs() < REFROST_DISTANCE {
                 self.lens.target = 0.0;
             }

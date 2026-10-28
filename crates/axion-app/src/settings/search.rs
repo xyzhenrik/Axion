@@ -321,6 +321,8 @@ pub const INDEX: &[Entry] = &[
     control(C::LiquidGlass, S::Blur, &["frosted", "unschärfe", "weichzeichnen", "milky"]),
     control(C::LiquidGlass, S::Dispersion, &["rainbow", "chromatic", "prism", "farbsaum"]),
     control(C::LiquidGlass, S::Squash, &["stretch", "jelly", "wobble", "physics", "physik", "dehnen"]),
+    control(C::LiquidGlass, S::DragStretch, &["stretch", "pull", "drag", "jelly", "ziehen", "dehnen"]),
+    control(C::LiquidGlass, S::DragResistance, &["resistance", "rubber", "band", "widerstand", "pull"]),
     control(C::LiquidGlass, S::MergeDistance, &["blob", "connect", "drops", "verschmelzen", "goo"]),
     page(
         C::Keyboard,
