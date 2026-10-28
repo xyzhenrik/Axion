@@ -315,6 +315,12 @@ pub const INDEX: &[Entry] = &[
     page(C::Tabs, tr_mark("Tab bar layout"), &["compact", "separate", "tab strip", "tableiste", "kompakt"]),
     control(C::Tabs, S::TintFromPage, &["color", "page colour", "tint", "farbe"]),
     control(C::Tabs, S::OpenInBackground, &["new tab", "links", "hintergrund", "middle click"]),
+    control(C::Tabs, S::DragOutLinks, &["drag", "tab", "link", "paste", "ziehen", "text field"]),
+    control(
+        C::Tabs,
+        S::MiddleClickClosesTab,
+        &["middle click", "mittlere maustaste", "close tab", "mouse wheel"],
+    ),
     page(C::Tabs, tr_mark("Close tabs"), &["auto close", "old tabs", "cleanup", "schließen", "aufräumen"]),
     page(
         C::Tabs,

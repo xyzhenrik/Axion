@@ -46,6 +46,10 @@ zeroize = "1"
 # data-control) and the pointer during file drags (X11).
 wl-clipboard-rs = "0.9"
 x11rb = { version = "0.13", default-features = false }
+# Dragging a tab out of the window starts a Wayland drag on winit's connection (winit 0.30 cannot
+# be a drag source; see `platform::dragout`). Both come with winit already.
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
 # Already in the tree (wayland, wl-clipboard-rs): with `AXION_STALL_STACK` a debugger may read
 # the main thread's stack during a freeze (see `platform::stall`).
 rustix = { version = "1.1", features = ["process"] }

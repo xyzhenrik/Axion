@@ -433,6 +433,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "wayland-backend",
+ "wayland-client",
  "wgpu",
  "winit",
  "wl-clipboard-rs",
