@@ -13,6 +13,7 @@ use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, Shadow, TextSty
 use glam::Vec2;
 
 use crate::favicons::{Favicons, favicon_node};
+use crate::tabclose::{Dying, Kind, Slide, slide_spring};
 use crate::tabs::Tabs;
 use crate::url::display_host;
 
@@ -107,6 +108,8 @@ impl OverviewAction {
 struct Card {
     tab: usize,
     view: ViewId,
+    /// The whole card (thumbnail and title).
+    node: NodeId,
     image: NodeId,
 }
 
@@ -139,6 +142,9 @@ pub struct Overview {
     ghost_size: Animated<Vec2>,
     /// Which tab the ghost shows (the active tab when opening, the chosen one when closing).
     ghost_view: Option<ViewId>,
+    /// Cards of closed tabs, shrinking away, and the other cards sliding into the gap.
+    dying: Vec<Dying>,
+    slide: Slide<ViewId>,
     scroll: f32,
     content_height: f32,
     window: Vec2,
@@ -378,6 +384,8 @@ impl Overview {
             ghost_origin: Animated::new(Vec2::ZERO, Spring::SMOOTH),
             ghost_size: Animated::new(Vec2::ONE, Spring::SMOOTH),
             ghost_view: None,
+            dying: Vec::new(),
+            slide: Slide::default(),
             scroll: 0.0,
             content_height: 0.0,
             window: Vec2::ONE,
@@ -439,6 +447,68 @@ impl Overview {
         ui.set_visible(self.ghost, false);
         ui.set_visible(self.root, false);
         ui.blur()
+    }
+
+    /// A tab is about to be closed: its card leaves the grid as a ghost that shrinks away, and
+    /// the cards are noted where they are drawn, to slide into the gap once the grid is rebuilt
+    /// (call before `rebuild`). Nothing happens while the overview is not shown.
+    pub fn begin_close(&mut self, ui: &mut Ui, view: ViewId, config: &Config) {
+        if !self.is_open() || self.phase == Phase::Closing {
+            return;
+        }
+        let drawn = |ui: &Ui, node: NodeId| {
+            ui.widget(node).and_then(|w| w.visual_frame).unwrap_or_else(|| ui.frame(node))
+        };
+        self.slide
+            .remember(self.cards.iter().map(|c| (c.view, drawn(ui, c.node).origin)), slide_spring(config));
+        let Some(at) = self.cards.iter().position(|c| c.view == view) else { return };
+        let card = self.cards.remove(at);
+        let frame = drawn(ui, card.node);
+        let visible = frame.size.x > 0.0
+            && frame.origin.y + frame.size.y > 0.0
+            && frame.origin.y < self.window.y
+            && frame.origin.x < self.window.x;
+        let Some(grid) = ui.parent(card.node) else { return };
+        let rest: Vec<NodeId> = ui.children(grid).into_iter().filter(|&n| n != card.node).collect();
+        ui.set_children(grid, &rest);
+        if !visible {
+            ui.remove(card.node);
+            return;
+        }
+        let mut shown = ui.children(self.root);
+        shown.push(card.node);
+        ui.set_children(self.root, &shown);
+        let mut ghost = Dying::new(ui, card.node, frame, Kind::Card, config);
+        ghost.image = Some((card.image, card.view));
+        self.dying.push(ghost);
+    }
+
+    /// After layout, every frame: the cards slide to their places, the cards of closed tabs
+    /// shrink away.
+    pub fn animate_cards(&mut self, ui: &mut Ui, config: &Config, dt: f32) {
+        if !self.is_open() {
+            for ghost in self.dying.drain(..) {
+                ui.remove(ghost.node);
+            }
+            self.slide.clear();
+            return;
+        }
+        if !self.slide.is_idle() {
+            let nodes: Vec<(ViewId, NodeId)> = self.cards.iter().map(|c| (c.view, c.node)).collect();
+            if self.slide.animate(ui, &nodes, slide_spring(config), config.glass.reduce_motion, dt) {
+                self.slide.clear();
+            }
+        }
+        for ghost in &mut self.dying {
+            ghost.step(ui, dt);
+        }
+        self.dying.retain(|ghost| {
+            let gone = ghost.is_gone();
+            if gone {
+                ui.remove(ghost.node);
+            }
+            !gone
+        });
     }
 
     /// Swaps the segmented control for the search field (and back). Returns the events of
@@ -613,7 +683,7 @@ impl Overview {
                 },
             );
             let _ = text;
-            self.cards.push(Card { tab: i, view: tab.view, image });
+            self.cards.push(Card { tab: i, view: tab.view, node: card, image });
         }
         // The zooming page belongs to the other group now (switched to/from Private while
         // opening): end the zoom instead of flying a card that isn't in the grid.
@@ -747,6 +817,9 @@ impl Overview {
             // The card being zoomed is shown by the ghost instead.
             let hidden = zooming && Some(card.view) == ghost_view;
             ui.set_opacity(card.image, if hidden { 0.0 } else { 1.0 });
+        }
+        for (image, view) in self.dying.iter().filter_map(|g| g.image) {
+            ui.set_image(image, frame_of(view));
         }
         ui.set_visible(self.ghost, zooming);
         if zooming {

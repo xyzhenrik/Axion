@@ -167,6 +167,19 @@ pub struct TabItem {
     pub surface: Surface,
 }
 
+/// A tab's node taken out of the chrome by [`Chrome::detach_tab`].
+#[derive(Clone, Copy, Debug)]
+pub struct DetachedTab {
+    pub surface: Surface,
+    /// `None` for the compact bar's open segment (it stays; the tab looks like it).
+    pub node: Option<NodeId>,
+    /// Where it was drawn.
+    pub frame: Frame,
+}
+
+/// How far beyond the tabs' row the pointer still keeps closed tabs' widths held (logical px).
+const TAB_HOLD_MARGIN: f32 = 4.0;
+
 /// The sidebar's lists as laid out when a drag starts (logical px): a drop's place is decided
 /// against these, so the rows sliding aside don't move the targets.
 #[derive(Clone, Debug, Default)]
@@ -550,6 +563,14 @@ struct TabWidths {
     strip_area: (f32, f32),
     /// The strip's applied left edge and width.
     strip_applied: (f32, f32),
+    /// A tab was closed with the pointer in the bar: the width the tabs had then, which they
+    /// keep until the pointer leaves (`tabs.keep_widths_while_closing`), and the separate
+    /// bar's width then.
+    hold: Option<f32>,
+    hold_strip: f32,
+    /// How much wider than its tabs the separate bar is held (it springs back to 0 once the
+    /// hold ends).
+    strip_extra: Animated<f32>,
 }
 
 /// The bookmarks bar: favicons and titles on a glass capsule, what doesn't fit behind a
@@ -1603,6 +1624,9 @@ impl Chrome {
                 separator_hover: None,
                 strip_area: (0.0, 0.0),
                 strip_applied: (-1.0, -1.0),
+                hold: None,
+                hold_strip: 0.0,
+                strip_extra: Animated::new(0.0, Spring::SMOOTH),
             },
             bookmarks,
         };
@@ -2304,6 +2328,7 @@ impl Chrome {
             config.glass.damping(config.motion.smooth.damping),
         );
         widths.address_width.spring = widths.width.spring;
+        widths.strip_extra.spring = widths.width.spring;
         widths.applied = -1.0;
         let widths_floor = l.tab_icon_width.min(l.tab_min_width);
         let mut address = ui.style(self.address);
@@ -2691,6 +2716,76 @@ impl Chrome {
     /// The items of `surface`, in order.
     pub fn tab_items(&self, surface: Surface) -> Vec<TabItem> {
         self.items.iter().copied().filter(|i| i.surface == surface).collect()
+    }
+
+    /// A closing tab: takes its nodes out of the tree before `sync_tabs` rebuilds it, so they
+    /// can shrink away as ghosts (see `tabclose`). Where a node cannot leave (the compact bar's
+    /// open segment is the address), `node` is `None`. Only tabs that are shown are returned.
+    pub fn detach_tab(&mut self, ui: &mut Ui, view: ViewId) -> Vec<DetachedTab> {
+        let mut out = Vec::new();
+        for item in self.items.clone().into_iter().filter(|i| i.view == view) {
+            let Some(parent) = ui.parent(item.node) else { continue };
+            // A hidden list or sidebar has no rows to show leaving.
+            let shown = match item.surface {
+                Surface::Sidebar => ui.is_visible(self.sidebar) && ui.is_visible(parent),
+                Surface::Bar => ui.is_visible(item.node),
+            };
+            let frame =
+                ui.widget(item.node).and_then(|w| w.visual_frame).unwrap_or_else(|| ui.frame(item.node));
+            if !shown {
+                continue;
+            }
+            if item.node == self.address {
+                out.push(DetachedTab { surface: item.surface, node: None, frame });
+                continue;
+            }
+            let rest: Vec<NodeId> = ui.children(parent).into_iter().filter(|&n| n != item.node).collect();
+            ui.set_children(parent, &rest);
+            self.pills.retain(|&p| p != item.node);
+            out.push(DetachedTab { surface: item.surface, node: Some(item.node), frame });
+        }
+        out
+    }
+
+    /// Closing with the pointer on the tabs: they keep their widths while it stays there.
+    pub fn hold_tab_widths(&mut self, ui: &Ui, pointer: Option<Vec2>) {
+        if self.tab_widths.hold.is_some() || !self.tab_widths.ready {
+            return;
+        }
+        let Some(area) = self.tab_hold_area(ui) else { return };
+        if pointer.is_some_and(|p| area.contains(p)) {
+            self.tab_widths.hold = Some(self.tab_widths.width.value);
+            self.tab_widths.hold_strip = self.tab_widths.strip_applied.1.max(0.0);
+        }
+    }
+
+    /// Whether the tabs keep their widths and the pointer has left the bar (or `force`): they
+    /// are free again and spring to their widths. Returns whether they were held.
+    pub fn release_tab_widths(&mut self, ui: &Ui, pointer: Option<Vec2>, force: bool) -> bool {
+        if self.tab_widths.hold.is_none() {
+            return false;
+        }
+        let inside = self.tab_hold_area(ui).is_some_and(|a| pointer.is_some_and(|p| a.contains(p)));
+        if inside && !force {
+            return false;
+        }
+        self.tab_widths.hold = None;
+        true
+    }
+
+    pub fn tab_widths_held(&self) -> bool {
+        self.tab_widths.hold.is_some()
+    }
+
+    /// Where the pointer keeps closed tabs' widths held: the tabs' row, a little beyond.
+    fn tab_hold_area(&self, ui: &Ui) -> Option<Frame> {
+        let node = if self.tab_bar == TabBarStyle::Separate { self.tab_strip } else { self.tab_capsule };
+        if !ui.is_visible(node) {
+            return None;
+        }
+        let f = ui.frame(node);
+        let margin = TAB_HOLD_MARGIN;
+        Some(Frame { origin: f.origin - Vec2::splat(margin), size: f.size + Vec2::splat(2.0 * margin) })
     }
 
     /// The sidebar's lists as laid out now (see [`SidebarLayout`]).
@@ -3263,8 +3358,13 @@ impl Chrome {
             widths.address_width.target = s.flexible;
             s
         };
-        let target = sizes.flexible;
+        // Closing with the pointer in the bar: the tabs keep their widths until it leaves.
+        let target = crate::tabclose::held_width(sizes.flexible, widths.hold);
         widths.width.target = target;
+        if tiled && !editing {
+            widths.address_width.target =
+                crate::tabclose::held_width(widths.address_width.target, widths.hold);
+        }
         if !widths.ready || widths.reduce_motion {
             widths.width.snap(target);
             let at = widths.address_width.target;
@@ -3281,7 +3381,16 @@ impl Chrome {
             let gaps = count.saturating_sub(1) as f32 * TAB_GAP;
             let tabs = flexible as f32 * width + pinned as f32 * sizes.pinned + gaps;
             let (left, span) = widths.strip_area;
-            let strip_width = (tabs + 2.0 * inner_padding).min(span);
+            let natural = (tabs + 2.0 * inner_padding).min(span);
+            let held = if widths.hold.is_some() { widths.hold_strip.min(span) } else { 0.0 };
+            widths.strip_extra.target = (held - natural).max(0.0);
+            if widths.reduce_motion {
+                let at = widths.strip_extra.target;
+                widths.strip_extra.snap(at);
+            } else {
+                widths.strip_extra.step(dt);
+            }
+            let strip_width = (natural + widths.strip_extra.value.max(0.0)).min(span);
             let placed = (left + (span - strip_width) / 2.0, strip_width);
             if (placed.0 - widths.strip_applied.0).abs() > 0.05
                 || (placed.1 - widths.strip_applied.1).abs() > 0.05

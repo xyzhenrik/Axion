@@ -361,6 +361,10 @@ pub struct Browser {
     /// The plane the sidebar is drawn before (its place while nothing is locked).
     sidebar_before: Option<axion_ui::taffy::NodeId>,
     tab_drag: TabDrag,
+    /// Closed tabs shrinking away in the bar and the sidebar.
+    tab_close: crate::tabclose::TabClose,
+    /// Capture aid (`--open=close-burst:N`): the shown tab is closed once per frame, N times.
+    close_burst: u32,
     /// Right-click menus of tabs and bookmarks, and the tab (view, private) one was opened for.
     context_menus: ContextMenus,
     context_tab: Option<(ViewId, bool)>,
@@ -700,6 +704,7 @@ impl Browser {
         let update_check_at = axion_update::auto_check_due(&config.updates, &axion_update::SystemClock)
             .then(|| Instant::now() + Duration::from_secs(u64::from(config.updates.startup_delay_seconds)));
         // The dragged tab's lens above the chrome, and the lock screen's alert above all.
+        let tab_close = crate::tabclose::TabClose::build(&mut ui);
         let tab_drag = TabDrag::build(&mut ui);
         let context_menus = ContextMenus::build(
             &mut ui,
@@ -817,6 +822,8 @@ impl Browser {
             pending_move: None,
             sidebar_before,
             tab_drag,
+            tab_close,
+            close_burst: 0,
             context_menus,
             context_tab: None,
             page_context: None,
@@ -1008,6 +1015,8 @@ impl Browser {
         if activate {
             self.on_active_changed(previous);
         }
+        // A new tab: the tabs are not held at their widths any more.
+        self.chrome.release_tab_widths(&self.ui, None, true);
         self.tabs_changed = true;
         Ok(())
     }
@@ -1018,6 +1027,17 @@ impl Browser {
             self.playlist.pending.remove(&view);
         }
         let previous = self.tabs.active().map(|t| t.view);
+        if self.config.tabs.close_animation
+            && let Some(tab) = self.tabs.all().get(index)
+        {
+            // The tab shrinks away in the bar and the sidebar (see `tabclose`); the model and
+            // the page switch below do not wait for it.
+            let label = if tab.url.is_empty() { tab.label() } else { crate::url::display_host(&tab.url) };
+            self.tab_close.begin(tab.view, &tab.url, label);
+            if self.config.tabs.keep_widths_while_closing && !tab.pinned {
+                self.chrome.hold_tab_widths(&self.ui, self.pointer);
+            }
+        }
         let Some(tab) = self.tabs.remove(index) else { return };
         self.engine.close_view(tab.view);
         self.tabs_changed = true;
@@ -2558,6 +2578,11 @@ impl Browser {
             OverviewAction::Select(i) => self.close_overview(i),
             OverviewAction::Done => self.close_overview(self.tabs.active_index()),
             OverviewAction::Close(i) if !self.is_locked() => {
+                if self.config.tabs.close_animation
+                    && let Some(view) = self.tabs.all().get(i).map(|t| t.view)
+                {
+                    self.overview.begin_close(&mut self.ui, view, &self.config);
+                }
                 if self.tabs.len() == 1 && !self.private_mode {
                     // The only tab: no new one until the overview is left.
                     self.close_last_tab_quietly(i);
@@ -3107,6 +3132,34 @@ impl Browser {
     /// The drag's per-frame step before layout (the slot follows the pointer).
     fn update_tab_drag(&mut self, dt: f32) {
         self.tab_drag.update(&mut self.ui, &mut self.chrome, &self.config, dt);
+        // Tabs held at their widths after a close are free once the pointer leaves the bar (they
+        // slide to their widths), and at once when a drag starts.
+        if self.chrome.tab_widths_held() {
+            let force = self.tab_drag.is_dragging() || !self.config.tabs.keep_widths_while_closing;
+            self.release_held_tabs(force);
+        }
+    }
+
+    fn release_held_tabs(&mut self, force: bool) {
+        if self.chrome.release_tab_widths(&self.ui, self.pointer, force) {
+            tracing::debug!("tab widths released");
+        }
+    }
+
+    /// Before the chrome is rebuilt after tabs were closed: their nodes leave the old tree as
+    /// ghosts that shrink away, and the remaining tabs are noted where they are drawn, to slide
+    /// into the gap. Not while the overview covers the bars (it animates its own cards).
+    fn start_close_animations(&mut self) {
+        if !self.tab_close.has_pending() {
+            return;
+        }
+        if !self.config.tabs.close_animation || self.overview.is_open() {
+            self.tab_close.discard_pending();
+            return;
+        }
+        let window = self.logical_size();
+        self.tab_close.adopt(&mut self.ui, &mut self.chrome, &self.favicons, &self.config, window);
+        self.tab_drag.remember_rows(&self.ui, &self.chrome, &self.config);
     }
 
     fn toggle_shields_popover(&mut self) {
@@ -5595,6 +5648,7 @@ impl Browser {
             self.session_changed = Instant::now();
             let normal_count = if self.private_mode { self.parked.len() } else { self.tabs.len() };
             self.chrome.set_normal_count(normal_count);
+            self.start_close_animations();
             self.chrome.sync_tabs(&mut self.ui, &self.tabs, &self.parked, &self.favicons);
             let audio = self.tabs.active().map_or((false, false), |t| (t.playing_media, t.muted));
             self.chrome.set_audio(&mut self.ui, audio.0, audio.1);
@@ -5629,6 +5683,10 @@ impl Browser {
             // Done with the field or a menu while the pointer is elsewhere: they go again.
             self.fullscreen_reveal_pointer(p);
         }
+        if self.close_burst > 0 {
+            self.close_burst -= 1;
+            self.run(Action::CloseTab);
+        }
         if self.overview_at.is_some_and(|at| now >= at) {
             self.overview_at = None;
             self.open_overview();
@@ -5647,6 +5705,34 @@ impl Browser {
                 "devtools-console" => self.run(Action::DevToolsConsole),
                 "view-source" => self.run(Action::ViewSource),
                 "close-tab" => self.run(Action::CloseTab),
+                // Capture aids for the close animation: close tab N (0-based) without the
+                // active-tab rules, close the shown tab N times on consecutive frames, put the
+                // pointer at X:Y (on a tab: the widths stay held), and close card N of the
+                // overview (opening it first).
+                at if at.starts_with("close-tab-at:") => {
+                    if let Ok(i) = at["close-tab-at:".len()..].parse::<usize>() {
+                        self.close_tab(i);
+                    }
+                }
+                burst if burst.starts_with("close-burst:") => {
+                    self.close_burst = burst["close-burst:".len()..].parse().unwrap_or(0);
+                }
+                at if at.starts_with("pointer:") => {
+                    if let Some((x, y)) = at["pointer:".len()..].split_once(':')
+                        && let (Ok(x), Ok(y)) = (x.parse::<f32>(), y.parse::<f32>())
+                    {
+                        self.pointer_moved(Vec2::new(x, y));
+                    }
+                }
+                "overview-open" => self.open_overview(),
+                card if card.starts_with("overview-close:") => {
+                    if let Ok(i) = card["overview-close:".len()..].parse::<usize>() {
+                        if !self.overview.is_open() {
+                            self.open_overview();
+                        }
+                        self.overview_action(OverviewAction::Close(i));
+                    }
+                }
                 // Capture aids: the page menu with its zoom submenu open, a zoom step in it,
                 // and closing every popup at once (mid-animation with --lead / frame sequences).
                 "zoom-menu" => self.menu.open_first_submenu(&mut self.ui, &self.config),
@@ -6472,6 +6558,8 @@ impl Browser {
         self.ui.layout();
         self.frame_times.ui_layout = ms_since(started);
         self.tab_drag.animate_rows(&mut self.ui, &self.chrome, &self.config, dt);
+        self.tab_close.animate(&mut self.ui, dt);
+        self.overview.animate_cards(&mut self.ui, &self.config, dt);
         if let Some(view) = self.display_view() {
             self.engine.request_frame(view);
         }

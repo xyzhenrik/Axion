@@ -650,6 +650,9 @@ pub struct Motion {
     pub drain_drop: f32,
     /// Overview zoom, scroll hand-off.
     pub fling: SpringSpec,
+    /// A closing tab shrinking and fading away (tab bar, sidebar, overview). The tabs beside it
+    /// slide into the gap on `snappy`.
+    pub tab_close: SpringSpec,
     /// Multiplies every spring response (0.5 = twice as fast).
     pub speed: f32,
 }
@@ -665,6 +668,7 @@ impl Default for Motion {
             drain_absorb: SpringSpec { response: 0.20, damping: 1.00 },
             drain_drop: 18.0,
             fling: SpringSpec { response: 0.60, damping: 0.85 },
+            tab_close: SpringSpec { response: 0.34, damping: 0.95 },
             speed: 1.0,
         }
     }
@@ -1418,6 +1422,13 @@ pub struct Tabs {
     /// A press on a tab turns into dragging it (to reorder, or to move it between normal and
     /// private tabs) once the pointer moved this far (logical px); shorter moves are clicks.
     pub drag_threshold: f32,
+    /// A tab that is closed shrinks and fades away while the tabs beside it slide into its place
+    /// (tab bar, sidebar and tab overview). Off: tabs vanish at once. Reduce Motion and flat
+    /// mode keep only a short fade.
+    pub close_animation: bool,
+    /// Closing tabs with the pointer in the tab bar: the remaining tabs keep their widths until
+    /// the pointer leaves the bar, so the next close button stays under the pointer.
+    pub keep_widths_while_closing: bool,
     /// Pages draw at most this many frames per second; 0 follows the display's refresh rate.
     pub max_frame_rate: u32,
     /// Following the display (`max_frame_rate = 0`), pages draw at most this many frames per
@@ -1447,6 +1458,8 @@ impl Default for Tabs {
             close_after_days: 0,
             check_interval_seconds: 5.0,
             drag_threshold: 6.0,
+            close_animation: true,
+            keep_widths_while_closing: true,
             max_frame_rate: 0,
             max_frame_rate_cap: 120,
             gpu_frame_settle_ms: 6.0,

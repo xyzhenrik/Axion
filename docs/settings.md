@@ -131,6 +131,8 @@ How tabs look and how Axion saves memory. See [Tabs and memory](features/tabs-an
 | **Colour in tab bar** | Tints the window around the page with a colour taken from the page, like Safari. | Off | `appearance.tint_from_page` |
 | **Page colour** (**Extreme** / **Dominant**) | Shown when **Colour in tab bar** is on. **Extreme** takes the darkest or lightest prominent colour. **Dominant** takes the main colour, evened out. Turning the colour on switches from neutral to **Extreme**. | Neutral (page colour off) | `appearance.tint_mode` (`neutral`, `extreme`, `dominant`) |
 | **Open new tabs in background** | Tabs opened from links do not take over the screen. | On | `tabs.open_links_in_background` |
+| **Animate closing tabs** | A closed tab shrinks and fades away (tab bar, sidebar and tab overview) while the tabs beside it slide into the gap. With **Reduce motion** or the flat glass style only a short fade stays. The spring is `motion.tab_close`. | On | `tabs.close_animation` |
+| **Keep tab widths while closing** | After closing a tab with the pointer in the tab bar, the other tabs keep their widths until the pointer leaves the bar, so the next close button stays under it. | On | `tabs.keep_widths_while_closing` |
 | **Close tabs** | Closes tabs you have not looked at for a while: **Manually** (never), **After a Day**, **After a Week**, **After a Month**. Pinned tabs and tabs playing media stay. | Manually | `tabs.close_after_days` (0, 1, 7, 30) |
 | **Bookmarks bar** | When the bookmarks bar shows: **Always**, **On Home Page**, **Never**. | Always | `layout.bookmarks_bar` (`always`, `home`, `never`) |
 

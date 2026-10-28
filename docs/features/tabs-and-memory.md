@@ -58,6 +58,15 @@ and unloading rules as other tabs.
 month. The default is **Manually**, which never closes anything. Pinned tabs and tabs playing media
 are kept. This only applies to normal tabs, not private ones.
 
+## Closing a tab
+
+A closed tab shrinks and fades away in the tab bar, the sidebar and the tab overview while the
+tabs beside it slide into the gap. The page of the new current tab shows at once. When you close
+tabs with the pointer in the tab bar, the other tabs keep their widths until the pointer leaves the
+bar, so the next close button stays under the pointer. Turn the motion off with **Animate closing
+tabs**, the width holding with **Keep tab widths while closing**. **Reduce motion** and the flat
+glass style keep only a short fade.
+
 ## Related options
 
 - **Open new tabs in background** keeps your current page in front when you open links in new tabs.

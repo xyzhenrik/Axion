@@ -67,6 +67,7 @@ mod shields_popover;
 mod stall;
 mod suggestions;
 mod svg_icons;
+mod tabclose;
 mod tabdrag;
 mod tabs;
 mod toast;

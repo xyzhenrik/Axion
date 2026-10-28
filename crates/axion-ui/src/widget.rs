@@ -205,6 +205,8 @@ pub struct Widget {
     pub track: Option<f32>,
     /// Shown in a glass label after the pointer rests on the widget (see `Ui::hovered_tooltip`).
     pub tooltip: Option<Tooltip>,
+    /// The pointer passes through this widget and everything inside it (a tab that is closing).
+    pub passthrough: bool,
     /// Absolute frame in logical pixels, updated by layout.
     pub(crate) frame: Rect,
 }
@@ -232,6 +234,7 @@ impl Widget {
             clip: false,
             track: None,
             tooltip: None,
+            passthrough: false,
             frame: Rect::default(),
         }
     }

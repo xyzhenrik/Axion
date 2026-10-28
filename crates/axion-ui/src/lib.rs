@@ -545,6 +545,13 @@ impl Ui {
         }
     }
 
+    /// Lets the pointer pass through `node` and everything inside it.
+    pub fn set_passthrough(&mut self, node: NodeId, passthrough: bool) {
+        if let Some(w) = self.tree.get_node_context_mut(node) {
+            w.passthrough = passthrough;
+        }
+    }
+
     pub fn set_opacity(&mut self, node: NodeId, opacity: f32) {
         if let Some(w) = self.tree.get_node_context_mut(node) {
             w.opacity = opacity.clamp(0.0, 1.0);
@@ -912,7 +919,7 @@ impl Ui {
             return None;
         }
         let widget = self.widget(node)?;
-        if widget.clip && !widget.frame.contains(p) {
+        if widget.passthrough || widget.clip && !widget.frame.contains(p) {
             return None;
         }
         // A segmented control takes the pointer itself (its segments may carry actions).
@@ -1572,6 +1579,9 @@ impl Ui {
             return None;
         }
         let widget = self.widget(within)?;
+        if widget.passthrough {
+            return None;
+        }
         for child in self.tree.children(within).unwrap_or_default().into_iter().rev() {
             if let Some(found) = self.glass_at(child, p, skip) {
                 return Some(found);

@@ -6,8 +6,6 @@
 //! along its motion), its own row stays as an empty slot at the place it would drop, and the
 //! other rows slide aside on springs (each row's drawn position follows its laid-out one).
 
-use std::collections::HashMap;
-
 use axion_compositor::Rect as Frame;
 use axion_config::Config;
 use axion_engine::ViewId;
@@ -18,6 +16,7 @@ use glam::Vec2;
 
 use crate::chrome::{Chrome, MoveKey, SidebarLayout, Surface, TabItem};
 use crate::favicons::{Favicons, favicon_node};
+use crate::tabclose::{Slide, slide_spring};
 use crate::tabs::Tab;
 
 /// The lens grows this much when lifted.
@@ -26,8 +25,6 @@ const LIFT: f32 = 1.06;
 const STRETCH_PER_SPEED: f32 = 0.00008;
 /// How far outside the sidebar (or the bar's band) a drop still counts, logical px.
 const DROP_MARGIN: f32 = 48.0;
-/// A row closer than this to its place stops being moved (logical px).
-const SETTLED_PX: f32 = 0.5;
 
 /// Where a dragged tab would go: its group, and its index there (among the group's other
 /// tabs; `usize::MAX` for the end).
@@ -71,7 +68,7 @@ pub struct TabDrag {
     plane: NodeId,
     lens: NodeId,
     /// Drawn positions of rows and segments, following their laid-out ones on springs.
-    moving: HashMap<MoveKey, Animated<Vec2>>,
+    moving: Slide<MoveKey>,
 }
 
 /// How many of `centers` lie before `pos`: the index a dragged item at `pos` goes to.
@@ -138,7 +135,7 @@ impl TabDrag {
             },
         );
         ui.set_visible(plane, false);
-        Self { pending: None, active: None, plane, lens, moving: HashMap::new() }
+        Self { pending: None, active: None, plane, lens, moving: Slide::default() }
     }
 
     pub fn is_dragging(&self) -> bool {
@@ -262,34 +259,28 @@ impl TabDrag {
     }
 
     /// After layout, every frame: rows and segments are drawn where their springs are, on the
-    /// way to where the layout put them. Only while dragging and until they settled after it.
+    /// way to where the layout put them. While dragging, and until they settled after it or
+    /// after a tab was closed (see `remember_rows`).
     pub fn animate_rows(&mut self, ui: &mut Ui, chrome: &Chrome, config: &Config, dt: f32) {
-        if self.active.is_none() && self.moving.is_empty() {
+        if self.active.is_none() && self.moving.is_idle() {
             return;
         }
-        let spring = spring(config);
         let nodes = chrome.moving_nodes(ui);
-        let mut settled = true;
-        for (key, node) in &nodes {
-            let frame = ui.frame(*node);
-            let place = self.moving.entry(*key).or_insert_with(|| Animated::new(frame.origin, spring));
-            place.spring = spring;
-            place.target = frame.origin;
-            if config.glass.reduce_motion {
-                place.snap(frame.origin);
-            }
-            place.step(dt);
-            if place.is_settled(SETTLED_PX) {
-                place.snap(frame.origin);
-                ui.set_visual_frame(*node, None);
-            } else {
-                settled = false;
-                ui.set_visual_frame(*node, Some(Frame { origin: place.value, size: frame.size }));
-            }
-        }
+        let settled = self.moving.animate(ui, &nodes, spring(config), config.glass.reduce_motion, dt);
         if self.active.is_none() && settled {
             self.moving.clear();
         }
+    }
+
+    /// Before the chrome rebuilds its tabs for a change of their layout (a tab closed): notes
+    /// where every row and segment is drawn now, so they slide to their new places instead of
+    /// jumping.
+    pub fn remember_rows(&mut self, ui: &Ui, chrome: &Chrome, config: &Config) {
+        let items = chrome.moving_nodes(ui).into_iter().map(|(key, node)| {
+            let drawn = ui.widget(node).and_then(|w| w.visual_frame).unwrap_or_else(|| ui.frame(node));
+            (key, drawn.origin)
+        });
+        self.moving.remember(items, slide_spring(config));
     }
 
     /// The pointer went up during a drag: the lens goes, and the dropped tab flies from the
@@ -305,9 +296,7 @@ impl TabDrag {
 
     /// Starts `key`'s row at `from` (logical px), to spring into its place.
     pub fn land(&mut self, key: MoveKey, from: Vec2) {
-        let mut place = Animated::new(from, Spring::SNAPPY);
-        place.value = from;
-        self.moving.insert(key, place);
+        self.moving.start(key, from, Spring::SNAPPY);
     }
 
     /// Where the lens is (logical px), while dragging.

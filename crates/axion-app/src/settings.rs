@@ -205,6 +205,8 @@ enum Setting {
     KeepMediaAwake,
     RestoreSession,
     OpenInBackground,
+    CloseAnimation,
+    KeepTabWidths,
     HomeButton,
     OwnFullscreenControls,
     HideControlsAfter,
@@ -274,6 +276,8 @@ impl Setting {
             Setting::KeepMediaAwake => tr_mark("Keep tabs playing audio awake"),
             Setting::RestoreSession => tr_mark("Reopen last session's tabs at start"),
             Setting::OpenInBackground => tr_mark("Open new tabs in background"),
+            Setting::CloseAnimation => tr_mark("Animate closing tabs"),
+            Setting::KeepTabWidths => tr_mark("Keep tab widths while closing"),
             Setting::HomeButton => tr_mark("Show home button"),
             Setting::OwnFullscreenControls => tr_mark("Axion's player in fullscreen"),
             Setting::HideControlsAfter => tr_mark("Hide controls while playing after"),
@@ -327,6 +331,8 @@ impl Setting {
                 | Setting::KeepMediaAwake
                 | Setting::RestoreSession
                 | Setting::OpenInBackground
+                | Setting::CloseAnimation
+                | Setting::KeepTabWidths
                 | Setting::OwnFullscreenControls
                 | Setting::HardwareDecoding
                 | Setting::HardwareEnabled
@@ -450,6 +456,8 @@ impl Setting {
             Setting::KeepMediaAwake => return c.tabs.keep_media_awake as u8 as f32,
             Setting::RestoreSession => return c.tabs.restore_session as u8 as f32,
             Setting::OpenInBackground => return c.tabs.open_links_in_background as u8 as f32,
+            Setting::CloseAnimation => return c.tabs.close_animation as u8 as f32,
+            Setting::KeepTabWidths => return c.tabs.keep_widths_while_closing as u8 as f32,
             Setting::HomeButton => return c.layout.home_button as u8 as f32,
             Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
@@ -526,6 +534,8 @@ impl Setting {
             Setting::KeepMediaAwake => c.tabs.keep_media_awake = on,
             Setting::RestoreSession => c.tabs.restore_session = on,
             Setting::OpenInBackground => c.tabs.open_links_in_background = on,
+            Setting::CloseAnimation => c.tabs.close_animation = on,
+            Setting::KeepTabWidths => c.tabs.keep_widths_while_closing = on,
             Setting::HomeButton => c.layout.home_button = on,
             Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
@@ -1830,6 +1840,8 @@ impl SettingsSheet {
                     segmented(ui, row_node, &options, current);
                 }
                 self.control(ui, config, Setting::OpenInBackground);
+                self.control(ui, config, Setting::CloseAnimation);
+                self.control(ui, config, Setting::KeepTabWidths);
                 let row_node = self.row(ui, tr("Close tabs"));
                 let options: Vec<(&str, ActionId)> = CLOSE_AFTER
                     .iter()

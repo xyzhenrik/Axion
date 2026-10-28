@@ -952,3 +952,7 @@
 
 "Add Axion to the application menu" = "Axion zum Anwendungsmenü hinzufügen"
 "Gives Axion its icon in the taskbar and the application menu. Applies after restarting Axion." = "Gibt Axion sein Symbol in der Taskleiste und im Anwendungsmenü. Wird nach einem Neustart von Axion übernommen."
+
+# crates/axion-app/src/settings.rs
+"Animate closing tabs" = "Schließen von Tabs animieren"
+"Keep tab widths while closing" = "Tab-Breiten beim Schließen beibehalten"
