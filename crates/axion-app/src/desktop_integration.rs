@@ -295,7 +295,7 @@ mod tests {
         assert!(text.contains("\nIcon=axion\n") && text.contains("\nStartupWMClass=axion\n"));
         assert!(text.contains("\nCategories=Network;WebBrowser;\n"));
         assert!(text.contains("x-scheme-handler/https"));
-        assert!(text.contains("# X-Axion-Integration: r2 1.2.3 /opt/axion browser/axion\n"));
+        assert!(text.contains("# X-Axion-Integration: r3 1.2.3 /opt/axion browser/axion\n"));
         // The template's own `Exec=axion %U` is gone, and there is exactly one.
         assert_eq!(text.matches("\nExec=").count(), 1);
         // The group header stays the first line, as the specification wants.
@@ -311,7 +311,7 @@ mod tests {
         let entry = dir.join("applications/axion.desktop");
         let old = std::fs::read_to_string(&entry)
             .expect("entry")
-            .replace("# X-Axion-Integration: r2 1.2.3 ", "# X-Axion-Integration: 1.2.3 ");
+            .replace("# X-Axion-Integration: r3 1.2.3 ", "# X-Axion-Integration: 1.2.3 ");
         std::fs::write(&entry, old).expect("write");
         assert!(!is_up_to_date(&t));
         assert!(install(&t).expect("rewrite"));
