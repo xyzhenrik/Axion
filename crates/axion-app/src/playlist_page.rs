@@ -295,6 +295,8 @@ pub struct PlayerModel<'a> {
     pub site: &'a str,
     pub elapsed: f64,
     pub duration: f64,
+    /// A live stream: the timeline is full and says *Live*.
+    pub live: bool,
     pub playing: bool,
     pub shuffle: bool,
     pub repeat: Repeat,
@@ -1317,7 +1319,9 @@ impl PlaylistPage {
         ui.set_text(self.title, m.title);
         ui.set_text(self.site, m.site);
         ui.set_text(self.elapsed, &format_time(m.elapsed));
-        let remaining = if m.duration > 0.0 {
+        let remaining = if m.live {
+            tr("Live").to_owned()
+        } else if m.duration > 0.0 {
             format!("−{}", format_time(m.duration - m.elapsed))
         } else {
             String::new()
@@ -1325,7 +1329,9 @@ impl PlaylistPage {
         ui.set_text(self.remaining, &remaining);
         let scrubbing = ui.dragging() == Some(self.scrubber)
             || self.scrubbed_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
-        if !scrubbing && m.duration > 0.0 {
+        if m.live {
+            ui.set_value(self.scrubber, 1.0);
+        } else if !scrubbing && m.duration > 0.0 {
             ui.set_value(self.scrubber, (m.elapsed / m.duration).clamp(0.0, 1.0) as f32);
         }
         ui.set_icon(self.play_icon, if m.playing { Icon::Pause } else { Icon::Play });

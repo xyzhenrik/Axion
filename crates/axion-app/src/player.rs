@@ -589,7 +589,10 @@ impl PlayerOverlay {
         ui.set_visible(self.captions, !player.captions.is_empty());
         let scrubbing = ui.dragging() == Some(self.scrubber)
             || self.scrubbed_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
-        if !scrubbing && player.duration > 0.0 {
+        if player.live {
+            // A live stream has no end to measure against: the timeline is always full.
+            ui.set_value(self.scrubber, 1.0);
+        } else if !scrubbing && player.duration > 0.0 {
             ui.set_value(self.scrubber, (player.time / player.duration) as f32);
         }
         let adjusting = ui.dragging() == Some(self.volume)

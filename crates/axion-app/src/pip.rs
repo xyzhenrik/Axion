@@ -969,7 +969,10 @@ impl PipWindow {
             // Not while the user scrubs (or a moment after): the reports still carry the old time.
             let scrubbing = self.ui.dragging() == Some(self.progress)
                 || self.scrubbed_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
-            if !scrubbing && player.duration > 0.0 {
+            if player.live {
+                // A live stream has no end to measure against: the timeline is always full.
+                self.ui.set_value(self.progress, 1.0);
+            } else if !scrubbing && player.duration > 0.0 {
                 self.ui.set_value(self.progress, (player.time / player.duration) as f32);
             }
         }

@@ -35,6 +35,7 @@ pub struct Config {
     pub clipboard: Clipboard,
     pub toast: Toast,
     pub sidebar: Sidebar,
+    pub window: WindowBehavior,
     pub ui: Ui,
     pub updates: Updates,
     pub extensions: Extensions,
@@ -972,6 +973,9 @@ pub struct Data {
     pub clear_cache: bool,
     pub clear_downloads: bool,
     pub clear_range: ClearRange,
+    /// How long (milliseconds) the window waits for the history database when another part of
+    /// Axion (an import) holds it, before the entry is skipped. The window freezes meanwhile.
+    pub db_busy_timeout_ms: u32,
 }
 
 impl Default for Data {
@@ -983,6 +987,7 @@ impl Default for Data {
             clear_cache: true,
             clear_downloads: true,
             clear_range: ClearRange::AllTime,
+            db_busy_timeout_ms: 500,
         }
     }
 }
@@ -1137,6 +1142,42 @@ pub struct DevTools {
 impl Default for DevTools {
     fn default() -> Self {
         Self { enabled: true }
+    }
+}
+
+/// Remembering the window and the panels between runs, and how quitting behaves. The remembered
+/// values themselves (position, size, which panels are open) live in the profile's
+/// `window.toml`, not here: they change all the time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WindowBehavior {
+    /// Reopen the window where and how big it was (maximized, fullscreen and monitor included).
+    pub restore_geometry: bool,
+    /// Reopen the sidebar and its sections as they were.
+    pub restore_panels: bool,
+    /// The window's state is written this many milliseconds after it last changed.
+    pub save_delay_ms: u32,
+    /// A remembered position is used only while at least this much of the window (logical px
+    /// each way) is still on a connected monitor; else the window opens on the default monitor.
+    pub min_visible_px: u32,
+    /// Quitting waits this long (milliseconds) for Chromium to shut down; then the process
+    /// ends at once (everything of ours is saved before that). 0 never forces the exit.
+    pub shutdown_timeout_ms: u32,
+    /// How long (milliseconds) quitting waits for the pages to close before it stops
+    /// waiting for them.
+    pub close_pages_timeout_ms: u32,
+}
+
+impl Default for WindowBehavior {
+    fn default() -> Self {
+        Self {
+            restore_geometry: true,
+            restore_panels: true,
+            save_delay_ms: 800,
+            min_visible_px: 120,
+            shutdown_timeout_ms: 6000,
+            close_pages_timeout_ms: 2500,
+        }
     }
 }
 
@@ -1532,6 +1573,12 @@ pub struct Media {
     /// Sites whose own player is kept, also in fullscreen. Just the site's name, like
     /// "youtube.com" — its subdomains (www., m., …) count too. Edit in Settings › Media.
     pub trusted_player_sites: Vec<String>,
+    /// Sites whose `<video>`/`<audio>` elements are not media to play or list: calls and chats
+    /// (Discord voice/video, …) where the elements carry live call streams. The bridge does not
+    /// see them, so no player, no Now Playing entry, no Playlist entry. The site's name, like
+    /// "discord.com"; subdomains count too. Streams the page gets from the camera, microphone
+    /// or a peer connection (`srcObject`) are skipped on every site.
+    pub ignored_media_sites: Vec<String>,
     /// Older settings (Axion's controls inline), no longer used; accepted so old files load.
     #[serde(skip_serializing)]
     own_controls: Option<bool>,
@@ -1631,6 +1678,9 @@ impl Default for Media {
             ]
             .map(String::from)
             .to_vec(),
+            ignored_media_sites: ["discord.com", "discordapp.com", "discord.gg", "discord.media"]
+                .map(String::from)
+                .to_vec(),
             own_controls: None,
             replace_site_players: None,
             hide_controls_after_seconds: 2.5,
