@@ -419,6 +419,8 @@ impl Ui {
     }
 
     pub fn parent(&self, node: NodeId) -> Option<NodeId> {
+        // taffy panics on a removed node's key: a stale node (the tree was rebuilt) has no parent.
+        self.widget(node)?;
         self.tree.parent(node)
     }
 

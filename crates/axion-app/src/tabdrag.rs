@@ -233,6 +233,10 @@ impl TabDrag {
         }
         let Some(pending) = self.pending.take() else { return false };
         let item = pending.item;
+        // The tabs were rebuilt since the press (their nodes are gone): there is nothing to drag.
+        if ui.widget(item.node).is_none() {
+            return false;
+        }
         let frame = ui.frame(item.node);
         let area = match item.surface {
             Surface::Sidebar => ui.frame(chrome.sidebar_node()),
