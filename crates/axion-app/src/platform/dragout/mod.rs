@@ -37,6 +37,19 @@ impl Payload {
     }
 }
 
+/// The picture that travels with the pointer during a drag (the system draws it).
+#[derive(Clone, Debug)]
+pub struct Image {
+    pub width: u32,
+    pub height: u32,
+    /// Pixels per logical px the picture was painted at (Wayland buffer scale).
+    pub scale: i32,
+    /// Premultiplied B, G, R, A bytes, row by row (Wayland `ARGB8888`, X11 depth 32).
+    pub bgra: Vec<u8>,
+    /// Where the pointer sits on the picture, in its pixels from the top-left corner.
+    pub hotspot: (i32, i32),
+}
+
 /// The MIME types a drop offers, in order of preference.
 pub const MIME_URI_LIST: &str = "text/uri-list";
 pub const MIME_PLAIN_UTF8: &str = "text/plain;charset=utf-8";
@@ -65,7 +78,7 @@ pub fn offered_mimes(defaults: &[&str]) -> Vec<String> {
 }
 
 enum Backend {
-    Wayland(wayland::Source),
+    Wayland(Box<wayland::Source>),
     X11(x11::Source),
 }
 
@@ -85,7 +98,7 @@ impl DragOut {
                     RawWindowHandle::Wayland(h) => h.surface,
                     _ => return None,
                 };
-                Backend::Wayland(wayland::Source::connect(handle.display, surface)?)
+                Backend::Wayland(Box::new(wayland::Source::connect(handle.display, surface)?))
             }
             RawDisplayHandle::Xlib(_) | RawDisplayHandle::Xcb(_) => {
                 let id = match window.window_handle().ok()?.as_raw() {
@@ -107,12 +120,13 @@ impl DragOut {
         }
     }
 
-    /// Starts the drag of `payload` from the button press that is held now. Returns whether the
+    /// Starts the drag of `payload` from the button press that is held now, with `image` beside
+    /// the pointer if there is one. Returns whether the
     /// system took it (then the pointer belongs to the drag until it ends).
-    pub fn start(&mut self, payload: Payload) -> bool {
+    pub fn start(&mut self, payload: Payload, image: Option<Image>) -> bool {
         match &mut self.backend {
-            Backend::Wayland(source) => source.start(payload),
-            Backend::X11(source) => source.start(payload),
+            Backend::Wayland(source) => source.start(payload, image),
+            Backend::X11(source) => source.start(payload, image),
         }
     }
 }
