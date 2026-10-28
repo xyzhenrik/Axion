@@ -932,6 +932,7 @@ impl Browser {
             elapsed: current.as_ref().map_or(0.0, |i| i.position),
             duration: current.as_ref().map_or(0.0, |i| i.duration),
             live: false,
+            loading: self.playlist.resolving.is_some(),
             playing: false,
             shuffle: self.playlist.shuffle,
             repeat: self.playlist.repeat,
@@ -1009,6 +1010,7 @@ impl Browser {
             elapsed,
             duration,
             live: player.as_ref().is_some_and(|p| p.live),
+            loading: player.as_ref().is_none_or(|p| p.loading),
             playing,
             shuffle: self.playlist.shuffle,
             repeat: self.playlist.repeat,
@@ -1482,7 +1484,8 @@ impl Browser {
         let item = self.playlist.item(id).cloned();
         match item {
             // A saved link may have expired (signed addresses): look at the page once more.
-            Some(item) if !fresh && !local => {
+            // (A video that can't be decoded won't be any better from a fresh address.)
+            Some(item) if !fresh && !local && code != "codec" => {
                 self.playlist.failure = None;
                 self.playlist_resolve_start(&item);
             }
@@ -1622,6 +1625,11 @@ impl Browser {
             }
             PageAction::PictureInPicture => self.playlist_picture_in_picture(),
             PageAction::Fullscreen => self.playlist_set_fullscreen(true),
+            PageAction::Retry => {
+                if let Some(id) = self.playlist.failure.as_ref().map(|f| f.item) {
+                    self.playlist_play(id);
+                }
+            }
             PageAction::OpenPage => {
                 if let Some(id) = self.playlist.failure.as_ref().map(|f| f.item) {
                     self.playlist_open_in_tab(id, false);

@@ -22,6 +22,7 @@ use glam::Vec2;
 use crate::favicons::{Favicons, favicon_or};
 use crate::menu::{Menu, MenuItem, Placement};
 use crate::playlist::{Repeat, wrap_title};
+use crate::spinner::Spinner;
 
 /// Action ids of the page: the buttons, then the rows' (`ROW_BASE + 8 * row + kind`), then
 /// the page's menu.
@@ -56,6 +57,8 @@ pub enum PageAction {
     DownloadSelected,
     /// The player area's *Open page* button (a video that can't play there).
     OpenPage,
+    /// The player area's *Retry* button (a video that failed to play).
+    Retry,
     /// The row (index into the shown rows) was clicked.
     Row(usize),
     RowMenu(usize),
@@ -64,7 +67,7 @@ pub enum PageAction {
     RowDown(usize),
 }
 
-const SIMPLE: [PageAction; 19] = [
+const SIMPLE: [PageAction; 20] = [
     PageAction::Close,
     PageAction::PlayAll,
     PageAction::Edit,
@@ -84,6 +87,7 @@ const SIMPLE: [PageAction; 19] = [
     PageAction::DeleteSelected,
     PageAction::DownloadSelected,
     PageAction::OpenPage,
+    PageAction::Retry,
 ];
 
 impl PageAction {
@@ -237,9 +241,9 @@ fn plain_button(
 /// A glass capsule with a text, for the edit bar.
 fn capsule(ui: &mut Ui, parent: NodeId, action: PageAction, icon: Icon, text: &str, danger: bool) -> NodeId {
     let background = if danger {
-        Background::Fill(Paint::Fixed(DANGER), 0.16)
+        Background::TintedGlass(GlassLevel::Thin, Paint::Fixed(DANGER))
     } else {
-        Background::Fill(Paint::Label, 0.08)
+        Background::Glass(GlassLevel::Thin)
     };
     let node = ui.add(
         parent,
@@ -259,6 +263,8 @@ fn capsule(ui: &mut Ui, parent: NodeId, action: PageAction, icon: Icon, text: &s
     }
     node
 }
+
+const SPINNER_SIDE: f32 = 56.0;
 
 const DANGER: Color = Color::rgb(0xE5483E);
 
@@ -297,6 +303,8 @@ pub struct PlayerModel<'a> {
     pub duration: f64,
     /// A live stream: the timeline is full and says *Live*.
     pub live: bool,
+    /// Waiting for the video (loading or buffering): the player area shows the loading ring.
+    pub loading: bool,
     pub playing: bool,
     pub shuffle: bool,
     pub repeat: Repeat,
@@ -342,6 +350,10 @@ pub struct PlaylistPage {
     video: NodeId,
     video_note: NodeId,
     open_page_button: NodeId,
+    retry_button: NodeId,
+    spinner: Spinner,
+    /// The player area waits for its video (the ring turns).
+    loading: bool,
     title: NodeId,
     site: NodeId,
     elapsed: NodeId,
@@ -433,7 +445,7 @@ impl PlaylistPage {
             Widget::container()
                 .with_action(PageAction::Sort.id())
                 .with_radius(CAPSULE)
-                .with_background(Background::Fill(Paint::Label, 0.08))
+                .with_background(Background::Glass(GlassLevel::Thin))
                 .with_tooltip(tr("Sort"), None),
             Style {
                 size: square(34.0),
@@ -591,6 +603,22 @@ impl PlaylistPage {
         let open_page_button =
             capsule(ui, note_box, PageAction::OpenPage, Icon::Globe, tr("Open page"), false);
         ui.set_visible(open_page_button, false);
+        let retry_button = capsule(ui, note_box, PageAction::Retry, Icon::Reload, tr("Retry"), false);
+        ui.set_visible(retry_button, false);
+        // The loading ring sits over the middle of the video area (in an overlay that fills
+        // it and takes no clicks).
+        let overlay = ui.add(
+            video_box,
+            Widget::container(),
+            Style {
+                position: Position::Absolute,
+                inset: Rect { left: length(0.0), right: length(0.0), top: length(0.0), bottom: length(0.0) },
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..Default::default()
+            },
+        );
+        let spinner = Spinner::build(ui, overlay, SPINNER_SIDE);
 
         let info = ui.add(
             player_col,
@@ -731,7 +759,10 @@ impl PlaylistPage {
         // The volume: a glass capsule with the speaker (mute) and a slider, right of the speed.
         let volume_capsule = ui.add(
             left_slot,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thin)).with_radius(CAPSULE),
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thin))
+                .with_button_tint()
+                .with_radius(CAPSULE),
             Style {
                 size: Size { width: length(VOLUME_WIDTH), height: length(BOTTOM_BUTTON) },
                 flex_shrink: 1.0,
@@ -817,6 +848,9 @@ impl PlaylistPage {
             video,
             video_note,
             open_page_button,
+            retry_button,
+            spinner,
+            loading: false,
             title,
             site,
             elapsed,
@@ -1017,9 +1051,9 @@ impl PlaylistPage {
                     .with_action(PageAction::RowSelect(i).id())
                     .with_radius(CAPSULE)
                     .with_background(if m.selected {
-                        Background::Fill(Paint::Accent, 1.0)
+                        Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
                     } else {
-                        Background::Fill(Paint::Label, 0.12)
+                        Background::Glass(GlassLevel::Thin)
                     }),
                 Style {
                     size: square(SELECT_CIRCLE),
@@ -1316,6 +1350,7 @@ impl PlaylistPage {
 
     /// The player half: texts, buttons' states, the picture.
     pub fn set_player(&mut self, ui: &mut Ui, m: &PlayerModel<'_>) {
+        self.loading = m.loading && !m.open_page;
         ui.set_text(self.title, m.title);
         ui.set_text(self.site, m.site);
         ui.set_text(self.elapsed, &format_time(m.elapsed));
@@ -1388,6 +1423,7 @@ impl PlaylistPage {
                     note.unwrap_or(if self.list_empty { tr("No Videos") } else { tr("Choose a video") }),
                 );
                 ui.set_visible(self.open_page_button, m.open_page);
+                ui.set_visible(self.retry_button, m.open_page);
                 if let Some(parent) = ui.parent(self.video_note) {
                     ui.set_visible(parent, true);
                 }
@@ -1405,6 +1441,8 @@ impl PlaylistPage {
         if !self.open {
             return;
         }
+        let loading = self.loading;
+        self.spinner.update(ui, config, loading, dt);
         if config.glass.reduce_motion {
             self.search_width.snap(self.search_width.target);
         } else {

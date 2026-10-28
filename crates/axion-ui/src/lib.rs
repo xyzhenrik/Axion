@@ -2430,7 +2430,7 @@ fn transform_content(c: &mut Content<'_>, m: &Mark, xf: &PressXf) {
 fn glass_tint_opacity(widget: &Widget, theme: &Theme) -> Option<f32> {
     widget.glass_density.map(|l| theme.glass_opacity(l)).or_else(|| {
         // A tinted (primary) button keeps its level's strength: the colour is its point.
-        (widget.action.is_some() && matches!(widget.background, Background::Glass(_)))
+        ((widget.action.is_some() || widget.button_tint) && matches!(widget.background, Background::Glass(_)))
             .then(|| theme.glass_button_opacity())
     })
 }

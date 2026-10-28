@@ -1168,3 +1168,6 @@
 
 # crates/axion-app/src/page_menu.rs
 "Print…" = "Drucken…"
+
+"This video’s picture can’t be decoded (unsupported format)." = "Das Bild dieses Videos lässt sich nicht dekodieren (Format nicht unterstützt)."
+"Retry" = "Erneut versuchen"

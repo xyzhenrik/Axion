@@ -72,6 +72,7 @@ mod settings;
 mod shields;
 mod shields_popover;
 mod shutdown;
+mod spinner;
 mod stall;
 mod suggestions;
 mod svg_icons;

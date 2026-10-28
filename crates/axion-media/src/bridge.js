@@ -23,7 +23,8 @@
   var isTop = window === window.top;
   var FRAME = Math.random().toString(36).slice(2, 8);
   var EVENTS = ['play', 'playing', 'pause', 'ended', 'timeupdate', 'volumechange', 'ratechange',
-    'durationchange', 'seeked', 'loadedmetadata', 'emptied', 'progress', 'resize'];
+    'durationchange', 'seeked', 'loadedmetadata', 'emptied', 'progress', 'resize', 'waiting', 'stalled',
+    'canplay', 'seeking', 'loadstart', 'error'];
   var seq = 0;
   var media = new Set();
   // Shadow roots are held weakly: sites like YouTube create thousands of them while the page
@@ -176,6 +177,7 @@
       fit: el.tagName === 'VIDEO' ? (getComputedStyle(el).objectFit || '') : '',
       paused: el.paused, ended: el.ended, time: el.currentTime || 0,
       duration: isFinite(el.duration) ? el.duration : 0, live: isLive(el),
+      loading: !el.ended && !el.error && el.readyState < 3 && (!el.paused || el.networkState === 2),
       volume: el.volume, muted: el.muted, rate: el.playbackRate, buffered: buffered,
       captions: captions, caption: caption, native: !!el.__axNative,
       trusted: TRUSTED,

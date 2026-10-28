@@ -152,25 +152,37 @@ wrap_resource_request_handler! {
     impl ResourceRequestHandler {
         fn resource_handler(
             &self,
-            _browser: Option<&mut Browser>,
+            browser: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
             request: Option<&mut Request>,
         ) -> Option<ResourceHandler> {
             // A media view reads its stream's manifests and segments from hosters whose CORS
             // headers never name `axion://media`: they come through the proxy instead (see
-            // `mediaproxy`). Plain files (`<video src>`) need no CORS and load natively.
+            // `mediaproxy`). Plain files (`<video src>`) come through it too: the view's origin is
+            // cross-site to every host, so Chromium would not send the host's cookies itself.
             self.net.media_view(self.view)?;
             let request = request?;
             let url = CefString::from(&request.url()).to_string();
             let web = url.starts_with("http://") || url.starts_with("https://");
             let get = CefString::from(&request.method()).to_string().eq_ignore_ascii_case("GET");
-            if !web || !get || !matches!(resource_kind(request.resource_type()), ResourceKind::Xhr | ResourceKind::Other)
+            if !web || !get || !matches!(
+                    resource_kind(request.resource_type()),
+                    ResourceKind::Xhr | ResourceKind::Other | ResourceKind::Media
+                )
             {
                 return None;
             }
             let referer = CefString::from(&request.referrer_url()).to_string();
             let range = CefString::from(&request.header_by_name(Some(&"Range".into()))).to_string();
-            Some(super::mediaproxy::handler(url, referer, Some(range).filter(|r| !r.is_empty())))
+            // The cookies the profile holds for the stream's host, when Shields allow them there.
+            let page_url = self.net.media_view(self.view).map(|m| m.page_url).unwrap_or_default();
+            let allowed = self.net.policy().is_none_or(|p| p.allow_cookies(&url, &page_url));
+            let cookies = browser
+                .filter(|_| allowed)
+                .and_then(|b| b.host())
+                .and_then(|h| h.request_context())
+                .and_then(|c| c.cookie_manager(None));
+            Some(super::mediaproxy::handler(url, referer, Some(range).filter(|r| !r.is_empty()), cookies))
         }
 
         fn on_resource_response(
