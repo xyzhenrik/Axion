@@ -17,6 +17,7 @@ axion-compositor = { path = "crates/axion-compositor" }
 axion-accounts = { path = "crates/axion-accounts" }
 axion-config = { path = "crates/axion-config" }
 axion-engine = { path = "crates/axion-engine" }
+axion-extensions = { path = "crates/axion-extensions" }
 axion-glass = { path = "crates/axion-glass" }
 axion-i18n = { path = "crates/axion-i18n" }
 axion-import = { path = "crates/axion-import" }
@@ -24,6 +25,8 @@ axion-physics = { path = "crates/axion-physics" }
 axion-shields = { path = "crates/axion-shields" }
 axion-tabs = { path = "crates/axion-tabs" }
 axion-media = { path = "crates/axion-media" }
+axion-reader = { path = "crates/axion-reader" }
+axion-translate = { path = "crates/axion-translate" }
 axion-store = { path = "crates/axion-store" }
 axion-ui = { path = "crates/axion-ui" }
 axion-update = { path = "crates/axion-update" }

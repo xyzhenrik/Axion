@@ -47,6 +47,7 @@ const MAX_COLUMNS: usize = 4;
 const THUMB_ASPECT: f32 = 0.625;
 const THUMB_RADIUS: f32 = 12.0;
 const LABEL_HEIGHT: f32 = 32.0;
+const GROUP_HEADER_HEIGHT: f32 = 32.0;
 const LABEL_GAP: f32 = 12.0;
 const TOOLBAR_BOTTOM: f32 = 32.0;
 /// Width of the top bar's right group (three circles), mirrored on the left so the segmented
@@ -207,6 +208,44 @@ fn segment(ui: &mut Ui, parent: NodeId, text: &str) -> (NodeId, NodeId) {
     );
     let label = ui.add_label(node, text, TextStyle::Callout, Style::default());
     (node, label)
+}
+
+/// A tab group's header across the grid: its colour, name and tab count. A click folds the
+/// group's cards away, or brings them back.
+fn group_header(ui: &mut Ui, grid: NodeId, group: &crate::tabs::TabGroup, count: usize) {
+    let header = ui.add(
+        grid,
+        Widget::container()
+            .with_action(crate::chrome::ChromeAction::ToggleTabGroup(group.id).id())
+            .without_feedback(),
+        Style {
+            size: Size { width: percent(1.0), height: length(GROUP_HEADER_HEIGHT) },
+            flex_shrink: 0.0,
+            ..row_style(10.0)
+        },
+    );
+    let chevron = if group.collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
+    ui.add(
+        header,
+        Widget::icon(chevron, 14.0).with_icon_weight(IconWeight::Bold).with_paint(Paint::Secondary),
+        Style::default(),
+    );
+    ui.add(
+        header,
+        Widget::container()
+            .with_background(Background::Fill(Paint::Fixed(group.color.color()), 1.0))
+            .with_radius(CAPSULE),
+        Style {
+            size: Size { width: length(12.0), height: length(12.0) },
+            flex_shrink: 0.0,
+            ..Default::default()
+        },
+    );
+    ui.add_label(header, &crate::chrome::group_title(group), TextStyle::Title2, Style::default());
+    let counter = ui.add_label(header, &count.to_string(), TextStyle::Body, Style::default());
+    if let Some(w) = ui.widget_mut(counter) {
+        w.set_paint(Paint::Secondary);
+    }
 }
 
 fn insets(left: f32, right: f32, top: f32, bottom: f32) -> Rect<LengthPercentageAuto> {
@@ -552,7 +591,10 @@ impl Overview {
         };
         ui.set_style(self.grid, grid_style);
 
-        let mut count: usize = 0;
+        // Cards in sections: a header before each tab group's cards. `rows` counts the card
+        // rows of the finished sections, `section` the cards of the open one.
+        let (mut rows, mut section, mut headers, mut breaks) = (0usize, 0usize, 0usize, 0usize);
+        let mut last_group: Option<u32> = None;
         for (i, tab) in tabs.all().iter().enumerate() {
             let label = tab.label();
             if !query.is_empty()
@@ -561,7 +603,32 @@ impl Overview {
             {
                 continue;
             }
-            count += 1;
+            if tab.group != last_group {
+                last_group = tab.group;
+                rows += section.div_ceil(columns.max(1));
+                section = 0;
+                if let Some(group) = tab.group.and_then(|id| tabs.group(id)) {
+                    group_header(ui, self.grid, group, tabs.group_range(group.id).map_or(0, |r| r.len()));
+                    headers += 1;
+                } else {
+                    // Tabs without a group after a group's: they start a line of their own.
+                    ui.add(
+                        self.grid,
+                        Widget::container(),
+                        Style {
+                            size: Size { width: percent(1.0), height: length(0.0) },
+                            flex_shrink: 0.0,
+                            ..Default::default()
+                        },
+                    );
+                    breaks += 1;
+                }
+            }
+            // Folded away in a collapsed group (its header unfolds it).
+            if !tabs.is_shown(i) {
+                continue;
+            }
+            section += 1;
             let active = i == tabs.active_index();
             let card = ui.add(
                 self.grid,
@@ -692,9 +759,11 @@ impl Overview {
             self.ghost_size.snap(self.ghost_size.target);
             self.ghost_view = None;
         }
-        let rows = count.div_ceil(columns.max(1));
-        self.content_height =
-            rows as f32 * (thumb_height + LABEL_GAP + LABEL_HEIGHT) + rows.saturating_sub(1) as f32 * ROW_GAP;
+        rows += section.div_ceil(columns.max(1));
+        let lines = rows + headers + breaks;
+        self.content_height = rows as f32 * (thumb_height + LABEL_GAP + LABEL_HEIGHT)
+            + headers as f32 * GROUP_HEADER_HEIGHT
+            + lines.saturating_sub(1) as f32 * ROW_GAP;
     }
 
     /// Opens the overview, zooming the current page (`page`, logical) into its card.

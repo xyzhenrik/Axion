@@ -37,11 +37,41 @@ impl Browser {
             }
             return true;
         }
+        if button == Button::Middle && self.config.tabs.middle_click_closes_tab && !self.is_locked() {
+            // The tab overview's cards (a click on a card's close button counts as the card).
+            if let Some(OverviewAction::Select(i) | OverviewAction::Close(i)) = self
+                .ui
+                .hit_action(p)
+                .and_then(|n| self.ui.widget(n))
+                .and_then(|w| w.action)
+                .and_then(OverviewAction::from_id)
+                && self.overview.is_open()
+            {
+                self.overview_action(OverviewAction::Close(i));
+                return true;
+            }
+            if let Some(item) = self.chrome.tab_at(&self.ui, node) {
+                self.close_tab_in(item.private, item.view);
+                return true;
+            }
+        }
         if button == Button::Right
             && !self.is_locked()
             && let Some(item) = self.chrome.tab_at(&self.ui, node)
         {
             self.open_tab_menu(item);
+            return true;
+        }
+        if button == Button::Right
+            && !self.is_locked()
+            && let Some((id, header)) = self.chrome.tab_group_at(&self.ui, node)
+        {
+            let in_sidebar = self.chrome.sidebar_contains(&self.ui, header);
+            self.open_tab_group_menu(id, header, in_sidebar);
+            return true;
+        }
+        if button == Button::Middle && self.chrome.tab_group_at(&self.ui, node).is_some() {
+            // A middle click on a group's header is not a click on a tab.
             return true;
         }
         if button == Button::Right
@@ -60,11 +90,12 @@ impl Browser {
     }
 
     /// Opens a tab's context menu, flowing out of its segment or row.
-    fn open_tab_menu(&mut self, item: TabItem) {
+    pub(super) fn open_tab_menu(&mut self, item: TabItem) {
         let group = self.group(item.private);
         let Some(index) = group.index_of(item.view) else { return };
         let tabs = group.all();
         let tab = &tabs[index];
+        let host = axion_store::site_host(&tab.url);
         let info = TabMenuInfo {
             pinned: tab.pinned,
             muted: tab.muted,
@@ -73,8 +104,14 @@ impl Browser {
             right: tabs[index + 1..].iter().any(|t| !t.pinned),
             can_reopen: group.has_closed(),
             can_bookmark: self.store.is_some(),
+            can_group: !item.private && !tab.pinned,
+            in_group: tab.group.is_some(),
+            site_muted: host.as_ref().is_some_and(|h| self.muted_sites.contains(h))
+                || (tab.muted && tab.site_muted),
+            has_site: host.is_some(),
         };
-        let items = tab_items(info, &self.keymap);
+        let choices = self.group_choices(tab.group);
+        let items = tab_items(info, &choices, &self.keymap);
         self.close_other_menus();
         self.context_tab = Some((item.view, item.private));
         // A sidebar row is covered by its menu (which grows out of it); in the top bar the
@@ -110,6 +147,7 @@ impl Browser {
             right: false,
             can_reopen: group.has_closed(),
             can_bookmark: self.store.is_some(),
+            ..Default::default()
         };
         let items = group_items(info, &self.keymap);
         self.close_other_menus();
@@ -210,14 +248,14 @@ impl Browser {
     }
 
     /// Shows the tab group `private` (the menu's tab may be in the one not shown).
-    fn show_group(&mut self, private: bool) {
+    pub(super) fn show_group(&mut self, private: bool) {
         if private != self.private_mode {
             self.toggle_private_mode();
         }
     }
 
     /// Opens `url` in a new tab of the shown group at `index` (kept after the pinned tabs).
-    fn open_tab_at(&mut self, url: &str, index: usize, activate: bool) {
+    pub(super) fn open_tab_at(&mut self, url: &str, index: usize, activate: bool) {
         let view = match self.engine.create_view(url, self.view_size(), self.private_mode) {
             Ok(view) => view,
             Err(e) => {
@@ -237,7 +275,7 @@ impl Browser {
     }
 
     /// Closes `view`'s tab in either group.
-    fn close_tab_in(&mut self, private: bool, view: ViewId) {
+    pub(super) fn close_tab_in(&mut self, private: bool, view: ViewId) {
         if private == self.private_mode {
             if let Some(i) = self.tabs.index_of(view) {
                 self.close_tab(i);
@@ -277,12 +315,19 @@ impl Browser {
                 self.group_mut(private).set_pinned(index, command == TabCommand::Pin);
                 self.tabs_changed = true;
             }
-            TabCommand::Mute | TabCommand::Unmute => {
-                let muted = command == TabCommand::Mute;
-                if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
-                    tab.muted = muted;
-                }
-                self.engine.set_audio_muted(view, muted);
+            TabCommand::Mute | TabCommand::Unmute => self.set_tab_muted(view, command == TabCommand::Mute),
+            TabCommand::MuteSite | TabCommand::UnmuteSite => {
+                self.set_site_muted(&tab.url, command == TabCommand::MuteSite);
+            }
+            TabCommand::NewGroup => {
+                self.open_group_sheet(crate::group_sheet::GroupSheetPurpose::New(view));
+            }
+            TabCommand::MoveToGroup(id) => {
+                self.group_mut(false).set_tab_group(index, Some(id));
+                self.tabs_changed = true;
+            }
+            TabCommand::RemoveFromGroup => {
+                self.group_mut(false).set_tab_group(index, None);
                 self.tabs_changed = true;
             }
             TabCommand::Close => self.close_tab_in(private, view),

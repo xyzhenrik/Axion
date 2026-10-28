@@ -19,6 +19,27 @@ This takes **several hours and about 100 GB of disk space**, so start it and let
 `CEF_BUILD_DIR` to choose where it works (default `~/cef-build`). When it is done, point `CEF_PATH`
 at the result before you build or run Axion.
 
+## A video shows a black picture (the sound and the time run), or says its picture can't be decoded
+
+Two different causes look alike.
+
+**The picture's format is not supported.** Axion's engine plays H.264 / AAC (when built with the
+codecs, see above), VP8, VP9 and AV1, but **not HEVC (H.265)**: such a file plays its sound and shows
+nothing. The Playlist notices this (no decodable picture after about two seconds) and says
+*This video's picture can't be decoded (unsupported format)*, with **Open page** and **Retry**.
+Files named `…x265…`, `…HEVC…` or `…10bit…` are usually HEVC; `…x264…` is H.264 and plays.
+
+**Hardware decoding or GPU frame sharing misbehaves** (a picture that is black although the video
+decodes, typically on NVIDIA with the native Wayland session). To tell: start Axion with
+`AXION_OSR=software axion`, or turn **Settings › Media › Hardware decoding** off, and play the video
+again. If the picture comes back, leave that setting off; please report your driver (`vainfo`,
+`nvidia-smi`) so it can be handled automatically.
+
+To see what happened, start Axion from a terminal with `RUST_LOG=info,axion_app=debug,axion_engine=debug axion`
+and play the video from the Playlist: each step of the media view's loading is logged as `media probe`
+(ready state, size, decoded frames, error) and each request of the stream as `media view fetch`
+(status, range, cookies, bytes).
+
 ## Microphone, camera or screen sharing do not work
 
 First check the site's permission: click the address field's recording icon or open **Settings >
@@ -299,7 +320,57 @@ Do not include passwords, vault files or the contents of `device.key`.
 
 ## Chrome Web Store: "Add to Chrome" does nothing
 
-Installing extensions from the Chrome Web Store is not supported; Axion does not load
-extensions yet. The extension system is switched off (`[extensions] enabled = false`, the
-default), so the Web Store's install button fails harmlessly. Turning it on is not recommended:
-Chromium's install dialog has no window to attach to in Axion and would crash the browser.
+Axion installs from the store with its own dialog: after you press the store's button, the
+extension is downloaded and checked, and a window under the extensions button shows what it can
+do (**Add Extension** / **Cancel**). If that window does not appear:
+
+- Check **Settings > Privacy > Extensions**: **Install from the Chrome Web Store** must be on
+  (it needs a restart), and so must **Chrome extensions**.
+- Open the extensions button: a download or install in progress is shown there, and only one runs
+  at a time.
+- A Manifest V2 extension is refused with a message: current Chromium no longer runs them.
+- Run `axion` from a terminal; the log says why a download was refused (the signature of the
+  package did not match the extension id, the store answered with an error, no connection).
+
+You can also download a `.crx` yourself and use **Install from .crx File…**; see
+[Chrome extensions](features/extensions.md).
+
+## Dragging a tab into another app does nothing
+
+Dragging a tab out of the window drops its address into the app under the pointer
+(`Settings › Tabs › Drag tabs out as links`, `tabs.drag_out_links`). If the tab just stays
+at the window edge, or the drop pastes nothing, start Axion from a terminal with the drag
+logging on, repeat the drag once, and send the lines that mention `dragout`:
+
+```bash
+RUST_LOG=axion=info,axion::platform::dragout=trace,axion::browser=debug,axion::tabdrag=debug axion 2>&1 | grep -E "dragout|drag out|tab drag"
+```
+
+What the lines mean (Wayland):
+
+| Line | Meaning |
+|---|---|
+| `tab drags: connected to the Wayland seat` | the drag source is ready (without it: `... not available (yet)` and the reason above it) |
+| `drag-out pointer: button serial=N ... Pressed` | the press that may start a drag was seen |
+| `starting wl_data_device.start_drag serial=N` | the request that was sent; `focus=None` means the compositor never told us the window has pointer focus |
+| `drag-out source: target accepts mime_type=...` | the app under the pointer accepts the data |
+| `dnd_drop_performed`, `send mime_type=...`, `dnd_finished` | the drop happened and the app read the link |
+| `cancelled` without a drop | the compositor ended the drag (dropped on nothing, Esc, or a refused start) |
+
+The dragged tab shows as a small card beside the pointer (`tabs.drag_out_image`, off in
+`Settings › Tabs`): a snapshot of the page's top with the site icon and title, or just icon, title
+and host when the tab has no picture. On Wayland it is the drag icon surface (`drag image buffer
+made` in the log); on X11 a translucent window of ours that follows the pointer (`drag-out XDND:
+drag image`; it needs a compositing manager for the transparency, else the corners show black).
+No card and no `drag image` line means the setting is off or the card could not be made.
+
+`AXION_DRAGOUT_MIMES=text/plain` (a comma-separated list) changes which formats are offered, for
+finding out what a stubborn app accepts. Browsers (Chromium, Firefox) and Electron apps handle a
+dropped link in a text field their own way: some open it instead of pasting it; that is their
+behaviour, the same as when dragging a link from any other app.
+
+## A website never finishes loading after installing an extension
+
+Extensions that use `webRequest` or `declarativeNetRequest` stall page loads in Axion today, so
+Axion removes those permissions from the extensions it installs (`extensions.block_request_apis`).
+If a site hangs anyway, switch the newest extension off in the extensions button and restart.

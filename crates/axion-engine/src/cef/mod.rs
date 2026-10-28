@@ -10,12 +10,14 @@ mod download;
 mod drag;
 mod gpu;
 mod input;
+mod mediaproxy;
 mod network;
 mod paste;
 mod permission;
 mod schedule;
 mod scheme;
 mod settle;
+mod snapshot;
 mod stats;
 
 use std::collections::BTreeMap;
@@ -53,6 +55,8 @@ struct ProcessFlags {
     render_node: Option<PathBuf>,
     hardware_video_decoding: bool,
     extensions_enabled: bool,
+    /// Unpacked extensions to load (`--load-extension`).
+    load_extensions: Vec<PathBuf>,
     /// Chromium switches from the settings (`[hardware]`, see `CefOptions::extra_switches`).
     extra_switches: Vec<(String, Option<String>)>,
     /// The browser process's message pump schedule (`None` in helper processes).
@@ -133,10 +137,10 @@ wrap_app! {
                     }
                 }
             }
-            for (name, value) in extension_switches(self.flags.extensions_enabled) {
+            for (name, value) in extension_switches(self.flags.extensions_enabled, &self.flags.load_extensions) {
                 match value {
                     Some(value) => {
-                        command_line.append_switch_with_value(Some(&name.into()), Some(&value.into()))
+                        command_line.append_switch_with_value(Some(&name.into()), Some(&value.as_str().into()))
                     }
                     None => command_line.append_switch(Some(&name.into())),
                 }
@@ -149,17 +153,32 @@ wrap_app! {
     }
 }
 
-/// The Chromium switches for the extension system. Axion cannot host extensions yet (no window
-/// for their install dialog, no popups), so unless they are enabled the whole system is off:
-/// external extensions (e.g. a desktop's browser integration) stay unloaded. This alone does
-/// not remove `chrome.webstorePrivate` from the Web Store page (the PDF viewer, a component
-/// extension, keeps working), so `network.rs` also refuses to load the Web Store at all: its
-/// "Add to Chrome" reached `ExtensionInstallPrompt`, which crashes in off-screen mode.
-fn extension_switches(enabled: bool) -> Vec<(&'static str, Option<&'static str>)> {
-    if enabled {
+/// The Chromium switches for the extension system. Off: the whole system is off (external
+/// extensions, e.g. a desktop's browser integration, stay unloaded). On: Chromium runs the
+/// extensions Axion installed, loaded unpacked with `--load-extension` (CEF 156 has no
+/// `LoadExtension` call). The Web Store's own install dialog needs a native window, so Axion's
+/// page script replaces it, or the store is blocked, see `network.rs`. Extensions can only be
+/// added or removed by restarting.
+fn extension_switches(enabled: bool, load: &[PathBuf]) -> Vec<(&'static str, Option<String>)> {
+    if !enabled {
+        return vec![
+            ("disable-extensions", None),
+            ("disable-component-extensions-with-background-pages", None),
+        ];
+    }
+    if load.is_empty() {
         return Vec::new();
     }
-    vec![("disable-extensions", None), ("disable-component-extensions-with-background-pages", None)]
+    // The switch is a comma separated list with no way to escape a comma.
+    let (ok, bad): (Vec<_>, Vec<_>) = load.iter().partition(|p| !p.to_string_lossy().contains(','));
+    for path in bad {
+        tracing::warn!(path = %path.display(), "extension skipped: its folder name contains a comma");
+    }
+    if ok.is_empty() {
+        return Vec::new();
+    }
+    let list = ok.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(",");
+    vec![("load-extension", Some(list))]
 }
 
 /// `AXION_FAKE_MEDIA_DEVICES=1`: tests use Chromium's fake capture devices.
@@ -200,6 +219,7 @@ pub fn run_subprocess_if_needed() -> Option<i32> {
         render_node: None,
         hardware_video_decoding: false,
         extensions_enabled: false,
+        load_extensions: Vec::new(),
         extra_switches: Vec::new(),
         schedule: None,
     });
@@ -232,9 +252,12 @@ pub struct CefOptions {
     pub frame_settle: std::time::Duration,
     /// Decode video on the GPU (VA-API).
     pub hardware_video_decoding: bool,
-    /// Run Chromium's extension system. Off by default: Axion cannot host extensions yet and the
-    /// Web Store's install dialog crashes without a native window (see [`extension_switches`]).
+    /// Run Chromium's extension system (see [`extension_switches`]).
     pub extensions_enabled: bool,
+    /// Folders of the unpacked extensions to load; ignored unless `extensions_enabled`.
+    pub load_extensions: Vec<PathBuf>,
+    /// Refuse to open the Chrome Web Store (installing from it is switched off).
+    pub block_web_store: bool,
     /// More Chromium command line switches (name, value), e.g. from Settings › Hardware.
     pub extra_switches: Vec<(String, Option<String>)>,
     /// Wakes the embedder's event loop when Chromium has work (see [`Engine::next_pump`]).
@@ -271,6 +294,8 @@ pub struct CefEngine {
     dark: Option<bool>,
     schedule: Arc<PumpSchedule>,
     shut_down: bool,
+    /// How long `shutdown` waits for the pages to close.
+    close_timeout: Duration,
 }
 
 impl CefEngine {
@@ -284,6 +309,7 @@ impl CefEngine {
             render_node: options.render_node.clone(),
             hardware_video_decoding: options.hardware_video_decoding,
             extensions_enabled: options.extensions_enabled,
+            load_extensions: options.load_extensions.clone(),
             extra_switches: options.extra_switches.clone(),
             schedule: Some(schedule.clone()),
         });
@@ -303,9 +329,10 @@ impl CefEngine {
         tracing::info!(accelerated = options.accelerated, render_node = ?options.render_node, "Chromium ready");
         let net = Arc::<Network>::default();
         scheme::install(&net, None, false);
-        if !options.extensions_enabled {
-            net.block_web_store.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
+        // The Web Store's own install dialog crashes without a native window. Axion's page script
+        // intercepts "Add to Chrome" (see `axion-extensions`); with that switched off the store
+        // is not opened at all.
+        net.block_web_store.store(options.block_web_store, std::sync::atomic::Ordering::Relaxed);
         Ok(Self {
             device,
             queue,
@@ -320,6 +347,7 @@ impl CefEngine {
             dark: None,
             schedule,
             shut_down: false,
+            close_timeout: SHUTDOWN_TIMEOUT,
         })
     }
 
@@ -531,7 +559,8 @@ impl CefEngine {
                 }
             }
         }
-        let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+        let started = Instant::now();
+        let deadline = started + self.close_timeout;
         while !self.views.is_empty() && Instant::now() < deadline {
             self.pump();
             std::thread::sleep(Duration::from_millis(5));
@@ -540,7 +569,18 @@ impl CefEngine {
             tracing::warn!(open = self.views.len(), "views did not close in time");
         }
         self.views.clear();
+        let closed = started.elapsed();
         cef::shutdown();
+        tracing::info!(
+            pages_ms = closed.as_millis() as u64,
+            total_ms = started.elapsed().as_millis() as u64,
+            "Chromium shut down"
+        );
+    }
+
+    /// How long quitting waits for the pages to close before it stops waiting for them.
+    pub fn set_close_timeout(&mut self, timeout: Duration) {
+        self.close_timeout = timeout;
     }
 }
 
@@ -806,6 +846,7 @@ impl Engine for CefEngine {
         // Events of the closed page (its `Closed` included) no longer match and are dropped.
         state.browser_id = NO_BROWSER;
         self.shared.permissions.drop_view(view);
+        self.shared.screen_approvals.borrow_mut().remove(&view);
         if let Some(host) = browser.host() {
             host.close_browser(1);
         }
@@ -1001,6 +1042,35 @@ impl Engine for CefEngine {
         host.download_image(Some(&url.into()), 0, max_px, 0, Some(&mut callback));
     }
 
+    fn print_to_pdf(&mut self, view: ViewId, path: PathBuf, options: &crate::PdfOptions) {
+        let Some(state) = self.views.get(&view).filter(|v| !v.closing) else { return };
+        let Some(host) = state.browser.as_ref().and_then(|b| b.host()) else {
+            let event = EngineEvent::PdfSaved { view, path, ok: false };
+            self.shared.events.borrow_mut().push((state.browser_id, event));
+            return;
+        };
+        let mut callback = snapshot::PdfCallbackBuilder::new(snapshot::PdfJob {
+            ctx: state.ctx.clone(),
+            browser_id: state.browser_id,
+        });
+        let settings = snapshot::pdf_settings(options);
+        host.print_to_pdf(
+            Some(&path.to_string_lossy().as_ref().into()),
+            Some(&settings),
+            Some(&mut callback),
+        );
+    }
+
+    fn capture_screenshot(&mut self, view: ViewId, id: u32) {
+        let Some(state) = self.views.get(&view).filter(|v| !v.closing) else { return };
+        let Some(host) = state.browser.as_ref().and_then(|b| b.host()) else {
+            let event = EngineEvent::ScreenshotFailed { view, id };
+            self.shared.events.borrow_mut().push((state.browser_id, event));
+            return;
+        };
+        snapshot::capture(host, state.ctx.clone(), state.browser_id, id);
+    }
+
     fn context_command(&mut self, view: ViewId, command: crate::ContextCommand) {
         use crate::ContextCommand as C;
         let Some(frame) = self.browser(view).and_then(|b| b.focused_frame().or_else(|| b.main_frame()))
@@ -1081,6 +1151,31 @@ impl Engine for CefEngine {
         screen_cast_portal() && !on_x11()
     }
 
+    fn set_screen_picker(&mut self, on: bool) {
+        self.shared.own_screen_picker.set(on);
+    }
+
+    fn answer_screen_pick(&mut self, view: ViewId, token: u64, pick: Option<crate::ScreenPick>) {
+        let (id, audio) = match &pick {
+            // The id is a desktop media id; anything that could leave the string is dropped.
+            Some(p) => (format!("'{}'", p.id.replace(['\\', '\''], "")), p.audio),
+            None => ("null".to_owned(), false),
+        };
+        if pick.is_some() {
+            *self.shared.screen_approvals.borrow_mut().entry(view).or_insert(0) += 1;
+        }
+        let script = format!("window.__axionPicked && window.__axionPicked({token}, {id}, {audio});");
+        let Some(browser) = self.browser(view) else { return };
+        let mut ids = CefStringList::new();
+        browser.frame_identifiers(Some(&mut ids));
+        for frame_id in client::string_list(&mut ids) {
+            if let Some(frame) = browser.frame_by_identifier(Some(&frame_id.as_str().into())) {
+                frame.execute_java_script(Some(&script.as_str().into()), None, 0);
+            }
+        }
+        tracing::info!(?view, token, shared = pick.is_some(), "screen pick answered");
+    }
+
     fn request_frame(&mut self, _view: ViewId) {
         // Chromium renders on its own timer (see `create_browser`).
     }
@@ -1118,6 +1213,7 @@ impl Engine for CefEngine {
         let started = Instant::now();
         self.schedule.pumping();
         do_message_loop_work();
+        dispatch_glib_sources();
         self.shared.stats.pump(started.elapsed());
         self.adopt_devtools_browsers();
         self.fall_back_to_software_if_needed();
@@ -1148,14 +1244,19 @@ impl Engine for CefEngine {
                 | EngineEvent::ContextMenu { view, .. }
                 | EngineEvent::ImageReady { view, .. }
                 | EngineEvent::ImageFailed { view, .. }
+                | EngineEvent::PdfSaved { view, .. }
+                | EngineEvent::ScreenshotReady { view, .. }
+                | EngineEvent::ScreenshotFailed { view, .. }
                 | EngineEvent::CursorChanged { view, .. }
                 | EngineEvent::FullscreenRequested { view, .. }
                 | EngineEvent::PageMessage { view, .. }
                 | EngineEvent::RequestBlocked { view, .. }
                 | EngineEvent::MediaSniffed { view, .. }
                 | EngineEvent::NavigationBlocked { view, .. }
+                | EngineEvent::RendererGone { view, .. }
                 | EngineEvent::FindResult { view, .. }
                 | EngineEvent::PermissionRequest { view, .. }
+                | EngineEvent::ScreenPickRequested { view, .. }
                 | EngineEvent::PermissionCancelled { view, .. }
                 | EngineEvent::CaptureChanged { view, .. }
                 | EngineEvent::Closed { view } => *view,
@@ -1176,6 +1277,7 @@ impl Engine for CefEngine {
                 EngineEvent::Closed { .. } => {
                     self.net.set_media_view(view, None);
                     self.shared.permissions.drop_view(view);
+                    self.shared.screen_approvals.borrow_mut().remove(&view);
                     self.views.remove(&view);
                     if let Some(inspected) = tools_of.and_then(|v| self.views.get_mut(&v)) {
                         inspected.devtools = None;
@@ -1198,6 +1300,26 @@ impl Engine for CefEngine {
             events.push(EngineEvent::SiteData(sites));
         }
         events
+    }
+}
+
+#[link(name = "glib-2.0")]
+unsafe extern "C" {
+    fn g_main_context_iteration(context: *mut std::ffi::c_void, may_block: i32) -> i32;
+}
+
+/// Runs whatever is ready on GLib's default main context without blocking. Chromium's
+/// Wayland connection (windows it opens itself, like DevTools) is watched by a GLib source
+/// that only fires when somebody iterates that context; CEF's external message pump does
+/// not, so without this such windows never receive a configure event and never appear.
+fn dispatch_glib_sources() {
+    // Bounded: a source that is always ready must not stall the pump.
+    for _ in 0..16 {
+        // SAFETY: a null context means the default one; may_block = 0 never blocks. Called
+        // on the UI thread, which owns the default context's iteration here.
+        if unsafe { g_main_context_iteration(std::ptr::null_mut(), 0) } == 0 {
+            break;
+        }
     }
 }
 
@@ -1269,10 +1391,11 @@ fn emulate_color_scheme(host: &BrowserHost, dark: bool) {
 #[cfg(test)]
 mod tests {
     use super::extension_switches;
+    use std::path::PathBuf;
 
     #[test]
-    fn extensions_are_off_by_default_switches() {
-        let off = extension_switches(false);
+    fn extensions_off_disable_the_system() {
+        let off = extension_switches(false, &[PathBuf::from("/x")]);
         assert!(off.contains(&("disable-extensions", None)));
         assert!(off.iter().any(|(n, _)| *n == "disable-component-extensions-with-background-pages"));
         // Nothing may re-enable an extension.
@@ -1280,7 +1403,9 @@ mod tests {
     }
 
     #[test]
-    fn enabled_extensions_add_no_switches() {
-        assert!(extension_switches(true).is_empty());
+    fn enabled_extensions_load_the_installed_folders() {
+        assert!(extension_switches(true, &[]).is_empty());
+        let on = extension_switches(true, &[PathBuf::from("/a"), PathBuf::from("/b"), PathBuf::from("/c,d")]);
+        assert_eq!(on, vec![("load-extension", Some("/a,/b".to_owned()))]);
     }
 }

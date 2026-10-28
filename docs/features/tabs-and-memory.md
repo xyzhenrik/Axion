@@ -74,3 +74,32 @@ glass style keep only a short fade.
 - Private tabs are described in [Accounts and privacy](accounts-and-privacy.md).
 
 For the exact keys see the [Settings reference](../settings.md#tabs--memory).
+
+## Tab groups
+
+Right-click a tab and choose **Add to New Group**. Name the group and pick a colour. A group is a
+named, coloured run of neighbouring tabs:
+
+- In the sidebar it is a section of the tab list. Click its header to fold the tabs away; a folded
+  group still shows its current tab.
+- In the tab bar it is a chip with the group's name in front of its tabs, and a colour line under
+  each tab. Click the chip to fold the group.
+- In the tab overview the group's cards sit under a header of its own.
+
+Right-click a group's header or chip to add a tab, rename it, change its colour, ungroup the tabs or
+close the group. Choose **Move to Group** in a tab's menu, or drag a tab onto a group's header or
+between its tabs, to add it. Drag it below the group's last tab, or choose **Remove from Group**,
+to take it out. Pinned tabs and private tabs cannot be grouped. Groups come back after a restart.
+Freezing and unloading treat grouped tabs like any other tab.
+
+## Searching tabs
+
+**Ctrl+Shift+A** opens the tab search: type to find open tabs (by title, address or group name),
+recently closed tabs and history. Up and Down move the selection, Enter opens it, Escape closes the
+search. Private browsing searches its own tabs only.
+
+## Sound
+
+A tab that plays sound shows a speaker in the tab bar and the sidebar. Click it to mute the tab; a
+muted tab keeps a crossed-out speaker. **Mute Site** in a tab's menu mutes every tab of that site
+and remembers it. Tabs playing sound are never frozen or unloaded (**Keep tabs playing audio awake**).

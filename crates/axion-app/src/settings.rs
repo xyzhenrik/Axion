@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
     ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, GlassStyle, GpuChoice,
-    Keymap, PageFrames, PermissionDefault, PlaylistSort, RemoveDownloads, ShieldLevel, TabBarStyle,
-    ThemeMode, TintMode, UiLanguage,
+    Keymap, PageFrames, PermissionDefault, PlaylistSort, ReaderFont, ReaderTheme, RemoveDownloads,
+    ShieldLevel, TabBarStyle, ThemeMode, TintMode, TranslationBackend, UiLanguage,
 };
 use axion_i18n::{tr, tr_fmt, tr_mark, tr_n};
 use axion_ui::taffy::prelude::*;
@@ -98,6 +98,7 @@ pub enum Category {
     LiquidGlass,
     Tabs,
     Media,
+    Reading,
     Keyboard,
     Shields,
     Privacy,
@@ -108,13 +109,14 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 13] = [
+    pub const ALL: [Category; 14] = [
         Category::Account,
         Category::General,
         Category::Appearance,
         Category::LiquidGlass,
         Category::Tabs,
         Category::Media,
+        Category::Reading,
         Category::Keyboard,
         Category::Shields,
         Category::Privacy,
@@ -138,6 +140,7 @@ impl Category {
             Category::LiquidGlass => tr_mark("Liquid Glass"),
             Category::Tabs => tr_mark("Tabs & Memory"),
             Category::Media => tr_mark("Media"),
+            Category::Reading => tr_mark("Reading & Translation"),
             Category::Keyboard => tr_mark("Keyboard"),
             Category::Shields => tr_mark("Shields"),
             Category::Privacy => tr_mark("Privacy"),
@@ -156,6 +159,7 @@ impl Category {
             Category::LiquidGlass => Icon::Overview,
             Category::Tabs => Icon::TabGroup,
             Category::Media => Icon::Media,
+            Category::Reading => Icon::TextSize,
             Category::Keyboard => Icon::Menu,
             Category::Shields => Icon::Shield,
             Category::Privacy => Icon::Lock,
@@ -176,6 +180,7 @@ enum Setting {
     HomeTopSites,
     HomeStats,
     HomeLive,
+    HomeGlassGround,
     HomeLiveIgnoreReduceMotion,
     DevTools,
     HomeDim,
@@ -207,6 +212,13 @@ enum Setting {
     OpenInBackground,
     CloseAnimation,
     KeepTabWidths,
+    MiddleClickClosesTab,
+    NewTabJoinsGroup,
+    GroupChipsInBar,
+    ShowAudioIndicator,
+    RememberSiteMute,
+    DragOutLinks,
+    DragOutImage,
     HomeButton,
     OwnFullscreenControls,
     HideControlsAfter,
@@ -223,11 +235,19 @@ enum Setting {
     ClearCacheItem,
     ClearDownloadsItem,
     OfferToSavePasswords,
+    ExtensionsEnabled,
+    ExtensionsWebStore,
+    ExtensionsAutoUpdate,
     AutofillPasswords,
     ClearClipboardAfter,
     PlaylistQuickAction,
     PlaylistAutoDownload,
     PlaylistDeleteFiles,
+    ReaderButton,
+    ReaderRememberPerSite,
+    TranslateOffer,
+    TranslatePrompt,
+    TranslateChanges,
     AutoCheckUpdates,
     UpdatePrereleases,
 }
@@ -246,6 +266,7 @@ impl Setting {
             Setting::HomeSearch => tr_mark("Search field"),
             Setting::HomeTopSites => tr_mark("Top sites"),
             Setting::HomeStats => tr_mark("Shields statistics"),
+            Setting::HomeGlassGround => tr_mark("Chrome colour as default background"),
             Setting::HomeLive => tr_mark("Live wallpapers (animated images and videos)"),
             Setting::HomeLiveIgnoreReduceMotion => tr_mark("Play live wallpapers with Reduce Motion"),
             Setting::DevTools => tr_mark("Developer tools"),
@@ -278,6 +299,13 @@ impl Setting {
             Setting::OpenInBackground => tr_mark("Open new tabs in background"),
             Setting::CloseAnimation => tr_mark("Animate closing tabs"),
             Setting::KeepTabWidths => tr_mark("Keep tab widths while closing"),
+            Setting::MiddleClickClosesTab => tr_mark("Middle click closes tabs"),
+            Setting::NewTabJoinsGroup => tr_mark("New tabs join the group they open from"),
+            Setting::GroupChipsInBar => tr_mark("Show tab group names in the tab bar"),
+            Setting::ShowAudioIndicator => tr_mark("Show a speaker on tabs playing sound"),
+            Setting::RememberSiteMute => tr_mark("Remember muted sites"),
+            Setting::DragOutLinks => tr_mark("Drag tabs out as links"),
+            Setting::DragOutImage => tr_mark("Show a preview while dragging a tab out"),
             Setting::HomeButton => tr_mark("Show home button"),
             Setting::OwnFullscreenControls => tr_mark("Axion's player in fullscreen"),
             Setting::HideControlsAfter => tr_mark("Hide controls while playing after"),
@@ -294,11 +322,19 @@ impl Setting {
             Setting::ClearCacheItem => tr_mark("Cached images and files"),
             Setting::ClearDownloadsItem => tr_mark("Downloads list"),
             Setting::OfferToSavePasswords => tr_mark("Offer to save passwords"),
+            Setting::ExtensionsEnabled => tr_mark("Chrome extensions (after restart)"),
+            Setting::ExtensionsWebStore => tr_mark("Install from the Chrome Web Store (after restart)"),
+            Setting::ExtensionsAutoUpdate => tr_mark("Update Web Store extensions automatically"),
             Setting::AutofillPasswords => tr_mark("Offer to fill saved passwords"),
             Setting::ClearClipboardAfter => tr_mark("Clear clipboard after copying"),
             Setting::PlaylistQuickAction => tr_mark("Playlist button in the address field"),
             Setting::PlaylistAutoDownload => tr_mark("Download videos when adding them to the Playlist"),
             Setting::PlaylistDeleteFiles => tr_mark("Delete downloaded files when removing videos"),
+            Setting::ReaderButton => tr_mark("Reader View in the page menu"),
+            Setting::ReaderRememberPerSite => tr_mark("Remember Reader View’s look for each site"),
+            Setting::TranslateOffer => tr_mark("Offer to translate pages in other languages"),
+            Setting::TranslatePrompt => tr_mark("Open the offer by itself"),
+            Setting::TranslateChanges => tr_mark("Translate text that appears later"),
             Setting::AutoCheckUpdates => tr_mark("Check for updates automatically"),
             Setting::UpdatePrereleases => tr_mark("Include pre-releases"),
         }
@@ -314,6 +350,7 @@ impl Setting {
                 | Setting::HomeTopSites
                 | Setting::HomeStats
                 | Setting::HomeLive
+                | Setting::HomeGlassGround
                 | Setting::HomeLiveIgnoreReduceMotion
                 | Setting::DevTools
                 | Setting::TintFromPage
@@ -333,6 +370,13 @@ impl Setting {
                 | Setting::OpenInBackground
                 | Setting::CloseAnimation
                 | Setting::KeepTabWidths
+                | Setting::MiddleClickClosesTab
+                | Setting::NewTabJoinsGroup
+                | Setting::GroupChipsInBar
+                | Setting::ShowAudioIndicator
+                | Setting::RememberSiteMute
+                | Setting::DragOutLinks
+                | Setting::DragOutImage
                 | Setting::OwnFullscreenControls
                 | Setting::HardwareDecoding
                 | Setting::HardwareEnabled
@@ -347,10 +391,18 @@ impl Setting {
                 | Setting::ClearCacheItem
                 | Setting::ClearDownloadsItem
                 | Setting::OfferToSavePasswords
+                | Setting::ExtensionsEnabled
+                | Setting::ExtensionsWebStore
+                | Setting::ExtensionsAutoUpdate
                 | Setting::AutofillPasswords
                 | Setting::PlaylistQuickAction
                 | Setting::PlaylistAutoDownload
                 | Setting::PlaylistDeleteFiles
+                | Setting::ReaderButton
+                | Setting::ReaderRememberPerSite
+                | Setting::TranslateOffer
+                | Setting::TranslatePrompt
+                | Setting::TranslateChanges
                 | Setting::AutoCheckUpdates
                 | Setting::UpdatePrereleases
         )
@@ -434,6 +486,7 @@ impl Setting {
             Setting::HomeSearch => return c.home.show_search as u8 as f32,
             Setting::HomeTopSites => return c.home.show_top_sites as u8 as f32,
             Setting::HomeStats => return c.home.show_stats as u8 as f32,
+            Setting::HomeGlassGround => return c.home.glass_ground as u8 as f32,
             Setting::HomeLive => return c.home.live_wallpapers as u8 as f32,
             Setting::HomeLiveIgnoreReduceMotion => {
                 return c.home.live_wallpapers_ignore_reduce_motion as u8 as f32;
@@ -458,6 +511,13 @@ impl Setting {
             Setting::OpenInBackground => return c.tabs.open_links_in_background as u8 as f32,
             Setting::CloseAnimation => return c.tabs.close_animation as u8 as f32,
             Setting::KeepTabWidths => return c.tabs.keep_widths_while_closing as u8 as f32,
+            Setting::MiddleClickClosesTab => return c.tabs.middle_click_closes_tab as u8 as f32,
+            Setting::NewTabJoinsGroup => return c.tabs.new_tab_joins_group as u8 as f32,
+            Setting::GroupChipsInBar => return c.tabs.group_chips_in_bar as u8 as f32,
+            Setting::ShowAudioIndicator => return c.tabs.show_audio_indicator as u8 as f32,
+            Setting::RememberSiteMute => return c.tabs.remember_site_mute as u8 as f32,
+            Setting::DragOutLinks => return c.tabs.drag_out_links as u8 as f32,
+            Setting::DragOutImage => return c.tabs.drag_out_image as u8 as f32,
             Setting::HomeButton => return c.layout.home_button as u8 as f32,
             Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
@@ -473,10 +533,18 @@ impl Setting {
             Setting::ClearCacheItem => return c.data.clear_cache as u8 as f32,
             Setting::ClearDownloadsItem => return c.data.clear_downloads as u8 as f32,
             Setting::OfferToSavePasswords => return c.passwords.offer_to_save as u8 as f32,
+            Setting::ExtensionsEnabled => return c.extensions.enabled as u8 as f32,
+            Setting::ExtensionsWebStore => return c.extensions.web_store as u8 as f32,
+            Setting::ExtensionsAutoUpdate => return c.extensions.auto_update as u8 as f32,
             Setting::AutofillPasswords => return c.passwords.autofill as u8 as f32,
             Setting::PlaylistQuickAction => return c.playlist.quick_action as u8 as f32,
             Setting::PlaylistAutoDownload => return c.playlist.auto_download as u8 as f32,
             Setting::PlaylistDeleteFiles => return c.playlist.delete_files_on_remove as u8 as f32,
+            Setting::ReaderButton => return c.reader.button as u8 as f32,
+            Setting::ReaderRememberPerSite => return c.reader.remember_per_site as u8 as f32,
+            Setting::TranslateOffer => return c.translation.offer as u8 as f32,
+            Setting::TranslatePrompt => return c.translation.prompt as u8 as f32,
+            Setting::TranslateChanges => return c.translation.translate_changes as u8 as f32,
             Setting::AutoCheckUpdates => return c.updates.auto_check_on_start as u8 as f32,
             Setting::UpdatePrereleases => {
                 return (c.updates.channel == axion_config::UpdateChannel::Prerelease) as u8 as f32;
@@ -509,6 +577,7 @@ impl Setting {
             Setting::HomeSearch => c.home.show_search = on,
             Setting::HomeTopSites => c.home.show_top_sites = on,
             Setting::HomeStats => c.home.show_stats = on,
+            Setting::HomeGlassGround => c.home.glass_ground = on,
             Setting::HomeLive => c.home.live_wallpapers = on,
             Setting::HomeLiveIgnoreReduceMotion => c.home.live_wallpapers_ignore_reduce_motion = on,
             Setting::DevTools => c.devtools.enabled = on,
@@ -536,6 +605,13 @@ impl Setting {
             Setting::OpenInBackground => c.tabs.open_links_in_background = on,
             Setting::CloseAnimation => c.tabs.close_animation = on,
             Setting::KeepTabWidths => c.tabs.keep_widths_while_closing = on,
+            Setting::MiddleClickClosesTab => c.tabs.middle_click_closes_tab = on,
+            Setting::NewTabJoinsGroup => c.tabs.new_tab_joins_group = on,
+            Setting::GroupChipsInBar => c.tabs.group_chips_in_bar = on,
+            Setting::ShowAudioIndicator => c.tabs.show_audio_indicator = on,
+            Setting::RememberSiteMute => c.tabs.remember_site_mute = on,
+            Setting::DragOutLinks => c.tabs.drag_out_links = on,
+            Setting::DragOutImage => c.tabs.drag_out_image = on,
             Setting::HomeButton => c.layout.home_button = on,
             Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
@@ -551,10 +627,18 @@ impl Setting {
             Setting::ClearCacheItem => c.data.clear_cache = on,
             Setting::ClearDownloadsItem => c.data.clear_downloads = on,
             Setting::OfferToSavePasswords => c.passwords.offer_to_save = on,
+            Setting::ExtensionsEnabled => c.extensions.enabled = on,
+            Setting::ExtensionsWebStore => c.extensions.web_store = on,
+            Setting::ExtensionsAutoUpdate => c.extensions.auto_update = on,
             Setting::AutofillPasswords => c.passwords.autofill = on,
             Setting::PlaylistQuickAction => c.playlist.quick_action = on,
             Setting::PlaylistAutoDownload => c.playlist.auto_download = on,
             Setting::PlaylistDeleteFiles => c.playlist.delete_files_on_remove = on,
+            Setting::ReaderButton => c.reader.button = on,
+            Setting::ReaderRememberPerSite => c.reader.remember_per_site = on,
+            Setting::TranslateOffer => c.translation.offer = on,
+            Setting::TranslatePrompt => c.translation.prompt = on,
+            Setting::TranslateChanges => c.translation.translate_changes = on,
             Setting::AutoCheckUpdates => c.updates.auto_check_on_start = on,
             Setting::UpdatePrereleases => {
                 c.updates.channel = if on {
@@ -623,6 +707,13 @@ pub enum SettingsAction {
     /// `appearance.tint_mode` while the page colour is on.
     TintMode(TintMode),
     PlaylistSort(PlaylistSort),
+    ReaderFont(ReaderFont),
+    ReaderTheme(ReaderTheme),
+    TranslationBackend(TranslationBackend),
+    /// Index into [`TRANSLATE_TARGETS`].
+    TranslateTarget(usize),
+    /// Deletes the downloaded translation models.
+    RemoveTranslationModels,
     Language(UiLanguage),
     /// Runs the first-run introduction again.
     ShowWelcomeTour,
@@ -702,6 +793,31 @@ const REMOVE_BACKGROUND_BASE: u32 = BACKGROUND_BASE + BACKGROUND_SLOTS as u32;
 const TRUSTED_SITE_BASE: u32 = 200;
 /// The pages in the list on the left.
 const CATEGORY_BASE: u32 = 900;
+/// Reader view and translation controls.
+const READING_BASE: u32 = 1100;
+const READER_FONTS: [(&str, ReaderFont); 3] = [
+    (tr_mark("Serif"), ReaderFont::Serif),
+    (tr_mark("Sans"), ReaderFont::Sans),
+    (tr_mark("Mono"), ReaderFont::Mono),
+];
+const READER_THEMES: [(&str, ReaderTheme); 4] = [
+    (tr_mark("Auto"), ReaderTheme::Auto),
+    (tr_mark("Light"), ReaderTheme::Light),
+    (tr_mark("Sepia"), ReaderTheme::Sepia),
+    (tr_mark("Dark"), ReaderTheme::Dark),
+];
+const TRANSLATION_BACKENDS: [(&str, TranslationBackend); 2] = [
+    (tr_mark("On this computer"), TranslationBackend::Local),
+    (tr_mark("Your server"), TranslationBackend::Endpoint),
+];
+/// Languages pages are translated into: the code (empty: the interface language) and its name.
+const TRANSLATE_TARGETS: [(&str, &str); 5] = [
+    ("", tr_mark("Interface")),
+    ("en", tr_mark("English")),
+    ("de", tr_mark("German")),
+    ("fr", tr_mark("French")),
+    ("es", tr_mark("Spanish")),
+];
 
 /// Remove buttons of the sites with data, and how many sites are listed.
 const SITE_DATA_BASE: u32 = 100;
@@ -848,6 +964,16 @@ impl SettingsAction {
                     SettingsAction::PlaylistSort(sort) => {
                         81 + crate::playlist::SORTS.iter().position(|(s, ..)| *s == sort).unwrap_or(0) as u32
                     }
+                    SettingsAction::ReaderFont(f) => {
+                        READING_BASE + READER_FONTS.iter().position(|(_, x)| *x == f).unwrap_or(0) as u32
+                    }
+                    SettingsAction::ReaderTheme(t) => {
+                        READING_BASE + 3 + READER_THEMES.iter().position(|(_, x)| *x == t).unwrap_or(0) as u32
+                    }
+                    SettingsAction::TranslationBackend(TranslationBackend::Local) => READING_BASE + 7,
+                    SettingsAction::TranslationBackend(TranslationBackend::Endpoint) => READING_BASE + 8,
+                    SettingsAction::TranslateTarget(i) => READING_BASE + 10 + i as u32,
+                    SettingsAction::RemoveTranslationModels => READING_BASE + 30,
                     SettingsAction::AddTrustedSite => 80,
                     SettingsAction::OpenPasswords => 85,
                     SettingsAction::ImportPasswords => 86,
@@ -930,6 +1056,18 @@ impl SettingsAction {
             79 => SettingsAction::TintMode(TintMode::Dominant),
             80 => SettingsAction::AddTrustedSite,
             81..=83 => SettingsAction::PlaylistSort(crate::playlist::SORTS[(n - 81) as usize].0),
+            n if (READING_BASE..READING_BASE + 3).contains(&n) => {
+                SettingsAction::ReaderFont(READER_FONTS[(n - READING_BASE) as usize].1)
+            }
+            n if (READING_BASE + 3..READING_BASE + 7).contains(&n) => {
+                SettingsAction::ReaderTheme(READER_THEMES[(n - READING_BASE - 3) as usize].1)
+            }
+            n if n == READING_BASE + 7 => SettingsAction::TranslationBackend(TranslationBackend::Local),
+            n if n == READING_BASE + 8 => SettingsAction::TranslationBackend(TranslationBackend::Endpoint),
+            n if (READING_BASE + 10..READING_BASE + 10 + TRANSLATE_TARGETS.len() as u32).contains(&n) => {
+                SettingsAction::TranslateTarget((n - READING_BASE - 10) as usize)
+            }
+            n if n == READING_BASE + 30 => SettingsAction::RemoveTranslationModels,
             85 => SettingsAction::OpenPasswords,
             86 => SettingsAction::ImportPasswords,
             87 => SettingsAction::ExportPasswords,
@@ -996,6 +1134,8 @@ pub enum Outcome {
     Changed,
     Close,
     ClearHistory,
+    /// Delete the downloaded translation models.
+    RemoveTranslationModels,
     /// Set the account password (`current: None`: it has none yet) or change it.
     SetAccountPassword {
         current: Option<Zeroizing<String>>,
@@ -1701,6 +1841,7 @@ impl SettingsSheet {
                     self.control_labeled(ui, config, Setting::HomeDim, tr("Dim"));
                     self.control_labeled(ui, config, Setting::HomeBlur, tr("Blur"));
                 }
+                self.control(ui, config, Setting::HomeGlassGround);
                 self.control(ui, config, Setting::HomeLive);
                 self.control(ui, config, Setting::HomeLiveIgnoreReduceMotion);
                 self.note(ui, tr("Off: wallpapers show a still frame while Reduce Motion is on."));
@@ -1842,6 +1983,13 @@ impl SettingsSheet {
                 self.control(ui, config, Setting::OpenInBackground);
                 self.control(ui, config, Setting::CloseAnimation);
                 self.control(ui, config, Setting::KeepTabWidths);
+                self.control(ui, config, Setting::MiddleClickClosesTab);
+                self.control(ui, config, Setting::NewTabJoinsGroup);
+                self.control(ui, config, Setting::GroupChipsInBar);
+                self.control(ui, config, Setting::ShowAudioIndicator);
+                self.control(ui, config, Setting::RememberSiteMute);
+                self.control(ui, config, Setting::DragOutLinks);
+                self.control(ui, config, Setting::DragOutImage);
                 let row_node = self.row(ui, tr("Close tabs"));
                 let options: Vec<(&str, ActionId)> = CLOSE_AFTER
                     .iter()
@@ -1961,6 +2109,7 @@ impl SettingsSheet {
                 }
             }
             Category::Hardware => self.hardware_page(ui, config),
+            Category::Reading => self.reading_page(ui, config),
             Category::Shields => {
                 let row_node = self.row(ui, tr("Shields on sites you haven't set"));
                 let options: Vec<(&str, ActionId)> = SHIELD_LEVELS
@@ -2029,15 +2178,12 @@ impl SettingsSheet {
                 }
                 self.site_permissions_section(ui, config);
                 self.section(ui, tr("Extensions"));
-                let row_node = self.row(ui, tr("Chrome extensions"));
-                let state =
-                    ui.add_label(row_node, tr("Not supported yet"), TextStyle::Callout, Style::default());
-                if let Some(w) = ui.widget_mut(state) {
-                    w.set_paint(Paint::Secondary);
-                }
+                self.control(ui, config, Setting::ExtensionsEnabled);
+                self.control(ui, config, Setting::ExtensionsWebStore);
+                self.control(ui, config, Setting::ExtensionsAutoUpdate);
                 self.note(
                     ui,
-                    tr("Chrome extensions are not supported yet; the Chrome Web Store cannot install them."),
+                    tr("Manifest V3 extensions install from the Chrome Web Store (Axion asks first and shows every permission), or from the extensions button in the toolbar (an unpacked folder or a .crx file). Updates for Web Store extensions are downloaded in the background and apply after a restart."),
                 );
             }
             Category::Passwords => {
@@ -2861,6 +3007,69 @@ impl SettingsSheet {
 
     /// Settings › Hardware: acceleration switches, page rendering, graphics card, and what is
     /// actually active (all read when Axion starts).
+    fn reading_page(&mut self, ui: &mut Ui, config: &Config) {
+        self.section(ui, tr("Reader View"));
+        for setting in [Setting::ReaderButton, Setting::ReaderRememberPerSite] {
+            self.control(ui, config, setting);
+        }
+        let row_node = self.row(ui, tr("Font"));
+        let options: Vec<(&str, ActionId)> = READER_FONTS
+            .iter()
+            .map(|(name, font)| (tr(name), SettingsAction::ReaderFont(*font).id()))
+            .collect();
+        let current = READER_FONTS.iter().position(|(_, f)| *f == config.reader.font);
+        segmented(ui, row_node, &options, current);
+        let row_node = self.row(ui, tr("Theme"));
+        let options: Vec<(&str, ActionId)> = READER_THEMES
+            .iter()
+            .map(|(name, theme)| (tr(name), SettingsAction::ReaderTheme(*theme).id()))
+            .collect();
+        let current = READER_THEMES.iter().position(|(_, t)| *t == config.reader.theme);
+        segmented(ui, row_node, &options, current);
+        self.note(ui, tr("Text size and column width are in Reader Options of the page menu."));
+
+        self.section(ui, tr("Translation"));
+        for setting in [Setting::TranslateOffer, Setting::TranslatePrompt, Setting::TranslateChanges] {
+            self.control(ui, config, setting);
+        }
+        let row_node = self.row(ui, tr("Translate pages into"));
+        let options: Vec<(&str, ActionId)> = TRANSLATE_TARGETS
+            .iter()
+            .enumerate()
+            .map(|(i, (_, name))| (tr(name), SettingsAction::TranslateTarget(i).id()))
+            .collect();
+        let current =
+            TRANSLATE_TARGETS.iter().position(|(code, _)| *code == config.translation.target_language);
+        segmented(ui, row_node, &options, current);
+        let row_node = self.row(ui, tr("Translate"));
+        let options: Vec<(&str, ActionId)> = TRANSLATION_BACKENDS
+            .iter()
+            .map(|(name, backend)| (tr(name), SettingsAction::TranslationBackend(*backend).id()))
+            .collect();
+        let current = TRANSLATION_BACKENDS.iter().position(|(_, b)| *b == config.translation.backend);
+        segmented(ui, row_node, &options, current);
+        self.note(
+            ui,
+            tr("On this computer: language data from Mozilla is downloaded once, with your consent; pages never leave it."),
+        );
+        if config.translation.backend == TranslationBackend::Endpoint {
+            let note = if config.translation.endpoint_url.trim().is_empty() {
+                tr(
+                    "Set translation.endpoint_url in the settings file to a LibreTranslate server. Page text is sent to it.",
+                )
+            } else {
+                tr("Page text is sent to the server in translation.endpoint_url.")
+            };
+            self.note(ui, note);
+        }
+        let row_node = self.row(ui, tr("Downloaded language data"));
+        pill_button(ui, row_node, tr("Remove"), SettingsAction::RemoveTranslationModels, true);
+        if !config.translation.never_sites.is_empty() {
+            self.section(ui, tr("Never translated"));
+            self.note(ui, &config.translation.never_sites.join(", "));
+        }
+    }
+
     fn hardware_page(&mut self, ui: &mut Ui, config: &Config) {
         let status = self.hardware.clone();
         let amd = status.as_ref().is_some_and(|h| crate::hardware::is_amd(h.in_use.vendor));
@@ -3472,6 +3681,25 @@ impl SettingsSheet {
                 config.playlist.sort = sort;
                 Outcome::Changed
             }
+            SettingsAction::ReaderFont(font) => {
+                config.reader.font = font;
+                Outcome::Changed
+            }
+            SettingsAction::ReaderTheme(theme) => {
+                config.reader.theme = theme;
+                Outcome::Changed
+            }
+            SettingsAction::TranslationBackend(backend) => {
+                config.translation.backend = backend;
+                Outcome::Changed
+            }
+            SettingsAction::TranslateTarget(i) => {
+                if let Some((code, _)) = TRANSLATE_TARGETS.get(i) {
+                    config.translation.target_language = (*code).to_owned();
+                }
+                Outcome::Changed
+            }
+            SettingsAction::RemoveTranslationModels => return Outcome::RemoveTranslationModels,
             // Saved at once; the interface is built in one language per run, so it takes
             // effect at the next start (the note under the control says so).
             SettingsAction::Language(language) => {
@@ -3912,6 +4140,7 @@ fn shortcut_actions() -> Vec<KeyAction> {
         NewTab,
         CloseTab,
         ReopenClosedTab,
+        SearchTabs,
         NextTab,
         PreviousTab,
         PinTab,
@@ -3927,6 +4156,8 @@ fn shortcut_actions() -> Vec<KeyAction> {
         ZoomIn,
         ZoomOut,
         ZoomReset,
+        Print,
+        Screenshot,
         BookmarkPage,
         ShowBookmarks,
         ShowHistory,
@@ -3935,6 +4166,7 @@ fn shortcut_actions() -> Vec<KeyAction> {
         OpenPasswords,
         ToggleSidebar,
         OpenSettings,
+        CommandPalette,
         ToggleFullscreen,
         Quit,
         Lock,
@@ -3956,24 +4188,25 @@ fn shortcut_actions() -> Vec<KeyAction> {
 
 /// The heading a shortcut is listed under on the Keyboard page; consecutive actions in
 /// `shortcut_actions` with the same heading share one section.
-fn shortcut_group(action: KeyAction) -> &'static str {
+pub(crate) fn shortcut_group(action: KeyAction) -> &'static str {
     use KeyAction::*;
     match action {
-        NewTab | CloseTab | ReopenClosedTab | NextTab | PreviousTab | PinTab | TabOverview | SelectTab(_)
-        | SelectLastTab => tr("Tabs"),
+        NewTab | CloseTab | ReopenClosedTab | SearchTabs | NextTab | PreviousTab | PinTab | TabOverview
+        | SelectTab(_) | SelectLastTab => tr("Tabs"),
         FocusAddressBar | Back | Forward | Reload | HardReload => tr("Navigation"),
-        Find | FindNext | FindPrevious | ZoomIn | ZoomOut | ZoomReset | Paste | PastePlainText => tr("Page"),
+        Find | FindNext | FindPrevious | ZoomIn | ZoomOut | ZoomReset | Paste | PastePlainText | Print
+        | Screenshot => tr("Page"),
         BookmarkPage | ShowBookmarks | ShowHistory | OpenPlaylist | PlaylistAdd | OpenPasswords
         | ToggleSidebar => tr("Panels"),
         Lock => tr("Privacy"),
         DevTools | DevToolsConsole | ViewSource => tr("Developer"),
-        OpenSettings | ToggleFullscreen | Quit => tr("Window"),
+        OpenSettings | CommandPalette | ToggleFullscreen | Quit => tr("Window"),
         _ => tr("Media (fullscreen video)"),
     }
 }
 
 /// The name a shortcut is listed under, translated.
-fn shortcut_name(action: KeyAction) -> &'static str {
+pub(crate) fn shortcut_name(action: KeyAction) -> &'static str {
     tr(shortcut_source_name(action))
 }
 
@@ -3984,6 +4217,7 @@ fn shortcut_source_name(action: KeyAction) -> &'static str {
         NewTab => tr_mark("New tab"),
         CloseTab => tr_mark("Close tab"),
         ReopenClosedTab => tr_mark("Reopen closed tab"),
+        SearchTabs => tr_mark("Search tabs"),
         NextTab => tr_mark("Next tab"),
         PreviousTab => tr_mark("Previous tab"),
         PinTab => tr_mark("Pin tab"),
@@ -4008,15 +4242,20 @@ fn shortcut_source_name(action: KeyAction) -> &'static str {
         ShowHistory => tr_mark("Show history"),
         OpenPlaylist => tr_mark("Open playlist"),
         PlaylistAdd => tr_mark("Playlist add"),
+        ToggleReader => tr_mark("Toggle reader view"),
+        TranslatePage => tr_mark("Translate page"),
         OpenPasswords => tr_mark("Open passwords"),
         ToggleSidebar => tr_mark("Toggle sidebar"),
         OpenSettings => tr_mark("Open settings"),
+        CommandPalette => tr_mark("Command palette"),
         ToggleFullscreen => tr_mark("Toggle fullscreen"),
         Quit => tr_mark("Quit"),
         Lock => tr_mark("Lock"),
         DevTools => tr_mark("Developer tools"),
         DevToolsConsole => tr_mark("Developer console"),
         ViewSource => tr_mark("View source"),
+        Print => tr_mark("Print or save as PDF"),
+        Screenshot => tr_mark("Screenshot"),
         MediaPlayPause => tr_mark("Media play pause"),
         MediaSeekBack => tr_mark("Media seek back"),
         MediaSeekForward => tr_mark("Media seek forward"),

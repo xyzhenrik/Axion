@@ -466,7 +466,12 @@ impl Browser {
     }
 
     /// Copies the part `uv` of `texture` to the CPU, scaled so its long side is `max_px`.
-    fn read_texture(&self, texture: &wgpu::Texture, uv: Rect, max_px: u32) -> Option<image::RgbaImage> {
+    pub(super) fn read_texture(
+        &self,
+        texture: &wgpu::Texture,
+        uv: Rect,
+        max_px: u32,
+    ) -> Option<image::RgbaImage> {
         let (tw, th) = (texture.width(), texture.height());
         let x0 = ((uv.origin.x * tw as f32).floor() as u32).min(tw.saturating_sub(1));
         let y0 = ((uv.origin.y * th as f32).floor() as u32).min(th.saturating_sub(1));
@@ -931,6 +936,8 @@ impl Browser {
             site: &site,
             elapsed: current.as_ref().map_or(0.0, |i| i.position),
             duration: current.as_ref().map_or(0.0, |i| i.duration),
+            live: false,
+            loading: self.playlist.resolving.is_some(),
             playing: false,
             shuffle: self.playlist.shuffle,
             repeat: self.playlist.repeat,
@@ -995,7 +1002,7 @@ impl Browser {
         });
         let (elapsed, duration, playing) =
             player.as_ref().map_or((item.position, item.duration, false), |p| {
-                (p.time, p.duration.max(item.duration), p.is_playing())
+                (p.time, if p.live { 0.0 } else { p.duration.max(item.duration) }, p.is_playing())
             });
         let note = if picture.is_none() || (player.is_none() && opened.elapsed() < Duration::from_secs(1)) {
             Some(tr("Loading…"))
@@ -1007,6 +1014,8 @@ impl Browser {
             site: &display_host(&item.page_url),
             elapsed,
             duration,
+            live: player.as_ref().is_some_and(|p| p.live),
+            loading: player.as_ref().is_none_or(|p| p.loading),
             playing,
             shuffle: self.playlist.shuffle,
             repeat: self.playlist.repeat,
@@ -1115,6 +1124,10 @@ impl Browser {
 
     /// Saves where `player` is in item `id`.
     fn save_item_progress(&mut self, id: i64, player: &axion_media::Player) {
+        // A live stream has no position to come back to (and is never "watched").
+        if player.live {
+            return;
+        }
         let (position, watched) = playlist::progress(player.time, player.duration, &self.config.playlist);
         tracing::debug!(item = id, media_time = player.time, position, watched, "Playlist position saved");
         let watched = watched || self.playlist.item(id).is_some_and(|i| i.watched);
@@ -1200,7 +1213,7 @@ impl Browser {
     }
 
     /// A command to the page's player.
-    fn playlist_media(&mut self, action: MediaAction) {
+    pub(super) fn playlist_media(&mut self, action: MediaAction) {
         let Some(pb) = &self.playlist.playback else { return };
         let Some(id) = pb.player().map(|p| p.id.clone()) else { return };
         let view = pb.view;
@@ -1218,6 +1231,10 @@ impl Browser {
             return Target::Local(path);
         }
         if let Some(source) = MediaSource::from_json(&item.source) {
+            // A live channel's address is signed for minutes: look at the page again.
+            if source.live && item.page_url.starts_with("http") {
+                return Target::Find;
+            }
             return if source.playable() {
                 Target::Source(source)
             } else {
@@ -1405,6 +1422,9 @@ impl Browser {
         let now = Instant::now();
         match found {
             Capture::Found(source) => {
+                let was_live = MediaSource::from_json(&item.source).is_some_and(|s| s.live);
+                let seen_live = r.media.as_ref().and_then(|m| m.primary()).is_some_and(|p| p.live);
+                let source = source.with_live(was_live || seen_live);
                 self.set_item_source(id, &source);
                 self.cancel_resolve();
                 self.playlist_open_source(&item, source, true);
@@ -1469,7 +1489,8 @@ impl Browser {
         let item = self.playlist.item(id).cloned();
         match item {
             // A saved link may have expired (signed addresses): look at the page once more.
-            Some(item) if !fresh && !local => {
+            // (A video that can't be decoded won't be any better from a fresh address.)
+            Some(item) if !fresh && !local && code != "codec" => {
                 self.playlist.failure = None;
                 self.playlist_resolve_start(&item);
             }
@@ -1609,6 +1630,11 @@ impl Browser {
             }
             PageAction::PictureInPicture => self.playlist_picture_in_picture(),
             PageAction::Fullscreen => self.playlist_set_fullscreen(true),
+            PageAction::Retry => {
+                if let Some(id) = self.playlist.failure.as_ref().map(|f| f.item) {
+                    self.playlist_play(id);
+                }
+            }
             PageAction::OpenPage => {
                 if let Some(id) = self.playlist.failure.as_ref().map(|f| f.item) {
                     self.playlist_open_in_tab(id, false);

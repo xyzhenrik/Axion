@@ -288,6 +288,22 @@ impl Favicons {
         Some(self.shown_icon((host, scheme), &cached))
     }
 
+    /// The site's own icon pixels for `page_url` (current scheme, else the other), for drawing
+    /// outside the GPU frame (the drag image). `None` while no icon is known.
+    pub fn pixels(&self, page_url: &str) -> Option<image::RgbaImage> {
+        if is_internal(page_url) {
+            return image::load_from_memory_with_format(APP_ICON_PNG, image::ImageFormat::Png)
+                .ok()
+                .map(image::DynamicImage::into_rgba8);
+        }
+        let host = display_host(page_url);
+        if host.is_empty() {
+            return None;
+        }
+        let cached = self.cached(&host, self.scheme).or_else(|| self.cached(&host, self.scheme.other()))?;
+        image::RgbaImage::from_raw(cached.raw.width, cached.raw.height, cached.raw.rgba.clone())
+    }
+
     /// The cached icon as drawn on the current chrome: adapted when it would fade into it.
     fn shown_icon(&self, key: Key, cached: &Cached) -> SiteIcon {
         if let Some(shown) = self.shown.borrow().get(&key) {

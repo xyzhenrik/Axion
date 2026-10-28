@@ -180,6 +180,9 @@ pub struct Widget {
     /// Glass drawn in its own level's pass (so it flows into that level's glass) but tinted
     /// as densely as this level: popovers that grow out of thin bar glass and carry text.
     pub glass_density: Option<GlassLevel>,
+    /// A glass control without an action of its own (the pill around a slider) that is tinted
+    /// like the glass buttons beside it, so a row of controls over a video reads as one.
+    pub button_tint: bool,
     /// This glass's own smooth-union radius (logical px) where it flows into the glass drawn
     /// before it, when wider than `glass.merge_distance` (a popover's bridge to its bar).
     pub glass_merge: Option<f32>,
@@ -226,6 +229,7 @@ impl Widget {
             rotation: 0.0,
             visual_frame: None,
             glass_density: None,
+            button_tint: false,
             glass_merge: None,
             join_only: false,
             flat_role: FlatRole::Auto,
@@ -319,6 +323,12 @@ impl Widget {
 
     pub fn with_background(mut self, background: Background) -> Self {
         self.background = background;
+        self
+    }
+
+    /// See [`Widget::button_tint`].
+    pub fn with_button_tint(mut self) -> Self {
+        self.button_tint = true;
         self
     }
 

@@ -11,12 +11,14 @@ mod keymap;
 mod schema;
 mod store;
 mod watch;
+mod window_state;
 
 pub use color::{ACCENT_SWATCHES, Color};
 pub use keymap::{Action, Chord, Key, Keymap, KeymapConflict, Modifiers};
 pub use schema::*;
 pub use store::{ConfigPaths, load_config, load_keymap, save_config};
 pub use watch::{Changed, ConfigWatcher};
+pub use window_state::{MonitorRect, WINDOW_STATE_FILE, WindowState, is_visible};
 
 /// Errors from reading, parsing or writing configuration files.
 #[derive(Debug, thiserror::Error)]

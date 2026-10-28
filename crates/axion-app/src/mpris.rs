@@ -19,6 +19,8 @@ pub enum MprisCommand {
     Play,
     Pause,
     PlayPause,
+    /// Stop: pause and back to the start.
+    Stop,
     Next,
     Previous,
     /// Relative, seconds.
@@ -125,7 +127,7 @@ impl PlayerIface {
     }
 
     fn stop(&self) {
-        self.send(MprisCommand::Pause);
+        self.send(MprisCommand::Stop);
     }
 
     fn next(&self) {

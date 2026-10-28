@@ -20,12 +20,13 @@ changes. The names in the last column are what you use in `keymap.toml` (see
 | Select last tab | Alt+9 | `select_last_tab` |
 | Pin or unpin tab | Alt+P | `pin_tab` |
 | Tab overview | Alt+O, F9 | `tab_overview` |
+| Search tabs, recently closed tabs and history | Ctrl+Shift+A | `search_tabs` |
 
 ## Navigation
 
 | Action | Keys | Name in `keymap.toml` |
 |---|---|---|
-| Focus address bar | Alt+D, F6, Ctrl+K | `focus_address_bar` |
+| Focus address bar | Alt+D, F6 | `focus_address_bar` |
 | Back | Alt+Left, Ctrl+[ | `back` |
 | Forward | Alt+Right, Ctrl+] | `forward` |
 | Reload | Ctrl+R, F5 | `reload` |
@@ -38,6 +39,8 @@ changes. The names in the last column are what you use in `keymap.toml` (see
 | Find on page | Ctrl+F | `find` |
 | Find next | Ctrl+G, F3 | `find_next` |
 | Find previous | Ctrl+Shift+G, Shift+F3 | `find_previous` |
+| Print or save as PDF | Ctrl+P | `print` |
+| Screenshot | Ctrl+Shift+S | `screenshot` |
 | Zoom in | Ctrl++, Ctrl+= | `zoom_in` |
 | Zoom out | Ctrl+- | `zoom_out` |
 | Reset zoom | Ctrl+0 | `zoom_reset` |
@@ -53,7 +56,9 @@ changes. The names in the last column are what you use in `keymap.toml` (see
 | Show history | Ctrl+H | `show_history` |
 | Open the Playlist | Ctrl+Shift+P | `open_playlist` |
 | Add the page's video to the Playlist | Ctrl+Shift+D | `playlist_add` |
-| Open Passwords | Ctrl+P | `open_passwords` |
+| Reader view on or off | Ctrl+Alt+R | `toggle_reader` |
+| Translate the page, or show the original | not bound | `translate_page` |
+| Open Passwords | Ctrl+Alt+P | `open_passwords` |
 | Show or hide the sidebar | Ctrl+Shift+L | `toggle_sidebar` |
 
 ## Privacy
@@ -77,6 +82,7 @@ These only work while **Developer tools** is on in **Settings > General**.
 | Action | Keys | Name in `keymap.toml` |
 |---|---|---|
 | Settings | Ctrl+,  and Ctrl+S | `open_settings` |
+| Command palette (search every action) | Ctrl+K | `command_palette` |
 | Fullscreen window | F11 | `toggle_fullscreen` |
 | Quit | Ctrl+Q | `quit` |
 
@@ -121,7 +127,7 @@ Each line is an action name and a list of keys:
 
 ```toml
 # Replaces the defaults of this action
-focus_address_bar = ["Alt+D", "Ctrl+K"]
+focus_address_bar = ["Alt+D", "Ctrl+E"]
 toggle_sidebar = ["Ctrl+Shift+B"]
 
 # An empty list removes all keys of an action

@@ -23,6 +23,8 @@ use crate::{
 
 /// Console messages of the page meta script ([`PAGE_META_SCRIPT`]) start with this.
 const PAGE_META_PREFIX: &str = "\u{1}axion-meta:";
+/// `capture.js` reports a `getDisplayMedia()` call to the engine's own screen picker with this.
+const SCREEN_PICK_PREFIX: &str = "\u{1}axion-screen-pick:";
 /// Reports icon links and theme colours of every top-level document.
 const PAGE_META_SCRIPT: &str = include_str!("page_meta.js");
 /// Keeps the page's capture tracks so `Engine::stop_capture` can end them; run in every frame.
@@ -46,6 +48,11 @@ pub(super) struct Shared {
     /// DevTools browsers Chromium created for a view (see `Engine::open_devtools`), until the
     /// engine takes them in `pump`.
     pub devtools_created: RefCell<Vec<(ViewId, Browser)>>,
+    /// The engine's own screen picker is on (`Engine::set_screen_picker`).
+    pub own_screen_picker: Cell<bool>,
+    /// Shares the browser approved with `Engine::answer_screen_pick` that Chromium has not
+    /// asked about yet, per view: the follow-up media request of such a share is granted.
+    pub screen_approvals: RefCell<std::collections::HashMap<ViewId, u32>>,
 }
 
 #[derive(Default)]
@@ -619,6 +626,20 @@ wrap_display_handler! {
                 self.ctx.emit(browser, EngineEvent::PageMetaChanged { view: self.ctx.view, meta });
                 return 1;
             }
+            if let Some(report) = message.strip_prefix(SCREEN_PICK_PREFIX) {
+                if let Some((token, audio)) = parse_screen_pick(report) {
+                    let origin = browser
+                        .as_ref()
+                        .and_then(|b| b.main_frame())
+                        .map(|f| origin_of(&CefString::from(&f.url()).to_string()))
+                        .unwrap_or_default();
+                    self.ctx.emit(
+                        browser,
+                        EngineEvent::ScreenPickRequested { view: self.ctx.view, token, origin, audio },
+                    );
+                }
+                return 1;
+            }
             if !message.starts_with(PAGE_MESSAGE_PREFIX) {
                 return 0;
             }
@@ -725,7 +746,12 @@ wrap_load_handler! {
             if self.ctx.devtools || is_internal(&url) {
                 return;
             }
-            frame.execute_java_script(Some(&CAPTURE_SCRIPT.into()), Some(&url.as_str().into()), 0);
+            let capture = if self.ctx.shared.own_screen_picker.get() {
+                format!("window.__axionPicker=true;{CAPTURE_SCRIPT}")
+            } else {
+                CAPTURE_SCRIPT.to_owned()
+            };
+            frame.execute_java_script(Some(&capture.as_str().into()), Some(&url.as_str().into()), 0);
             let page_script = self.ctx.shared.page_script.borrow().clone();
             if let Some(script) = page_script {
                 frame.execute_java_script(Some(&script.as_str().into()), Some(&url.as_str().into()), 0);
@@ -990,6 +1016,16 @@ wrap_permission_handler! {
             // The DevTools frontend never captures; unknown kinds get Chromium's default (denied).
             if self.ctx.devtools || kinds.is_empty() || unknown != 0 {
                 return 0;
+            }
+            // A share the user just picked in Axion's own picker: that was the permission.
+            if kinds.contains(&crate::PermissionKind::ScreenShare) {
+                let mut approvals = self.ctx.shared.screen_approvals.borrow_mut();
+                if let Some(count) = approvals.get_mut(&self.ctx.view).filter(|c| **c > 0) {
+                    *count -= 1;
+                    drop(approvals);
+                    callback.cont(requested_permissions);
+                    return 1;
+                }
             }
             let permissions = &self.ctx.shared.permissions;
             let id = permissions.add_media(self.ctx.view, callback.clone(), requested_permissions);
@@ -1270,4 +1306,38 @@ fn check_rows(buffer: &wgpu::Buffer, width: u32) -> (bool, bool) {
     let bars_above_below = [rows[0], rows[rows.len() - 1]].iter().all(|row| row.iter().all(black));
     let bars_beside = rows.iter().all(|row| row.first().is_some_and(black) && row.last().is_some_and(black));
     (drawn, bars_above_below || bars_beside)
+}
+
+/// `{"token":N,"audio":B}` from `capture.js`.
+fn parse_screen_pick(report: &str) -> Option<(u64, bool)> {
+    let token = report.split("\"token\":").nth(1)?;
+    let digits: String = token.chars().take_while(char::is_ascii_digit).collect();
+    let audio = report.contains("\"audio\":true");
+    Some((digits.parse().ok()?, audio))
+}
+
+/// `scheme://host[:port]` of an address.
+fn origin_of(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => format!("{scheme}://{}", rest.split(['/', '?', '#']).next().unwrap_or("")),
+        None => url.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod screen_pick_tests {
+    use super::*;
+
+    #[test]
+    fn reports_are_parsed() {
+        assert_eq!(parse_screen_pick(r#"{"token":12,"audio":true}"#), Some((12, true)));
+        assert_eq!(parse_screen_pick(r#"{"token":3,"audio":false}"#), Some((3, false)));
+        assert_eq!(parse_screen_pick("nonsense"), None);
+    }
+
+    #[test]
+    fn origins_drop_the_path() {
+        assert_eq!(origin_of("https://meet.example.com/abc?x=1"), "https://meet.example.com");
+        assert_eq!(origin_of("file:///tmp/x.html"), "file://");
+    }
 }

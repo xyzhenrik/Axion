@@ -15,6 +15,30 @@
     console.debug(MARK + JSON.stringify({ t: 'failure', code: code, message: String(message || '') }));
   }
 
+  // One log line per step of the video's loading, so a log tells what happened.
+  function diag(event) {
+    var q = v.getVideoPlaybackQuality && v.getVideoPlaybackQuality();
+    console.debug(MARK + JSON.stringify({ t: 'probe', event: event, src: v.currentSrc, ready: v.readyState,
+      network: v.networkState, error: v.error && v.error.code, time: v.currentTime, duration: v.duration,
+      vw: v.videoWidth, vh: v.videoHeight, frames: q ? q.totalVideoFrames : -1, dropped: q ? q.droppedVideoFrames : -1 }));
+  }
+  ['loadedmetadata', 'playing', 'waiting', 'stalled', 'canplay', 'ended', 'seeked'].forEach(function (e) {
+    v.addEventListener(e, function () { diag(e); });
+  });
+  // The picture can't be decoded (HEVC and other formats Chromium lacks): the sound plays,
+  // the screen stays black. Say so instead of leaving a silent black picture.
+  var AUDIO_ONLY = /\.(mp3|m4a|aac|ogg|oga|opus|flac|wav)(\?|#|$)/i;
+  var sourceUrl = '';
+  v.addEventListener('playing', function () {
+    setTimeout(function () {
+      if (failed || v.paused || v.ended || AUDIO_ONLY.test(sourceUrl)) return;
+      var q = v.getVideoPlaybackQuality && v.getVideoPlaybackQuality();
+      if (v.videoWidth === 0 || (q && q.totalVideoFrames === 0 && v.currentTime > 1)) {
+        diag('no-picture');
+        fail('codec', 'no decodable video track (videoWidth=' + v.videoWidth + ')');
+      }
+    }, 2500);
+  });
   v.addEventListener('error', function () {
     var e = v.error;
     fail('media', (e ? (e.code + ' ' + (e.message || '')) : 'unknown media error') + ' [src=' + v.currentSrc +
@@ -25,9 +49,10 @@
   window.open = function () { return null; };
 
   function start(src) {
+    sourceUrl = src.url || '';
     if (src.kind === 'hls') {
       if (window.Hls && Hls.isSupported()) {
-        var hls = new Hls({ enableWorker: true, lowLatencyMode: false, maxBufferLength: 60 });
+        var hls = new Hls({ enableWorker: true, lowLatencyMode: false, maxBufferLength: 60, backBufferLength: 90, liveDurationInfinity: true });
         window.__axionHls = hls;
         var retried = false, recovered = false;
         hls.on(Hls.Events.ERROR, function (_, data) {

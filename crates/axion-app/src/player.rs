@@ -12,6 +12,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::spinner::Spinner;
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
 use axion_engine::ViewId;
@@ -144,6 +145,8 @@ pub struct PlayerOverlay {
     skip_back: NodeId,
     play: NodeId,
     play_icon: NodeId,
+    /// Turns in the play button's place while the video loads or buffers.
+    spinner: Spinner,
     skip_forward: NodeId,
     side_buttons: NodeId,
     captions: NodeId,
@@ -265,7 +268,10 @@ impl PlayerOverlay {
         // Top right: volume.
         let volume_capsule = ui.add(
             root,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(CAPSULE),
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thick))
+                .with_button_tint()
+                .with_radius(CAPSULE),
             Style {
                 padding: Rect {
                     left: length(14.0),
@@ -312,6 +318,7 @@ impl PlayerOverlay {
         let (skip_back, _) =
             circle(ui, centre, Control::SkipBack, Icon::SkipBack, FULLSCREEN.skip, Some("10"));
         let (play, play_icon) = circle(ui, centre, Control::PlayPause, Icon::Pause, FULLSCREEN.play, None);
+        let spinner = Spinner::build(ui, centre, FULLSCREEN.play);
         let (skip_forward, _) =
             circle(ui, centre, Control::SkipForward, Icon::SkipForward, FULLSCREEN.skip, Some("10"));
 
@@ -340,7 +347,10 @@ impl PlayerOverlay {
         // Bottom: elapsed, progress, remaining in one capsule.
         let bar = ui.add(
             root,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(CAPSULE),
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thick))
+                .with_button_tint()
+                .with_radius(CAPSULE),
             Style {
                 padding: Rect {
                     left: length(16.0),
@@ -377,6 +387,7 @@ impl PlayerOverlay {
             skip_back,
             play,
             play_icon,
+            spinner,
             skip_forward,
             side_buttons,
             captions,
@@ -466,6 +477,10 @@ impl PlayerOverlay {
         }
         self.place(ui, rect);
         self.show_state(ui, &player);
+        // While it loads the ring takes the play button's place (and its room).
+        let loading = player.loading && !player.paused;
+        let ring = self.spinner.update(ui, config, loading, dt);
+        ui.set_visible(self.play, !ring);
         let recently_active =
             now.duration_since(self.last_activity).as_secs_f32() < config.media.hide_controls_after_seconds;
         let held = ui.dragging().is_some_and(|n| n == self.scrubber || n == self.volume);
@@ -589,7 +604,10 @@ impl PlayerOverlay {
         ui.set_visible(self.captions, !player.captions.is_empty());
         let scrubbing = ui.dragging() == Some(self.scrubber)
             || self.scrubbed_at.is_some_and(|t| t.elapsed() < SCRUB_SETTLE);
-        if !scrubbing && player.duration > 0.0 {
+        if player.live {
+            // A live stream has no end to measure against: the timeline is always full.
+            ui.set_value(self.scrubber, 1.0);
+        } else if !scrubbing && player.duration > 0.0 {
             ui.set_value(self.scrubber, (player.time / player.duration) as f32);
         }
         let adjusting = ui.dragging() == Some(self.volume)
