@@ -369,7 +369,8 @@ impl NowPlayingCard {
                 );
             }
         } else {
-            ui.set_value(self.scrubber, 0.0);
+            // Live: the timeline is full (there is no end to measure against).
+            ui.set_value(self.scrubber, if now.live { 1.0 } else { 0.0 });
             ui.set_text(self.elapsed, &axion_media::format_time(now.time));
             ui.set_text(self.remaining, if now.live { tr("Live") } else { "\u{2212}:\u{2212}\u{2212}" });
         }

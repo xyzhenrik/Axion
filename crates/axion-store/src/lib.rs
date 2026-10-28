@@ -365,12 +365,20 @@ impl Store {
         Self::init(Connection::open(path)?)
     }
 
+    /// How long a call waits for a lock held by another connection before it fails.
+    pub fn set_busy_timeout(&self, timeout: std::time::Duration) -> Result<()> {
+        Ok(self.conn.busy_timeout(timeout)?)
+    }
+
     pub fn in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }
 
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // With WAL, NORMAL syncs at checkpoints instead of at every commit: no corruption, at
+        // worst the last moments are lost on power failure. Commits run on the UI thread.
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         for (i, migration) in MIGRATIONS.iter().enumerate().skip(version.max(0) as usize) {

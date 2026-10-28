@@ -26,6 +26,10 @@ pub struct MediaSource {
     /// be replaced: Chromium's network stack refuses a request whose Origin was changed.)
     #[serde(default)]
     pub referer: String,
+    /// The stream is live (a channel, not a recording). Its address is signed for a short time
+    /// (Twitch…), so a saved one is never reused: playing looks at the page again.
+    #[serde(default)]
+    pub live: bool,
 }
 
 impl MediaSource {
@@ -35,7 +39,13 @@ impl MediaSource {
             url: url.trim().to_owned(),
             kind,
             referer: if referer.starts_with("http") { referer.to_owned() } else { String::new() },
+            live: false,
         }
+    }
+
+    pub fn with_live(mut self, live: bool) -> Self {
+        self.live = live;
+        self
     }
 
     /// Whether the dedicated media view can play it.

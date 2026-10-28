@@ -131,7 +131,10 @@ pub fn candidates(
                 position: p.time,
                 rect: (p.x, p.y, p.w, p.h),
                 dpr: media.dpr,
-                capture: axion_media::capture(&p.src, &p.frame, page_url, sniffed),
+                capture: match axion_media::capture(&p.src, &p.frame, page_url, sniffed) {
+                    Capture::Found(source) => Capture::Found(source.with_live(p.live)),
+                    other => other,
+                },
             }
         })
         .collect()

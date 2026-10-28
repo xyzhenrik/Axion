@@ -27,7 +27,7 @@
   function start(src) {
     if (src.kind === 'hls') {
       if (window.Hls && Hls.isSupported()) {
-        var hls = new Hls({ enableWorker: true, lowLatencyMode: false, maxBufferLength: 60 });
+        var hls = new Hls({ enableWorker: true, lowLatencyMode: false, maxBufferLength: 60, backBufferLength: 90, liveDurationInfinity: true });
         window.__axionHls = hls;
         var retried = false, recovered = false;
         hls.on(Hls.Events.ERROR, function (_, data) {
