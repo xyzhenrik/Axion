@@ -23,6 +23,8 @@ pub struct Config {
     pub media: Media,
     pub hardware: Hardware,
     pub playlist: Playlist,
+    pub reader: Reader,
+    pub translation: Translation,
     pub downloads: Downloads,
     pub data: Data,
     pub passwords: Passwords,
@@ -1669,6 +1671,152 @@ pub struct Playlist {
     pub volume: f32,
     /// Playlist videos are muted (the volume above is kept for when they are not).
     pub muted: bool,
+}
+
+/// The font family of Reader view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReaderFont {
+    /// A book face.
+    #[default]
+    Serif,
+    /// The system's UI face.
+    Sans,
+    /// A fixed-width face.
+    Mono,
+}
+
+/// The colours of Reader view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReaderTheme {
+    /// Light or dark with Axion's own theme.
+    #[default]
+    Auto,
+    Light,
+    Sepia,
+    Dark,
+}
+
+/// Reader view: the article of a page on a clean sheet.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Reader {
+    /// Show the Reader button in the address field on pages that have an article.
+    pub button: bool,
+    pub font: ReaderFont,
+    /// Text size in CSS pixels.
+    pub font_size: f32,
+    /// Line height as a multiple of the text size.
+    pub line_height: f32,
+    /// Width of the text column in CSS pixels.
+    pub width: f32,
+    pub theme: ReaderTheme,
+    /// The Aa menu's choices are remembered for each site (otherwise they are the choices for
+    /// every site, saved here).
+    pub remember_per_site: bool,
+    /// A page counts as readable when its main text has at least this many characters.
+    pub min_chars: u32,
+    /// How long after a page loaded it is checked for an article (milliseconds); pages that
+    /// build their text with scripts need a moment.
+    pub detect_delay_ms: u32,
+    /// The Aa menu's text size range and step (CSS pixels).
+    pub min_font_size: f32,
+    pub max_font_size: f32,
+    pub font_step: f32,
+    /// The Aa menu's column width range and step (CSS pixels).
+    pub min_width: f32,
+    pub max_width: f32,
+    pub width_step: f32,
+}
+
+impl Default for Reader {
+    fn default() -> Self {
+        Self {
+            button: true,
+            font: ReaderFont::Serif,
+            font_size: 20.0,
+            line_height: 1.6,
+            width: 680.0,
+            theme: ReaderTheme::Auto,
+            remember_per_site: true,
+            min_chars: 600,
+            detect_delay_ms: 700,
+            min_font_size: 14.0,
+            max_font_size: 36.0,
+            font_step: 2.0,
+            min_width: 480.0,
+            max_width: 1000.0,
+            width_step: 80.0,
+        }
+    }
+}
+
+/// Where translations are computed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranslationBackend {
+    /// On this computer, with Mozilla's Bergamot models (downloaded once, with your consent).
+    #[default]
+    Local,
+    /// A LibreTranslate-compatible server you run or trust (`translation.endpoint_url`):
+    /// page text is sent there.
+    Endpoint,
+}
+
+/// Page translation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Translation {
+    /// Offer to translate pages written in another language than `target_language`.
+    pub offer: bool,
+    /// ISO 639-1 code pages are translated into; empty: the interface language.
+    pub target_language: String,
+    pub backend: TranslationBackend,
+    /// LibreTranslate-compatible server (`https://host/translate`), used when `backend` is
+    /// `endpoint`. Empty: none. Page text is sent to it.
+    pub endpoint_url: String,
+    /// The server's API key (empty: none).
+    pub endpoint_api_key: String,
+    /// Sites (and their subdomains) that are never offered for translation.
+    pub never_sites: Vec<String>,
+    /// Languages (ISO 639-1) that are never offered for translation, besides the target.
+    pub known_languages: Vec<String>,
+    /// Where the model list comes from (Mozilla Remote Settings).
+    pub models_records_url: String,
+    /// Where model files are downloaded from.
+    pub models_attachments_url: String,
+    /// Translated in one go: at most this many characters and text pieces.
+    pub batch_chars: u32,
+    pub batch_pieces: u32,
+    /// Text that appears on a translated page later (feeds, comments) is translated too.
+    pub translate_changes: bool,
+    /// A page without a declared language is guessed from at least this many characters.
+    pub detect_min_chars: u32,
+    /// How long an endpoint may take for one request (seconds).
+    pub endpoint_timeout_seconds: u32,
+}
+
+impl Default for Translation {
+    fn default() -> Self {
+        Self {
+            offer: true,
+            target_language: String::new(),
+            backend: TranslationBackend::Local,
+            endpoint_url: String::new(),
+            endpoint_api_key: String::new(),
+            never_sites: Vec::new(),
+            known_languages: Vec::new(),
+            models_records_url: "https://firefox.settings.services.mozilla.com/v1/buckets/main/collections"
+                .to_owned(),
+            models_attachments_url: "https://firefox-settings-attachments.cdn.mozilla.net/".to_owned(),
+            batch_chars: 4000,
+            batch_pieces: 60,
+            translate_changes: true,
+            detect_min_chars: 120,
+            endpoint_timeout_seconds: 30,
+        }
+    }
 }
 
 /// How the Playlist page orders its videos. More modes can be added later.
