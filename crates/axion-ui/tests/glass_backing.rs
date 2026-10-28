@@ -252,3 +252,90 @@ fn glass_buttons_inside_glass_leave_the_container_untouched_outside_their_shape(
     }
     assert!(failures.is_empty(), "nested glass leaves marks outside its shape:\n{}", failures.join("\n"));
 }
+
+/// A round glass button of `side` px, centred in the frame.
+fn round_button(config: &Config, dark: bool, level: GlassLevel, side: f32) -> (Ui, Vec2, Vec2) {
+    let mut ui = Ui::new(Theme::new(config, dark), 1.0);
+    ui.set_viewport(Vec2::new(SIZE.0 as f32, SIZE.1 as f32), 1.0);
+    let root = ui.root();
+    let node = ui.add(
+        root,
+        Widget::container()
+            .with_radius(CAPSULE)
+            .with_background(Background::Glass(level))
+            .with_action(ActionId(7)),
+        Style {
+            position: Position::Absolute,
+            inset: Rect {
+                left: length((SIZE.0 as f32 - side) / 2.0),
+                top: length((SIZE.1 as f32 - side) / 2.0),
+                right: auto(),
+                bottom: auto(),
+            },
+            size: Size { width: length(side), height: length(side) },
+            ..Default::default()
+        },
+    );
+    ui.layout();
+    let frame = ui.frame(node);
+    (ui, frame.origin, frame.size)
+}
+
+/// Largest channel lift over the backdrop inside a round button's shape, from its middle out
+/// to `inner` of its radius (the rim light and highlight band at the edge are left out).
+fn worst_lift_inside(frame: &[u8], origin: Vec2, size: Vec2, backdrop: u8, inner: f32) -> (i32, (u32, u32)) {
+    let centre = origin + size / 2.0;
+    let reach = size.x / 2.0 * inner;
+    let mut worst = (0, (0, 0));
+    for y in 0..SIZE.1 {
+        for x in 0..SIZE.0 {
+            let d = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) - centre;
+            if d.length() > reach {
+                continue;
+            }
+            let i = ((y * SIZE.0 + x) * 4) as usize;
+            let lift = (0..3).map(|c| frame[i + c] as i32 - backdrop as i32).max().unwrap_or(0);
+            if lift > worst.0 {
+                worst = (lift, (x, y));
+            }
+        }
+    }
+    worst
+}
+
+/// A glass button over a black (or near-black) backdrop is nearly invisible inside its shape:
+/// the backdrop plus a few levels, never a grey disc. Checked at rest and with the pointer on it
+/// (a hover must not paint a plate on glass either).
+#[test]
+fn glass_button_over_black_is_not_a_grey_disc() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter: skipped");
+        return;
+    };
+    let config = Config::default();
+    // The most a button may lift its backdrop: its tint (`glass.button_opacity` of white over a
+    // light scheme's glass) plus rounding. The dark scheme's tint is nearly black.
+    let allowed = |dark: bool| if dark { 4 } else { (config.glass.button_opacity * 255.0).ceil() as i32 + 3 };
+    let mut failures = Vec::new();
+    for dark in [true, false] {
+        for backdrop in [0.0_f32, 0.06, 0.12] {
+            for level in [GlassLevel::Thin, GlassLevel::Regular] {
+                for hover in [false, true] {
+                    let (mut ui, origin, size) = round_button(&config, dark, level, 68.0);
+                    if hover {
+                        let _ = ui.handle(axion_ui::UiInput::PointerMove(origin + size / 2.0));
+                    }
+                    let frame = render(&gpu, Some(&ui), backdrop);
+                    let level_255 = (backdrop * 255.0).round() as u8;
+                    let (lift, at) = worst_lift_inside(&frame, origin, size, level_255, 0.5);
+                    if lift > allowed(dark) {
+                        failures.push(format!(
+                            "{level:?} (dark={dark}, backdrop {level_255}, hover={hover}): pixel {at:?} is {lift} levels lighter than the backdrop"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "a glass button reads as a grey disc:\n{}", failures.join("\n"));
+}

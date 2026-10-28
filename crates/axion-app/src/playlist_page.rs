@@ -1360,10 +1360,16 @@ impl PlaylistPage {
         self.menu.open(ui, config, anchor, window, items);
     }
 
-    /// The player's glass controls (play, speed, volume, sleep, fullscreen): content on glass
+    /// The player's controls (the transport row, speed, volume, sleep, fullscreen): content on glass
     /// lies in the menu's own layer, so where a menu lies on one the control has to fade out.
     fn control_glass(&self, ui: &Ui) -> Vec<NodeId> {
-        let mut nodes: Vec<NodeId> = ui.parent(self.play_icon).into_iter().collect();
+        // The transport row (shuffle, previous, play, next, repeat) …
+        let mut nodes: Vec<NodeId> = ui
+            .parent(self.play_icon)
+            .and_then(|play| ui.parent(play))
+            .map(|row| ui.children(row))
+            .unwrap_or_default();
+        // … and the bottom row's controls.
         // sleep icon -> sleep button -> its slot -> the bottom row, whose slots hold the rest.
         let bottom = ui.parent(self.sleep_icon).and_then(|b| ui.parent(b)).and_then(|s| ui.parent(s));
         for slot in bottom.map(|b| ui.children(b)).unwrap_or_default() {

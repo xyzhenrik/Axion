@@ -25,6 +25,9 @@ pub const LEVEL: GlassLevel = GlassLevel::Thin;
 /// … but are tinted as densely as thick glass, so text directly on them stays legible on
 /// any page (light, dark or busy).
 pub const DENSITY: GlassLevel = GlassLevel::Thick;
+/// The glass level of a popover that stands apart from its anchor (a menu above a row of
+/// buttons): another pass than the buttons' (thin), so its glass never flows into theirs.
+pub const STANDALONE_LEVEL: GlassLevel = GlassLevel::Regular;
 /// A bridge narrower than this (logical px) isn't drawn.
 const MIN_BRIDGE_WIDTH: f32 = 1.0;
 /// A bridge reaches at most to the middle of a shape.
@@ -60,6 +63,17 @@ impl Popover {
     pub fn unjoined(mut self) -> Self {
         self.unjoined = true;
         self
+    }
+
+    /// Makes the popover a card of its own for as long as set (a menu above a button that has
+    /// controls beside it): no liquid bridge to the anchor, and its glass lies in a pass of its
+    /// own so it never flows into the glass of the buttons around it. It still grows out of the
+    /// anchor.
+    pub fn set_standalone(&mut self, ui: &mut Ui, standalone: bool) {
+        self.unjoined = standalone;
+        if let Some(w) = ui.widget_mut(self.root) {
+            w.background = Background::Glass(if standalone { STANDALONE_LEVEL } else { LEVEL });
+        }
     }
 
     /// Where it opens to (logical px).
@@ -401,6 +415,71 @@ mod tests {
         assert!(bridge_frame(anchor, CAPSULE, anchor, 20.0, DEPTH).is_none());
         // Below, but shifted off to the side: no shared front.
         assert!(bridge_frame(anchor, CAPSULE, Frame::new(300.0, 160.0, 100.0, 100.0), 20.0, DEPTH).is_none());
+    }
+
+    /// The most shapes drawn together in one glass pass (shapes in a pass flow into each other)
+    /// in a scene with a glass button and a popover above it, and whether the bridge was ever
+    /// drawn while the popover opened.
+    fn widest_pass_over_a_button(standalone: bool) -> (usize, bool) {
+        use axion_ui::{ActionId, Theme};
+        let config = Config::default();
+        let mut ui = Ui::new(Theme::new(&config, true), 1.0);
+        ui.set_viewport(Vec2::new(800.0, 600.0), 1.0);
+        // Each child of the root is a plane of its own, painted on its own.
+        let root = ui.add(
+            ui.root(),
+            Widget::container(),
+            Style { size: Size { width: length(800.0), height: length(600.0) }, ..Default::default() },
+        );
+        let button = ui.add(
+            root,
+            Widget::container()
+                .with_radius(CAPSULE)
+                .with_background(Background::Glass(LEVEL))
+                .with_action(ActionId(1)),
+            Style {
+                position: Position::Absolute,
+                inset: Rect { left: length(100.0), top: length(500.0), right: auto(), bottom: auto() },
+                size: Size { width: length(56.0), height: length(42.0) },
+                ..Default::default()
+            },
+        );
+        let mut popover = Popover::build(
+            &mut ui,
+            root,
+            22.0,
+            Style { size: Size { width: length(210.0), height: length(270.0) }, ..Default::default() },
+        );
+        ui.layout();
+        let anchor = ui.frame(button);
+        popover.set_standalone(&mut ui, standalone);
+        // 10 px above the button, as the Playlist's menus.
+        let target = Frame::new(anchor.origin.x, anchor.origin.y - 10.0 - 270.0, 210.0, 270.0);
+        popover.open(&mut ui, &config, anchor, target);
+        let (mut widest, mut bridged) = (0, false);
+        for _ in 0..180 {
+            popover.animate(&mut ui, 1.0 / 60.0);
+            bridged |= ui.is_visible(popover.bridge);
+            let mut layers = Vec::new();
+            ui.paint(&mut layers);
+            for layer in &layers {
+                if let axion_compositor::Layer::Glass { shapes, .. } = layer {
+                    widest = widest.max(shapes.len());
+                }
+            }
+        }
+        (widest, bridged)
+    }
+
+    #[test]
+    fn a_standalone_popover_is_a_card_with_no_bridge_and_a_glass_pass_of_its_own() {
+        // Attached (the bar's menus): the bridge and the button's glass flow into one shape.
+        let (widest, bridged) = widest_pass_over_a_button(false);
+        assert!(bridged && widest >= 2, "an attached popover joins its anchor ({bridged}, {widest})");
+        // Standalone: never a bridge, and the card and the button are never drawn together.
+        let (widest, bridged) = widest_pass_over_a_button(true);
+        assert!(!bridged, "a standalone popover has no bridge");
+        assert_eq!(widest, 1, "the card's glass shares no pass with the button's");
     }
 
     #[test]

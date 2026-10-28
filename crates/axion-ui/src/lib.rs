@@ -2033,6 +2033,13 @@ impl Ui {
                 // The button is glass: its lens is the feedback.
                 0.0
             } else if !opaque
+                && matches!(widget.background, Background::Glass(_) | Background::TintedGlass(..))
+            {
+                // A glass button at rest under the pointer (no lens yet): never a grey plate on
+                // the glass (a 7 % white fill is +18 levels on black, a visible disc). Glass
+                // reacts only through its lens when pressed.
+                0.0
+            } else if !opaque
                 && self.pressed == Some(node)
                 && self.press_target(node).is_some_and(|(glass, lens)| lens && glass != node)
             {

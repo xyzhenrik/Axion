@@ -471,6 +471,10 @@ pub struct Glass {
     /// or menu to the bar or button it flows out of: how wide the concave fillets at the
     /// junction's ends are (at most `merge_distance` has no extra effect).
     pub popover_bridge_fillet: f32,
+    /// Clear space in logical pixels between a menu that stands apart from its button (above a
+    /// row of controls, as the Playlist's speed and sleep menus) and that button. Such a menu
+    /// is its own card: no bridge, and its glass never flows into the button's.
+    pub menu_anchor_gap: f32,
     /// Opacity (0–1) of the soft plate under a menu's rows: menus carry text, so their glass is
     /// made denser than thick glass in the middle while the edges still refract.
     pub menu_plate_opacity: f32,
@@ -563,6 +567,7 @@ impl Default for Glass {
             drag_resistance: 40.0,
             rubber_band_c: 0.55,
             popover_bridge_fillet: 30.0,
+            menu_anchor_gap: 10.0,
             menu_plate_opacity: 0.6,
             button_opacity: 0.04,
             button_shadow: 0.0,

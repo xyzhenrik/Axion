@@ -126,6 +126,7 @@ Fine-tune the glass material. These settings only matter with **Glass** set to *
 | **Drag stretch (maximum)** | The most a glass control (a held button, a switch or slider knob) stretches when you pull it far from where it rests; the icon or label stays in place and stretches the same way. 0 to 20 %. Off with Reduce motion and in flat mode. | 8 % | `glass.drag_stretch_max` |
 | Rubber-band constant | Advanced, `config.toml` only. The drag curve is UIScrollView's rubber band `(1 - 1/(x·c/d + 1))·d` over the control's size `d`; the maximum stays **Drag stretch (maximum)**. Smaller `c` is stiffer. | 0.55 (Apple's) | `glass.rubber_band_c` (`glass.drag_resistance` is deprecated: still accepted, ignored) |
 | **Merge distance** | How close two glass shapes must be before they flow together. 0 to 40 px. | 20 px | `glass.merge_distance` |
+| Menu gap | Clear space between a menu that stands apart from its button (the Playlist's speed and sleep menus, above their buttons) and that button. Such a menu is a card of its own: no liquid bridge, its glass never flows into the button's. Edit in `config.toml`. | 10 px | `glass.menu_anchor_gap` |
 | Button shadow | Share of the glass drop shadow that a glass button casts. 0 (the default) means buttons are pure refractive glass with nothing dark around them; panels, sheets and popovers keep their shadow. Edit in `config.toml`. | 0 | `glass.button_shadow` |
 
 ## Tabs & Memory

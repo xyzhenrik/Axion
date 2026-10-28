@@ -253,7 +253,14 @@ fn plate(ui: &mut Ui, panel: NodeId, config: &Config) {
 
 /// Where a menu of `width` x `height` goes for `placement` around `anchor`, kept inside
 /// `window` (all logical px).
-pub fn target_frame(placement: Placement, anchor: Frame, window: Vec2, width: f32, height: f32) -> Frame {
+pub fn target_frame(
+    placement: Placement,
+    anchor: Frame,
+    window: Vec2,
+    width: f32,
+    height: f32,
+    standalone_gap: f32,
+) -> Frame {
     let max_left = (window.x - width - WINDOW_MARGIN).max(WINDOW_MARGIN);
     match placement {
         Placement::Below => {
@@ -298,8 +305,8 @@ pub fn target_frame(placement: Placement, anchor: Frame, window: Vec2, width: f3
                 anchor.origin.x + anchor.size.x / 2.0 - width / 2.0
             }
             .clamp(WINDOW_MARGIN, max_left);
-            let above = anchor.origin.y - GAP_TO_ANCHOR - height;
-            let below = anchor.origin.y + anchor.size.y + GAP_TO_ANCHOR;
+            let above = anchor.origin.y - standalone_gap - height;
+            let below = anchor.origin.y + anchor.size.y + standalone_gap;
             let max_top = (window.y - height - WINDOW_MARGIN).max(WINDOW_MARGIN);
             let top = if above >= WINDOW_MARGIN {
                 above
@@ -469,7 +476,11 @@ impl Menu {
             }
         }
         .max(self.min_width);
-        let target = target_frame(self.placement, anchor, window, width, height);
+        let standalone = matches!(self.placement, Placement::AboveStart | Placement::AboveCentered);
+        self.popover.set_standalone(ui, standalone);
+        self.sub.set_standalone(ui, standalone);
+        let gap = if standalone { config.glass.menu_anchor_gap.max(0.0) } else { GAP_TO_ANCHOR };
+        let target = target_frame(self.placement, anchor, window, width, height, gap);
         if !self.cover_if_under.is_empty() {
             let under = std::mem::take(&mut self.cover_if_under)
                 .into_iter()
@@ -822,22 +833,22 @@ mod tests {
         // A speed button at the bottom with a volume capsule 24 px to its right.
         let button = Frame::new(100.0, 700.0, 56.0, 42.0);
         for placement in [Placement::AboveStart, Placement::AboveCentered] {
-            let t = target_frame(placement, button, WINDOW, 210.0, 270.0);
+            let t = target_frame(placement, button, WINDOW, 210.0, 270.0, 10.0);
             assert!(t.origin.y + t.size.y <= button.origin.y, "{placement:?} lies on the button");
             assert!(t.origin.x >= WINDOW_MARGIN && t.origin.x + t.size.x <= WINDOW.x - WINDOW_MARGIN);
         }
-        let start = target_frame(Placement::AboveStart, button, WINDOW, 210.0, 270.0);
+        let start = target_frame(Placement::AboveStart, button, WINDOW, 210.0, 270.0, 10.0);
         assert_eq!(start.origin.x, button.origin.x);
     }
 
     #[test]
     fn a_menu_above_a_button_flips_below_when_there_is_no_room_above() {
         let button = Frame::new(100.0, 40.0, 56.0, 42.0);
-        let t = target_frame(Placement::AboveStart, button, WINDOW, 210.0, 270.0);
+        let t = target_frame(Placement::AboveStart, button, WINDOW, 210.0, 270.0, 10.0);
         assert!(t.origin.y >= button.origin.y + button.size.y);
         // No room on either side: kept inside the window.
         let anchor = Frame::new(100.0, 200.0, 56.0, 42.0);
-        let tall = target_frame(Placement::AboveStart, anchor, Vec2::new(1000.0, 300.0), 210.0, 270.0);
+        let tall = target_frame(Placement::AboveStart, anchor, Vec2::new(1000.0, 300.0), 210.0, 270.0, 10.0);
         assert!(tall.origin.y >= WINDOW_MARGIN);
     }
 }
