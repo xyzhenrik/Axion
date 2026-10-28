@@ -183,6 +183,8 @@ struct SiteClick {
 }
 
 /// How long a click into a site player gets to start it before we click again.
+/// How long after a pause it is checked that nothing plays again.
+const PAUSE_CHECK: Duration = Duration::from_millis(700);
 const SITE_CLICK_RETRY: Duration = Duration::from_millis(1200);
 const SITE_CLICK_TRIES: u32 = 3;
 const DAY_SECONDS: i64 = 24 * 60 * 60;
@@ -343,6 +345,8 @@ pub struct Browser {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     site_click: Option<SiteClick>,
+    /// The view whose pause is checked a moment later (see `verify_pause`).
+    pause_check: Option<(ViewId, Instant)>,
     frame_stats: FrameStats,
     /// The tab whose media the Now Playing card and the desktop (MPRIS) show.
     now_playing: Option<ViewId>,
@@ -791,6 +795,7 @@ impl Browser {
                 own_fullscreen: false,
                 trusted_sites: Vec::new(),
                 ignored_sites: config.media.ignored_media_sites.clone(),
+                keep_seconds: config.media.now_playing_keep_seconds,
             },
         ));
         engine.set_internal_pages(Some(Arc::new(crate::media_view::Chain(vec![
@@ -899,6 +904,7 @@ impl Browser {
             instance,
             adapter: adapter.clone(),
             site_click: None,
+            pause_check: None,
             frame_stats: FrameStats::default(),
             now_playing: None,
             now_art: ArtStore::default(),
@@ -1822,6 +1828,22 @@ impl Browser {
     // ---- media ----
 
     fn media_command(&mut self, view: ViewId, command: &axion_media::Command) {
+        use axion_media::Action;
+        // Every pause (Now Playing, media keys, the fullscreen player, Picture in Picture, the
+        // Playlist) takes one path: everything that plays in the page is paused and the result
+        // checked, instead of toggling one element the page may have swapped or restarted.
+        let playing = self.media_of(view).is_some_and(|(m, _)| m.players.iter().any(|p| p.is_playing()));
+        let pausing = match command.action {
+            Action::Pause => true,
+            Action::Toggle => playing,
+            _ => false,
+        };
+        if pausing && command.player != "*" {
+            tracing::info!(?view, player = %command.player, ?command.action, playing, "pause: all playing media");
+            self.pause_check = Some((view, Instant::now()));
+            self.media_command(view, &axion_media::Command::pause_all());
+            return;
+        }
         tracing::debug!(?view, ?command, "media command");
         // Every volume control of a Playlist video sets the Playlist's one shared volume.
         if self.is_playback_view(view)
@@ -1851,7 +1873,15 @@ impl Browser {
         use axion_media::Action;
         let Some(tab) = find_tab(&self.tabs, &self.parked, view) else { return false };
         let Some(media) = tab.media.as_ref() else { return false };
-        let Some(player) = media.get(&command.player).filter(|p| !p.native && !p.trusted).cloned() else {
+        // Only a real, visible picture can be clicked: an `<audio>`, or a video of no size, has
+        // no centre to hit (the click would land on whatever else is at its position).
+        let Some(player) = media
+            .get(&command.player)
+            .filter(|p| {
+                !p.native && !p.trusted && p.kind == axion_media::Kind::Video && p.w >= 80.0 && p.h >= 45.0
+            })
+            .cloned()
+        else {
             return false;
         };
         let click = match command.action {
@@ -1897,6 +1927,31 @@ impl Browser {
     }
 
     /// Clicks a site player again while it hasn't started (see `click_site_player`).
+    /// A moment after a pause: if something still plays (the page restarted it, or a swapped
+    /// element is not the one that was paused), the site's own play/pause is clicked once.
+    fn verify_pause(&mut self) {
+        let Some((view, at)) = self.pause_check else { return };
+        if at.elapsed() < PAUSE_CHECK {
+            return;
+        }
+        self.pause_check = None;
+        let Some(player) = self
+            .media_of(view)
+            .and_then(|(m, _)| {
+                m.players.iter().filter(|p| p.is_playing()).max_by(|a, b| a.area().total_cmp(&b.area()))
+            })
+            .cloned()
+        else {
+            tracing::info!(?view, "pause stuck");
+            return;
+        };
+        tracing::warn!(?view, player = %player.id, kind = ?player.kind, "still playing after pause");
+        let toggle = axion_media::Command::new(&player.id, axion_media::Action::Toggle);
+        if self.click_site_player(view, &toggle) {
+            tracing::info!(?view, "clicked the site's own player to pause it");
+        }
+    }
+
     fn retry_site_click(&mut self) {
         let Some(pending) = self.site_click.take() else { return };
         if pending.at.elapsed() < SITE_CLICK_RETRY {
@@ -2098,8 +2153,15 @@ impl Browser {
     }
 
     fn now_playing_command(&mut self, action: axion_media::Action) {
-        let Some(view) = self.now_playing else { return };
-        let Some(id) = self.primary_player(view).map(|p| p.id.clone()) else { return };
+        let Some(view) = self.now_playing else {
+            tracing::info!(?action, "Now Playing command without a tab");
+            return;
+        };
+        let Some(id) = self.primary_player(view).map(|p| p.id.clone()) else {
+            tracing::info!(?view, ?action, "Now Playing command: the tab has no player");
+            return;
+        };
+        tracing::info!(?view, player = %id, ?action, "Now Playing command");
         self.media_command(view, &axion_media::Command::new(&id, action));
     }
 
@@ -2109,6 +2171,15 @@ impl Browser {
         let tab = self.now_playing.and_then(|v| find_tab(&self.tabs, &self.parked, v));
         let tab = tab.filter(|t| t.media.as_ref().and_then(|m| m.primary()).is_some());
         if tab.is_none() {
+            if let Some(view) = self.now_playing {
+                // Say why the card goes: the tab is gone, or its page reports no player.
+                let why = match find_tab(&self.tabs, &self.parked, view) {
+                    None => "its tab is gone",
+                    Some(t) if t.media.is_none() => "the page has not reported media",
+                    Some(_) => "the page reports no player any more",
+                };
+                tracing::info!(?view, why, "Now Playing card dropped");
+            }
             self.now_playing = None;
         }
         let info = tab.and_then(|t| {
@@ -2432,6 +2503,7 @@ impl Browser {
 
     fn update_player(&mut self, dt: f32) {
         self.retry_site_click();
+        self.verify_pause();
         self.update_pip();
         let locked = self.is_locked();
         let tab = self.tabs.active().filter(|_| !self.overview.is_open() && !locked);
@@ -8494,6 +8566,7 @@ fn media_replace(config: &Config) -> axion_media::BridgeOptions {
         own_fullscreen: media.fullscreen_player,
         trusted_sites: media.trusted_player_sites.clone(),
         ignored_sites: media.ignored_media_sites.clone(),
+        keep_seconds: media.now_playing_keep_seconds,
     }
 }
 

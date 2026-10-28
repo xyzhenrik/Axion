@@ -1915,6 +1915,10 @@ pub struct Media {
     pub now_playing_marquee_speed: f32,
     /// Show a turning ring on the players while a video loads or buffers.
     pub loading_indicator: bool,
+    /// A player that left the page's document (a site swapping its `<audio>` element) while
+    /// paused keeps the Now Playing card for this long (seconds); a `new Audio()` never put in
+    /// the document keeps it as long as it has a source.
+    pub now_playing_keep_seconds: f32,
     /// Seconds for one turn of that ring.
     pub loading_spin_seconds: f32,
 }
@@ -1989,6 +1993,7 @@ impl Default for Media {
             now_playing_marquee: true,
             now_playing_marquee_speed: 28.0,
             loading_indicator: true,
+            now_playing_keep_seconds: 30.0,
             loading_spin_seconds: 0.9,
         }
     }
