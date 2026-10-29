@@ -625,6 +625,8 @@ pub enum Choose {
     Bookmarks,
     /// An extension package (`.crx` or `.zip`).
     ExtensionPackage,
+    /// A WireGuard config (`.conf`).
+    WireGuardConfig,
 }
 
 /// The XDG desktop portal's file chooser (`FileChooser.OpenFile`, for a folder with
@@ -677,6 +679,13 @@ pub fn choose_portal(title: &str, what: Choose) -> zbus::Result<Option<PathBuf>>
                     (1, "application/x-chrome-extension".to_owned()),
                     (1, "application/zip".to_owned()),
                 ],
+            )];
+            options.insert("filters", Value::from(filters));
+        }
+        Choose::WireGuardConfig => {
+            let filters = vec![(
+                tr("WireGuard configs").to_owned(),
+                vec![(0u32, "*.conf".to_owned()), (0, "*.txt".to_owned())],
             )];
             options.insert("filters", Value::from(filters));
         }

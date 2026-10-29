@@ -24,6 +24,7 @@ axion-import = { path = "crates/axion-import" }
 axion-physics = { path = "crates/axion-physics" }
 axion-shields = { path = "crates/axion-shields" }
 axion-tabs = { path = "crates/axion-tabs" }
+axion-net = { path = "crates/axion-net" }
 axion-media = { path = "crates/axion-media" }
 axion-reader = { path = "crates/axion-reader" }
 axion-translate = { path = "crates/axion-translate" }

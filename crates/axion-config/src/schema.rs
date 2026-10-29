@@ -19,6 +19,7 @@ pub struct Config {
     pub privacy: Privacy,
     pub permissions: Permissions,
     pub shields: Shields,
+    pub network: Network,
     pub tabs: Tabs,
     pub media: Media,
     pub hardware: Hardware,
@@ -189,6 +190,54 @@ mod devtools_tests {
         assert!(Config::default().devtools.enabled);
         let config: Config = toml::from_str("[devtools]\nenabled = false\n").unwrap();
         assert!(!config.devtools.enabled);
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+    use axion_net::{Connection, ConnectionKind, ProxyConfig, SiteRule, Target};
+
+    #[test]
+    fn network_defaults_are_safe_and_idle() {
+        let n = Config::default().network;
+        assert!(
+            n.connections.is_empty() && n.default_connection.is_direct() && n.private_connection.is_none()
+        );
+        assert!(n.kill_switch && n.leak_protection);
+        assert!(n.check_ip_url.is_empty(), "no third-party call without the user choosing one");
+    }
+
+    #[test]
+    fn network_roundtrips_through_toml_without_secrets() {
+        let mut c = Config::default();
+        c.network.connections.push(Connection {
+            id: "c-1".into(),
+            name: "Office".into(),
+            kind: ConnectionKind::Proxy(ProxyConfig {
+                host: "p.example".into(),
+                port: 1080,
+                username: "me".into(),
+                ..Default::default()
+            }),
+        });
+        c.network.default_connection = Target::Connection("c-1".into());
+        c.network.private_connection = Some(Target::Direct);
+        c.network.site_rules.push(SiteRule { host: "example.com".into(), connection: Target::Direct });
+        let text = toml::to_string(&c).unwrap();
+        let network_part = text
+            .split("[[network.connections]]")
+            .nth(1)
+            .unwrap_or_default()
+            .split("\n[tabs]")
+            .next()
+            .unwrap_or_default();
+        assert!(!network_part.to_lowercase().contains("password"), "{network_part}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.network, c.network);
+        assert_eq!(back.network.routing().private, Some(Target::Direct));
+        let old: Config = toml::from_str("[shields]\ndefault_level = \"off\"\n").unwrap();
+        assert_eq!(old.network, Network::default(), "files without [network] load");
     }
 }
 
@@ -1767,6 +1816,103 @@ impl Default for Shields {
                     .into(),
             ],
             update_interval_hours: 96.0,
+        }
+    }
+}
+
+/// Privacy network: upstream proxies, WireGuard and Tor, and the rules that route tabs and
+/// sites through them (Settings › Network & VPN). Secrets (proxy passwords, WireGuard keys)
+/// are **not** in this file: they live in the password vault, by connection id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Network {
+    /// The connections the user set up.
+    pub connections: Vec<axion_net::Connection>,
+    /// Connection for this account's tabs (`direct` or a connection id).
+    pub default_connection: axion_net::Target,
+    /// Connection for private tabs (`direct` or an id). Unset: same as the account's.
+    pub private_connection: Option<axion_net::Target>,
+    /// Per-site routes: they beat both defaults. `[[network.site_rules]]` with `host` (covers
+    /// subdomains) and `connection`.
+    pub site_rules: Vec<axion_net::SiteRule>,
+    /// When a connection is not up, block its traffic (with an explanation page) instead of
+    /// sending it directly. Turning this off is the only way a request can ever leave
+    /// directly although a route says otherwise.
+    pub kill_switch: bool,
+    /// While any route uses a connection: WebRTC may not use non-proxied UDP, DNS
+    /// prefetching and preconnecting are off, secure DNS is off, Chromium's background
+    /// services (component updates, sync, Safe Browsing pings, field trials) do not run.
+    pub leak_protection: bool,
+    /// Also switch QUIC (HTTP/3 over UDP) off when a route is set at start. Applies after a
+    /// restart.
+    pub disable_quic_when_routed: bool,
+    /// When every request goes through a connection, Chromium may not resolve any name on
+    /// this computer (`--host-resolver-rules`), except the proxy hosts. Applies after a
+    /// restart; breaks nothing that goes through a connection.
+    pub strict_dns: bool,
+    /// The address "Check my IP" fetches through the route (it must return the caller's IP
+    /// as text). Empty: the button is not shown. Axion never calls it by itself.
+    pub check_ip_url: String,
+    /// Seconds to wait for a proxy or tunnel to answer when connecting.
+    pub connect_timeout_secs: f32,
+    /// Seconds between checks that a proxy still answers (the kill switch reacts within two).
+    pub health_check_secs: f32,
+    /// Most connections a local relay serves at once.
+    pub max_relay_connections: u32,
+    /// Start the connections of the default routes when Axion starts. Off: they start when
+    /// the first tab that needs them opens.
+    pub connect_at_start: bool,
+    /// Show the connection button in the address field while a route is active.
+    pub show_chip: bool,
+    /// Tell the user in a toast when a connection comes up or goes down.
+    pub notify_changes: bool,
+}
+
+impl Default for Network {
+    fn default() -> Self {
+        Self {
+            connections: Vec::new(),
+            default_connection: axion_net::Target::Direct,
+            private_connection: None,
+            site_rules: Vec::new(),
+            kill_switch: true,
+            leak_protection: true,
+            disable_quic_when_routed: true,
+            strict_dns: false,
+            check_ip_url: String::new(),
+            connect_timeout_secs: 10.0,
+            health_check_secs: 10.0,
+            max_relay_connections: 512,
+            connect_at_start: true,
+            show_chip: true,
+            notify_changes: true,
+        }
+    }
+}
+
+impl Network {
+    /// The routing part, for `axion_net::NetManager`.
+    pub fn routing(&self) -> axion_net::RoutingConfig {
+        axion_net::RoutingConfig {
+            connections: self.connections.clone(),
+            default: self.default_connection.clone(),
+            private: self.private_connection.clone(),
+            site_rules: self.site_rules.clone(),
+            kill_switch: self.kill_switch,
+        }
+    }
+
+    pub fn connection(&self, id: &str) -> Option<&axion_net::Connection> {
+        self.connections.iter().find(|c| c.id == id)
+    }
+
+    /// Names a connection for a route (`Direct` for none).
+    pub fn target_name(&self, target: &axion_net::Target) -> String {
+        match target {
+            axion_net::Target::Direct => "Direct".to_owned(),
+            axion_net::Target::Connection(id) => {
+                self.connection(id).map_or_else(|| "Unknown connection".to_owned(), |c| c.name.clone())
+            }
         }
     }
 }

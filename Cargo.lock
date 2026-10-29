@@ -417,6 +417,7 @@ dependencies = [
  "axion-i18n",
  "axion-import",
  "axion-media",
+ "axion-net",
  "axion-physics",
  "axion-reader",
  "axion-shields",
@@ -465,6 +466,7 @@ dependencies = [
 name = "axion-config"
 version = "0.2.0"
 dependencies = [
+ "axion-net",
  "notify",
  "serde",
  "thiserror 2.0.21",
@@ -549,6 +551,19 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "axion-net"
+version = "0.2.0"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "serde",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+ "zeroize",
 ]
 
 [[package]]

@@ -119,6 +119,9 @@ pub struct Vault {
     device: Arc<dyn DeviceKey>,
     key: Option<Key>,
     items: Vec<Item>,
+    /// Secrets the browser keeps for its own features (see [`Vault::set_secret`]). Stored like
+    /// items, but never listed, exported or searched.
+    secrets: Vec<Item>,
     last_activity: Instant,
     /// Domains that share a sign-in (see [`site::Related`]).
     related: site::Related,
@@ -129,6 +132,16 @@ pub struct Vault {
     /// Tests: make the format upgrade fail just before it commits.
     #[cfg(test)]
     fail_upgrade: bool,
+}
+
+/// Marks a note as one of the browser's own secrets.
+const SECRET_PREFIX: &str = "\u{1}axion-secret:";
+
+fn secret_name(data: &ItemData) -> Option<&str> {
+    match data {
+        ItemData::Note(n) => n.title.strip_prefix(SECRET_PREFIX),
+        _ => None,
+    }
 }
 
 fn now() -> i64 {
@@ -156,6 +169,7 @@ impl Vault {
             device,
             key: None,
             items: Vec::new(),
+            secrets: Vec::new(),
             last_activity: Instant::now(),
             related: site::Related::default(),
             index: RefCell::new(None),
@@ -293,7 +307,7 @@ impl Vault {
     /// binding is upgraded on the way (or, if that fails, opens as it is).
     pub fn unlock(&mut self, password: &str) -> Result<()> {
         let key = self.key_for(password)?;
-        self.items = self.read_items(&key)?;
+        self.load_items(&key)?;
         self.sort();
         let key = if self.format()? == FORMAT_PASSWORD_ONLY {
             match self.upgrade(password) {
@@ -314,6 +328,15 @@ impl Vault {
         self.key = Some(key);
         self.last_activity = Instant::now();
         self.reindex();
+        Ok(())
+    }
+
+    /// Reads and decrypts everything; the browser's own secrets are set apart from the items.
+    fn load_items(&mut self, key: &Key) -> Result<()> {
+        let all = self.read_items(key)?;
+        let (secrets, items) = all.into_iter().partition(|i| secret_name(&i.data).is_some());
+        self.items = items;
+        self.secrets = secrets;
         Ok(())
     }
 
@@ -355,7 +378,7 @@ impl Vault {
 
     /// Writes every item in memory again, encrypted with `key`.
     fn rewrite_items(&self, key: &Key) -> Result<()> {
-        for item in &self.items {
+        for item in self.items.iter().chain(&self.secrets) {
             let envelope =
                 Envelope { data: item.data.clone(), created: item.created, modified: item.modified };
             self.write_with(key, &item.id, &envelope)?;
@@ -367,6 +390,7 @@ impl Vault {
     pub fn lock(&mut self) {
         self.key = None;
         self.items.clear();
+        self.secrets.clear();
     }
 
     /// Something was done with the vault (resets the auto-lock timer).
@@ -392,6 +416,58 @@ impl Vault {
     }
 
     /// The decrypted items, by kind and title (empty while locked).
+    /// The names of the browser's own secrets that start with `prefix` (unlocked vault).
+    pub fn secret_names(&self, prefix: &str) -> Vec<String> {
+        self.secrets
+            .iter()
+            .filter_map(|i| secret_name(&i.data))
+            .filter(|n| n.starts_with(prefix))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// A secret the browser keeps for its own features (network passwords and keys), by
+    /// name. These never appear among the items.
+    pub fn secret(&self, name: &str) -> Option<&str> {
+        match &self.secrets.iter().find(|i| secret_name(&i.data) == Some(name))?.data {
+            ItemData::Note(n) => Some(n.text.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Stores or replaces a secret.
+    pub fn set_secret(&mut self, name: &str, text: &str) -> Result<()> {
+        self.key()?;
+        let data = ItemData::Note(Note { title: format!("{SECRET_PREFIX}{name}"), text: text.to_owned() });
+        let at = now();
+        if let Some(i) = self.secrets.iter().position(|i| secret_name(&i.data) == Some(name)) {
+            let (id, created) = (self.secrets[i].id.clone(), self.secrets[i].created);
+            let envelope = Envelope { data, created, modified: at };
+            self.write(&id, &envelope)?;
+            self.secrets[i].data = envelope.data;
+            self.secrets[i].modified = at;
+        } else {
+            let id = new_id();
+            let envelope = Envelope { data, created: at, modified: at };
+            self.write(&id, &envelope)?;
+            self.secrets.push(Item { id, data: envelope.data, created: at, modified: at });
+        }
+        self.touch();
+        Ok(())
+    }
+
+    /// Removes a secret (no error if there is none).
+    pub fn remove_secret(&mut self, name: &str) -> Result<()> {
+        self.key()?;
+        if let Some(i) = self.secrets.iter().position(|i| secret_name(&i.data) == Some(name)) {
+            let id = self.secrets[i].id.clone();
+            self.conn.execute("DELETE FROM items WHERE id = ?1", [&id])?;
+            self.secrets.remove(i);
+        }
+        self.touch();
+        Ok(())
+    }
+
     pub fn items(&self) -> &[Item] {
         &self.items
     }
@@ -713,6 +789,33 @@ mod tests {
             password: pw.into(),
             notes: String::new(),
         })
+    }
+
+    #[test]
+    fn browser_secrets_are_kept_apart_from_items() {
+        let path = scratch_file("secrets");
+        let mut v = Vault::open(&path, device_a()).unwrap();
+        v.setup_with("test-only-pass", KdfParams::TEST).unwrap();
+        v.add(login("https://example.com", "me", "pw")).unwrap();
+        v.set_secret("net:c-1", "{\"password\":\"proxy-pw\"}").unwrap();
+        v.set_secret("net:c-1", "{\"password\":\"proxy-pw2\"}").unwrap();
+        assert_eq!(v.items().len(), 1, "never listed");
+        assert_eq!(v.secret("net:c-1"), Some("{\"password\":\"proxy-pw2\"}"));
+        assert_eq!(v.secret_names("net:"), ["net:c-1"]);
+        v.lock();
+        assert_eq!(v.secret("net:c-1"), None, "wiped with the lock");
+        v.unlock("test-only-pass").unwrap();
+        assert_eq!(v.secret("net:c-1"), Some("{\"password\":\"proxy-pw2\"}"));
+        assert_eq!(v.items().len(), 1);
+        // A new master password keeps them.
+        v.change_password("test-only-pass", "other-test-pass").unwrap();
+        v.lock();
+        v.unlock("other-test-pass").unwrap();
+        assert_eq!(v.secret("net:c-1"), Some("{\"password\":\"proxy-pw2\"}"));
+        v.remove_secret("net:c-1").unwrap();
+        v.remove_secret("net:missing").unwrap();
+        assert_eq!(v.secret("net:c-1"), None);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
