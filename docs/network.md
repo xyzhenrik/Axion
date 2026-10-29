@@ -86,7 +86,21 @@ crates/axion-app   network.rs (state, vault cache, kill-switch page), settings/n
 * Chromium cannot log in to SOCKS5. So Chromium is pointed at `LocalServer::http_front`, an
   HTTP proxy on loopback with a per-session Basic login (answered through CEF's
   `GetAuthCredentials`) that dials through the tunnel's authenticated SOCKS5. Neither loopback
-  port accepts a connection without its login.
+  port accepts a connection without its login, with one exception described next.
+* **Peer-process authentication (the front).** Chromium never answers the front's 407
+  challenge (CEF does not call `GetAuthCredentials` for it; the net-log shows the challenge and
+  the connection being dropped), so the front also lets in a loopback connection whose *peer
+  process descends from Axion's own process*: the source port is looked up in
+  `/proc/net/tcp`, the owning pid in `/proc/<pid>/fd`, and the parent chain (`/proc/<pid>/stat`)
+  must reach this process (`crates/axion-net/src/peer.rs`, injectable `/proc` for tests,
+  verdicts for known pids are cached). Anyone else (another program of the same user, a
+  sandboxed app sharing the network) still has to send the per-session Basic login, which only
+  this process knows. Where `/proc` is unavailable (not Linux) nothing is trusted and the
+  login is the only way in. Switch it off with `network.front_trust_own_processes = false`.
+  Threat model: it stops other programs from *using* the loopback port; a program that can
+  read this process's memory or inject code into Chromium is not stopped (nothing in user space
+  could), and descendants of Axion (extension helper processes, anything Chromium launches) are
+  trusted like Chromium.
 * Direct exposure: HTTP/HTTPS proxies and SOCKS5 proxies without a login are handed to Chromium
   as they are (`ProxyMonitor` only watches them). HTTP(S) proxy logins are answered through
   `GetAuthCredentials` (with a retry limit). A SOCKS5 proxy **with** a login goes through

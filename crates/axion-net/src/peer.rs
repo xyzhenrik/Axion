@@ -161,10 +161,10 @@ impl PeerCheck {
             let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.trusted.iter().copied().collect()
         };
-        let owner = trusted
-            .into_iter()
-            .find(|pid| self.src.socket_inodes(*pid).contains(&inode))
-            .or_else(|| self.src.pids().into_iter().find(|pid| self.src.socket_inodes(*pid).contains(&inode)));
+        let owner =
+            trusted.into_iter().find(|pid| self.src.socket_inodes(*pid).contains(&inode)).or_else(|| {
+                self.src.pids().into_iter().find(|pid| self.src.socket_inodes(*pid).contains(&inode))
+            });
         let own = owner.is_some_and(|pid| descends_from(self.src.as_ref(), pid, self.root));
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         match (owner, own) {
@@ -208,10 +208,13 @@ mod tests {
     }
 
     fn row(local: &str, remote: &str, inode: u64) -> String {
-        format!("   0: {local} {remote} 01 00000000:00000000 00:00000000 00000000  1000        0 {inode} 1 0 0 0\n")
+        format!(
+            "   0: {local} {remote} 01 00000000:00000000 00:00000000 00000000  1000        0 {inode} 1 0 0 0\n"
+        )
     }
 
-    const HEADER: &str = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+    const HEADER: &str =
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
 
     #[test]
     fn hex_addresses() {
@@ -230,7 +233,11 @@ mod tests {
 
     #[test]
     fn inodes_from_the_table() {
-        let table = format!("{HEADER}{}{}", row("0100007F:C350", "0100007F:1F90", 111), row("0100007F:1F90", "0100007F:C350", 222));
+        let table = format!(
+            "{HEADER}{}{}",
+            row("0100007F:C350", "0100007F:1F90", 111),
+            row("0100007F:1F90", "0100007F:C350", 222)
+        );
         let lo = Ipv4Addr::LOCALHOST;
         assert_eq!(socket_inode(&table, (lo, 0xC350), (lo, 0x1F90)), Some(111));
         assert_eq!(socket_inode(&table, (lo, 0x1F90), (lo, 0xC350)), Some(222));
@@ -294,10 +301,14 @@ mod tests {
         let client = std::net::TcpStream::connect(listener.local_addr().expect("addr")).expect("connect");
         let (server_side, _) = listener.accept().expect("accept");
         let check = PeerCheck::for_this_process();
-        assert!(check.is_own(server_side.peer_addr().expect("peer"), server_side.local_addr().expect("local")));
+        assert!(
+            check.is_own(server_side.peer_addr().expect("peer"), server_side.local_addr().expect("local"))
+        );
         // A root that is not us: the same peer is then foreign (our parent is not this process).
         let other = PeerCheck::new(Box::new(ProcFs), 1 << 30);
-        assert!(!other.is_own(server_side.peer_addr().expect("peer"), server_side.local_addr().expect("local")));
+        assert!(
+            !other.is_own(server_side.peer_addr().expect("peer"), server_side.local_addr().expect("local"))
+        );
         drop(client);
     }
 }

@@ -255,7 +255,8 @@ fn http_front_lets_in_own_processes_without_login_only_when_asked() {
     let trusting = ServerOptions { trust_own_process_tree: true, ..Default::default() };
     let front = LocalServer::http_front(Credentials::new("u", "p"), dialer(), trusting).unwrap();
     assert!(ask(&front).starts_with("HTTP/1.1 200"), "a process of our own tree needs no login");
-    let strict = LocalServer::http_front(Credentials::new("u", "p"), dialer(), ServerOptions::default()).unwrap();
+    let strict =
+        LocalServer::http_front(Credentials::new("u", "p"), dialer(), ServerOptions::default()).unwrap();
     assert!(ask(&strict).starts_with("HTTP/1.1 407"), "without the option everyone must log in");
 }
 

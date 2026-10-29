@@ -39,7 +39,11 @@ pub struct ServerOptions {
 
 impl Default for ServerOptions {
     fn default() -> Self {
-        Self { max_connections: 512, handshake_timeout: Duration::from_secs(15), trust_own_process_tree: false }
+        Self {
+            max_connections: 512,
+            handshake_timeout: Duration::from_secs(15),
+            trust_own_process_tree: false,
+        }
     }
 }
 
@@ -78,7 +82,8 @@ impl LocalServer {
     ) -> io::Result<Self> {
         let peers = options.trust_own_process_tree.then(crate::peer::PeerCheck::for_this_process);
         let handler: Handler = Arc::new(move |client| {
-            let _ = serve_http(client, &credentials, dialer.as_ref(), options.handshake_timeout, peers.as_ref());
+            let _ =
+                serve_http(client, &credentials, dialer.as_ref(), options.handshake_timeout, peers.as_ref());
         });
         Self::start("net-front", handler, options)
     }
