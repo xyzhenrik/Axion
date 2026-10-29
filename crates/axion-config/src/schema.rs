@@ -39,6 +39,7 @@ pub struct Config {
     pub devtools: DevTools,
     pub clipboard: Clipboard,
     pub toast: Toast,
+    pub link_preview: LinkPreview,
     pub sidebar: Sidebar,
     pub window: WindowBehavior,
     pub ui: Ui,
@@ -1700,6 +1701,42 @@ pub struct Toast {
 impl Default for Toast {
     fn default() -> Self {
         Self { duration_seconds: 2.0, action_duration_seconds: 8.0, clearance: 12.0 }
+    }
+}
+
+/// The bubble that shows where a link under the pointer leads.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LinkPreview {
+    /// Show the bubble.
+    pub enabled: bool,
+    /// How long the pointer rests on a link before the bubble appears (ms).
+    pub show_delay_ms: u32,
+    /// How long the bubble stays up before it grows to show the whole address on two lines (ms).
+    pub expand_after_ms: u32,
+    /// The widest the short bubble gets, as a share of the page's width (0.1 to 1).
+    pub max_width_fraction: f32,
+    /// How long the bubble lingers after the pointer left the link (ms; avoids flicker between
+    /// neighbouring links).
+    pub hide_delay_ms: u32,
+    /// Keep the bubble clear of the pointer: it moves to the other bottom corner when the
+    /// pointer comes closer than this (px).
+    pub pointer_clearance: f32,
+    /// Show nothing for `javascript:` links (like Chrome).
+    pub hide_javascript_urls: bool,
+}
+
+impl Default for LinkPreview {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            show_delay_ms: 120,
+            expand_after_ms: 1200,
+            max_width_fraction: 0.6,
+            hide_delay_ms: 80,
+            pointer_clearance: 36.0,
+            hide_javascript_urls: true,
+        }
     }
 }
 

@@ -107,6 +107,8 @@ How Axion looks. See [Appearance and Liquid Glass](features/appearance-and-glass
 | **Text size** | Scales all of Axion's own text. 85 to 130 %. Web pages have their own zoom (Ctrl++, Ctrl+-). | 100 % | `appearance.text_scale` |
 | **Page corner radius** | How round the corners of the page card are. 0 to 24 px. | 10 px | `layout.page_corner_radius` |
 | **Float sidebar over the page** | Always floats the sidebar over the page as a glass card instead of docking it beside the page. | Off | `layout.float_sidebar` |
+| **Show where a link leads** | A small glass bubble at the bottom corner of the page shows the address of the link under the pointer (also links inside text, image links and links reached with Tab): the host stands out, the path is dimmer, and a very long address is shortened in the middle. After a moment it grows to show the whole address on two lines. It moves to the other corner when the pointer comes close. `javascript:` links show nothing. | On | `link_preview.enabled` |
+| **Link bubble timing** (config only) | `link_preview.show_delay_ms` (120) before it appears, `link_preview.hide_delay_ms` (80) before it goes, `link_preview.expand_after_ms` (1200) before it shows the whole address, `link_preview.max_width_fraction` (0.6 of the page width), `link_preview.pointer_clearance` (36 px; closer than this to the pointer it moves to the other corner), `link_preview.hide_javascript_urls` (true). | | `link_preview.*` |
 
 ## Liquid Glass
 

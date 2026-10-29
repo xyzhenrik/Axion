@@ -47,6 +47,7 @@ use crate::home::{HomeAction, HomePage, REFRESH_SCRIPT, is_home_url};
 use crate::import::Importer;
 use crate::input::{self, ClickCounter};
 use crate::lifecycle;
+use crate::link_preview::LinkPreview;
 use crate::lockscreen::LockScreen;
 use crate::menu::{
     ACCOUNT_MENU_BASE, MAX_ITEMS, Menu, MenuAction, MenuClick, MenuControl, MenuItem, PAGE_MENU_BASE,
@@ -314,6 +315,8 @@ pub struct Browser {
     /// The app icon as a texture for the About page (made when first needed).
     about_icon: Option<crate::home::Image>,
     tooltip: Tooltip,
+    /// The bubble that shows where the hovered link leads.
+    link_preview: LinkPreview,
     /// What the sidebar panel's search field held when the list was last built.
     panel_query: String,
     find: FindBar,
@@ -851,6 +854,7 @@ impl Browser {
             chrome.bar_node(),
         );
         let tooltip_parent = ui.root();
+        let link_preview = LinkPreview::build(&mut ui, tooltip_parent);
         let tooltip = Tooltip::build(&mut ui, tooltip_parent);
         let (_, alert_plane) = lock_screen.planes();
         let root = ui.root();
@@ -907,6 +911,7 @@ impl Browser {
             update_phase: Phase::Idle,
             about_icon: None,
             tooltip,
+            link_preview,
             panel_query: String::new(),
             find,
             palette,
@@ -4580,6 +4585,11 @@ impl Browser {
                         self.page_cursor = cursor;
                     }
                 }
+                EngineEvent::LinkHover { view, url } => {
+                    if Some(view) == self.active_view() {
+                        self.link_preview.set_hover(&self.config, view, url);
+                    }
+                }
                 EngineEvent::FullscreenRequested { view, fullscreen } => {
                     if Some(view) == self.active_view() {
                         self.release_pointer_holds();
@@ -6941,6 +6951,25 @@ impl Browser {
                 burst if burst.starts_with("close-burst:") => {
                     self.close_burst = burst["close-burst:".len()..].parse().unwrap_or(0);
                 }
+                // Capture aid: the link bubble for URL, as if the pointer rested on that link.
+                link if link.starts_with("link-hover:") => {
+                    if let Some(view) = self.active_view() {
+                        let url = link["link-hover:".len()..].to_owned();
+                        self.link_preview.set_hover(&self.config, view, Some(url));
+                    }
+                }
+                // … and "link-hover-at:X:Y:URL" with the pointer at X:Y too (the bubble keeps
+                // clear of it).
+                link if link.starts_with("link-hover-at:") => {
+                    let mut parts = link["link-hover-at:".len()..].splitn(3, ':');
+                    if let (Some(x), Some(y), Some(url), Some(view)) =
+                        (parts.next(), parts.next(), parts.next(), self.active_view())
+                        && let (Ok(x), Ok(y)) = (x.parse::<f32>(), y.parse::<f32>())
+                    {
+                        self.pointer_moved(Vec2::new(x, y));
+                        self.link_preview.set_hover(&self.config, view, Some(url.to_owned()));
+                    }
+                }
                 at if at.starts_with("pointer:") => {
                     if let Some((x, y)) = at["pointer:".len()..].split_once(':')
                         && let (Ok(x), Ok(y)) = (x.parse::<f32>(), y.parse::<f32>())
@@ -7867,6 +7896,10 @@ impl Browser {
         let blocked = self.tooltips_blocked();
         let window = self.logical_size();
         self.tooltip.animate(&mut self.ui, &self.config, &self.keymap, window, blocked, dt);
+        let (active, pointer) = (self.active_view(), self.pointer);
+        // The find bar and the address suggestions do not take the pointer from the page.
+        let link_blocked = blocked && !self.find.is_open() && !self.suggestions.is_visible();
+        self.link_preview.animate(&mut self.ui, &self.config, page, pointer, active, link_blocked, dt);
         self.take_engine_icons();
         self.poll_svg_icons();
         if self.now_art.poll(&self.favicons) {

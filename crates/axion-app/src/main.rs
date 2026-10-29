@@ -43,6 +43,7 @@ mod home;
 mod import;
 mod input;
 mod lifecycle;
+mod link_preview;
 mod locale;
 mod lockscreen;
 mod media_view;

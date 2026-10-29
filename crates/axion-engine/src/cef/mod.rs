@@ -1318,6 +1318,7 @@ impl Engine for CefEngine {
                 | EngineEvent::ScreenshotReady { view, .. }
                 | EngineEvent::ScreenshotFailed { view, .. }
                 | EngineEvent::CursorChanged { view, .. }
+                | EngineEvent::LinkHover { view, .. }
                 | EngineEvent::FullscreenRequested { view, .. }
                 | EngineEvent::PageMessage { view, .. }
                 | EngineEvent::RequestBlocked { view, .. }
