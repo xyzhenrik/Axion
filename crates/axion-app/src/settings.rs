@@ -3476,10 +3476,10 @@ impl SettingsSheet {
         group
     }
 
-    fn row_with_height(&mut self, ui: &mut Ui, label: &str, height: f32) -> NodeId {
+    /// A row without its label (the caller adds its own content), at least `height` tall.
+    fn row_bare(&mut self, ui: &mut Ui, height: f32) -> NodeId {
         let parent = self.group_for_row(ui);
-        // At least `height` tall, taller when a long label wraps.
-        let row_node = ui.add(
+        ui.add(
             parent,
             Widget::container(),
             Style {
@@ -3488,7 +3488,12 @@ impl SettingsSheet {
                 flex_shrink: 0.0,
                 ..row(10.0)
             },
-        );
+        )
+    }
+
+    fn row_with_height(&mut self, ui: &mut Ui, label: &str, height: f32) -> NodeId {
+        // At least `height` tall, taller when a long label wraps.
+        let row_node = self.row_bare(ui, height);
         let label = ui.add_label(row_node, label, TextStyle::Body, grow_label());
         ui.set_label_lines(label, LABEL_LINES);
         row_node

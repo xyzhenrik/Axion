@@ -533,13 +533,13 @@ impl SettingsSheet {
         for (i, c) in conns.iter().enumerate().take(MAX_CONNECTIONS) {
             let status = self.net.status_of(&c.id).cloned().unwrap_or(ConnectionStatus::Stopped);
             let title = format!("{}  ·  {}", c.name, crate::network::describe(c));
-            let row_node = self.row_with_height(ui, &title, 52.0);
+            let row_node = self.row_bare(ui, 52.0);
             let (color, text) = status_look(&status, &c.kind);
             let text = match (&status, self.net.progress_of(&c.id)) {
                 (ConnectionStatus::Connecting, Some(p)) => p,
                 _ => text,
             };
-            let dot = ui.add(
+            ui.add(
                 row_node,
                 Widget::container()
                     .with_background(Background::Fill(Paint::Fixed(color), 1.0))
@@ -550,18 +550,28 @@ impl SettingsSheet {
                     ..Default::default()
                 },
             );
-            let _ = dot;
-            let label = ui.add_label(
+            // Two lines: the name and kind, then the status (a failure reason in full).
+            let column = ui.add(
                 row_node,
-                &text,
-                TextStyle::Footnote,
+                Widget::container(),
                 Style {
+                    flex_direction: FlexDirection::Column,
+                    flex_grow: 1.0,
                     flex_shrink: 1.0,
                     min_size: Size { width: length(0.0), height: auto() },
                     ..Default::default()
                 },
             );
-            ui.set_label_lines(label, 2);
+            let name = ui.add_label(column, &title, TextStyle::Body, Style {
+                min_size: Size { width: length(0.0), height: auto() },
+                ..Default::default()
+            });
+            ui.set_label_lines(name, 2);
+            let label = ui.add_label(column, &text, TextStyle::Footnote, Style {
+                min_size: Size { width: length(0.0), height: auto() },
+                ..Default::default()
+            });
+            ui.set_label_lines(label, 6);
             if let Some(w) = ui.widget_mut(label) {
                 w.set_paint(Paint::Secondary);
             }
