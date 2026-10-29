@@ -171,6 +171,34 @@ pub struct TorConfig {
     /// Two-letter country code to leave the network from (`de`); empty: any. Narrows the
     /// anonymity set, off by default.
     pub exit_country: String,
+    /// Which connections may share a circuit.
+    pub isolation: TorIsolation,
+}
+
+/// Which connections share a Tor circuit (`isolation` of a Tor connection).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TorIsolation {
+    /// One set of circuits per site (registrable domain): different sites cannot be linked by
+    /// their exit relay. The default.
+    #[default]
+    Site,
+    /// One set of circuits for everything this connection carries.
+    Context,
+    /// Tor's own default (no isolation beyond what Arti does itself).
+    None,
+}
+
+impl TorIsolation {
+    pub const ALL: [TorIsolation; 3] = [TorIsolation::Site, TorIsolation::Context, TorIsolation::None];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TorIsolation::Site => "site",
+            TorIsolation::Context => "context",
+            TorIsolation::None => "none",
+        }
+    }
 }
 
 impl TorConfig {

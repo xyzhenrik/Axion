@@ -306,6 +306,7 @@ the password vault, not in `config.toml`.
 | Setting (`[network]`) | Default | What it does |
 |---|---|---|
 | Connections (`connections`) | none | Proxies (SOCKS5, HTTP, HTTPS), WireGuard (import a `.conf`) and Tor. |
+| Tor options (per Tor connection: `use_bridges`, `bridges`, `exit_country`, `isolation`) | per site | `isolation` = `site` (own circuits per site), `context` (shared) or `none`. Plain bridges only. Not Tor Browser: no fingerprinting resistance. See [network.md](network.md#tor). |
 | `default_connection` | `direct` | Route of this account's tabs. |
 | `private_connection` | unset | Route of private tabs (unset: same as the account). |
 | `site_rules` | none | `host` + `connection`: a site (and its subdomains) with its own route. Beats both defaults. |
@@ -314,6 +315,7 @@ the password vault, not in `config.toml`.
 | `disable_quic_when_routed` | on | QUIC off while a route exists (after restart). |
 | `strict_dns` | off | When everything is routed, no name is resolved on this computer (after restart). |
 | `check_ip_url` | empty | Address the "Check My IP" button opens in a tab. Axion never calls it itself. |
+| `front_trust_own_processes` | on | The loopback front lets in Axion's own processes (Chromium) without a login, found by process tree (Linux). Everyone else needs the per-session login. |
 | `connect_timeout_secs`, `health_check_secs`, `max_relay_connections` | 10, 10, 512 | Timing and limits (after restart). |
 | `connect_at_start`, `show_chip`, `notify_changes` | on | Start default routes at launch; show the chip in the address field; toast on changes. |
 

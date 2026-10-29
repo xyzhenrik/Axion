@@ -32,11 +32,18 @@ pub struct ServerOptions {
     pub max_connections: usize,
     /// How long a client may take to finish its greeting and request.
     pub handshake_timeout: Duration,
+    /// The HTTP front also lets in connections from processes of this program's own tree
+    /// without the login (see [`crate::peer`]); everyone else must log in.
+    pub trust_own_process_tree: bool,
 }
 
 impl Default for ServerOptions {
     fn default() -> Self {
-        Self { max_connections: 512, handshake_timeout: Duration::from_secs(15) }
+        Self {
+            max_connections: 512,
+            handshake_timeout: Duration::from_secs(15),
+            trust_own_process_tree: false,
+        }
     }
 }
 
@@ -73,8 +80,10 @@ impl LocalServer {
         dialer: Arc<dyn Dialer>,
         options: ServerOptions,
     ) -> io::Result<Self> {
+        let peers = options.trust_own_process_tree.then(crate::peer::PeerCheck::for_this_process);
         let handler: Handler = Arc::new(move |client| {
-            let _ = serve_http(client, &credentials, dialer.as_ref(), options.handshake_timeout);
+            let _ =
+                serve_http(client, &credentials, dialer.as_ref(), options.handshake_timeout, peers.as_ref());
         });
         Self::start("net-front", handler, options)
     }
@@ -245,20 +254,29 @@ fn serve_http(
     creds: &Credentials,
     dialer: &dyn Dialer,
     timeout: Duration,
+    peers: Option<&crate::peer::PeerCheck>,
 ) -> io::Result<()> {
     client.set_read_timeout(Some(timeout))?;
     client.set_write_timeout(Some(timeout))?;
+    let own = peers.is_some_and(|p| match (client.peer_addr(), client.local_addr()) {
+        (Ok(peer), Ok(local)) => p.is_own(peer, local),
+        _ => false,
+    });
     let mut carry = Vec::new();
     let mut head = None;
     for _ in 0..4 {
-        let Some(h) = read_head(&mut client, std::mem::take(&mut carry))? else { return Ok(()) };
-        if authorized(&h, creds) {
+        let Some(h) = read_head(&mut client, std::mem::take(&mut carry))? else {
+            tracing::debug!("front: client closed before a request");
+            return Ok(());
+        };
+        tracing::debug!(method = %h.method, own_process = own, "front: request head");
+        if own || authorized(&h, creds) {
             head = Some(h);
             break;
         }
         // Chromium answers the challenge on the same connection.
         client.write_all(
-            b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"Axion\"\r\nContent-Length: 0\r\n\r\n",
+            b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"Axion\"\r\nProxy-Connection: keep-alive\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n",
         )?;
         carry = h.rest;
     }

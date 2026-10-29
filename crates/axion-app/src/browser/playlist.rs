@@ -1018,9 +1018,15 @@ impl Browser {
         if cover_pending {
             self.playlist.dirty = true;
         }
+        // A live stream's timer starts at 0:00 when watching begins, not at its server clock.
+        let live_origin = match (&player, self.playlist.playback.as_mut()) {
+            (Some(p), Some(pb)) if p.live => Some(*pb.live_origin.get_or_insert(p.time)),
+            _ => None,
+        };
         let (elapsed, duration, playing) =
             player.as_ref().map_or((item.position, item.duration, false), |p| {
-                (p.time, if p.live { 0.0 } else { p.duration.max(item.duration) }, p.is_playing())
+                let time = live_origin.map_or(p.time, |origin| (p.time - origin).max(0.0));
+                (time, if p.live { 0.0 } else { p.duration.max(item.duration) }, p.is_playing())
             });
         let note = if audio_only && picture.is_none() {
             Some(tr("Audio only"))
@@ -1342,6 +1348,7 @@ impl Browser {
                 let local = source.is_none();
                 let token = source.map(|(_, token)| token);
                 self.playlist.playback = Some(Playback {
+                    live_origin: None,
                     item: item.id,
                     view,
                     media: None,

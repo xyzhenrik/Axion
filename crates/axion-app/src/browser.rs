@@ -30,6 +30,7 @@ use winit::window::{Fullscreen, Window};
 use crate::accounts::{AddAccountSheet, Relaunch, SheetAction};
 use crate::avatars::{Avatars, PhotoChooser, PhotoFor};
 use crate::chrome::{Chrome, ChromeAction, MoveKey, NowPlaying, PanelItem, Section, Surface, TabItem};
+use crate::circuit_popover::CircuitPopover;
 use crate::context_menu::ContextMenus;
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
@@ -91,6 +92,7 @@ use crate::window_resize::{Debounce, ResizePacer};
 use crate::zoom::{self, SiteZoom};
 
 mod capture;
+mod circuit;
 mod context;
 mod ext_popup;
 mod import;
@@ -275,6 +277,9 @@ pub struct Browser {
     /// The privacy network: connections, routes, the kill switch (see `crate::network`).
     net: crate::network::NetworkState,
     network_popover: NetworkPopover,
+    /// The Tor circuit of the page, from the circuit button.
+    circuit_popover: CircuitPopover,
+    circuit_refreshed: Instant,
     /// What the address field's network chip shows now.
     chip_shown: Option<crate::network::ChipState>,
     /// The file chooser for WireGuard configs.
@@ -542,6 +547,8 @@ pub struct Browser {
     /// The shown scene's layer fingerprints (trace logging only).
     shown_layers: Vec<u64>,
     idle_redraw_at: Option<Instant>,
+    /// Whether the pointer was hidden with the fullscreen player's controls at the last check.
+    player_pointer_hidden: bool,
     frame_interval: Duration,
     /// Notices the window's monitor's refresh rate changing (see `frame_rate`).
     refresh_watch: RefreshWatch,
@@ -774,6 +781,7 @@ impl Browser {
         let account_menu = Menu::build(&mut ui, chrome.sidebar_node(), ACCOUNT_MENU_BASE, Placement::Above);
         let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
         let network_popover = NetworkPopover::build(&mut ui, chrome.bar_node());
+        let circuit_popover = CircuitPopover::build(&mut ui, chrome.bar_node());
         let reading = reading::ReadingUi::build(&mut ui, chrome.bar_node(), &profile, &config);
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
         // The popup's card first: the extensions list is drawn above it.
@@ -874,6 +882,8 @@ impl Browser {
             shields_popover,
             net,
             network_popover,
+            circuit_popover,
+            circuit_refreshed: Instant::now(),
             chip_shown: None,
             conf_chooser: crate::network::ConfChooser::default(),
             reading,
@@ -1029,6 +1039,7 @@ impl Browser {
             shown_layers: Vec::new(),
             page_view: None,
             idle_redraw_at: None,
+            player_pointer_hidden: false,
             frame_interval: frame_rate::display_interval(None),
             refresh_watch: RefreshWatch::default(),
             frames_skipped: 0,
@@ -2551,6 +2562,13 @@ impl Browser {
             page_fullscreen: self.chrome.page_fullscreen(),
         };
         self.player.update(&mut self.ui, &self.config, &cx, dt);
+        // The pointer hides with fullscreen controls that faded out, and is back when they return
+        // or the fullscreen ends: update it on that change, not only on the next pointer event.
+        let pointer_hidden = self.player.mode() == PlayerMode::Fullscreen && !self.player.is_shown();
+        if pointer_hidden != self.player_pointer_hidden {
+            self.player_pointer_hidden = pointer_hidden;
+            self.update_cursor();
+        }
         if let Some((view, command)) = self.player.takeover_command() {
             self.media_command(view, &command);
         }
@@ -4107,6 +4125,11 @@ impl Browser {
                         None => {}
                     }
                 }
+                UiEvent::Clicked { action, .. } if self.circuit_popover.action(action).is_some() => {
+                    if let Some(action) = self.circuit_popover.action(action) {
+                        self.circuit_popover_action(action);
+                    }
+                }
                 UiEvent::Clicked { action, .. } if self.network_popover.action(action).is_some() => {
                     if let Some(action) = self.network_popover.action(action) {
                         self.network_popover_action(action);
@@ -4142,6 +4165,7 @@ impl Browser {
                     Some(ChromeAction::Overview) => self.run(Action::TabOverview),
                     Some(ChromeAction::Shield) => self.toggle_shields_popover(),
                     Some(ChromeAction::Network) => self.toggle_network_popover(),
+                    Some(ChromeAction::Circuit) => self.toggle_circuit_popover(),
                     Some(ChromeAction::Share) => {
                         // Until the share sheet exists: copy the address.
                         self.copy_link();
@@ -4997,6 +5021,7 @@ impl Browser {
             || self.account_menu.is_open()
             || self.context_menus.is_open()
             || self.shields_popover.is_open()
+            || self.circuit_popover.is_open()
             || self.reading.popovers_open()
             || self.downloads_popover.is_open()
             || self.extensions_popover.is_open()
@@ -6332,6 +6357,14 @@ impl Browser {
             return;
         }
         if pressed
+            && self.circuit_popover.is_open()
+            && !self.circuit_popover.contains(&self.ui, p)
+            && !self.chrome.circuit_button_frame(&self.ui).contains(p)
+        {
+            self.circuit_popover.close(&mut self.ui, &self.config);
+            return;
+        }
+        if pressed
             && self.network_popover.is_open()
             && !self.network_popover.contains(&self.ui, p)
             && !self.chrome.network_button_frame(&self.ui).contains(p)
@@ -6572,6 +6605,11 @@ impl Browser {
         if pressed && self.shields_popover.is_open() && input::key(event) == Some(Key::Named("Escape".into()))
         {
             self.shields_popover.close(&mut self.ui, &self.config);
+            return false;
+        }
+        if pressed && self.circuit_popover.is_open() && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            self.circuit_popover.close(&mut self.ui, &self.config);
             return false;
         }
         if pressed && self.network_popover.is_open() && input::key(event) == Some(Key::Named("Escape".into()))
@@ -6970,6 +7008,7 @@ impl Browser {
                     self.run(Action::OpenSettings);
                 }
                 "network-popover" => self.toggle_network_popover(),
+                "circuit-popover" => self.toggle_circuit_popover(),
                 "data-settings" => {
                     self.settings.set_category(Category::Data);
                     self.run(Action::OpenSettings);
@@ -7768,6 +7807,7 @@ impl Browser {
         self.poll_tab_search();
         self.shields_popover.animate(&mut self.ui, dt);
         self.network_popover.animate(&mut self.ui, dt);
+        self.circuit_popover.animate(&mut self.ui, dt);
         self.downloads_popover.animate(&mut self.ui, dt);
         self.extensions_popover.animate(&mut self.ui, dt);
         self.ext_popup_tick(dt);

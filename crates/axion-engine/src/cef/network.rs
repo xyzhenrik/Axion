@@ -367,6 +367,7 @@ wrap_request_handler! {
         ) -> ::std::os::raw::c_int {
             // Only proxies are answered here (from the vault via the connection manager); a
             // web site's login prompt is not handled by the engine.
+            tracing::debug!(is_proxy, port, "authentication asked");
             if is_proxy == 0 {
                 return 0;
             }
@@ -377,7 +378,10 @@ wrap_request_handler! {
                 let logins = self.net.proxy_logins.read().unwrap_or_else(PoisonError::into_inner);
                 logins.iter().find(|l| l.host.eq_ignore_ascii_case(&host) && l.port == port).cloned()
             };
-            let Some(login) = login else { return 0 };
+            let Some(login) = login else {
+                tracing::debug!(port, "a proxy asked for a login that is not known");
+                return 0;
+            };
             {
                 let mut asks = self.net.login_asks.lock().unwrap_or_else(PoisonError::into_inner);
                 let now = std::time::Instant::now();

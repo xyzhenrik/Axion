@@ -47,6 +47,8 @@ pub enum TextStyle {
     Callout,
     /// 13/18 — secondary lines.
     Footnote,
+    /// 13/18 monospace — IP addresses and fingerprints.
+    Mono,
     /// 11/14 semibold, upper case — section headers.
     Caption,
 }
@@ -62,6 +64,7 @@ impl TextStyle {
             TextStyle::BodyEmphasis => (15.0, 22.0, 500),
             TextStyle::Callout => (14.0, 20.0, 500),
             TextStyle::Footnote => (13.0, 18.0, 400),
+            TextStyle::Mono => (13.0, 18.0, 400),
             TextStyle::Caption => (11.0, 14.0, 600),
         }
     }

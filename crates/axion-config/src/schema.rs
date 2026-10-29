@@ -1846,6 +1846,10 @@ pub struct Network {
     /// Also switch QUIC (HTTP/3 over UDP) off when a route is set at start. Applies after a
     /// restart.
     pub disable_quic_when_routed: bool,
+    /// The loopback front lets in Axion's own processes (Chromium) without a login, found by
+    /// the process tree behind the connection (Linux). Off: only the per-session login works,
+    /// which Chromium does not answer reliably.
+    pub front_trust_own_processes: bool,
     /// When every request goes through a connection, Chromium may not resolve any name on
     /// this computer (`--host-resolver-rules`), except the proxy hosts. Applies after a
     /// restart; breaks nothing that goes through a connection.
@@ -1859,6 +1863,9 @@ pub struct Network {
     pub health_check_secs: f32,
     /// Most connections a local relay serves at once.
     pub max_relay_connections: u32,
+    /// Seconds a WireGuard handshake may stay unanswered before the connection counts as
+    /// failed (wrong key, server down or UDP blocked all look the same).
+    pub wireguard_handshake_timeout_secs: f32,
     /// Start the connections of the default routes when Axion starts. Off: they start when
     /// the first tab that needs them opens.
     pub connect_at_start: bool,
@@ -1878,11 +1885,13 @@ impl Default for Network {
             kill_switch: true,
             leak_protection: true,
             disable_quic_when_routed: true,
+            front_trust_own_processes: true,
             strict_dns: false,
             check_ip_url: String::new(),
             connect_timeout_secs: 10.0,
             health_check_secs: 10.0,
             max_relay_connections: 512,
+            wireguard_handshake_timeout_secs: 20.0,
             connect_at_start: true,
             show_chip: true,
             notify_changes: true,

@@ -14,10 +14,11 @@ use axion_config::{Config, Network};
 use axion_engine::{
     Engine, InternalPages, InternalRequest, InternalResponse, ProxyLogin, ProxySetting, ViewId,
 };
-use axion_i18n::tr;
+use axion_i18n::{tr, tr_fmt};
 use axion_net::{
     Connection, ConnectionKind, ConnectionSecrets, ConnectionStatus, NetEvent, NetManager, NetOptions, Plan,
-    ProxyTimings, RouteQuery, Secret, SecretError, SecretStore, ServerOptions, Target, WgSecrets,
+    ProgressStage, ProxyTimings, RouteQuery, Secret, SecretError, SecretStore, ServerOptions, Target,
+    WgSecrets,
 };
 
 /// The host of the "connection is down" page (`axion://network/blocked?…`).
@@ -264,8 +265,7 @@ impl NetworkState {
             axion_net::ProxySetting::Fixed(server) => ProxySetting::Fixed(server.clone()),
             axion_net::ProxySetting::Pac(script) => ProxySetting::Pac(script.clone()),
         };
-        engine.set_proxy(false, setting(&plan.normal.setting), plan.normal.leak_protection && protect);
-        engine.set_proxy(true, setting(&plan.private.setting), plan.private.leak_protection && protect);
+        // Logins first: a request that reaches the new proxy must find its login.
         engine.set_proxy_logins(
             plan.logins
                 .iter()
@@ -277,6 +277,8 @@ impl NetworkState {
                 })
                 .collect(),
         );
+        engine.set_proxy(false, setting(&plan.normal.setting), plan.normal.leak_protection && protect);
+        engine.set_proxy(true, setting(&plan.private.setting), plan.private.leak_protection && protect);
         self.applied = Some(plan);
         true
     }
@@ -312,7 +314,12 @@ impl NetworkState {
                 let (state, detail) = match &status {
                     Some(ConnectionStatus::Up { .. }) => (ChipState::Up, tr("Connected").to_owned()),
                     Some(ConnectionStatus::Connecting) | Some(ConnectionStatus::Stopped) => {
-                        (ChipState::Connecting, tr("Connecting…").to_owned())
+                        // Tor says how far its bootstrap is.
+                        let detail = match self.manager.progress(id) {
+                            Some(p) => bootstrap_text(Some(p)),
+                            None => tr("Connecting…").to_owned(),
+                        };
+                        (ChipState::Connecting, detail)
                     }
                     Some(ConnectionStatus::Failed(r) | ConnectionStatus::Blocked(r)) => {
                         (ChipState::Down, r.clone())
@@ -338,9 +345,11 @@ pub fn options(network: &Network, profile: &std::path::Path) -> NetOptions {
         },
         server: ServerOptions {
             max_connections: network.max_relay_connections.clamp(8, 8192) as usize,
+            trust_own_process_tree: network.front_trust_own_processes,
             ..Default::default()
         },
         data_dir: profile.join("network"),
+        wireguard_handshake_timeout: Duration::from_secs_f32(network.wireguard_handshake_timeout_secs.clamp(2.0, 300.0)),
     }
 }
 
@@ -550,6 +559,21 @@ document.getElementById('direct').onclick=function(){document.getElementById('co
 document.getElementById('confirm-no').onclick=function(){document.getElementById('confirm').hidden=true;};\
 document.getElementById('confirm-yes').onclick=function(){send({action:'direct',url:url});};\
 })();";
+
+/// "Bootstrapping 40%: loading relays" (the progress of a starting Tor connection).
+pub fn bootstrap_text(progress: Option<axion_net::TunnelProgress>) -> String {
+    let Some(p) = progress else { return tr("Starting Tor…").to_owned() };
+    if let Some(stuck) = &p.stuck {
+        return tr_fmt!("Bootstrapping {percent}%: {why}", percent = p.percent, why = stuck);
+    }
+    let stage = match p.stage {
+        ProgressStage::Connecting => tr("connecting to the Tor network"),
+        ProgressStage::Consensus => tr("fetching the list of relays"),
+        ProgressStage::Relays => tr("loading relays"),
+        ProgressStage::Ready => tr("almost ready"),
+    };
+    tr_fmt!("Bootstrapping {percent}%: {stage}", percent = p.percent, stage = stage)
+}
 
 #[cfg(test)]
 mod tests {

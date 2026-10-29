@@ -22,17 +22,22 @@ impl Browser {
         }
         let events = self.net.poll();
         let mut changed = !events.is_empty();
-        for event in &events {
-            self.network_event(event);
-        }
+        // The engine learns the new route (and its login) before the events below load pages
+        // through it: a page that starts first would meet the proxy's login challenge with no
+        // login known and fail.
         if self.net.apply_to_engine(&mut self.engine, &self.config) {
             changed = true;
+        }
+        for event in &events {
+            self.network_event(event);
         }
         if changed {
             self.update_network_chip();
             self.refresh_network_popover();
+            self.refresh_circuit_popover();
             self.refresh_settings();
         }
+        self.circuit_tick();
     }
 
     /// The settings (`[network]`) changed.
@@ -192,6 +197,7 @@ impl Browser {
         let chip = self.active_network_chip();
         self.chrome.set_network_chip(&mut self.ui, chip.as_ref().map(|c| c.state));
         self.chip_shown = chip.map(|c| c.state);
+        self.update_circuit_button();
     }
 
     fn active_network_chip(&self) -> Option<Chip> {

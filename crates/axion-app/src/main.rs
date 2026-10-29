@@ -17,6 +17,7 @@ mod app_icon;
 mod avatars;
 mod browser;
 mod chrome;
+mod circuit_popover;
 mod context_menu;
 mod desktop;
 mod desktop_integration;
