@@ -391,6 +391,8 @@
 "Axion data folder" = "Axion-Datenordner"
 "Axion then opens another account." = "Axion öffnet danach einen anderen Account."
 "Axion's player in fullscreen" = "Axions Player im Vollbild"
+"Show the title in fullscreen" = "Titel im Vollbild anzeigen"
+"Ignore video previews" = "Video-Vorschauen ignorieren"
 "Block popups opened without a click" = "Pop-ups ohne Klick blockieren"
 "Block redirects to ad and tracker sites" = "Weiterleitungen zu Werbe- und Tracker-Seiten blockieren"
 "Block third-party cookies" = "Cookies von Drittanbietern blockieren"

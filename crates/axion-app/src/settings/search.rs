@@ -364,6 +364,8 @@ pub const INDEX: &[Entry] = &[
     control(C::Tabs, S::KeepMediaAwake, &["music", "audio", "video", "musik", "playing"]),
     control(C::Tabs, S::RestoreSession, &["startup", "reopen", "session", "wiederherstellen", "sitzung"]),
     control(C::Media, S::OwnFullscreenControls, &["video", "player", "fullscreen", "vollbild"]),
+    control(C::Media, S::FullscreenTitle, &["video", "title", "fullscreen", "titel", "vollbild"]),
+    control(C::Media, S::DetectPreviews, &["video", "preview", "hover", "vorschau", "now playing"]),
     control(C::Media, S::HideControlsAfter, &["video", "player", "overlay", "timeout", "steuerung"]),
     page(
         C::Media,

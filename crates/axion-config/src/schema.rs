@@ -1905,6 +1905,16 @@ pub struct Media {
     replace_site_players: Option<bool>,
     /// Hide the controls of a playing video after this long without pointer movement.
     pub hide_controls_after_seconds: f32,
+    /// Axion's fullscreen player shows what plays at the top: "Title - Channel - Site" (from the
+    /// page's media session, else the page title), in a glass pill between the buttons.
+    pub fullscreen_title: bool,
+    /// Hover previews and autoplaying tiles (YouTube's grids, Twitch's directory) are told
+    /// apart from real playback: they never are the Now Playing card, the desktop's media
+    /// controls or what keeps a tab from freezing.
+    pub detect_previews: bool,
+    /// A controls-less video that loops or autoplays and is narrower than this part (0–1) of
+    /// the page's width counts as a preview (0 turns the size rule off).
+    pub preview_max_width: f32,
     /// How far the skip buttons and arrow keys jump.
     pub skip_seconds: f32,
     /// Volume step of the arrow keys (0–1).
@@ -2027,6 +2037,9 @@ impl Default for Media {
             own_controls: None,
             replace_site_players: None,
             hide_controls_after_seconds: 2.5,
+            fullscreen_title: true,
+            detect_previews: true,
+            preview_max_width: 0.4,
             skip_seconds: 10.0,
             volume_step: 0.1,
             playback_speeds: vec![1.0, 1.25, 1.5, 2.0, 0.5, 0.75],

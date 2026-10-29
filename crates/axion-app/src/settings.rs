@@ -222,6 +222,8 @@ enum Setting {
     DragOutImage,
     HomeButton,
     OwnFullscreenControls,
+    FullscreenTitle,
+    DetectPreviews,
     HideControlsAfter,
     HardwareDecoding,
     HardwareEnabled,
@@ -310,6 +312,8 @@ impl Setting {
             Setting::DragOutImage => tr_mark("Show a preview while dragging a tab out"),
             Setting::HomeButton => tr_mark("Show home button"),
             Setting::OwnFullscreenControls => tr_mark("Axion's player in fullscreen"),
+            Setting::FullscreenTitle => tr_mark("Show the title in fullscreen"),
+            Setting::DetectPreviews => tr_mark("Ignore video previews"),
             Setting::HideControlsAfter => tr_mark("Hide controls while playing after"),
             Setting::HardwareDecoding => tr_mark("Hardware video decoding (after restart)"),
             Setting::HardwareEnabled => tr_mark("Use hardware acceleration"),
@@ -380,6 +384,8 @@ impl Setting {
                 | Setting::DragOutLinks
                 | Setting::DragOutImage
                 | Setting::OwnFullscreenControls
+                | Setting::FullscreenTitle
+                | Setting::DetectPreviews
                 | Setting::HardwareDecoding
                 | Setting::HardwareEnabled
                 | Setting::GpuRasterization
@@ -524,6 +530,8 @@ impl Setting {
             Setting::DragOutImage => return c.tabs.drag_out_image as u8 as f32,
             Setting::HomeButton => return c.layout.home_button as u8 as f32,
             Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
+            Setting::FullscreenTitle => return c.media.fullscreen_title as u8 as f32,
+            Setting::DetectPreviews => return c.media.detect_previews as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
             Setting::HardwareEnabled => return c.hardware.enabled as u8 as f32,
             Setting::GpuRasterization => return c.hardware.gpu_rasterization as u8 as f32,
@@ -619,6 +627,8 @@ impl Setting {
             Setting::DragOutImage => c.tabs.drag_out_image = on,
             Setting::HomeButton => c.layout.home_button = on,
             Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
+            Setting::FullscreenTitle => c.media.fullscreen_title = on,
+            Setting::DetectPreviews => c.media.detect_previews = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
             Setting::HardwareEnabled => c.hardware.enabled = on,
             Setting::GpuRasterization => c.hardware.gpu_rasterization = on,
@@ -2034,7 +2044,12 @@ impl SettingsSheet {
                 }
             }
             Category::Media => {
-                for setting in [Setting::OwnFullscreenControls, Setting::HideControlsAfter] {
+                for setting in [
+                    Setting::OwnFullscreenControls,
+                    Setting::FullscreenTitle,
+                    Setting::DetectPreviews,
+                    Setting::HideControlsAfter,
+                ] {
                     self.control(ui, config, setting);
                 }
                 self.note(ui, tr("Pages keep their own player; in fullscreen, Axion's takes over."));

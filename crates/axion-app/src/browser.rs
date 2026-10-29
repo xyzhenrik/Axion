@@ -792,6 +792,8 @@ impl Browser {
                 trusted_sites: Vec::new(),
                 ignored_sites: config.media.ignored_media_sites.clone(),
                 keep_seconds: config.media.now_playing_keep_seconds,
+                detect_previews: config.media.detect_previews,
+                preview_max_width: config.media.preview_max_width,
             },
         ));
         engine.set_internal_pages(Some(Arc::new(crate::media_view::Chain(vec![
@@ -1825,7 +1827,7 @@ impl Browser {
         // Every pause (Now Playing, media keys, the fullscreen player, Picture in Picture, the
         // Playlist) takes one path: everything that plays in the page is paused and the result
         // checked, instead of toggling one element the page may have swapped or restarted.
-        let playing = self.media_of(view).is_some_and(|(m, _)| m.players.iter().any(|p| p.is_playing()));
+        let playing = self.media_of(view).is_some_and(|(m, _)| m.is_playing());
         let pausing = match command.action {
             Action::Pause => true,
             Action::Toggle => playing,
@@ -1931,7 +1933,10 @@ impl Browser {
         let Some(player) = self
             .media_of(view)
             .and_then(|(m, _)| {
-                m.players.iter().filter(|p| p.is_playing()).max_by(|a, b| a.area().total_cmp(&b.area()))
+                m.players
+                    .iter()
+                    .filter(|p| !p.preview && p.is_playing())
+                    .max_by(|a, b| a.area().total_cmp(&b.area()))
             })
             .cloned()
         else {
@@ -2512,6 +2517,13 @@ impl Browser {
         };
         let playback = self.playlist.playback.as_ref().filter(|_| self.playlist.fullscreen);
         let tab = self.tabs.active().filter(|_| !self.overview.is_open() && !locked);
+        // What the fullscreen heading falls back on: the playing Playlist item, else the page.
+        let (page_title, page_url) = match playback {
+            Some(p) => {
+                self.playlist.item(p.item).map(|i| (i.title.clone(), i.page_url.clone())).unwrap_or_default()
+            }
+            None => tab.map(|t| (t.title.clone(), t.url.clone())).unwrap_or_default(),
+        };
         let cx = PlayerContext {
             cover,
             view: playback.map(|p| p.view).or(tab.map(|t| t.view)),
@@ -2522,6 +2534,8 @@ impl Browser {
             page: self.page_rect(),
             pointer: self.pointer,
             page_fullscreen: self.chrome.page_fullscreen(),
+            page_title: &page_title,
+            page_url: &page_url,
         };
         self.player.update(&mut self.ui, &self.config, &cx, dt);
         if let Some((view, command)) = self.player.takeover_command() {
@@ -7411,6 +7425,16 @@ impl Browser {
                         self.engine.run_script(view, &format!("window.scrollBy(0, {} - 90);", y), false);
                     }
                 }
+                // Debug aid: "eval:PATH" runs the script in that file (no commas in the path) in
+                // the page; it reports with
+                // `console.debug("\u0001axion:" + JSON.stringify({t: "probe", ..}))`, which shows
+                // in the log as "media probe".
+                eval if eval.starts_with("eval:") => {
+                    let script = std::fs::read_to_string(&eval["eval:".len()..]).ok();
+                    if let (Some(view), Some(script)) = (self.active_view(), script) {
+                        self.engine.run_script(view, &script, true);
+                    }
+                }
                 // Capture aid: what a site's own fullscreen button does (its player's frame).
                 "page-fullscreen" => {
                     if let Some(view) = self.active_view() {
@@ -8581,6 +8605,8 @@ fn media_replace(config: &Config) -> axion_media::BridgeOptions {
         trusted_sites: media.trusted_player_sites.clone(),
         ignored_sites: media.ignored_media_sites.clone(),
         keep_seconds: media.now_playing_keep_seconds,
+        detect_previews: media.detect_previews,
+        preview_max_width: media.preview_max_width,
     }
 }
 

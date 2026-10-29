@@ -178,6 +178,9 @@ Video, audio and the Playlist. See [Media and Playlist](features/media-and-playl
 | Setting | What it does | Default | Config key |
 |---|---|---|---|
 | **Axion's player in fullscreen** | When a video goes fullscreen, Axion's own glass controls take over. Inline, pages keep their own controls. | On | `media.fullscreen_player` |
+| **Show the title in fullscreen** | Axion's fullscreen player shows what plays at the top centre, as `Title - Channel - Site` in a glass pill between the buttons (from the page's media session, else the page title, else the file name). A too-long title is cut with an ellipsis first, then the channel; the site stays. Hides with the other controls. | On | `media.fullscreen_title` |
+| **Ignore video previews** | Hover previews and autoplaying tiles (YouTube's home, search and subscription grids, Twitch's directory) are never the Now Playing card, the desktop media controls or a reason to keep a tab awake. Real playback (watch page, Shorts, miniplayer) is unaffected. | On | `media.detect_previews` |
+| Preview width limit | A controls-less video that loops or autoplays and is narrower than this part (0 to 1) of the page counts as a preview; 0 turns the size rule off. Config file only. | 0.4 | `media.preview_max_width` |
 | **Hide controls while playing after** | Hides the controls after this long without mouse movement. 1 to 10 s. | 2.5 s | `media.hide_controls_after_seconds` |
 
 ### Playlist
