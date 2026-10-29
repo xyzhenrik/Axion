@@ -26,6 +26,8 @@ pub struct NetOptions {
     pub server: ServerOptions,
     /// Where backends may keep state (Tor's cache, …).
     pub data_dir: std::path::PathBuf,
+    /// How long a WireGuard handshake may stay unanswered (`network.wireguard_handshake_timeout_secs`).
+    pub wireguard_handshake_timeout: Duration,
 }
 
 impl Default for NetOptions {
@@ -34,6 +36,7 @@ impl Default for NetOptions {
             timings: ProxyTimings::default(),
             server: ServerOptions::default(),
             data_dir: std::env::temp_dir(),
+            wireguard_handshake_timeout: Duration::from_secs(20),
         }
     }
 }
@@ -44,6 +47,7 @@ pub struct TunnelOptions {
     pub server: ServerOptions,
     pub connect_timeout: Duration,
     pub data_dir: std::path::PathBuf,
+    pub wireguard_handshake_timeout: Duration,
 }
 
 /// How a connection is doing, for the UI and the routing.
@@ -411,12 +415,10 @@ impl NetManager {
         for (id, entry) in &mut inner.entries {
             let Some(running) = &entry.running else { continue };
             let now: ConnectionStatus = running.status().into();
-            if now != entry.status
-                && !matches!(
-                    (&now, &entry.status),
-                    (ConnectionStatus::Up { .. }, ConnectionStatus::Up { .. })
-                )
-            {
+            if let (ConnectionStatus::Up { .. }, ConnectionStatus::Up { .. }) = (&now, &entry.status) {
+                // Still up: only the info line moves (a WireGuard handshake age), no event.
+                entry.status = now;
+            } else if now != entry.status {
                 let was = std::mem::replace(&mut entry.status, now.clone());
                 changed.push(NetEvent { id: id.clone(), name: entry.conn.name.clone(), status: now, was });
             }
@@ -555,6 +557,7 @@ fn build(shared: &Shared, conn: &Connection) -> Result<(Running, Gateway), Start
         server: shared.options.server,
         connect_timeout: timings.connect_timeout,
         data_dir: shared.options.data_dir.clone(),
+        wireguard_handshake_timeout: shared.options.wireguard_handshake_timeout,
     };
     let fail = |e: NetError| Started::Failed(e.to_string());
     match &conn.kind {

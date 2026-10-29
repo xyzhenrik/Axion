@@ -25,6 +25,8 @@ pub mod socks5;
 pub mod testing;
 pub mod tor;
 pub mod tunnel;
+pub mod wg_net;
+pub mod wg_testing;
 pub mod wgconf;
 pub mod wireguard;
 

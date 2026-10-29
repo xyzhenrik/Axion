@@ -8,8 +8,10 @@ publish.workspace = true
 
 [dependencies]
 base64 = "0.22"
+boringtun = "0.7"
 getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
+smoltcp = { version = "0.12", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "socket-dns", "proto-dns", "socket-tcp-reno", "dns-max-result-count-8", "dns-max-server-count-4"] }
 thiserror.workspace = true
 tracing.workspace = true
 zeroize = { version = "1", features = ["derive"] }
