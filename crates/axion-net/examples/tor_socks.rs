@@ -13,9 +13,10 @@ use std::time::{Duration, Instant};
 use axion_net::{ServerOptions, TorConfig, TunnelOptions, TunnelStatus};
 
 fn main() {
-    let dir = std::env::args().nth(1).map(std::path::PathBuf::from).unwrap_or_else(|| {
-        std::env::temp_dir().join("axion-tor-example")
-    });
+    let dir = std::env::args()
+        .nth(1)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("axion-tor-example"));
     let options = TunnelOptions {
         server: ServerOptions::default(),
         connect_timeout: Duration::from_secs(15),

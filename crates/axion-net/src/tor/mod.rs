@@ -98,14 +98,13 @@ impl Plan {
                 bridges.push(parse_bridge(line)?);
             }
         }
-        let exit_country = match config.exit_country.trim() {
-            "" => None,
-            code => Some(
-                code.to_ascii_uppercase()
-                    .parse::<CountryCode>()
-                    .map_err(|_| NetError::Invalid("the exit country is a two-letter code such as de".into()))?,
-            ),
-        };
+        let exit_country =
+            match config.exit_country.trim() {
+                "" => None,
+                code => Some(code.to_ascii_uppercase().parse::<CountryCode>().map_err(|_| {
+                    NetError::Invalid("the exit country is a two-letter code such as de".into())
+                })?),
+            };
         Ok(Self { bridges, exit_country })
     }
 }
@@ -328,10 +327,12 @@ fn start_inner(shared: &Arc<Shared>) -> Result<Running, NetError> {
             .map_err(|e| NetError::Connect(format!("Tor could not start: {e}")))?
     };
     *lock(&shared.client) = Some(client);
-    let client = lock(&shared.client).clone().ok_or_else(|| NetError::Connect("Tor could not start".into()))?;
+    let client =
+        lock(&shared.client).clone().ok_or_else(|| NetError::Connect("Tor could not start".into()))?;
 
     let credentials = Credentials::random_session();
-    let dialer = GuardedDialer::new(ArtiDialer { shared: Arc::clone(shared), handle: runtime.handle().clone() });
+    let dialer =
+        GuardedDialer::new(ArtiDialer { shared: Arc::clone(shared), handle: runtime.handle().clone() });
     let server = LocalServer::socks5(credentials.clone(), dialer, shared.server_options)?;
     let endpoint = LocalEndpoint { addr: server.addr(), credentials };
 
@@ -459,7 +460,8 @@ mod tests {
         assert!(parse_bridge(&format!("Bridge {ok}")).is_ok());
         assert!(parse_bridge(&format!("bridge   {ok}")).is_ok());
         assert!(parse_bridge("[2001:db8::2]:9001 0123456789ABCDEF0123456789ABCDEF01234567").is_ok());
-        let pt = parse_bridge("obfs4 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=x iat-mode=0");
+        let pt =
+            parse_bridge("obfs4 192.0.2.10:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=x iat-mode=0");
         assert!(matches!(pt, Err(NetError::Invalid(m)) if m.contains("obfs4")));
         assert!(parse_bridge("snowflake 192.0.2.3:1 FP").is_err());
         assert!(parse_bridge("not a bridge").is_err());

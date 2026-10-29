@@ -190,6 +190,8 @@ pub enum TorIsolation {
 }
 
 impl TorIsolation {
+    pub const ALL: [TorIsolation; 3] = [TorIsolation::Site, TorIsolation::Context, TorIsolation::None];
+
     pub fn label(self) -> &'static str {
         match self {
             TorIsolation::Site => "site",

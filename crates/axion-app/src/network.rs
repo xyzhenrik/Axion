@@ -17,7 +17,8 @@ use axion_engine::{
 use axion_i18n::{tr, tr_fmt};
 use axion_net::{
     Connection, ConnectionKind, ConnectionSecrets, ConnectionStatus, NetEvent, NetManager, NetOptions, Plan,
-    ProgressStage, ProxyTimings, RouteQuery, Secret, SecretError, SecretStore, ServerOptions, Target, WgSecrets,
+    ProgressStage, ProxyTimings, RouteQuery, Secret, SecretError, SecretStore, ServerOptions, Target,
+    WgSecrets,
 };
 
 /// The host of the "connection is down" page (`axion://network/blocked?…`).
@@ -264,8 +265,7 @@ impl NetworkState {
             axion_net::ProxySetting::Fixed(server) => ProxySetting::Fixed(server.clone()),
             axion_net::ProxySetting::Pac(script) => ProxySetting::Pac(script.clone()),
         };
-        engine.set_proxy(false, setting(&plan.normal.setting), plan.normal.leak_protection && protect);
-        engine.set_proxy(true, setting(&plan.private.setting), plan.private.leak_protection && protect);
+        // Logins first: a request that reaches the new proxy must find its login.
         engine.set_proxy_logins(
             plan.logins
                 .iter()
@@ -277,6 +277,8 @@ impl NetworkState {
                 })
                 .collect(),
         );
+        engine.set_proxy(false, setting(&plan.normal.setting), plan.normal.leak_protection && protect);
+        engine.set_proxy(true, setting(&plan.private.setting), plan.private.leak_protection && protect);
         self.applied = Some(plan);
         true
     }
@@ -556,6 +558,21 @@ document.getElementById('confirm-no').onclick=function(){document.getElementById
 document.getElementById('confirm-yes').onclick=function(){send({action:'direct',url:url});};\
 })();";
 
+/// "Bootstrapping 40%: loading relays" (the progress of a starting Tor connection).
+pub fn bootstrap_text(progress: Option<axion_net::TunnelProgress>) -> String {
+    let Some(p) = progress else { return tr("Starting Tor…").to_owned() };
+    if let Some(stuck) = &p.stuck {
+        return tr_fmt!("Bootstrapping {percent}%: {why}", percent = p.percent, why = stuck);
+    }
+    let stage = match p.stage {
+        ProgressStage::Connecting => tr("connecting to the Tor network"),
+        ProgressStage::Consensus => tr("fetching the list of relays"),
+        ProgressStage::Relays => tr("loading relays"),
+        ProgressStage::Ready => tr("almost ready"),
+    };
+    tr_fmt!("Bootstrapping {percent}%: {stage}", percent = p.percent, stage = stage)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -637,19 +654,4 @@ mod tests {
         n.leak_protection = false;
         assert!(startup_switches(&n).is_empty());
     }
-}
-
-/// "Bootstrapping 40%: loading relays" (the progress of a starting Tor connection).
-pub fn bootstrap_text(progress: Option<axion_net::TunnelProgress>) -> String {
-    let Some(p) = progress else { return tr("Starting Tor…").to_owned() };
-    if let Some(stuck) = &p.stuck {
-        return tr_fmt!("Bootstrapping {percent}%: {why}", percent = p.percent, why = stuck);
-    }
-    let stage = match p.stage {
-        ProgressStage::Connecting => tr("connecting to the Tor network"),
-        ProgressStage::Consensus => tr("fetching the list of relays"),
-        ProgressStage::Relays => tr("loading relays"),
-        ProgressStage::Ready => tr("almost ready"),
-    };
-    tr_fmt!("Bootstrapping {percent}%: {stage}", percent = p.percent, stage = stage)
 }

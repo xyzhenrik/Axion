@@ -5,9 +5,62 @@ Axion can send its traffic through an upstream proxy (SOCKS5, HTTP, HTTPS), a Wi
 how it works, what it protects and what it does not. Settings: **Settings > Network & VPN**
 (`[network]` in `config.toml`).
 
-WireGuard and Tor have their pages, forms and plug-in points ready, but their backends
-(`crates/axion-net/src/wireguard.rs`, `tor.rs`) answer "not available in this build yet".
-Upstream proxies work today.
+Upstream proxies and Tor work today; WireGuard has its page and form ready and its backend
+(`crates/axion-net/src/wireguard.rs`) answers "not available in this build yet" until it lands.
+
+## Tor
+
+The Tor connection runs [Arti](https://gitlab.torproject.org/tpo/core/arti), the Tor Project's
+Rust client, inside Axion (`crates/axion-net/src/tor/`). **This is not Tor Browser.** It hides
+your IP address from sites and your sites from your network, but Axion does not add Tor
+Browser's fingerprinting resistance (no letterboxing, no uniform fonts or canvas, sites can
+recognise your browser and cookies/accounts still identify you). Use Tor Browser when you need
+that.
+
+* **Bootstrapping.** The first start downloads the relay list from the Tor network itself
+  (10 to 60 s); later starts reuse the cache in `<profile>/network/tor/`. The chip, its popover
+  and Settings show "Bootstrapping 40%: loading relays". The connection counts as up once Arti
+  can carry traffic; until then the kill switch blocks the routed requests.
+* **Names are resolved by the exit relay**, never on this computer; `.onion` addresses work.
+  Requests to `localhost`, loopback, private and link-local addresses are refused before they
+  reach Tor (it cannot reach them, and asking would tell the exit what you tried).
+* **Circuits per site.** `Circuits` in the connection form (`isolation` in `config.toml`):
+  `site` (default: every registrable domain gets its own circuits, so no exit relay sees two
+  sites), `context` (one set of circuits for everything the connection carries) or `none`
+  (Arti's default). Isolation is by the *destination* site, because the loopback front cannot
+  tell which page a request belongs to (Tor Browser isolates by the first-party page); normal
+  and private tabs that use the same Tor connection share it.
+* **Circuit display.** Pages that go through Tor get a route button in the address field. Its
+  popover shows the circuit of the site: This browser, guard, middle relay, exit relay (for
+  onion services: guard, middle, rendezvous point, onion service) with a country badge and
+  IP address per relay, refreshed every second. The path comes from Arti's circuit of the
+  newest stream to the site (`DataStream::client_stream_ctrl`, `tor-proto`'s `stream-ctrl`
+  feature); countries come from the GeoIP database compiled into the program (no lookups over
+  the network). Hops are never invented: a site without a known circuit shows "Connecting…".
+  *New Tor circuit for this site* retires the site's isolation token, closes its open
+  connections and reloads the tab (your guard relay may stay the same). *New Tor identity*
+  does that for every site and reloads all tabs that use the connection.
+* **Bridges.** Plain bridges (`ip:port fingerprint`, with or without a leading `Bridge`) are
+  supported. Pluggable transports (obfs4, snowflake, meek) need separate programs this build
+  does not ship; such lines are refused with a message.
+* **Exit country** (`exit_country`, e.g. `de`) uses Arti's GeoIP exit filter; it narrows the
+  crowd you blend into.
+* **Limits.** TCP only: no UDP, QUIC or WebRTC (QUIC is switched off while routed). Tor is slow
+  compared to a direct connection. One Tor connection per profile is active at a time (Arti
+  locks its state directory). Tor is legal in most countries; what you do with it is your
+  responsibility, and some networks and sites block it.
+* **Logs** never contain destination hosts at info level (only at debug).
+
+Added dependencies (all Apache-2.0 or MIT): `arti-client`, `tor-rtcompat`, `tor-proto`,
+`tor-linkspec`, `tor-geoip` (+ `tor-geoip-db`, the embedded country data), their `tor-*`
+siblings, `tokio`, `futures`, `rustls` (with `ring`, ISC/Apache-2.0), `addr`. The OpenSSL
+backend of Arti is not used (rustls). `rusqlite` moved from 0.41 to 0.40 because Arti's
+directory cache requires `rusqlite < 0.41` (one `libsqlite3-sys` per program).
+
+Manual checks (they need the Tor network): `cargo test -p axion-net --lib -- --ignored real_tor
+--nocapture`, or `cargo run -p axion-net --example tor_socks` and
+`curl --socks5-hostname USER:PASS@127.0.0.1:PORT https://check.torproject.org/api/ip`
+(`"IsTor":true`).
 
 ## Architecture
 
@@ -115,6 +168,6 @@ site between its route and direct; it also appears in the command palette.
 
 ## Adding a backend
 
-Implement `Tunnel` in `wireguard.rs` / `tor.rs`, return `LocalServer::socks5(..)` from `start()`,
+Implement `Tunnel` in `wireguard.rs` (`tor/` is the worked example), return `LocalServer::socks5(..)` from `start()`,
 set `AVAILABLE = true`. The manager restores keys from the vault (`WgConfig::with_secrets`),
 fronts the tunnel with the authenticating HTTP proxy, and shows it in Settings and the chip.

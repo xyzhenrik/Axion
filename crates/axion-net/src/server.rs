@@ -251,14 +251,18 @@ fn serve_http(
     let mut carry = Vec::new();
     let mut head = None;
     for _ in 0..4 {
-        let Some(h) = read_head(&mut client, std::mem::take(&mut carry))? else { return Ok(()) };
+        let Some(h) = read_head(&mut client, std::mem::take(&mut carry))? else {
+            tracing::debug!("front: client closed before a request");
+            return Ok(());
+        };
+        tracing::debug!(method = %h.method, authorized = authorized(&h, creds), headers = ?h.headers.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), "front: request head");
         if authorized(&h, creds) {
             head = Some(h);
             break;
         }
         // Chromium answers the challenge on the same connection.
         client.write_all(
-            b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"Axion\"\r\nContent-Length: 0\r\n\r\n",
+            b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"Axion\"\r\nProxy-Connection: keep-alive\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n",
         )?;
         carry = h.rest;
     }

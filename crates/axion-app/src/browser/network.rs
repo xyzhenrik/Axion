@@ -22,11 +22,14 @@ impl Browser {
         }
         let events = self.net.poll();
         let mut changed = !events.is_empty();
-        for event in &events {
-            self.network_event(event);
-        }
+        // The engine learns the new route (and its login) before the events below load pages
+        // through it: a page that starts first would meet the proxy's login challenge with no
+        // login known and fail.
         if self.net.apply_to_engine(&mut self.engine, &self.config) {
             changed = true;
+        }
+        for event in &events {
+            self.network_event(event);
         }
         if changed {
             self.update_network_chip();

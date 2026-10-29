@@ -30,6 +30,7 @@ use winit::window::{Fullscreen, Window};
 use crate::accounts::{AddAccountSheet, Relaunch, SheetAction};
 use crate::avatars::{Avatars, PhotoChooser, PhotoFor};
 use crate::chrome::{Chrome, ChromeAction, MoveKey, NowPlaying, PanelItem, Section, Surface, TabItem};
+use crate::circuit_popover::CircuitPopover;
 use crate::context_menu::ContextMenus;
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
@@ -53,7 +54,6 @@ use crate::menu::{
 };
 use crate::morph::Origin;
 use crate::mpris::{Mpris, MprisCommand, Track};
-use crate::circuit_popover::CircuitPopover;
 use crate::network_popover::NetworkPopover;
 use crate::now_playing::{Art, ArtStore, first_web_url};
 use crate::onboarding::Onboarding;
@@ -92,10 +92,10 @@ use crate::window_resize::{Debounce, ResizePacer};
 use crate::zoom::{self, SiteZoom};
 
 mod capture;
+mod circuit;
 mod context;
 mod ext_popup;
 mod import;
-mod circuit;
 mod network;
 mod network_popup;
 mod network_requests;

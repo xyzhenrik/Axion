@@ -2,7 +2,7 @@
 //! its popover (the path of the site's circuit, refreshed while open) and the two actions
 //! (a new circuit for the site, a new identity). See `docs/network.md`.
 
-use axion_net::{ConnectionKind, Hop, HopRole, NameLanguage, ProgressStage, Target, country_name};
+use axion_net::{ConnectionKind, Hop, HopRole, NameLanguage, Target, country_name};
 
 use super::*;
 use crate::circuit_popover::{CircuitAction, CircuitRow, CircuitView, RowKind};
@@ -30,7 +30,8 @@ impl Browser {
             return None;
         }
         let Target::Connection(id) = self.net.route_of(&self.config, url, private) else { return None };
-        let is_tor = self.config.network.connection(&id).is_some_and(|c| matches!(c.kind, ConnectionKind::Tor(_)));
+        let is_tor =
+            self.config.network.connection(&id).is_some_and(|c| matches!(c.kind, ConnectionKind::Tor(_)));
         let host = axion_net::host_of_url(url)?;
         is_tor.then_some(CircuitTarget { connection: id, host })
     }
@@ -57,10 +58,8 @@ impl Browser {
             detail: String::new(),
         }];
         let mut note = None;
-        let circuit = status
-            .is_up()
-            .then(|| self.net.manager.circuit_for(&target.connection, &target.host))
-            .flatten();
+        let circuit =
+            status.is_up().then(|| self.net.manager.circuit_for(&target.connection, &target.host)).flatten();
         match circuit {
             Some(circuit) => {
                 for hop in &circuit.hops {
@@ -71,7 +70,9 @@ impl Browser {
                 if !status.is_up() {
                     note = Some(self.connecting_text(&target.connection, &status));
                 } else {
-                    note = Some(tr("No circuit for this site yet. It appears once the page connects.").to_owned());
+                    note = Some(
+                        tr("No circuit for this site yet. It appears once the page connects.").to_owned(),
+                    );
                 }
                 rows.push(CircuitRow {
                     kind: RowKind::Relay,
@@ -101,6 +102,7 @@ impl Browser {
         let Some(view) = self.circuit_view() else { return };
         self.shields_popover.close(&mut self.ui, &self.config);
         self.network_popover.close(&mut self.ui, &self.config);
+        self.reading.close_popovers(&mut self.ui, &self.config);
         let anchor = self.chrome.circuit_button_frame(&self.ui);
         let anchor = if anchor.size.x > 0.0 { anchor } else { self.chrome.address_frame(&self.ui) };
         let width = self.logical_size().x;
@@ -131,7 +133,10 @@ impl Browser {
                 if let Some(view) = self.active_view() {
                     self.engine.reload(view, true);
                 }
-                self.show_toast(Icon::Route, &tr_fmt!("New Tor circuit for {host}", host = site_label(&target.host)));
+                self.show_toast(
+                    Icon::Route,
+                    &tr_fmt!("New Tor circuit for {host}", host = site_label(&target.host)),
+                );
             }
             CircuitAction::NewIdentity => {
                 self.net.manager.new_identity(&target.connection);
@@ -140,8 +145,10 @@ impl Browser {
                     .all()
                     .iter()
                     .filter(|t| {
-                        let url = net::parse_blocked_url(&t.url).map_or_else(|| t.url.clone(), |(url, _)| url);
-                        self.circuit_target_of(&url, t.private).is_some_and(|c| c.connection == target.connection)
+                        let url =
+                            net::parse_blocked_url(&t.url).map_or_else(|| t.url.clone(), |(url, _)| url);
+                        self.circuit_target_of(&url, t.private)
+                            .is_some_and(|c| c.connection == target.connection)
                     })
                     .map(|t| t.view)
                     .collect();
@@ -194,7 +201,9 @@ fn hop_row(hop: &Hop) -> CircuitRow {
         axion_i18n::Language::English => NameLanguage::English,
     };
     let (badge, country) = match hop.country.as_deref() {
-        Some(code) => (code.to_owned(), country_name(code, language).map_or_else(|| code.to_owned(), str::to_owned)),
+        Some(code) => {
+            (code.to_owned(), country_name(code, language).map_or_else(|| code.to_owned(), str::to_owned))
+        }
         None => ("??".to_owned(), tr("Unknown country").to_owned()),
     };
     CircuitRow {
@@ -207,7 +216,7 @@ fn hop_row(hop: &Hop) -> CircuitRow {
 
 #[cfg(test)]
 mod tests {
-    use axion_net::HopRole;
+    use axion_net::{HopRole, ProgressStage};
 
     use super::*;
 
@@ -230,7 +239,12 @@ mod tests {
         let row = hop_row(&hop(HopRole::Exit, None, "192.0.2.1"));
         assert_eq!(row.badge.as_deref(), Some("??"));
         assert_eq!(row.title, "Unknown country (Exit)");
-        let row = hop_row(&Hop { role: HopRole::OnionService, fingerprint: String::new(), addrs: vec![], country: None });
+        let row = hop_row(&Hop {
+            role: HopRole::OnionService,
+            fingerprint: String::new(),
+            addrs: vec![],
+            country: None,
+        });
         assert_eq!(row.title, "Onion service");
         assert!(row.detail.is_empty());
     }
@@ -240,8 +254,15 @@ mod tests {
         axion_i18n::set_language(axion_i18n::Language::English);
         assert_eq!(net::bootstrap_text(None), "Starting Tor…");
         let p = |percent, stage| axion_net::TunnelProgress { percent, stage, stuck: None };
-        assert_eq!(net::bootstrap_text(Some(p(40, ProgressStage::Relays))), "Bootstrapping 40%: loading relays");
-        let stuck = axion_net::TunnelProgress { percent: 15, stage: ProgressStage::Consensus, stuck: Some("We seem to be offline".into()) };
+        assert_eq!(
+            net::bootstrap_text(Some(p(40, ProgressStage::Relays))),
+            "Bootstrapping 40%: loading relays"
+        );
+        let stuck = axion_net::TunnelProgress {
+            percent: 15,
+            stage: ProgressStage::Consensus,
+            stuck: Some("We seem to be offline".into()),
+        };
         assert_eq!(net::bootstrap_text(Some(stuck)), "Bootstrapping 15%: We seem to be offline");
     }
 

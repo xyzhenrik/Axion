@@ -81,7 +81,8 @@ impl<T: Clone> Isolation<T> {
             slots.clear();
         }
         let make = self.make;
-        let slot = slots.entry(key).or_insert_with(|| Slot { token: make(), cancel: watch::channel(false).0 });
+        let slot =
+            slots.entry(key).or_insert_with(|| Slot { token: make(), cancel: watch::channel(false).0 });
         Some(Lease { token: slot.token.clone(), cancel: slot.cancel.subscribe() })
     }
 
@@ -141,7 +142,10 @@ mod tests {
     fn keys_by_mode() {
         assert_eq!(isolation_key(TorIsolation::Site, "cdn.example.com").as_deref(), Some("example.com"));
         assert_eq!(isolation_key(TorIsolation::Context, "cdn.example.com").as_deref(), Some("*"));
-        assert_eq!(isolation_key(TorIsolation::Context, "other.org"), isolation_key(TorIsolation::Context, "x.com"));
+        assert_eq!(
+            isolation_key(TorIsolation::Context, "other.org"),
+            isolation_key(TorIsolation::Context, "x.com")
+        );
         assert_eq!(isolation_key(TorIsolation::None, "example.com"), None);
     }
 

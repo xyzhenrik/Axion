@@ -135,10 +135,7 @@ mod tests {
     use super::*;
 
     fn described(open: bool) -> Described {
-        Described {
-            info: CircuitInfo { hops: Vec::new(), onion: false },
-            open: Box::new(move || open),
-        }
+        Described { info: CircuitInfo { hops: Vec::new(), onion: false }, open: Box::new(move || open) }
     }
 
     #[test]

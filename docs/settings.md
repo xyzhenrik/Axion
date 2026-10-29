@@ -306,6 +306,7 @@ the password vault, not in `config.toml`.
 | Setting (`[network]`) | Default | What it does |
 |---|---|---|
 | Connections (`connections`) | none | Proxies (SOCKS5, HTTP, HTTPS), WireGuard (import a `.conf`) and Tor. |
+| Tor options (per Tor connection: `use_bridges`, `bridges`, `exit_country`, `isolation`) | per site | `isolation` = `site` (own circuits per site), `context` (shared) or `none`. Plain bridges only. Not Tor Browser: no fingerprinting resistance. See [network.md](network.md#tor). |
 | `default_connection` | `direct` | Route of this account's tabs. |
 | `private_connection` | unset | Route of private tabs (unset: same as the account). |
 | `site_rules` | none | `host` + `connection`: a site (and its subdomains) with its own route. Beats both defaults. |

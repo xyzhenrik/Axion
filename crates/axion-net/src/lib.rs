@@ -32,11 +32,11 @@ pub mod wireguard;
 
 pub use circuit::{CircuitInfo, Hop, HopRole};
 pub use conn::{Address, Conn, Dialer, pipe};
-pub use countries::{NameLanguage, country_name};
 pub use connection::{
-    Connection, ConnectionKind, ConnectionSecrets, ProxyConfig, ProxyScheme, TorConfig, TorIsolation, WgConfig,
-    WgInterface, WgPeer, WgSecrets,
+    Connection, ConnectionKind, ConnectionSecrets, ProxyConfig, ProxyScheme, TorConfig, TorIsolation,
+    WgConfig, WgInterface, WgPeer, WgSecrets,
 };
+pub use countries::{NameLanguage, country_name};
 pub use manager::{
     ConnectionStatus, ContextPlan, NetEvent, NetManager, NetOptions, Plan, ProxyLogin, ProxySetting,
     TunnelOptions,

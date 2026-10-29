@@ -14,7 +14,7 @@ use crate::popover::Popover;
 const ACTION_BASE: u32 = 6970;
 const NEW_CIRCUIT: ActionId = ActionId(ACTION_BASE + 1);
 const NEW_IDENTITY: ActionId = ActionId(ACTION_BASE + 2);
-const WIDTH: f32 = 372.0;
+const WIDTH: f32 = 408.0;
 const PADDING: f32 = 6.0;
 const INSET: f32 = 16.0;
 const GAP: f32 = 10.0;
@@ -93,7 +93,14 @@ impl CircuitPopover {
         self.popover.is_open()
     }
 
-    pub fn open(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, window_width: f32, view: &CircuitView) {
+    pub fn open(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        anchor: Frame,
+        window_width: f32,
+        view: &CircuitView,
+    ) {
         self.fill(ui, view);
         let rows = view.rows.len() as f32;
         let status = if view.status.is_some() { NOTE + GAP } else { 0.0 };
@@ -102,14 +109,21 @@ impl CircuitPopover {
             + status
             + rows * ROW
             + (NOTE + BUTTON + NOTE + BUTTON) // the two actions with their notes
-            + 5.0 * GAP;
+            + (rows + 4.0 + if view.status.is_some() { 1.0 } else { 0.0 }) * GAP;
         let left = (anchor.origin.x - PADDING - 8.0).clamp(8.0, (window_width - WIDTH - 8.0).max(8.0));
         let target = Frame::new(left, anchor.origin.y + anchor.size.y + GAP_BELOW_ANCHOR, WIDTH, height);
         self.popover.open(ui, config, anchor, target);
     }
 
     /// Refreshes an open popover; the content is rebuilt only when the view changed.
-    pub fn update(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, window_width: f32, view: &CircuitView) {
+    pub fn update(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        anchor: Frame,
+        window_width: f32,
+        view: &CircuitView,
+    ) {
         if self.is_open() && self.shown.as_ref() != Some(view) {
             self.open(ui, config, anchor, window_width, view);
         }
@@ -137,7 +151,7 @@ impl CircuitPopover {
         secondary(ui, n, tr("Your guard relay may not change"), TextStyle::Footnote);
         self.add_action(ui, NEW_IDENTITY, Icon::Shuffle, tr("New Tor identity"));
         let n = ui.add(self.plate, Widget::container(), fixed_row(NOTE, 0.0));
-        secondary(ui, n, tr("Closes every circuit and reloads the pages that use Tor"), TextStyle::Footnote);
+        secondary(ui, n, tr("Reloads every page that uses Tor"), TextStyle::Footnote);
     }
 
     fn add_action(&self, ui: &mut Ui, id: ActionId, icon: Icon, label: &str) {
@@ -150,7 +164,12 @@ impl CircuitPopover {
             Style {
                 size: Size { width: auto(), height: length(BUTTON) },
                 flex_shrink: 0.0,
-                padding: Rect { left: length(14.0), right: length(12.0), top: length(0.0), bottom: length(0.0) },
+                padding: Rect {
+                    left: length(14.0),
+                    right: length(12.0),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
                 ..row_style(8.0)
             },
         );
@@ -198,7 +217,11 @@ impl CircuitPopover {
         ui.add(
             rail,
             Widget::container().with_radius(CAPSULE).with_background(Background::Fill(dot_paint, 1.0)),
-            Style { size: Size { width: length(DOT), height: length(DOT) }, flex_shrink: 0.0, ..Default::default() },
+            Style {
+                size: Size { width: length(DOT), height: length(DOT) },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
         );
         line(ui, rail, !last);
 
@@ -206,7 +229,9 @@ impl CircuitPopover {
             (RowKind::Relay, Some(code)) => {
                 let badge = ui.add(
                     node,
-                    Widget::container().with_radius(CAPSULE).with_background(Background::Glass(GlassLevel::Thin)),
+                    Widget::container()
+                        .with_radius(CAPSULE)
+                        .with_background(Background::Glass(GlassLevel::Thin)),
                     Style {
                         size: Size { width: length(BADGE_WIDTH), height: length(BADGE_HEIGHT) },
                         flex_shrink: 0.0,
@@ -226,7 +251,12 @@ impl CircuitPopover {
         let title = ui.add_label(node, &row.title, TextStyle::Body, shrink_grow());
         ui.set_label_lines(title, 1);
         if !row.detail.is_empty() {
-            let ip = ui.add_label(node, &row.detail, TextStyle::Mono, Style { flex_shrink: 0.0, ..Default::default() });
+            let ip = ui.add_label(
+                node,
+                &row.detail,
+                TextStyle::Mono,
+                Style { flex_shrink: 0.0, ..Default::default() },
+            );
             if let Some(w) = ui.widget_mut(ip) {
                 w.set_paint(Paint::Secondary);
             }
@@ -273,7 +303,11 @@ fn fixed_row(height: f32, gap: f32) -> Style {
 }
 
 fn icon_slot() -> Style {
-    Style { size: Size { width: length(BADGE_WIDTH), height: length(BADGE_HEIGHT) }, flex_shrink: 0.0, ..Default::default() }
+    Style {
+        size: Size { width: length(BADGE_WIDTH), height: length(BADGE_HEIGHT) },
+        flex_shrink: 0.0,
+        ..Default::default()
+    }
 }
 
 fn shrink() -> Style {

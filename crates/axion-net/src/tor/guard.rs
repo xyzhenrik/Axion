@@ -165,17 +165,15 @@ mod tests {
     fn socks5_front_refuses_numeric_local_and_forwards_onions() {
         let probe = Arc::new(Probe(Mutex::new(Vec::new())));
         let creds = Credentials::random_session();
-        let server = LocalServer::socks5(
-            creds.clone(),
-            GuardedDialer::new(probe.clone()),
-            ServerOptions::default(),
-        )
-        .expect("server");
+        let server =
+            LocalServer::socks5(creds.clone(), GuardedDialer::new(probe.clone()), ServerOptions::default())
+                .expect("server");
         let ask = |target: Address| -> Result<(), SocksError> {
             let mut s = TcpStream::connect(server.addr()).expect("connect");
             socks5::client_connect(&mut s, &target, Some(&creds))
         };
-        let refused = |r: Result<(), SocksError>| matches!(r, Err(SocksError::Refused(c)) if c == reply::NOT_ALLOWED);
+        let refused =
+            |r: Result<(), SocksError>| matches!(r, Err(SocksError::Refused(c)) if c == reply::NOT_ALLOWED);
         assert!(refused(ask(ip("127.0.0.1:8080"))));
         assert!(refused(ask(ip("192.168.1.1:80"))));
         assert!(refused(ask(domain("localhost"))));
@@ -183,6 +181,10 @@ mod tests {
         assert!(ask(domain(onion)).is_ok(), "onion names pass through by name");
         assert!(ask(domain("example.com")).is_ok());
         let seen = probe.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        assert_eq!(seen, [format!("{onion}:443"), "example.com:443".to_owned()], "only allowed targets reach Tor");
+        assert_eq!(
+            seen,
+            [format!("{onion}:443"), "example.com:443".to_owned()],
+            "only allowed targets reach Tor"
+        );
     }
 }

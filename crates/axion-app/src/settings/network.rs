@@ -5,7 +5,7 @@
 
 use axion_net::{
     Connection, ConnectionKind, ConnectionStatus, ProxyConfig, ProxyScheme, Secret, Target, TorConfig,
-    WgConfig, WgSecrets,
+    TorIsolation, WgConfig, WgSecrets,
 };
 
 use super::*;
@@ -32,6 +32,7 @@ pub enum NetAction {
     AddRule,
     SaveCheckUrl,
     TorBridges,
+    TorIsolate(TorIsolation),
     Scheme(ProxyScheme),
     /// 0 = direct, then the connections.
     Default(usize),
@@ -62,6 +63,9 @@ impl NetAction {
                 NetAction::AddRule => 10,
                 NetAction::SaveCheckUrl => 11,
                 NetAction::TorBridges => 12,
+                NetAction::TorIsolate(m) => {
+                    160 + TorIsolation::ALL.iter().position(|x| *x == m).unwrap_or(0) as u32
+                }
                 NetAction::Scheme(s) => {
                     16 + ProxyScheme::ALL.iter().position(|x| *x == s).unwrap_or(0) as u32
                 }
@@ -92,6 +96,7 @@ impl NetAction {
             10 => NetAction::AddRule,
             11 => NetAction::SaveCheckUrl,
             12 => NetAction::TorBridges,
+            160..=162 => NetAction::TorIsolate(TorIsolation::ALL[(i - 160) as usize]),
             16..=18 => NetAction::Scheme(ProxyScheme::ALL[(i - 16) as usize]),
             20..=33 if (i - 20) as usize <= MAX_CONNECTIONS => NetAction::Default(at(20, MAX_CONNECTIONS)),
             34..=48 if (i - 34) as usize <= MAX_CONNECTIONS + 1 => {
@@ -173,6 +178,7 @@ struct Editor {
     bridges: String,
     exit: String,
     use_bridges: bool,
+    isolation: TorIsolation,
     /// The saved connection has a password (leave the field empty to keep it).
     has_saved_password: bool,
     wg: Option<WgConfig>,
@@ -197,6 +203,7 @@ impl Editor {
             bridges: String::new(),
             exit: String::new(),
             use_bridges: false,
+            isolation: TorIsolation::default(),
             has_saved_password: false,
             wg: None,
             wg_secrets: None,
@@ -210,10 +217,10 @@ impl Editor {
 /// A connection's state for the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectionRow {
+    pub id: String,
     pub status: ConnectionStatus,
     /// How far a starting connection has come ("Bootstrapping 40%: loading relays").
     pub progress: Option<String>,
-    pub status: ConnectionStatus,
 }
 
 /// What the page holds besides the config.
@@ -232,6 +239,10 @@ pub struct NetView {
 impl NetView {
     fn status_of(&self, id: &str) -> Option<&ConnectionStatus> {
         self.statuses.iter().find(|r| r.id == id).map(|r| &r.status)
+    }
+
+    fn progress_of(&self, id: &str) -> Option<String> {
+        self.statuses.iter().find(|r| r.id == id).and_then(|r| r.progress.clone())
     }
 }
 
@@ -337,6 +348,11 @@ impl SettingsSheet {
             NetAction::TorBridges => {
                 if let Some(e) = &mut self.net.editor {
                     e.use_bridges = !e.use_bridges;
+                }
+            }
+            NetAction::TorIsolate(mode) => {
+                if let Some(e) = &mut self.net.editor {
+                    e.isolation = mode;
                 }
             }
             NetAction::Edit(i) => {
@@ -487,6 +503,7 @@ impl SettingsSheet {
                         .filter(|b| !b.is_empty())
                         .collect(),
                     exit_country: e.exit.trim().to_ascii_lowercase(),
+                    isolation: e.isolation,
                 };
                 if let Err(err) = tor.validate() {
                     e.error = Some(err.to_string());
@@ -518,6 +535,10 @@ impl SettingsSheet {
             let title = format!("{}  ·  {}", c.name, crate::network::describe(c));
             let row_node = self.row_with_height(ui, &title, 52.0);
             let (color, text) = status_look(&status, &c.kind);
+            let text = match (&status, self.net.progress_of(&c.id)) {
+                (ConnectionStatus::Connecting, Some(p)) => p,
+                _ => text,
+            };
             let dot = ui.add(
                 row_node,
                 Widget::container()
@@ -808,6 +829,17 @@ impl SettingsSheet {
                     ui,
                     tr("Restricting the exit country narrows the crowd you blend into. Leave it empty unless you need it."),
                 );
+                let row_node = self.row(ui, tr("Circuits"));
+                let options: Vec<(&str, ActionId)> = TorIsolation::ALL
+                    .iter()
+                    .map(|m| (isolation_label(*m), SettingsAction::Network(NetAction::TorIsolate(*m)).id()))
+                    .collect();
+                let current = TorIsolation::ALL.iter().position(|m| *m == e.isolation);
+                segmented(ui, row_node, &options, current);
+                self.note(
+                    ui,
+                    tr("Per site, every site gets its own Tor circuit, so no exit relay sees two of them. This is Tor in Axion's browser, not Tor Browser: pages can still recognise your browser, and only TCP traffic goes through Tor (no QUIC, UDP or WebRTC)."),
+                );
             }
         }
         if let Some(error) = &e.error {
@@ -866,10 +898,19 @@ fn editor_for(c: &Connection) -> Editor {
             e.use_bridges = t.use_bridges;
             e.bridges = t.bridges.join("; ");
             e.exit = t.exit_country.clone();
+            e.isolation = t.isolation;
         }
         ConnectionKind::Direct => {}
     }
     e
+}
+
+fn isolation_label(mode: TorIsolation) -> &'static str {
+    match mode {
+        TorIsolation::Site => tr("Per site"),
+        TorIsolation::Context => tr("One for all"),
+        TorIsolation::None => tr("Tor default"),
+    }
 }
 
 /// The dot's colour and the status words.
@@ -910,6 +951,7 @@ mod tests {
             NetAction::SaveCheckUrl,
             NetAction::TorBridges,
         ];
+        all.extend(TorIsolation::ALL.map(NetAction::TorIsolate));
         all.extend(ProxyScheme::ALL.map(NetAction::Scheme));
         all.extend((0..=MAX_CONNECTIONS).map(NetAction::Default));
         all.extend((0..=MAX_CONNECTIONS + 1).map(NetAction::Private));
