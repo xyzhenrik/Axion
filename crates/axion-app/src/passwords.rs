@@ -82,6 +82,10 @@ const PROMPT_ERROR: f32 = 18.0;
 const PROMPT_LOGINS: usize = 3;
 /// The icon in a list row.
 const LIST_ICON: f32 = 30.0;
+/// Vault secrets with this prefix belong to network connections (the rest of the name is the
+/// connection's id).
+const NETWORK_SECRET_PREFIX: &str = "net:";
+
 /// The account password (the vault's master password) is at least this long.
 pub const MIN_MASTER_LENGTH: usize = 8;
 /// The password capture aids give throwaway test accounts.
@@ -864,6 +868,38 @@ impl Passwords {
 
     pub fn is_unlocked(&self) -> bool {
         self.vault.as_ref().is_some_and(Vault::is_unlocked)
+    }
+
+    /// The secrets of the network connections (connection id, stored text), or `None` while
+    /// the vault is locked. They are kept apart from the items (see `Vault::set_secret`).
+    pub fn network_secrets(&self) -> Option<Vec<(String, String)>> {
+        let vault = self.vault.as_ref().filter(|v| v.is_unlocked())?;
+        Some(
+            vault
+                .secret_names(NETWORK_SECRET_PREFIX)
+                .into_iter()
+                .filter_map(|name| {
+                    let text = vault.secret(&name)?.to_owned();
+                    Some((name.strip_prefix(NETWORK_SECRET_PREFIX)?.to_owned(), text))
+                })
+                .collect(),
+        )
+    }
+
+    /// Stores the secrets of a connection (needs the unlocked vault).
+    pub fn set_network_secret(&mut self, id: &str, text: &str) -> Result<(), VaultError> {
+        self.vault
+            .as_mut()
+            .ok_or(VaultError::NotSetUp)?
+            .set_secret(&format!("{NETWORK_SECRET_PREFIX}{id}"), text)
+    }
+
+    /// Forgets the secrets of a connection (needs the unlocked vault).
+    pub fn remove_network_secret(&mut self, id: &str) -> Result<(), VaultError> {
+        self.vault
+            .as_mut()
+            .ok_or(VaultError::NotSetUp)?
+            .remove_secret(&format!("{NETWORK_SECRET_PREFIX}{id}"))
     }
 
     /// Whether the account has a password (the vault is set up).

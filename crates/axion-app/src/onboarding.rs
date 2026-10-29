@@ -1670,7 +1670,7 @@ impl Onboarding {
 
     fn welcome(&mut self, ui: &mut Ui, body: NodeId, config: &Config, inner: f32) {
         let side = if self.compact() { ICON_SIDE * 0.82 } else { ICON_SIDE };
-        // The app icon is a rounded glass tile with its own soft edge: shown as is, never
+        // The app icon is a free-standing globe with its own soft glow: shown as is, never
         // clipped or shadowed again (the fallback tile below is).
         let holder = ui.add(
             body,

@@ -27,7 +27,18 @@ pub(super) struct Network {
     pub browsers: Mutex<HashMap<i32, ViewId>>,
     /// The views that only play one captured source (the Playlist's).
     pub media_views: RwLock<HashMap<ViewId, MediaViewOptions>>,
+    /// Logins proxies may ask for (see `Engine::set_proxy_logins`).
+    pub proxy_logins: RwLock<Vec<crate::ProxyLogin>>,
+    /// How often each proxy asked recently (host, port) -> (window start, asks): a login the
+    /// proxy keeps refusing is given up on instead of retried forever.
+    pub login_asks: Mutex<HashMap<(String, u16), (std::time::Instant, u32)>>,
 }
+
+/// Wrong logins are retried this many times within [`LOGIN_WINDOW`], then the request fails.
+/// (Chromium asks once per new connection until it has cached the login, so a page that
+/// opens many connections at once asks several times.)
+const LOGIN_RETRIES: u32 = 30;
+const LOGIN_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Network {
     pub fn policy(&self) -> Option<Arc<dyn RequestPolicy>> {
@@ -341,6 +352,52 @@ wrap_request_handler! {
             // Chromium waits for it to recover (the tab can be closed meanwhile); we only log.
             tracing::warn!(view = ?self.view, "the page's renderer process does not respond");
             0
+        }
+
+        fn auth_credentials(
+            &self,
+            _browser: Option<&mut Browser>,
+            _origin_url: Option<&CefString>,
+            is_proxy: ::std::os::raw::c_int,
+            host: Option<&CefString>,
+            port: ::std::os::raw::c_int,
+            _realm: Option<&CefString>,
+            _scheme: Option<&CefString>,
+            callback: Option<&mut AuthCallback>,
+        ) -> ::std::os::raw::c_int {
+            // Only proxies are answered here (from the vault via the connection manager); a
+            // web site's login prompt is not handled by the engine.
+            tracing::debug!(is_proxy, port, "authentication asked");
+            if is_proxy == 0 {
+                return 0;
+            }
+            let (Some(host), Some(callback)) = (host, callback) else { return 0 };
+            let host = host.to_string();
+            let Ok(port) = u16::try_from(port) else { return 0 };
+            let login = {
+                let logins = self.net.proxy_logins.read().unwrap_or_else(PoisonError::into_inner);
+                logins.iter().find(|l| l.host.eq_ignore_ascii_case(&host) && l.port == port).cloned()
+            };
+            let Some(login) = login else {
+                tracing::debug!(port, "a proxy asked for a login that is not known");
+                return 0;
+            };
+            {
+                let mut asks = self.net.login_asks.lock().unwrap_or_else(PoisonError::into_inner);
+                let now = std::time::Instant::now();
+                let entry = asks.entry((host, port)).or_insert((now, 0));
+                if now.duration_since(entry.0) > LOGIN_WINDOW {
+                    *entry = (now, 0);
+                }
+                entry.1 += 1;
+                if entry.1 > LOGIN_RETRIES {
+                    tracing::warn!("a proxy keeps refusing its login; giving up");
+                    callback.cancel();
+                    return 1;
+                }
+            }
+            callback.cont(Some(&login.username.as_str().into()), Some(&login.password.as_str().into()));
+            1
         }
 
         fn on_render_process_responsive(&self, _browser: Option<&mut Browser>) {

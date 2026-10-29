@@ -59,6 +59,8 @@ pub enum Action {
     OpenPasswords,
     /// Locks private tabs and password filling (the account menu's Lock).
     Lock,
+    /// Turns the network connection (proxy, VPN, Tor) on or off for the current site.
+    ToggleNetwork,
     Find,
     FindNext,
     FindPrevious,
@@ -149,6 +151,7 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::TranslatePage, "translate_page"),
     (Action::OpenPasswords, "open_passwords"),
     (Action::Lock, "lock"),
+    (Action::ToggleNetwork, "toggle_network"),
     (Action::Find, "find"),
     (Action::FindNext, "find_next"),
     (Action::FindPrevious, "find_previous"),

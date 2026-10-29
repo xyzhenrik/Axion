@@ -22,6 +22,7 @@ axion-extensions.workspace = true
 axion-i18n.workspace = true
 axion-import.workspace = true
 axion-media.workspace = true
+axion-net.workspace = true
 axion-reader.workspace = true
 axion-translate.workspace = true
 axion-physics.workspace = true

@@ -4,7 +4,7 @@
 
 use winit::window::Icon;
 
-/// 256 px PNG of the app icon (the Liquid Glass globe tile, `assets/icons/axion.png`; regenerate the set with `tools/make-icons.sh`).
+/// 256 px PNG of the app icon (the glowing glass globe with its orbit ring, no tile, `assets/icons/axion.png`; regenerate the set with `tools/make-icons.sh`).
 static ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/hicolor/256x256/apps/axion.png");
 
 /// The window icon, or `None` if the embedded PNG cannot be decoded.
@@ -32,10 +32,10 @@ mod tests {
         assert!(super::window_icon().is_some());
     }
 
-    /// The logo is a transparent-cornered tile: opaque centre, clear corners. Set
+    /// The logo is a free-standing globe: clear corners, opaque centre. Set
     /// `AXION_ICON_DUMP=path.png` to write the pixels the window icon gets.
     #[test]
-    fn icon_pixels_are_the_transparent_tile() {
+    fn icon_pixels_are_the_free_standing_globe() {
         let img = super::image().expect("icon");
         let (w, h) = img.dimensions();
         assert_eq!((w, h), (256, 256));
