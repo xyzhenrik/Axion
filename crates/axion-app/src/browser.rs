@@ -542,6 +542,8 @@ pub struct Browser {
     /// The shown scene's layer fingerprints (trace logging only).
     shown_layers: Vec<u64>,
     idle_redraw_at: Option<Instant>,
+    /// Whether the pointer was hidden with the fullscreen player's controls at the last check.
+    player_pointer_hidden: bool,
     frame_interval: Duration,
     /// Notices the window's monitor's refresh rate changing (see `frame_rate`).
     refresh_watch: RefreshWatch,
@@ -1029,6 +1031,7 @@ impl Browser {
             shown_layers: Vec::new(),
             page_view: None,
             idle_redraw_at: None,
+            player_pointer_hidden: false,
             frame_interval: frame_rate::display_interval(None),
             refresh_watch: RefreshWatch::default(),
             frames_skipped: 0,
@@ -2551,6 +2554,13 @@ impl Browser {
             page_fullscreen: self.chrome.page_fullscreen(),
         };
         self.player.update(&mut self.ui, &self.config, &cx, dt);
+        // The pointer hides with fullscreen controls that faded out, and is back when they return
+        // or the fullscreen ends: update it on that change, not only on the next pointer event.
+        let pointer_hidden = self.player.mode() == PlayerMode::Fullscreen && !self.player.is_shown();
+        if pointer_hidden != self.player_pointer_hidden {
+            self.player_pointer_hidden = pointer_hidden;
+            self.update_cursor();
+        }
         if let Some((view, command)) = self.player.takeover_command() {
             self.media_command(view, &command);
         }
