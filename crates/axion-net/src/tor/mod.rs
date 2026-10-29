@@ -493,6 +493,7 @@ mod tests {
             server: ServerOptions::default(),
             connect_timeout: Duration::from_secs(15),
             data_dir: dir.clone(),
+            wireguard_handshake_timeout: Duration::from_secs(20),
         };
         let tunnel = create(&TorConfig::default(), &options).expect("create");
         let endpoint = tunnel.start().expect("start");
