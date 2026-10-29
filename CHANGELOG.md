@@ -8,7 +8,12 @@
   falling back to direct, with an explanation page), leak protection (WebRTC, DNS, background
   services), a connection chip with a per-site popover in the address field, and the
   `toggle_network` shortcut. Passwords and keys live in the password vault. WireGuard (import a
-  `.conf`) is prepared and arrives with its backend. See docs/network.md.
+  `.conf`) is a fully userspace client (boringtun + smoltcp: no root, no TUN device) with DNS
+  inside the tunnel and AllowedIPs enforcement. See docs/network.md.
+- **WireGuard**: import a `.conf` and browse through it, in userspace with no root. Names are
+  resolved by the tunnel's DNS, destinations outside AllowedIPs are refused, a silent server is
+  reported as failed after `network.wireguard_handshake_timeout_secs`, and the connection list
+  in Settings uses two lines so a failure reason shows in full.
 - **Tor** (built-in Arti client, not Tor Browser): per-site circuits, `.onion` support, plain
   bridges, bootstrap progress in the chip, and a **circuit display** (route button in the address
   field) listing the guard, middle and exit relays of the site with country and IP, plus "New Tor

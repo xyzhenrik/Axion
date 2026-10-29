@@ -17,7 +17,8 @@ use base64::Engine as _;
 
 fn main() -> std::io::Result<()> {
     let mut args = std::env::args().skip(1);
-    let conf_path = args.next().ok_or_else(|| std::io::Error::other("usage: wg_world CONF_PATH [UDP_PORT]"))?;
+    let conf_path =
+        args.next().ok_or_else(|| std::io::Error::other("usage: wg_world CONF_PATH [UDP_PORT]"))?;
     let port: u16 = args.next().and_then(|p| p.parse().ok()).unwrap_or(0);
     let web = http_server(
         "<!doctype html><title>wg</title><h1 style='font:48px sans-serif'>WG-TUNNEL-OK</h1>",

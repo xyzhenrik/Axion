@@ -317,6 +317,7 @@ the password vault, not in `config.toml`.
 | `check_ip_url` | empty | Address the "Check My IP" button opens in a tab. Axion never calls it itself. |
 | `front_trust_own_processes` | on | The loopback front lets in Axion's own processes (Chromium) without a login, found by process tree (Linux). Everyone else needs the per-session login. |
 | `connect_timeout_secs`, `health_check_secs`, `max_relay_connections` | 10, 10, 512 | Timing and limits (after restart). |
+| `wireguard_handshake_timeout_secs` | 20 | How long a WireGuard handshake may stay unanswered before the connection is shown as failed (wrong key, dead server and blocked UDP look the same). |
 | `connect_at_start`, `show_chip`, `notify_changes` | on | Start default routes at launch; show the chip in the address field; toast on changes. |
 
 ## Privacy

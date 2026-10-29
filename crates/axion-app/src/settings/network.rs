@@ -562,15 +562,19 @@ impl SettingsSheet {
                     ..Default::default()
                 },
             );
-            let name = ui.add_label(column, &title, TextStyle::Body, Style {
-                min_size: Size { width: length(0.0), height: auto() },
-                ..Default::default()
-            });
+            let name = ui.add_label(
+                column,
+                &title,
+                TextStyle::Body,
+                Style { min_size: Size { width: length(0.0), height: auto() }, ..Default::default() },
+            );
             ui.set_label_lines(name, 2);
-            let label = ui.add_label(column, &text, TextStyle::Footnote, Style {
-                min_size: Size { width: length(0.0), height: auto() },
-                ..Default::default()
-            });
+            let label = ui.add_label(
+                column,
+                &text,
+                TextStyle::Footnote,
+                Style { min_size: Size { width: length(0.0), height: auto() }, ..Default::default() },
+            );
             ui.set_label_lines(label, 6);
             if let Some(w) = ui.widget_mut(label) {
                 w.set_paint(Paint::Secondary);

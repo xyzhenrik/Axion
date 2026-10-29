@@ -5,8 +5,78 @@ Axion can send its traffic through an upstream proxy (SOCKS5, HTTP, HTTPS), a Wi
 how it works, what it protects and what it does not. Settings: **Settings > Network & VPN**
 (`[network]` in `config.toml`).
 
-Upstream proxies and Tor work today; WireGuard has its page and form ready and its backend
-(`crates/axion-net/src/wireguard.rs`) answers "not available in this build yet" until it lands.
+Upstream proxies, WireGuard and Tor all work.
+
+## WireGuard
+
+A fully userspace client: no root, no TUN device, no kernel module, no external program (the way
+`wireproxy` works). Import a `.conf` in **Settings > Network & VPN > Add WireGuard** (file or
+clipboard). The keys go to the password vault (hidden secret), everything else to `config.toml`.
+
+```
+Chromium -> HTTP front (login) -> local SOCKS5 (login) -> Dialer -> smoltcp TCP stream
+         -> IP packets -> boringtun (Noise, timers, rekey) -> one UDP socket -> the peer
+```
+
+* `crates/axion-net/src/wireguard.rs`: the `Tunnel` (config -> keys and networks, start, status).
+  `wg_net.rs`: the stack. One worker thread owns the WireGuard peers ([boringtun]) and a
+  userspace TCP/IP stack ([smoltcp]) behind a virtual IP device; a reader thread empties the UDP
+  socket into the worker's queue (the kernel's UDP buffer is small); the worker blocks on that
+  queue with smoltcp's `poll_delay` (never a busy loop). SOCKS5 connection threads read and write
+  the smoltcp sockets directly under one lock and sleep on a per-stream condition variable that
+  the worker signals only when that stream can progress (backpressure is the socket buffer;
+  half-close, resets and clean teardown are handled).
+* **Handshake and status.** `Connecting` until the first handshake completes, then
+  `Up { info: "Peer host:port, last handshake 12 s ago" }` (also in the Settings row and the chip
+  popover). `Failed("No answer from ... within N s. Check the endpoint, the keys and that UDP is
+  not blocked.")` when a handshake stays unanswered for `network.wireguard_handshake_timeout_secs`
+  (default 20): a wrong key, a dead server and blocked UDP look the same in WireGuard, which never
+  answers a stranger. A tunnel that was up and then loses its peer turns `Failed` the same way
+  (the kill switch blocks), starts a new handshake every 15 s by itself and comes back to `Up`.
+  Rekeying (every 2 minutes of traffic) and keepalives (`PersistentKeepalive`) are boringtun's.
+* **DNS never leaves the tunnel.** A host name in a SOCKS5/CONNECT request is looked up with the
+  config's `DNS =` servers, over UDP through the tunnel (A, and AAAA when the config has an IPv6
+  address), cached for 30 s. Without a `DNS =` line names are refused with a clear error; the local
+  resolver is never used for them. The one local lookup is the peer's `Endpoint` host name, with the
+  system resolver, at start and again (and the socket re-created) when a handshake stays unanswered
+  or sending keeps failing (sleep/wake, network change).
+* **AllowedIPs are the kill switch of the tunnel.** Only destinations inside the AllowedIPs of some
+  peer (longest prefix wins, several peers are supported) are connected; anything else is refused
+  with SOCKS5 "connection not allowed" and nothing is sent to the local network. Incoming packets
+  must come from an allowed address of the peer that sent them.
+* IPv4 and IPv6 interface addresses (the first of each family is used), MTU from the config
+  (default 1420), preshared keys, IPv6 endpoints (the UDP socket is dual stack when needed).
+* Throughput on loopback with two userspace stacks: several Gbit/s in release builds (the test
+  asserts more than 50 Mbit/s), 100 parallel streams of 200 kB each in about two seconds.
+* Streams: `network.max_relay_connections` (shared with the other backends) bounds the open
+  streams; each has 256 KiB of buffer per direction, Reno congestion control.
+
+**Not supported / ignored.** `PreUp`, `PostUp`, `PreDown`, `PostDown`, `SaveConfig`, `Table`,
+`FwMark` and search domains in `DNS =` are never run or used (the import lists them as ignored).
+Only TCP is carried: SOCKS5 CONNECT has no UDP, so no QUIC/HTTP3 through the tunnel (QUIC is
+switched off while routed), no WebRTC media, no ICMP. IPv6 destinations need an IPv6 `Address`
+in the config. DNS goes over UDP only (no TCP fallback for truncated answers; names with huge
+answers may fail). Only the first IPv4 and first IPv6 address of the interface are used. Keys
+live in zeroizing buffers, but boringtun's internal copies are not wiped. This is a TCP-only
+"VPN for the browser", not a system VPN: other programs on this computer are not affected.
+
+Dependencies added (all permissive): `boringtun` 0.7 (BSD-3-Clause), `smoltcp` 0.12 (0BSD) and
+their trees: `x25519-dalek`/`curve25519-dalek` (BSD-3-Clause), `ring` (ISC/OpenSSL-style),
+`chacha20poly1305`, `blake2`, `hmac`, `aead` (MIT/Apache-2.0), `heapless`, `managed`,
+`ip_network`, `ip_network_table`, `parking_lot`, `byteorder`, `portable-atomic` (MIT/Apache-2.0/0BSD).
+
+**Testing without a real server.** `axion_net::wg_testing` is a WireGuard *server* on UDP
+loopback (a second boringtun peer plus its own smoltcp stack that answers for any address:
+forwards TCP to real local servers and answers DNS from a table). `tests/wireguard.rs` covers
+handshake, name resolution, 50 MB each way with checksums, 100 parallel streams, rekey, half-close,
+AllowedIPs refusal, "no DNS server", a silent server, a wrong key, a wrong preshared key, stop and
+restart, and (ignored, about 20 s each) recovery after a server restart and after a dark network.
+For the real browser: `cargo run --release -p axion-net --example wg_world -- /tmp/test.conf`
+prints an endpoint and writes a `.conf`; on a throwaway profile
+`axion --open=wg-test:/tmp/test.conf` imports it and routes the account through it, and
+`http://only-in-tunnel.test/` (a name that exists only inside) loads; stop the example and the
+kill-switch page appears. Note: the first `--open=wg-test` sets up the test vault, which takes
+about 20 s with a TPM.
 
 ## Tor
 
@@ -176,7 +246,8 @@ Axion, not by Chromium, and do not use the route yet).
 (unset = same as the account), `site_rules` (`host`, `connection`), `kill_switch`,
 `leak_protection`, `disable_quic_when_routed`, `strict_dns`, `check_ip_url` (empty: no
 check; Axion never calls it on its own, the button opens it in a tab through the tab's route),
-`connect_timeout_secs`, `health_check_secs`, `max_relay_connections`, `connect_at_start`,
+`connect_timeout_secs`, `health_check_secs`, `max_relay_connections`,
+`wireguard_handshake_timeout_secs`, `connect_at_start`,
 `show_chip`, `notify_changes`. The keymap action `toggle_network` (unbound) switches the current
 site between its route and direct; it also appears in the command palette.
 

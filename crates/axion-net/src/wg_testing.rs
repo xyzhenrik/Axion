@@ -240,10 +240,10 @@ fn run(
         std::thread::spawn(move || {
             let mut buf = vec![0u8; 65536];
             while !stop.load(Ordering::Acquire) {
-                if let Ok((n, from)) = reader.recv_from(&mut buf) {
-                    if feed.send((buf[..n].to_vec(), from)).is_err() {
-                        break;
-                    }
+                if let Ok((n, from)) = reader.recv_from(&mut buf)
+                    && feed.send((buf[..n].to_vec(), from)).is_err()
+                {
+                    break;
                 }
             }
         })
@@ -313,12 +313,12 @@ fn run(
                     let state = sockets.get::<tcp::Socket>(*h).state();
                     if state == State::Established {
                         let local = sockets.get::<tcp::Socket>(*h).local_endpoint();
-                        let dest = local.and_then(|e| {
+                        let dest = local.map(|e| {
                             let ip = match e.addr {
                                 IpAddress::Ipv4(a) => IpAddr::V4(a),
                                 IpAddress::Ipv6(a) => IpAddr::V6(a),
                             };
-                            Some(SocketAddr::new(ip, e.port))
+                            SocketAddr::new(ip, e.port)
                         });
                         let real = dest.and_then(|d| (config.forward)(d));
                         let accepted =
@@ -396,11 +396,12 @@ fn run(
                         Err(_) => b.tcp_eof = true,
                     }
                 }
-                if !b.down.is_empty() && sock.can_send() {
-                    if let Ok(n) = sock.send_slice(&b.down) {
-                        b.down.drain(..n);
-                        progressed = true;
-                    }
+                if !b.down.is_empty()
+                    && sock.can_send()
+                    && let Ok(n) = sock.send_slice(&b.down)
+                {
+                    b.down.drain(..n);
+                    progressed = true;
                 }
                 if b.tcp_eof && b.down.is_empty() && sock.may_send() {
                     sock.close();

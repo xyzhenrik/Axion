@@ -603,11 +603,11 @@ fn recovers_when_the_server_restarts() {
     // New connections work again once WireGuard has re-handshaken.
     let mut worked = false;
     while started.elapsed() < Duration::from_secs(60) {
-        if let Ok(conn) = dial(&endpoint, Address::Domain("app.inside.test".into(), 80)) {
-            if http_get(conn).contains("hello") {
-                worked = true;
-                break;
-            }
+        if let Ok(conn) = dial(&endpoint, Address::Domain("app.inside.test".into(), 80))
+            && http_get(conn).contains("hello")
+        {
+            worked = true;
+            break;
         }
     }
     eprintln!("recovered after {:?}", started.elapsed());

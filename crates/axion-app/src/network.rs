@@ -349,7 +349,9 @@ pub fn options(network: &Network, profile: &std::path::Path) -> NetOptions {
             ..Default::default()
         },
         data_dir: profile.join("network"),
-        wireguard_handshake_timeout: Duration::from_secs_f32(network.wireguard_handshake_timeout_secs.clamp(2.0, 300.0)),
+        wireguard_handshake_timeout: Duration::from_secs_f32(
+            network.wireguard_handshake_timeout_secs.clamp(2.0, 300.0),
+        ),
     }
 }
 

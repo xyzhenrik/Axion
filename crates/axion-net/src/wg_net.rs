@@ -223,7 +223,7 @@ impl Device for VDevice {
     }
 
     fn transmit(&mut self, _: SInstant) -> Option<VTx<'_>> {
-        (self.tx.len() < self.tx_cap).then(|| VTx(&mut self.tx))
+        (self.tx.len() < self.tx_cap).then_some(VTx(&mut self.tx))
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -553,10 +553,10 @@ impl Core {
     fn peer_for(&self, ip: IpAddr) -> Option<usize> {
         let mut best: Option<(u8, usize)> = None;
         for (i, p) in self.peers.iter().enumerate() {
-            if let Some(prefix) = p.best_prefix(ip) {
-                if best.is_none_or(|(b, _)| prefix > b) {
-                    best = Some((prefix, i));
-                }
+            if let Some(prefix) = p.best_prefix(ip)
+                && best.is_none_or(|(b, _)| prefix > b)
+            {
+                best = Some((prefix, i));
             }
         }
         best.map(|(_, i)| i)
@@ -565,7 +565,7 @@ impl Core {
     fn alloc_port(&mut self) -> Option<u16> {
         for _ in 0..16384 {
             let p = self.next_port;
-            self.next_port = if self.next_port >= 65535 { 49152 } else { self.next_port + 1 };
+            self.next_port = if self.next_port == 65535 { 49152 } else { self.next_port + 1 };
             if self.ports.insert(p) {
                 return Some(p);
             }
@@ -658,13 +658,13 @@ impl Core {
         let now = Instant::now();
         let force = shared.rekey.swap(false, Ordering::AcqRel);
         for idx in 0..self.peers.len() {
-            if force && self.peers[idx].endpoint.is_some() {
-                if let TunnResult::WriteToNetwork(p) =
+            if force
+                && self.peers[idx].endpoint.is_some()
+                && let TunnResult::WriteToNetwork(p) =
                     self.peers[idx].tunn.format_handshake_initiation(&mut scratch, true)
-                {
-                    let p = p.to_vec();
-                    self.send_to_peer(shared, idx, &p);
-                }
+            {
+                let p = p.to_vec();
+                self.send_to_peer(shared, idx, &p);
             }
             let result = self.peers[idx].tunn.update_timers(&mut scratch);
             match result {
@@ -780,16 +780,16 @@ impl Core {
         for idx in 0..self.peers.len() {
             let p = &mut self.peers[idx];
             let age = p.tunn.time_since_last_handshake();
-            if let Some(a) = age {
-                if p.last_age.is_none_or(|l| a < l) {
-                    p.handshake_at = Some(now.checked_sub(a).unwrap_or(now));
-                    p.pending_since = None;
-                    p.last_resolve = None;
-                    self.handshake_events += 1;
-                    shared.handshakes.fetch_add(1, Ordering::Relaxed);
-                    *lock(&shared.last_handshake) = Some((now, p.label.clone()));
-                    tracing::debug!("WireGuard handshake completed");
-                }
+            if let Some(a) = age
+                && p.last_age.is_none_or(|l| a < l)
+            {
+                p.handshake_at = Some(now.checked_sub(a).unwrap_or(now));
+                p.pending_since = None;
+                p.last_resolve = None;
+                self.handshake_events += 1;
+                shared.handshakes.fetch_add(1, Ordering::Relaxed);
+                *lock(&shared.last_handshake) = Some((now, p.label.clone()));
+                tracing::debug!("WireGuard handshake completed");
             }
             p.last_age = age;
             // The endpoint's name may point elsewhere after a network change.
@@ -859,12 +859,12 @@ impl Core {
             let Some(peer) = self.peers.get_mut(idx) else { continue };
             peer.resolving = false;
             let pick = addrs.iter().find(|a| v6 || a.is_ipv4()).copied();
-            if let Some(a) = pick {
-                if peer.endpoint != Some(a) {
-                    tracing::info!("the WireGuard endpoint's name now resolves elsewhere; switching");
-                    peer.endpoint = Some(a);
-                    shared.rekey.store(true, Ordering::Release);
-                }
+            if let Some(a) = pick
+                && peer.endpoint != Some(a)
+            {
+                tracing::info!("the WireGuard endpoint's name now resolves elsewhere; switching");
+                peer.endpoint = Some(a);
+                shared.rekey.store(true, Ordering::Release);
             }
         }
     }
@@ -1224,10 +1224,10 @@ impl WgDialer {
         let shared = &*self.shared;
         let key = name.trim_end_matches('.').to_ascii_lowercase();
         let mut core = shared.core();
-        if let Some((ips, at)) = core.dns_cache.get(&key) {
-            if at.elapsed() < shared.opts.dns_cache_ttl {
-                return Ok(ips.clone());
-            }
+        if let Some((ips, at)) = core.dns_cache.get(&key)
+            && at.elapsed() < shared.opts.dns_cache_ttl
+        {
+            return Ok(ips.clone());
         }
         if !core.has_dns {
             return Err(io::Error::new(
