@@ -18,6 +18,7 @@ pub mod connection;
 pub mod countries;
 pub mod manager;
 pub mod pac;
+pub mod peer;
 pub mod proxy;
 pub mod route;
 pub mod secret;

@@ -345,6 +345,7 @@ pub fn options(network: &Network, profile: &std::path::Path) -> NetOptions {
         },
         server: ServerOptions {
             max_connections: network.max_relay_connections.clamp(8, 8192) as usize,
+            trust_own_process_tree: network.front_trust_own_processes,
             ..Default::default()
         },
         data_dir: profile.join("network"),

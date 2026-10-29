@@ -232,6 +232,33 @@ fn http_front_connect_tunnels_bytes() {
     assert_eq!(proxy.requests(), ["tls.example:443"]);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn http_front_lets_in_own_processes_without_login_only_when_asked() {
+    let echo = echo_server().unwrap();
+    let proxy = mock_socks5(None, Upstream { connect_all_to: Some(echo.addr()) }).unwrap();
+    let dialer = || {
+        Arc::new(proxy::SocksUpstream::new(
+            ProxyConfig { host: "127.0.0.1".into(), port: proxy.addr().port(), ..Default::default() },
+            &Secret::default(),
+            Duration::from_secs(2),
+        ))
+    };
+    let ask = |front: &LocalServer| {
+        let mut s = TcpStream::connect(front.addr()).unwrap();
+        s.write_all(b"CONNECT own.example:443 HTTP/1.1\r\nHost: own.example:443\r\n\r\n").unwrap();
+        let mut buf = [0u8; 12];
+        s.read_exact(&mut buf).unwrap();
+        String::from_utf8_lossy(&buf).into_owned()
+    };
+    // This test process is its own process tree: trusted only when the option is on.
+    let trusting = ServerOptions { trust_own_process_tree: true, ..Default::default() };
+    let front = LocalServer::http_front(Credentials::new("u", "p"), dialer(), trusting).unwrap();
+    assert!(ask(&front).starts_with("HTTP/1.1 200"), "a process of our own tree needs no login");
+    let strict = LocalServer::http_front(Credentials::new("u", "p"), dialer(), ServerOptions::default()).unwrap();
+    assert!(ask(&strict).starts_with("HTTP/1.1 407"), "without the option everyone must log in");
+}
+
 #[test]
 fn mock_http_connect_proxy_checks_login() {
     let echo = echo_server().unwrap();

@@ -1846,6 +1846,10 @@ pub struct Network {
     /// Also switch QUIC (HTTP/3 over UDP) off when a route is set at start. Applies after a
     /// restart.
     pub disable_quic_when_routed: bool,
+    /// The loopback front lets in Axion's own processes (Chromium) without a login, found by
+    /// the process tree behind the connection (Linux). Off: only the per-session login works,
+    /// which Chromium does not answer reliably.
+    pub front_trust_own_processes: bool,
     /// When every request goes through a connection, Chromium may not resolve any name on
     /// this computer (`--host-resolver-rules`), except the proxy hosts. Applies after a
     /// restart; breaks nothing that goes through a connection.
@@ -1878,6 +1882,7 @@ impl Default for Network {
             kill_switch: true,
             leak_protection: true,
             disable_quic_when_routed: true,
+            front_trust_own_processes: true,
             strict_dns: false,
             check_ip_url: String::new(),
             connect_timeout_secs: 10.0,
