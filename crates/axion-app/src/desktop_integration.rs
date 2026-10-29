@@ -47,9 +47,9 @@ const STAMP_KEY: &str = "# X-Axion-Integration:";
 
 /// Revision of what [`install`] writes and does. Raising it rewrites every existing entry once
 /// (and so sends the icon change signal once): revision 2 added that signal, for entries an
-/// older Axion wrote while KDE kept an empty icon for them; revision 3 is the new logo, so
+/// older Axion wrote while KDE kept an empty icon for them; revision 4 is the globe logo (3 was the tile), so
 /// every installed copy of the old icon is replaced and the caches refreshed once.
-const REVISION: u32 = 3;
+const REVISION: u32 = 4;
 
 /// Where KDE's icon loaders listen for [`notify_icons_changed`].
 const ICON_LOADER_PATH: &str = "/KIconLoader";
@@ -295,7 +295,7 @@ mod tests {
         assert!(text.contains("\nIcon=axion\n") && text.contains("\nStartupWMClass=axion\n"));
         assert!(text.contains("\nCategories=Network;WebBrowser;\n"));
         assert!(text.contains("x-scheme-handler/https"));
-        assert!(text.contains("# X-Axion-Integration: r3 1.2.3 /opt/axion browser/axion\n"));
+        assert!(text.contains("# X-Axion-Integration: r4 1.2.3 /opt/axion browser/axion\n"));
         // The template's own `Exec=axion %U` is gone, and there is exactly one.
         assert_eq!(text.matches("\nExec=").count(), 1);
         // The group header stays the first line, as the specification wants.
@@ -311,7 +311,7 @@ mod tests {
         let entry = dir.join("applications/axion.desktop");
         let old = std::fs::read_to_string(&entry)
             .expect("entry")
-            .replace("# X-Axion-Integration: r3 1.2.3 ", "# X-Axion-Integration: 1.2.3 ");
+            .replace("# X-Axion-Integration: r4 1.2.3 ", "# X-Axion-Integration: 1.2.3 ");
         std::fs::write(&entry, old).expect("write");
         assert!(!is_up_to_date(&t));
         assert!(install(&t).expect("rewrite"));

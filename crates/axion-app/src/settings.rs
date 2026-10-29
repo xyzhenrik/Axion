@@ -2355,7 +2355,7 @@ impl SettingsSheet {
                 ..row(16.0)
             },
         );
-        // The logo is a rounded glass tile with its own soft edge: no plate or clip behind it
+        // The logo is a free-standing globe with its own soft glow: no plate or clip behind it
         // (the accent plate is only the fallback symbol's ground).
         let icon_box = ui.add(
             header,
