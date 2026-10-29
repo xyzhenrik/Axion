@@ -237,8 +237,13 @@ permissive. Licence texts ship with each crate. Lucide icons are covered in
 
 227 crates.
 Note: `priority-queue` is offered under `LGPL-3.0-or-later OR MPL-2.0`; Axion takes it under
-**MPL-2.0** (file-level copyleft, no changes made to it). It is the only crate in the list that is
-not plainly permissive.
+**MPL-2.0** (file-level copyleft, no changes made to it), a weak copyleft the project owner has
+accepted for this one crate. It is the only crate in the list that is not plainly permissive.
+MPL-2.0 asks that a binary which contains the crate says where its source and licence are: the
+source is the unmodified crate from [crates.io](https://crates.io/crates/priority-queue) (version
+2.7.0, the one pinned in `Cargo.lock`), its licence text ships with the crate, and the licence
+is [MPL-2.0](https://www.mozilla.org/MPL/2.0/). Should Axion ever change that crate's files, the
+changed files must be published under the MPL as well.
 
 Binary size (release, same machine): 69.0 MiB with Tor against 47.7 MiB for the main checkout's
 release binary at the time (about +21 MiB, mostly Arti, rustls/ring and the embedded GeoIP
