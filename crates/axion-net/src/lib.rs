@@ -12,8 +12,10 @@
 //! - [`socks5`] / [`server`] / [`conn`]: the minimal SOCKS5 and HTTP loopback servers.
 //! - [`proxy`]: the upstream-proxy backend.
 
+pub mod circuit;
 pub mod conn;
 pub mod connection;
+pub mod countries;
 pub mod manager;
 pub mod pac;
 pub mod proxy;
@@ -28,9 +30,11 @@ pub mod tunnel;
 pub mod wgconf;
 pub mod wireguard;
 
+pub use circuit::{CircuitInfo, Hop, HopRole};
 pub use conn::{Address, Conn, Dialer, pipe};
+pub use countries::{NameLanguage, country_name};
 pub use connection::{
-    Connection, ConnectionKind, ConnectionSecrets, ProxyConfig, ProxyScheme, TorConfig, WgConfig,
+    Connection, ConnectionKind, ConnectionSecrets, ProxyConfig, ProxyScheme, TorConfig, TorIsolation, WgConfig,
     WgInterface, WgPeer, WgSecrets,
 };
 pub use manager::{
@@ -42,7 +46,7 @@ pub use route::{RouteQuery, RoutingConfig, SiteRule, Target, host_matches, host_
 pub use secret::{Credentials, Secret};
 pub use secrets::{NoSecrets, SecretError, SecretStore};
 pub use server::{LocalServer, ServerOptions};
-pub use tunnel::{LocalEndpoint, Tunnel, TunnelStatus};
+pub use tunnel::{LocalEndpoint, ProgressStage, Tunnel, TunnelProgress, TunnelStatus};
 
 /// Everything that can go wrong.
 #[derive(Debug, thiserror::Error)]

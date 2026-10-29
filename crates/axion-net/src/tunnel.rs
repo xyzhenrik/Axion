@@ -48,4 +48,56 @@ pub trait Tunnel: Send + Sync {
 
     /// Stops the tunnel and closes its endpoint. Safe to call in any state, and more than once.
     fn stop(&self);
+
+    /// Gives the tunnel a function to call (from any thread) when its status or progress
+    /// changed on its own, so the UI can look at it. Called before [`start`](Self::start).
+    fn set_notifier(&self, _notify: std::sync::Arc<dyn Fn() + Send + Sync>) {}
+
+    /// How far a slow start is (Tor's bootstrap); `None` when the backend has nothing to say.
+    fn progress(&self) -> Option<TunnelProgress> {
+        None
+    }
+
+    /// The circuit that carries the most recent traffic to `host`'s site, if the backend has
+    /// circuits and one is known. Never invented: unknown is `None`.
+    fn circuit_for(&self, _host: &str) -> Option<crate::CircuitInfo> {
+        None
+    }
+
+    /// Retires the circuits of `host`'s site: the next connections build new ones. The
+    /// connections that are open now are closed (the browser reloads the page).
+    fn new_circuit(&self, _host: &str) {}
+
+    /// Like [`new_circuit`](Self::new_circuit) for every site.
+    fn new_identity(&self) {}
+}
+
+/// Where a slow start is, for the UI ("Bootstrapping 40%: loading relays").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TunnelProgress {
+    pub percent: u8,
+    pub stage: ProgressStage,
+    /// Why it is not moving (a blocked network, a skewed clock), as the backend says it.
+    pub stuck: Option<String>,
+}
+
+/// What a slow start is doing; the app translates these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgressStage {
+    Connecting,
+    Consensus,
+    Relays,
+    Ready,
+}
+
+impl ProgressStage {
+    /// The stage a bootstrap percentage is in.
+    pub fn for_percent(percent: u8) -> Self {
+        match percent {
+            0..=14 => ProgressStage::Connecting,
+            15..=39 => ProgressStage::Consensus,
+            40..=99 => ProgressStage::Relays,
+            _ => ProgressStage::Ready,
+        }
+    }
 }

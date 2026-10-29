@@ -160,6 +160,13 @@ impl Running {
             Running::Monitor(m) => m.stop(),
         }
     }
+
+    fn tunnel(&self) -> Option<&Arc<dyn Tunnel>> {
+        match self {
+            Running::Tunnel { tunnel, .. } => Some(tunnel),
+            Running::Monitor(_) => None,
+        }
+    }
 }
 
 /// How Chromium reaches a started connection.
@@ -434,6 +441,35 @@ impl NetManager {
         }
     }
 
+    /// The running tunnel of a connection (not for proxies Chromium talks to itself).
+    fn tunnel_of(&self, id: &str) -> Option<Arc<dyn Tunnel>> {
+        lock(&self.shared.inner).entries.get(id)?.running.as_ref()?.tunnel().cloned()
+    }
+
+    /// How far a connection that is still starting has come (Tor's bootstrap).
+    pub fn progress(&self, id: &str) -> Option<crate::TunnelProgress> {
+        self.tunnel_of(id)?.progress()
+    }
+
+    /// The circuit that carries `host`'s traffic through a connection, if it has circuits.
+    pub fn circuit_for(&self, id: &str, host: &str) -> Option<crate::CircuitInfo> {
+        self.tunnel_of(id)?.circuit_for(host)
+    }
+
+    /// New circuits for `host`'s site (open connections of the site are closed).
+    pub fn new_circuit(&self, id: &str, host: &str) {
+        if let Some(t) = self.tunnel_of(id) {
+            t.new_circuit(host);
+        }
+    }
+
+    /// New circuits for everything the connection carries.
+    pub fn new_identity(&self, id: &str) {
+        if let Some(t) = self.tunnel_of(id) {
+            t.new_identity();
+        }
+    }
+
     /// Which target a request uses.
     pub fn resolve(&self, query: &RouteQuery<'_>) -> Target {
         lock(&self.shared.inner).routing.resolve(query)
@@ -532,7 +568,7 @@ enum Started {
     Failed(String),
 }
 
-fn build(shared: &Shared, conn: &Connection) -> Result<(Running, Gateway), Started> {
+fn build(shared: &Arc<Shared>, conn: &Connection) -> Result<(Running, Gateway), Started> {
     let loaded = if conn.kind.needs_secrets() {
         shared.secrets.load(&conn.id)
     } else {
@@ -608,7 +644,14 @@ fn build(shared: &Shared, conn: &Connection) -> Result<(Running, Gateway), Start
 }
 
 /// Starts a tunnel and puts the authenticating HTTP front in front of it.
-fn front(tunnel: Arc<dyn Tunnel>, shared: &Shared) -> Result<(Running, Gateway), NetError> {
+fn front(tunnel: Arc<dyn Tunnel>, shared: &Arc<Shared>) -> Result<(Running, Gateway), NetError> {
+    // A tunnel that finishes starting later (Tor) wakes the UI through this.
+    let weak = Arc::downgrade(shared);
+    tunnel.set_notifier(Arc::new(move || {
+        if let Some(shared) = weak.upgrade() {
+            NetManager::wake(&shared);
+        }
+    }));
     let endpoint = tunnel.start()?;
     let dialer = Arc::new(SocksUpstream::local(&endpoint, shared.options.timings.connect_timeout));
     let session = Credentials::random_session();

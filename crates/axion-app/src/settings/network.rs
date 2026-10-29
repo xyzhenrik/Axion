@@ -210,7 +210,9 @@ impl Editor {
 /// A connection's state for the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectionRow {
-    pub id: String,
+    pub status: ConnectionStatus,
+    /// How far a starting connection has come ("Bootstrapping 40%: loading relays").
+    pub progress: Option<String>,
     pub status: ConnectionStatus,
 }
 

@@ -49,6 +49,7 @@ mod menu;
 mod morph;
 mod mpris;
 mod network;
+mod circuit_popover;
 mod network_popover;
 mod now_playing;
 mod onboarding;

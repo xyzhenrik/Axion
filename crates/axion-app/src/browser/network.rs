@@ -31,8 +31,10 @@ impl Browser {
         if changed {
             self.update_network_chip();
             self.refresh_network_popover();
+            self.refresh_circuit_popover();
             self.refresh_settings();
         }
+        self.circuit_tick();
     }
 
     /// The settings (`[network]`) changed.
@@ -192,6 +194,7 @@ impl Browser {
         let chip = self.active_network_chip();
         self.chrome.set_network_chip(&mut self.ui, chip.as_ref().map(|c| c.state));
         self.chip_shown = chip.map(|c| c.state);
+        self.update_circuit_button();
     }
 
     fn active_network_chip(&self) -> Option<Chip> {

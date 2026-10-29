@@ -376,14 +376,15 @@ fn manager_http_proxy_login_is_for_chromium_to_answer() {
 }
 
 #[test]
-fn manager_blocks_when_the_vault_is_locked_or_the_backend_is_missing() {
+fn manager_blocks_when_the_vault_is_locked_or_the_config_is_invalid() {
     let secrets = Arc::new(MemSecrets::default());
     let m = NetManager::new(secrets.clone(), fast_options());
     let mut routing = routing_with(proxy_conn("c-1", 1080, "bob", ProxyScheme::Socks5), true);
     routing.connections.push(Connection {
         id: "c-2".into(),
         name: "VPN".into(),
-        kind: ConnectionKind::Tor(TorConfig::default()),
+        // Invalid on purpose: a backend refuses to start a connection that does not validate.
+        kind: ConnectionKind::Tor(TorConfig { use_bridges: true, ..TorConfig::default() }),
     });
     m.set_routing(routing);
     *secrets.locked.lock().unwrap() = true;
@@ -391,7 +392,7 @@ fn manager_blocks_when_the_vault_is_locked_or_the_backend_is_missing() {
     assert!(reason.contains("vault"), "{reason}");
     *secrets.locked.lock().unwrap() = false;
     let ConnectionStatus::Blocked(reason) = start_and_wait(&m, "c-2") else { panic!() };
-    assert!(reason.contains("not available"), "{reason}");
+    assert!(reason.contains("bridge"), "{reason}");
     // Not up: the context is blocked, never direct.
     let plan = m.plan();
     assert!(matches!(plan.normal.setting, ProxySetting::Fixed(_)));

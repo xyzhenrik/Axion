@@ -55,6 +55,7 @@ impl SocksError {
             SocksError::Io(e) => match e.kind() {
                 io::ErrorKind::ConnectionRefused => reply::CONNECTION_REFUSED,
                 io::ErrorKind::TimedOut => reply::HOST_UNREACHABLE,
+                io::ErrorKind::PermissionDenied => reply::NOT_ALLOWED,
                 _ => reply::GENERAL_FAILURE,
             },
             _ => reply::GENERAL_FAILURE,

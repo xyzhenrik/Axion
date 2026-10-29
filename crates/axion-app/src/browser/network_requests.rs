@@ -182,7 +182,14 @@ impl Browser {
             .network
             .connections
             .iter()
-            .filter_map(|c| Some(ConnectionRow { id: c.id.clone(), status: self.net.manager.status(&c.id)? }))
+            .filter_map(|c| {
+                let status = self.net.manager.status(&c.id)?;
+                let progress = (status == axion_net::ConnectionStatus::Connecting)
+                    .then(|| self.net.manager.progress(&c.id))
+                    .flatten()
+                    .map(|p| crate::network::bootstrap_text(Some(p)));
+                Some(ConnectionRow { id: c.id.clone(), status, progress })
+            })
             .collect();
         self.settings.set_network_state(rows, self.net.vault_unlocked());
     }
