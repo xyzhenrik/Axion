@@ -22,6 +22,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -303,7 +304,8 @@ pub(crate) struct Core {
 pub(crate) struct Shared {
     core: Mutex<Core>,
     dns_cond: Condvar,
-    udp: Mutex<(Arc<UdpSocket>, SocketAddr)>,
+    events: SyncSender<Event>,
+    readers: Mutex<Vec<(Arc<AtomicBool>, std::thread::JoinHandle<()>)>>,
     woken: AtomicBool,
     stop: AtomicBool,
     phase: Mutex<Phase>,
@@ -322,13 +324,13 @@ impl Shared {
         lock(&self.core)
     }
 
-    /// Wakes the worker (coalesced: at most one datagram in flight).
+    /// Wakes the worker (coalesced: at most one wake-up in the queue).
     fn wake(&self) {
         if self.woken.swap(true, Ordering::AcqRel) {
             return;
         }
-        let (socket, addr) = lock(&self.udp).clone();
-        let _ = socket.send_to(&[], addr);
+        // A full queue already has the worker's attention.
+        let _ = self.events.try_send(Event::Wake);
     }
 
     fn set_phase(&self, phase: Phase) {
@@ -396,19 +398,55 @@ fn from_smol(ip: IpAddress) -> IpAddr {
     }
 }
 
-fn bind_udp(v6: bool, port: u16) -> io::Result<(UdpSocket, SocketAddr)> {
-    let any = if v6 { SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)) } else { SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)) };
-    let socket = match UdpSocket::bind(any) {
-        Ok(s) => s,
+fn bind_udp(v6: bool, port: u16) -> io::Result<UdpSocket> {
+    let any = if v6 {
+        SocketAddr::from((Ipv6Addr::UNSPECIFIED, port))
+    } else {
+        SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))
+    };
+    match UdpSocket::bind(any) {
+        Ok(s) => Ok(s),
         Err(e) if port != 0 => {
             tracing::debug!(error = %e, "the configured ListenPort is busy, using a random one");
-            return bind_udp(v6, 0);
+            bind_udp(v6, 0)
         }
-        Err(e) => return Err(e),
-    };
-    let local = socket.local_addr()?.port();
-    let wake = if v6 { SocketAddr::from((Ipv6Addr::LOCALHOST, local)) } else { SocketAddr::from((Ipv4Addr::LOCALHOST, local)) };
-    Ok((socket, wake))
+        Err(e) => Err(e),
+    }
+}
+
+/// What the worker waits for: a datagram from the network, or a nudge from another thread.
+enum Event {
+    Datagram(Vec<u8>, SocketAddr),
+    Wake,
+}
+
+/// A thread that does nothing but empty the socket into the worker's queue, so a burst never
+/// overflows the kernel's small receive buffer while the worker is busy.
+fn spawn_reader(shared: &Shared, socket: Arc<UdpSocket>) -> io::Result<()> {
+    let alive = Arc::new(AtomicBool::new(true));
+    let flag = alive.clone();
+    let events = shared.events.clone();
+    let handle = std::thread::Builder::new().name("wg-udp-read".into()).spawn(move || {
+        let _ = socket.set_read_timeout(Some(Duration::from_millis(50)));
+        let mut buf = vec![0u8; 65536];
+        while flag.load(Ordering::Acquire) {
+            match socket.recv_from(&mut buf) {
+                Ok((n, from)) => {
+                    if events.send(Event::Datagram(buf[..n].to_vec(), from)).is_err() {
+                        break;
+                    }
+                }
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    tracing::debug!(error = %e, "WireGuard socket read failed");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+    })?;
+    lock(&shared.readers).push((alive, handle));
+    Ok(())
 }
 
 fn random_u64() -> u64 {
@@ -621,7 +659,9 @@ impl Core {
         let force = shared.rekey.swap(false, Ordering::AcqRel);
         for idx in 0..self.peers.len() {
             if force && self.peers[idx].endpoint.is_some() {
-                if let TunnResult::WriteToNetwork(p) = self.peers[idx].tunn.format_handshake_initiation(&mut scratch, true) {
+                if let TunnResult::WriteToNetwork(p) =
+                    self.peers[idx].tunn.format_handshake_initiation(&mut scratch, true)
+                {
                     let p = p.to_vec();
                     self.send_to_peer(shared, idx, &p);
                 }
@@ -636,9 +676,13 @@ impl Core {
                     // WireGuard gave up (90 s without an answer). A tunnel that is not
                     // working starts over now and then, so it recovers by itself.
                     let peer = &mut self.peers[idx];
-                    if peer.endpoint.is_some() && now.duration_since(peer.last_retry) >= shared.opts.retry_interval {
+                    if peer.endpoint.is_some()
+                        && now.duration_since(peer.last_retry) >= shared.opts.retry_interval
+                    {
                         peer.last_retry = now;
-                        if let TunnResult::WriteToNetwork(p) = peer.tunn.format_handshake_initiation(&mut scratch, false) {
+                        if let TunnResult::WriteToNetwork(p) =
+                            peer.tunn.format_handshake_initiation(&mut scratch, false)
+                        {
                             let p = p.to_vec();
                             self.send_to_peer(shared, idx, &p);
                         }
@@ -760,7 +804,9 @@ impl Core {
             }
         }
         // Verdict.
-        let stalled = |p: &PeerRt| p.endpoint.is_some() && p.pending_since.is_some_and(|t| now.duration_since(t) > timeout);
+        let stalled = |p: &PeerRt| {
+            p.endpoint.is_some() && p.pending_since.is_some_and(|t| now.duration_since(t) > timeout)
+        };
         let usable: Vec<&PeerRt> = self.peers.iter().filter(|p| p.endpoint.is_some()).collect();
         let any_ok = usable.iter().any(|p| p.handshake_at.is_some() && !stalled(p));
         let all_stalled = !usable.is_empty() && usable.iter().all(|p| stalled(p));
@@ -781,7 +827,8 @@ impl Core {
 
 fn spawn_resolver(shared: Arc<Shared>, peer: usize, host: String, port: u16) {
     let spawned = std::thread::Builder::new().name("wg-resolve".into()).spawn(move || {
-        let addrs: Vec<SocketAddr> = (host.as_str(), port).to_socket_addrs().map(|i| i.collect()).unwrap_or_default();
+        let addrs: Vec<SocketAddr> =
+            (host.as_str(), port).to_socket_addrs().map(|i| i.collect()).unwrap_or_default();
         lock(&shared.inbox).push((peer, addrs));
         shared.wake();
     });
@@ -792,42 +839,6 @@ fn spawn_resolver(shared: Arc<Shared>, peer: usize, host: String, port: u16) {
 
 // ---------------------------------------------------------------------------------------------
 // The worker
-
-/// Takes datagrams from the socket: waits up to `wait` for the first, then drains what is
-/// already queued without waiting.
-fn recv_batch(
-    socket: &UdpSocket,
-    arena: &mut [u8],
-    slot: usize,
-    batch: usize,
-    wait: Duration,
-    out: &mut Vec<(usize, SocketAddr)>,
-) {
-    out.clear();
-    if !wait.is_zero() {
-        let _ = socket.set_nonblocking(false);
-        let _ = socket.set_read_timeout(Some(wait.max(Duration::from_millis(1))));
-        match socket.recv_from(&mut arena[..slot]) {
-            Ok((n, from)) => out.push((n, from)),
-            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => return,
-            Err(e) => {
-                tracing::debug!(error = %e, "WireGuard socket read failed");
-                std::thread::sleep(Duration::from_millis(20));
-                return;
-            }
-        }
-    }
-    let _ = socket.set_nonblocking(true);
-    while out.len() < batch {
-        let at = out.len() * slot;
-        match socket.recv_from(&mut arena[at..at + slot]) {
-            Ok((n, from)) => out.push((n, from)),
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(_) => break,
-        }
-    }
-    let _ = socket.set_nonblocking(false);
-}
 
 impl Core {
     fn next_wait(&mut self, opts: &WgOptions) -> Duration {
@@ -869,9 +880,15 @@ impl Core {
 
 fn rebind(shared: &Shared, core: &mut Core) {
     match bind_udp(core.udp_v6, 0) {
-        Ok((socket, wake)) => {
+        Ok(socket) => {
             let socket = Arc::new(socket);
-            *lock(&shared.udp) = (socket.clone(), wake);
+            for (alive, _) in lock(&shared.readers).iter() {
+                alive.store(false, Ordering::Release);
+            }
+            if let Err(e) = spawn_reader(shared, socket.clone()) {
+                tracing::warn!(error = %e, "could not start the WireGuard socket reader");
+                return;
+            }
             core.udp = socket;
             core.send_errors = 0;
             tracing::info!("WireGuard UDP socket re-created after repeated send errors");
@@ -880,28 +897,33 @@ fn rebind(shared: &Shared, core: &mut Core) {
     }
 }
 
-fn worker(shared: Arc<Shared>, slot: usize) {
+fn worker(shared: Arc<Shared>, events: Receiver<Event>) {
     let opts = shared.opts.clone();
-    let mut arena = vec![0u8; opts.batch * slot];
-    let mut got: Vec<(usize, SocketAddr)> = Vec::with_capacity(opts.batch);
+    let mut got: Vec<(Vec<u8>, SocketAddr)> = Vec::with_capacity(opts.batch);
     let mut wait = Duration::ZERO;
     let mut spins = 0u32;
     let mut last_tick: Option<Instant> = None;
     while !shared.stop.load(Ordering::Acquire) {
-        let socket = lock(&shared.udp).0.clone();
-        recv_batch(&socket, &mut arena, slot, opts.batch, wait, &mut got);
+        got.clear();
+        let first = if wait.is_zero() { events.try_recv().ok() } else { events.recv_timeout(wait).ok() };
         shared.woken.store(false, Ordering::Release);
+        let mut next = first;
+        while let Some(event) = next {
+            if let Event::Datagram(data, from) = event {
+                got.push((data, from));
+            }
+            next = if got.len() < opts.batch { events.try_recv().ok() } else { None };
+        }
         if shared.stop.load(Ordering::Acquire) {
             break;
         }
         let mut core = shared.core();
-        for (i, (len, from)) in got.iter().enumerate() {
-            if *len > 0 {
-                core.ingest(&shared, *from, &arena[i * slot..i * slot + len]);
-            }
+        for (data, from) in &got {
+            core.ingest(&shared, *from, data);
         }
         core.apply_resolved(&shared);
-        let due = last_tick.is_none_or(|t| t.elapsed() >= opts.tick / 2) || shared.rekey.load(Ordering::Acquire);
+        let due =
+            last_tick.is_none_or(|t| t.elapsed() >= opts.tick / 2) || shared.rekey.load(Ordering::Acquire);
         if due {
             core.tick(&shared);
             last_tick = Some(Instant::now());
@@ -938,14 +960,15 @@ impl Stack {
     /// Binds the UDP socket and starts the worker; handshakes begin at once.
     pub fn start(spec: &StackSpec, opts: WgOptions) -> io::Result<Stack> {
         let v6 = spec.peers.iter().filter_map(|p| p.endpoint_addrs.first()).any(SocketAddr::is_ipv6);
-        let (socket, wake) = bind_udp(v6, spec.listen_port)?;
+        let socket = bind_udp(v6, spec.listen_port)?;
         let socket = Arc::new(socket);
         let core = Core::new(spec, socket.clone(), v6)?;
-        let slot = (spec.mtu + 192).max(2048);
+        let (events_tx, events_rx) = std::sync::mpsc::sync_channel::<Event>(8192);
         let shared = Arc::new(Shared {
             core: Mutex::new(core),
             dns_cond: Condvar::new(),
-            udp: Mutex::new((socket, wake)),
+            events: events_tx,
+            readers: Mutex::new(Vec::new()),
             woken: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             phase: Mutex::new(Phase::Connecting),
@@ -958,15 +981,39 @@ impl Stack {
             rekey: AtomicBool::new(true), // the first round starts the handshakes
             last_handshake: Mutex::new(None),
         });
+        spawn_reader(&shared, socket)?;
         let thread = {
             let shared = shared.clone();
-            std::thread::Builder::new().name("wg-worker".into()).spawn(move || worker(shared, slot))?
+            std::thread::Builder::new().name("wg-worker".into()).spawn(move || worker(shared, events_rx))?
         };
         Ok(Stack { shared, worker: Mutex::new(Some(thread)) })
     }
 
     pub(crate) fn shared(&self) -> &Arc<Shared> {
         &self.shared
+    }
+
+    /// One line per open stream (state and queue sizes), for diagnosing stalls.
+    #[doc(hidden)]
+    pub fn debug_dump(&self) -> String {
+        let core = self.shared.core();
+        let mut out = String::new();
+        for (h, cs) in &core.conns {
+            let s = core.sockets.get::<tcp::Socket>(*h);
+            out.push_str(&format!(
+                "{h:?} port={} {} send_q={} recv_q={} wr={} ww={} released={} remote_closed={} reset={}\n",
+                cs.port,
+                s.state(),
+                s.send_queue(),
+                s.recv_queue(),
+                cs.wait_read,
+                cs.wait_write,
+                cs.released.is_some(),
+                cs.remote_closed,
+                cs.reset
+            ));
+        }
+        out
     }
 
     pub fn dialer(&self) -> Arc<dyn Dialer> {
@@ -977,6 +1024,13 @@ impl Stack {
         self.shared.stop();
         if let Some(t) = lock(&self.worker).take() {
             let _ = t.join();
+        }
+        let readers = std::mem::take(&mut *lock(&self.shared.readers));
+        for (alive, _) in &readers {
+            alive.store(false, Ordering::Release);
+        }
+        for (_, handle) in readers {
+            let _ = handle.join();
         }
     }
 }
@@ -1091,7 +1145,9 @@ impl io::Write for WgStream {
             let reset = core.conns.get(&inner.handle).is_some_and(|c| c.reset);
             let sock = core.sockets.get_mut::<tcp::Socket>(inner.handle);
             if !sock.may_send() {
-                return Err(if reset { io::ErrorKind::ConnectionReset } else { io::ErrorKind::BrokenPipe }.into());
+                return Err(
+                    if reset { io::ErrorKind::ConnectionReset } else { io::ErrorKind::BrokenPipe }.into()
+                );
             }
             if sock.can_send() {
                 let n = sock
@@ -1266,13 +1322,16 @@ impl WgDialer {
             IpAddr::V4(_) => core.v4.map(IpAddr::V4),
             IpAddr::V6(_) => core.v6.map(IpAddr::V6),
         }
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "the tunnel has no address of this IP version"))?;
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Unsupported, "the tunnel has no address of this IP version")
+        })?;
         if core.conns.len() >= shared.opts.max_streams {
             return Err(io::Error::new(io::ErrorKind::ConnectionRefused, "too many open connections"));
         }
         let port = core.alloc_port().ok_or_else(|| io::Error::other("no free local port"))?;
         let size = shared.opts.tcp_buffer;
-        let mut sock = tcp::Socket::new(SocketBuffer::new(vec![0u8; size]), SocketBuffer::new(vec![0u8; size]));
+        let mut sock =
+            tcp::Socket::new(SocketBuffer::new(vec![0u8; size]), SocketBuffer::new(vec![0u8; size]));
         sock.set_nagle_enabled(false);
         sock.set_congestion_control(CongestionControl::Reno);
         sock.set_keep_alive(Some(SDuration::from_secs(30)));
@@ -1315,7 +1374,10 @@ impl WgDialer {
             }
             let now = Instant::now();
             if now >= deadline {
-                break Err(io::Error::new(io::ErrorKind::TimedOut, "no answer from the host through the tunnel"));
+                break Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "no answer from the host through the tunnel",
+                ));
             }
             if core.stopped {
                 break Err(io::ErrorKind::ConnectionAborted.into());

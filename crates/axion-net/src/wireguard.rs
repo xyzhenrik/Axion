@@ -71,11 +71,15 @@ fn spec_of(config: &WgConfig) -> Result<StackSpec, NetError> {
     let private = key_bytes("PrivateKey", iface.private_key.expose())?;
     let mut addresses = Vec::new();
     for a in &iface.addresses {
-        addresses.push(Cidr::parse(a).ok_or_else(|| NetError::Invalid(format!("Address: {a:?} is not an address")))?);
+        addresses.push(
+            Cidr::parse(a).ok_or_else(|| NetError::Invalid(format!("Address: {a:?} is not an address")))?,
+        );
     }
     let mut dns = Vec::new();
     for d in &iface.dns {
-        dns.push(d.parse::<IpAddr>().map_err(|_| NetError::Invalid(format!("DNS: {d:?} is not an address")))?);
+        dns.push(
+            d.parse::<IpAddr>().map_err(|_| NetError::Invalid(format!("DNS: {d:?} is not an address")))?,
+        );
     }
     let mut peers = Vec::new();
     for p in &config.peers {
@@ -88,7 +92,8 @@ fn spec_of(config: &WgConfig) -> Result<StackSpec, NetError> {
         let mut allowed = Vec::new();
         for a in &p.allowed_ips {
             allowed.push(
-                Cidr::parse(a).ok_or_else(|| NetError::Invalid(format!("AllowedIPs: {a:?} is not a network")))?,
+                Cidr::parse(a)
+                    .ok_or_else(|| NetError::Invalid(format!("AllowedIPs: {a:?} is not a network")))?,
             );
         }
         peers.push(PeerSpec {
@@ -101,14 +106,7 @@ fn spec_of(config: &WgConfig) -> Result<StackSpec, NetError> {
         });
     }
     let mtu = if iface.mtu == 0 { DEFAULT_MTU } else { iface.mtu };
-    Ok(StackSpec {
-        private,
-        addresses,
-        dns,
-        mtu: usize::from(mtu),
-        listen_port: iface.listen_port,
-        peers,
-    })
+    Ok(StackSpec { private, addresses, dns, mtu: usize::from(mtu), listen_port: iface.listen_port, peers })
 }
 
 struct Live {
@@ -164,6 +162,11 @@ impl WireGuardTunnel {
     pub fn stats(&self) -> Option<WgStats> {
         let stack = lock(&self.live).as_ref().map(|l| l.stack.clone())?;
         Some(stack.shared().stats())
+    }
+
+    #[doc(hidden)]
+    pub fn debug_dump(&self) -> String {
+        lock(&self.live).as_ref().map(|l| l.stack.debug_dump()).unwrap_or_default()
     }
 
     /// Starts a new handshake with every peer now (a rekey). Mostly for tests.
@@ -234,7 +237,8 @@ impl Tunnel for WireGuardTunnel {
         *lock(&self.idle) = TunnelStatus::Connecting;
         let spec = self.resolved_spec().map_err(|e| self.fail(e.to_string()))?;
         let stack = Arc::new(
-            Stack::start(&spec, self.options.clone()).map_err(|e| self.fail(format!("Could not start the tunnel: {e}")))?,
+            Stack::start(&spec, self.options.clone())
+                .map_err(|e| self.fail(format!("Could not start the tunnel: {e}")))?,
         );
         *lock(&self.live) = Some(Live { stack: stack.clone(), server: None, endpoint: None });
         let slack = Duration::from_secs(3);
@@ -276,7 +280,10 @@ impl Tunnel for WireGuardTunnel {
             Phase::Up { since } => {
                 let info = match lock(&shared.last_handshake).clone() {
                     Some((at, label)) => {
-                        format!("Peer {label}, last handshake {} ago", age_text(Instant::now().saturating_duration_since(at)))
+                        format!(
+                            "Peer {label}, last handshake {} ago",
+                            age_text(Instant::now().saturating_duration_since(at))
+                        )
                     }
                     None => "Connected".to_owned(),
                 };

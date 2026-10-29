@@ -35,13 +35,12 @@ pub struct WgTestServerConfig {
     pub preshared: Option<[u8; 32]>,
     /// UDP address to bind (`127.0.0.1:0` for a random port).
     pub bind: SocketAddr,
-    /// TCP ports that exist "inside".
-    pub tcp_ports: Vec<u16>,
+    /// TCP ports that exist "inside", each with the number of waiting listeners (how many
+    /// connections may arrive at once).
+    pub tcp_ports: Vec<(u16, usize)>,
     pub forward: Forward,
     /// Names the DNS responder knows.
     pub names: Vec<(String, IpAddr)>,
-    /// Waiting listeners per port (how many connections may arrive at once).
-    pub backlog: usize,
     pub mtu: usize,
 }
 
@@ -52,10 +51,9 @@ impl WgTestServerConfig {
             client_public,
             preshared: None,
             bind: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-            tcp_ports: vec![80, 443],
+            tcp_ports: vec![(80, 16), (443, 16)],
             forward,
             names: Vec::new(),
-            backlog: 160,
             mtu: 1420,
         }
     }
@@ -67,6 +65,7 @@ pub struct WgTestStats {
     pub dns_queries: Mutex<Vec<String>>,
     pub tcp_accepted: AtomicUsize,
     pub datagrams: AtomicUsize,
+    pub sent_bytes: AtomicUsize,
 }
 
 /// A running test server. Dropping it stops it.
@@ -152,14 +151,22 @@ struct Bridge {
 const CHUNK: usize = 64 * 1024;
 
 fn listener(port: u16) -> tcp::Socket<'static> {
-    let mut s = tcp::Socket::new(SocketBuffer::new(vec![0u8; 128 * 1024]), SocketBuffer::new(vec![0u8; 128 * 1024]));
+    let mut s =
+        tcp::Socket::new(SocketBuffer::new(vec![0u8; 256 * 1024]), SocketBuffer::new(vec![0u8; 256 * 1024]));
     s.set_nagle_enabled(false);
+    s.set_congestion_control(smoltcp::socket::tcp::CongestionControl::Reno);
     // A listener on port `port` for any destination address (the interface is any-ip).
     let _ = s.listen(IpListenEndpoint { addr: None, port });
     s
 }
 
-fn run(config: WgTestServerConfig, socket: UdpSocket, stop: &AtomicBool, blackhole: &AtomicBool, stats: &WgTestStats) {
+fn run(
+    config: WgTestServerConfig,
+    socket: UdpSocket,
+    stop_flag: &Arc<AtomicBool>,
+    blackhole: &AtomicBool,
+    stats: &WgTestStats,
+) {
     let started = Instant::now();
     let mut tunn = Tunn::new(
         StaticSecret::from(config.private_key),
@@ -184,8 +191,8 @@ fn run(config: WgTestServerConfig, socket: UdpSocket, stop: &AtomicBool, blackho
     iface.set_any_ip(true);
     let mut sockets = SocketSet::new(Vec::new());
     let mut listeners: HashMap<u16, Vec<SocketHandle>> = HashMap::new();
-    for port in &config.tcp_ports {
-        let handles = (0..config.backlog).map(|_| sockets.add(listener(*port))).collect();
+    for (port, backlog) in &config.tcp_ports {
+        let handles = (0..*backlog).map(|_| sockets.add(listener(*port))).collect();
         listeners.insert(*port, handles);
     }
     let dns = {
@@ -208,18 +215,70 @@ fn run(config: WgTestServerConfig, socket: UdpSocket, stop: &AtomicBool, blackho
         }
         m
     };
+    // Loopback has no bottleneck link to pace a sender, and the client's UDP receive buffer
+    // holds only about a hundred datagrams: space the datagrams out a little (about 1 Gbit/s).
+    let next_send = std::cell::Cell::new(Instant::now());
     let send = |socket: &UdpSocket, client: Option<SocketAddr>, data: &[u8]| {
         if let Some(c) = client {
-            let _ = socket.send_to(data, c);
+            let due = next_send.get();
+            while Instant::now() < due {
+                std::hint::spin_loop();
+            }
+            next_send.set(Instant::now().max(due) + Duration::from_micros(10));
+            stats.sent_bytes.fetch_add(data.len(), Ordering::Relaxed);
+            if let Err(e) = socket.send_to(data, c) {
+                eprintln!("server send_to failed: {e}");
+            }
         }
     };
-    while !stop.load(Ordering::Acquire) {
+    // A thread that only reads the socket, so a burst never overflows the kernel's small
+    // receive buffer while the stack is busy.
+    let (feed, incoming) = std::sync::mpsc::channel::<(Vec<u8>, SocketAddr)>();
+    let reader = socket.try_clone().ok().map(|reader| {
+        let _ = reader.set_read_timeout(Some(Duration::from_millis(50)));
+        let stop = stop_flag.clone();
+        std::thread::spawn(move || {
+            let mut buf = vec![0u8; 65536];
+            while !stop.load(Ordering::Acquire) {
+                if let Ok((n, from)) = reader.recv_from(&mut buf) {
+                    if feed.send((buf[..n].to_vec(), from)).is_err() {
+                        break;
+                    }
+                }
+            }
+        })
+    });
+    let debug = std::env::var_os("AXION_WG_TEST_DEBUG").is_some();
+    let mut last_dump = Instant::now();
+    while !stop_flag.load(Ordering::Acquire) {
+        if debug && last_dump.elapsed() > Duration::from_secs(8) {
+            last_dump = Instant::now();
+            for b in &bridges {
+                let s = sockets.get::<tcp::Socket>(b.handle);
+                eprintln!(
+                    "server bridge {} up={} down={} eof={} shut={} sendq={} recvq={}",
+                    s.state(),
+                    b.up.len(),
+                    b.down.len(),
+                    b.tcp_eof,
+                    b.tcp_shut,
+                    s.send_queue(),
+                    s.recv_queue()
+                );
+            }
+        }
         // Datagrams from the client (drain what is queued after the first).
         let mut first = true;
         loop {
-            let got = if first { socket.recv_from(&mut dgram) } else { nonblocking_recv(&socket, &mut dgram) };
+            let got = if first {
+                incoming.recv_timeout(Duration::from_millis(1)).ok()
+            } else {
+                incoming.try_recv().ok()
+            };
             first = false;
-            let Ok((n, from)) = got else { break };
+            let Some((packet, from)) = got else { break };
+            let n = packet.len();
+            dgram[..n].copy_from_slice(&packet);
             stats.datagrams.fetch_add(1, Ordering::Relaxed);
             if blackhole.load(Ordering::Acquire) {
                 continue;
@@ -244,7 +303,6 @@ fn run(config: WgTestServerConfig, socket: UdpSocket, stop: &AtomicBool, blackho
         if let TunnResult::WriteToNetwork(p) = tunn.update_timers(&mut buf) {
             send(&socket, client, p);
         }
-        let _ = socket.set_read_timeout(Some(Duration::from_millis(1)));
 
         // The stack, the bridges, the stack again.
         for _ in 0..16 {
@@ -263,7 +321,8 @@ fn run(config: WgTestServerConfig, socket: UdpSocket, stop: &AtomicBool, blackho
                             Some(SocketAddr::new(ip, e.port))
                         });
                         let real = dest.and_then(|d| (config.forward)(d));
-                        let accepted = real.and_then(|r| TcpStream::connect_timeout(&r, Duration::from_secs(2)).ok());
+                        let accepted =
+                            real.and_then(|r| TcpStream::connect_timeout(&r, Duration::from_secs(2)).ok());
                         let old = *h;
                         *h = sockets.add(listener(*port));
                         match accepted {
@@ -271,7 +330,14 @@ fn run(config: WgTestServerConfig, socket: UdpSocket, stop: &AtomicBool, blackho
                                 let _ = tcp_stream.set_nodelay(true);
                                 let _ = tcp_stream.set_nonblocking(true);
                                 stats.tcp_accepted.fetch_add(1, Ordering::Relaxed);
-                                bridges.push(Bridge { handle: old, tcp: tcp_stream, up: Vec::new(), down: Vec::new(), tcp_eof: false, tcp_shut: false });
+                                bridges.push(Bridge {
+                                    handle: old,
+                                    tcp: tcp_stream,
+                                    up: Vec::new(),
+                                    down: Vec::new(),
+                                    tcp_eof: false,
+                                    tcp_shut: false,
+                                });
                             }
                             None => {
                                 // No real server behind it: reset, and free the socket later.
@@ -361,8 +427,13 @@ fn run(config: WgTestServerConfig, socket: UdpSocket, stop: &AtomicBool, blackho
             let mut sent = false;
             while let Some(packet) = device.tx.pop_front() {
                 sent = true;
-                if let TunnResult::WriteToNetwork(p) = tunn.encapsulate(&packet, &mut buf) {
-                    send(&socket, client, p);
+                match tunn.encapsulate(&packet, &mut buf) {
+                    TunnResult::WriteToNetwork(p) => send(&socket, client, p),
+                    other => {
+                        if debug {
+                            eprintln!("server encapsulate gave {other:?}");
+                        }
+                    }
                 }
             }
             if !progressed && !sent && device.rx.is_empty() {
@@ -370,17 +441,13 @@ fn run(config: WgTestServerConfig, socket: UdpSocket, stop: &AtomicBool, blackho
             }
         }
     }
+    if let Some(r) = reader {
+        let _ = r.join();
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn nonblocking_recv(socket: &UdpSocket, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-    socket.set_nonblocking(true)?;
-    let r = socket.recv_from(buf);
-    socket.set_nonblocking(false)?;
-    r
 }
 
 /// Parses a DNS query and builds the answer; returns the queried name.
@@ -412,7 +479,12 @@ fn answer(query: &[u8], names: &HashMap<String, Vec<IpAddr>>, answer_all: bool) 
     out.extend([0x81, if found { 0x80 } else { 0x83 }]);
     out.extend([0, 1]);
     let wanted: Vec<IpAddr> = known
-        .map(|v| v.iter().copied().filter(|ip| (qtype == 1 && ip.is_ipv4()) || (qtype == 28 && ip.is_ipv6())).collect())
+        .map(|v| {
+            v.iter()
+                .copied()
+                .filter(|ip| (qtype == 1 && ip.is_ipv4()) || (qtype == 28 && ip.is_ipv6()))
+                .collect()
+        })
         .unwrap_or_default();
     out.extend((wanted.len() as u16).to_be_bytes());
     out.extend([0, 0, 0, 0]);

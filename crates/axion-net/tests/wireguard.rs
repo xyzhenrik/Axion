@@ -35,6 +35,10 @@ fn serve(handler: impl Fn(TcpStream) + Send + Sync + 'static) -> SocketAddr {
     addr
 }
 
+/// The heavy tests run one at a time: on loopback they would drop each other's datagrams
+/// (the kernel's UDP receive buffer holds about a hundred).
+static HEAVY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn fnv(mut h: u64, data: &[u8]) -> u64 {
     for b in data {
         h ^= u64::from(*b);
@@ -75,7 +79,8 @@ fn inside() -> Inside {
             }
         }
         let body = "hello from inside the tunnel";
-        let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        let _ =
+            write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
     });
     let echo = serve(|mut s| {
         let mut buf = [0u8; 16384];
@@ -168,11 +173,16 @@ impl World {
     }
 }
 
-fn world_with(names: Vec<(String, IpAddr)>, expected_client: Option<[u8; 32]>, psk: Option<[u8; 32]>) -> World {
+fn world_with(
+    names: Vec<(String, IpAddr)>,
+    expected_client: Option<[u8; 32]>,
+    psk: Option<[u8; 32]>,
+) -> World {
     let inside = inside();
     let client_private = random_private_key();
     let server_private = random_private_key();
-    let (http, echo, source, sink, count) = (inside.http, inside.echo, inside.source, inside.sink, inside.count);
+    let (http, echo, source, sink, count) =
+        (inside.http, inside.echo, inside.source, inside.sink, inside.count);
     let forward: axion_net::wg_testing::Forward = Arc::new(move |dest: SocketAddr| match dest.port() {
         80 => Some(http),
         7 => Some(echo),
@@ -187,17 +197,14 @@ fn world_with(names: Vec<(String, IpAddr)>, expected_client: Option<[u8; 32]>, p
         forward,
     );
     config.preshared = psk;
-    config.tcp_ports = vec![80, 7, 9000, 9001, 8];
+    config.tcp_ports = vec![(80, 8), (7, 140), (9000, 4), (9001, 4), (8, 4)];
     config.names = names;
     let server = WgTestServer::start(config.clone()).unwrap();
     World { server, config, inside, client_private }
 }
 
 fn default_names() -> Vec<(String, IpAddr)> {
-    vec![
-        ("app.inside.test".into(), IpAddr::V4(APP_IP)),
-        ("v6.inside.test".into(), IpAddr::V6(APP_IP6)),
-    ]
+    vec![("app.inside.test".into(), IpAddr::V4(APP_IP)), ("v6.inside.test".into(), IpAddr::V6(APP_IP6))]
 }
 
 fn world() -> World {
@@ -276,10 +283,10 @@ fn handshake_name_resolution_and_http_inside_the_tunnel() {
     assert!(page.contains("hello from inside"), "{page}");
     // A name nobody knows.
     let err = dial(&endpoint, Address::Domain("nope.inside.test".into(), 80)).err().unwrap();
-    assert!(err.to_string().contains("unreachable") || err.to_string().contains("host"), "{err}");
+    assert!(err.to_string().contains("reply 4"), "{err}");
     // Nothing is listening on that inside port: refused.
     let err = dial(&endpoint, Address::Ip("198.51.100.9:81".parse().unwrap())).err().unwrap();
-    assert!(err.to_string().to_lowercase().contains("refused"), "{err}");
+    assert!(err.to_string().contains("reply 5"), "{err}");
     let stats = t.stats().unwrap();
     assert!(stats.handshakes >= 1 && stats.rx_bytes > 0 && stats.tx_bytes > 0, "{stats:?}");
     t.stop();
@@ -324,7 +331,11 @@ fn transfer_check(endpoint: &LocalEndpoint, megabytes: u64) -> (f64, f64) {
             let take = pending.len().min(want.len());
             let mut exp = vec![0u8; take];
             fill(&mut state, &mut exp);
-            assert!(pending[..take] == exp[..], "data differs near byte {}", got_total - pending.len() as u64);
+            assert!(
+                pending[..take] == exp[..],
+                "data differs near byte {}",
+                got_total - pending.len() as u64
+            );
             expected = fnv(expected, &exp);
             pending.drain(..take);
         }
@@ -355,6 +366,7 @@ fn transfer_check(endpoint: &LocalEndpoint, megabytes: u64) -> (f64, f64) {
 
 #[test]
 fn fifty_megabytes_each_way_arrive_intact_and_fast() {
+    let _heavy = HEAVY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (_w, t, endpoint) = open();
     let (down, up) = transfer_check(&endpoint, 50);
     eprintln!("loopback throughput: download {down:.0} Mbit/s, upload {up:.0} Mbit/s");
@@ -365,9 +377,28 @@ fn fifty_megabytes_each_way_arrive_intact_and_fast() {
 
 #[test]
 fn a_hundred_parallel_connections() {
+    let _heavy = HEAVY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (w, t, endpoint) = open();
     let endpoint = Arc::new(endpoint);
     let started = Instant::now();
+    let t = Arc::new(t);
+    let w2 = Arc::new(w);
+    {
+        let t = t.clone();
+        let w2 = w2.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(12));
+            for _ in 0..3 {
+                eprintln!(
+                    "STALL DUMP: {:?} server_sent={}\n{}",
+                    t.stats(),
+                    w2.server.stats.sent_bytes.load(Ordering::Relaxed),
+                    t.debug_dump()
+                );
+                std::thread::sleep(Duration::from_secs(3));
+            }
+        });
+    }
     let handles: Vec<_> = (0..100u32)
         .map(|i| {
             let endpoint = endpoint.clone();
@@ -399,8 +430,14 @@ fn a_hundred_parallel_connections() {
     for h in handles {
         h.join().unwrap();
     }
+    for l in std::fs::read_to_string("/proc/net/udp").unwrap_or_default().lines().skip(1) {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.last().is_some_and(|d| *d != "0") {
+            eprintln!("UDP drops: local {} rx_queue {} drops {}", f[1], f[4], f.last().unwrap());
+        }
+    }
     eprintln!("100 parallel echoes of 200 kB: {:?}", started.elapsed());
-    assert!(w.server.stats.tcp_accepted.load(Ordering::Relaxed) >= 100);
+    assert!(w2.server.stats.tcp_accepted.load(Ordering::Relaxed) >= 100);
     // Everything closes again.
     let start = Instant::now();
     while t.stats().unwrap().streams > 0 && start.elapsed() < Duration::from_secs(20) {
@@ -453,7 +490,7 @@ fn allowed_ips_refuse_everything_else_and_never_leak() {
     let accepted_before = w.server.stats.tcp_accepted.load(Ordering::Relaxed);
     // Outside: refused with "not allowed" (SOCKS reply 2), without any packet for it.
     let err = dial(&endpoint, Address::Ip("8.8.8.8:80".parse().unwrap())).err().unwrap();
-    assert!(err.to_string().to_lowercase().contains("not allowed") || err.to_string().contains("rule"), "{err}");
+    assert!(err.to_string().contains("reply 2"), "{err}");
     let err = dial(&endpoint, Address::Ip("[2001:db8::99]:80".parse().unwrap())).err().unwrap();
     assert!(!err.to_string().is_empty());
     assert_eq!(w.server.stats.tcp_accepted.load(Ordering::Relaxed), accepted_before);
@@ -463,7 +500,10 @@ fn allowed_ips_refuse_everything_else_and_never_leak() {
     // A name that resolves outside AllowedIPs (the v6 one) is refused as well.
     assert!(dial(&endpoint, Address::Domain("v6.inside.test".into(), 80)).is_err());
     // A host that is only on this computer (loopback) never connects locally either.
-    assert!(dial(&endpoint, Address::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), w.inside.http.port()))).is_err());
+    assert!(
+        dial(&endpoint, Address::Ip(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), w.inside.http.port())))
+            .is_err()
+    );
 }
 
 #[test]
@@ -555,7 +595,9 @@ fn recovers_when_the_server_restarts() {
     let config = client_config(&w, &["0.0.0.0/0"], &["10.9.0.1"], None);
     let t = tunnel(&config, 10);
     let endpoint = t.start().unwrap();
-    assert!(http_get(dial(&endpoint, Address::Domain("app.inside.test".into(), 80)).unwrap()).contains("hello"));
+    assert!(
+        http_get(dial(&endpoint, Address::Domain("app.inside.test".into(), 80)).unwrap()).contains("hello")
+    );
     w.restart_server();
     let started = Instant::now();
     // New connections work again once WireGuard has re-handshaken.
