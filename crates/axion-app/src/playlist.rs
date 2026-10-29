@@ -677,6 +677,9 @@ pub struct Playback {
     /// When the position was last saved.
     pub saved_at: Instant,
     pub ended_handled: bool,
+    /// A live stream's media clock when watching began: its timer counts from there (a live
+    /// stream's own clock is its server's, far from zero).
+    pub live_origin: Option<f64>,
     /// The player was playing at the last look (a change to paused saves the position).
     pub was_playing: bool,
 }
