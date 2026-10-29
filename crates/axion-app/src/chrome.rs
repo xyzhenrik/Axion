@@ -108,6 +108,8 @@ pub enum ChromeAction {
     Capture,
     /// The zoom in the address field: resets the page to its default zoom.
     ZoomIndicator,
+    /// The network chip in the address field: the route of this site, with a switch.
+    Network,
     /// The Now Playing card: open its tab.
     NowPlaying,
     /// The bookmarks bar's chevron: the bookmarks that don't fit, as a menu.
@@ -270,7 +272,7 @@ const TAB_GROUP_BASE: u32 = 100_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 37] = [
+    const SIMPLE: [ChromeAction; 38] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -308,6 +310,7 @@ impl ChromeAction {
         ChromeAction::Capture,
         ChromeAction::Translate,
         ChromeAction::ZoomIndicator,
+        ChromeAction::Network,
     ];
 
     pub fn id(self) -> ActionId {
@@ -578,6 +581,11 @@ pub struct Chrome {
     audio_wanted: bool,
     playlist_wanted: bool,
     translate_wanted: bool,
+    /// The network chip's state (`None`: hidden).
+    network_wanted: Option<crate::network::ChipState>,
+    /// The network chip in the address field, and its glyph.
+    network_button: NodeId,
+    network_icon: NodeId,
     /// The zoom indicator: its button and label, and the text it wants (`None`: hidden).
     zoom_button: NodeId,
     zoom_label: NodeId,
@@ -1465,6 +1473,11 @@ impl Chrome {
             icon_button(ui, address, ChromeAction::Translate, Widget::icon(Icon::Translate, 18.0), 30.0);
         tip(ui, translate_button, tr("Translate"), None);
         ui.set_visible(translate_button, false);
+        // The network connection (proxy, VPN, Tor) the page goes through; hidden for direct.
+        let (network_button, network_icon) =
+            icon_button(ui, address, ChromeAction::Network, Widget::icon(Icon::Network, 18.0), 30.0);
+        tip(ui, network_button, tr("Network connection"), Some(Action::ToggleNetwork));
+        ui.set_visible(network_button, false);
         // A page that is not at its default zoom: the zoom, and a click resets it.
         let zoom_button = ui.add(
             address,
@@ -1722,6 +1735,9 @@ impl Chrome {
             audio_wanted: false,
             playlist_wanted: false,
             translate_wanted: false,
+            network_wanted: None,
+            network_button,
+            network_icon,
             zoom_button,
             zoom_label,
             zoom_wanted: None,
@@ -2830,6 +2846,35 @@ impl Chrome {
         if let (Some(active), Some(w)) = (state, ui.widget_mut(self.translate_icon)) {
             w.set_paint(if active { Paint::Accent } else { Paint::Label });
         }
+    }
+
+    /// The network chip: hidden (`None`), or shown with the route's state (green: connected,
+    /// accent: connecting, red: down, grey: this site goes direct).
+    pub fn set_network_chip(&mut self, ui: &mut Ui, chip: Option<crate::network::ChipState>) {
+        use crate::network::ChipState;
+        self.network_wanted = chip;
+        ui.set_visible(self.network_button, chip.is_some() && self.extras_fit());
+        let Some(state) = chip else { return };
+        ui.set_icon(
+            self.network_icon,
+            match state {
+                ChipState::Down => Icon::WifiOff,
+                ChipState::Bypassed => Icon::GlobeLock,
+                ChipState::Up | ChipState::Connecting => Icon::Network,
+            },
+        );
+        if let Some(w) = ui.widget_mut(self.network_icon) {
+            w.set_paint(match state {
+                ChipState::Up => Paint::Shield,
+                ChipState::Connecting => Paint::Accent,
+                ChipState::Down => Paint::Fixed(Color::rgb(0xE2453A)),
+                ChipState::Bypassed => Paint::Secondary,
+            });
+        }
+    }
+
+    pub fn network_button_frame(&self, ui: &Ui) -> Frame {
+        ui.frame(self.network_button)
     }
 
     pub fn translate_button_frame(&self, ui: &Ui) -> Frame {
@@ -3994,6 +4039,7 @@ impl Chrome {
         ui.set_visible(self.audio_button, self.audio_wanted && fit.extras);
         ui.set_visible(self.playlist_button, self.playlist_wanted && fit.extras && !capture);
         ui.set_visible(self.translate_button, self.translate_wanted && fit.extras && !capture);
+        ui.set_visible(self.network_button, self.network_wanted.is_some() && fit.extras && !capture);
         ui.set_visible(self.zoom_button, self.zoom_wanted.is_some() && fit.extras);
         let icon_only = !fit.text;
         let mut style = ui.style(self.address);

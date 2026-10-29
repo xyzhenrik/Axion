@@ -17,6 +17,7 @@ These pages explain what it can do and, above all, what each setting does.
 | Page | What it covers |
 |---|---|
 | [Shields](features/shields.md) | Blocking ads, trackers, popups and redirects. |
+| [Network & VPN](network.md) | Upstream proxy, WireGuard and Tor per account, private tab or site; kill switch and leak protection. |
 | [Tabs and memory](features/tabs-and-memory.md) | Freezing and unloading background tabs, the memory budget. |
 | [Accounts and privacy](features/accounts-and-privacy.md) | Local accounts, private tabs, locking, how your data is protected. |
 | [Site permissions](features/site-permissions.md) | Microphone, camera, screen sharing (Discord, Meet), notifications, location; the recording indicator. |

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### New
+- **Network & VPN**: route an account, private tabs or single sites through an upstream proxy
+  (SOCKS5, HTTP, HTTPS; with login), with a **kill switch** (a down connection blocks instead of
+  falling back to direct, with an explanation page), leak protection (WebRTC, DNS, background
+  services), a connection chip with a per-site popover in the address field, and the
+  `toggle_network` shortcut. Passwords and keys live in the password vault. WireGuard (import a
+  `.conf`) and Tor are prepared and arrive with their backends. See docs/network.md.
+
 ## 0.2.0
 
 ### New

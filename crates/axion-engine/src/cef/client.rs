@@ -735,6 +735,23 @@ wrap_load_handler! {
             }
         }
 
+        fn on_load_error(
+            &self,
+            browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            error_code: Errorcode,
+            _error_text: Option<&CefString>,
+            failed_url: Option<&CefString>,
+        ) {
+            // A main-frame load that failed because the proxy did: the browser says whether
+            // that is the kill switch and shows its own page.
+            let code = *error_code.as_ref() as i32;
+            if frame.is_some_and(|f| f.is_main() == 1) && crate::is_proxy_error(code) {
+                let url = failed_url.map(ToString::to_string).unwrap_or_default();
+                self.ctx.emit(browser, EngineEvent::ProxyFailed { view: self.ctx.view, url, code });
+            }
+        }
+
         fn on_load_start(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, _transition_type: TransitionType) {
             let Some(frame) = frame else { return };
             let url = CefString::from(&frame.url()).to_string();

@@ -48,6 +48,8 @@ mod media_view;
 mod menu;
 mod morph;
 mod mpris;
+mod network;
+mod network_popover;
 mod now_playing;
 mod onboarding;
 mod overview;

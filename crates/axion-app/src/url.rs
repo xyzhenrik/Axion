@@ -66,6 +66,10 @@ pub(crate) fn encode_query(query: &str) -> String {
 
 /// The short form shown in the address bar when it isn't being edited: the host without `www.`.
 pub fn display_host(url: &str) -> String {
+    // The kill-switch page stands in for the page it blocked.
+    if let Some((original, _)) = crate::network::parse_blocked_url(url) {
+        return display_host(&original);
+    }
     let Some((scheme, rest)) = url.split_once("://") else {
         return if url == "about:blank" { String::new() } else { url.to_owned() };
     };

@@ -53,6 +53,7 @@ use crate::menu::{
 };
 use crate::morph::Origin;
 use crate::mpris::{Mpris, MprisCommand, Track};
+use crate::network_popover::NetworkPopover;
 use crate::now_playing::{Art, ArtStore, first_web_url};
 use crate::onboarding::Onboarding;
 use crate::overview::{Overview, OverviewAction};
@@ -93,6 +94,9 @@ mod capture;
 mod context;
 mod ext_popup;
 mod import;
+mod network;
+mod network_popup;
+mod network_requests;
 mod onboarding;
 mod page_context;
 mod permissions;
@@ -268,6 +272,13 @@ pub struct Browser {
     menu: Menu,
     shields: ShieldsState,
     shields_popover: ShieldsPopover,
+    /// The privacy network: connections, routes, the kill switch (see `crate::network`).
+    net: crate::network::NetworkState,
+    network_popover: NetworkPopover,
+    /// What the address field's network chip shows now.
+    chip_shown: Option<crate::network::ChipState>,
+    /// The file chooser for WireGuard configs.
+    conf_chooser: crate::network::ConfChooser,
     downloads_popover: DownloadsPopover,
     /// Chrome extensions: the installed list, and the popover of the toolbar's puzzle piece.
     extensions: Extensions,
@@ -723,7 +734,11 @@ impl Browser {
                         / 1000.0,
                 ),
                 hardware_video_decoding: crate::hardware::video_decoding(&config),
-                extra_switches: crate::hardware::chromium_switches(&config.hardware),
+                extra_switches: {
+                    let mut switches = crate::hardware::chromium_switches(&config.hardware);
+                    switches.extend(crate::network::startup_switches(&config.network));
+                    switches
+                },
                 extensions_enabled: config.extensions.enabled,
                 load_extensions: extensions.load_dirs(),
                 block_web_store: !config.extensions.web_store,
@@ -731,6 +746,10 @@ impl Browser {
             },
         )?;
         engine.set_request_policy(Some(shields.policy()));
+        // The privacy network: every request waits for the route, never goes around it.
+        let mut net = crate::network::NetworkState::new(&config, &profile);
+        net.start_default_route(&config);
+        net.apply_to_engine(&mut engine, &config);
         engine.set_download_options(Downloads::options(&config));
         Downloads::prune(store.as_ref(), &config, unix_now());
         // What the last quit should have removed, in case it didn't get to (a crash).
@@ -754,6 +773,7 @@ impl Browser {
         // In the sidebar's plane, rising from the account button at its bottom.
         let account_menu = Menu::build(&mut ui, chrome.sidebar_node(), ACCOUNT_MENU_BASE, Placement::Above);
         let shields_popover = ShieldsPopover::build(&mut ui, chrome.bar_node());
+        let network_popover = NetworkPopover::build(&mut ui, chrome.bar_node());
         let reading = reading::ReadingUi::build(&mut ui, chrome.bar_node(), &profile, &config);
         let downloads_popover = DownloadsPopover::build(&mut ui, chrome.bar_node());
         // The popup's card first: the extensions list is drawn above it.
@@ -797,6 +817,7 @@ impl Browser {
         engine.set_internal_pages(Some(Arc::new(crate::media_view::Chain(vec![
             home.service(),
             media_service.clone(),
+            Arc::new(crate::network::NetworkPages),
             reading.engine_pages(),
         ]))));
         // Built after the chrome so it draws above it.
@@ -851,6 +872,10 @@ impl Browser {
             menu,
             shields,
             shields_popover,
+            net,
+            network_popover,
+            chip_shown: None,
+            conf_chooser: crate::network::ConfChooser::default(),
             reading,
             downloads_popover,
             extensions,
@@ -1333,6 +1358,7 @@ impl Browser {
             Action::PlaylistAdd => self.playlist_add_action(),
             Action::ToggleReader => self.toggle_reader(),
             Action::TranslatePage => self.translate_page_action(),
+            Action::ToggleNetwork => self.toggle_network_for_site(),
             Action::FocusAddressBar => self.edit_address(),
             Action::NewTab => {
                 let home = self.config.general.effective_homepage().to_owned();
@@ -1414,6 +1440,7 @@ impl Browser {
                     // Out of what it was opened from (the address field by default).
                     let fallback = self.address_origin();
                     let origin = self.sheet_origin.take().unwrap_or(fallback);
+                    self.push_network_state();
                     self.settings.open(&mut self.ui, &self.config, &self.keymap, window, origin, fallback);
                     if self.settings.category() == Category::Data {
                         self.settings_outcome(Outcome::DataPage);
@@ -4080,6 +4107,11 @@ impl Browser {
                         None => {}
                     }
                 }
+                UiEvent::Clicked { action, .. } if self.network_popover.action(action).is_some() => {
+                    if let Some(action) = self.network_popover.action(action) {
+                        self.network_popover_action(action);
+                    }
+                }
                 UiEvent::Clicked { action, .. } if SuggestionList::row_action(action).is_some() => {
                     let url = SuggestionList::row_action(action)
                         .and_then(|i| self.suggestions.get(i))
@@ -4109,6 +4141,7 @@ impl Browser {
                     Some(ChromeAction::NewTab) => self.run(Action::NewTab),
                     Some(ChromeAction::Overview) => self.run(Action::TabOverview),
                     Some(ChromeAction::Shield) => self.toggle_shields_popover(),
+                    Some(ChromeAction::Network) => self.toggle_network_popover(),
                     Some(ChromeAction::Share) => {
                         // Until the share sheet exists: copy the address.
                         self.copy_link();
@@ -4579,6 +4612,10 @@ impl Browser {
                         self.fetch_icon(view, &page, &icon);
                     }
                 }
+                EngineEvent::ProxyFailed { view, url, code } => self.network_proxy_failed(view, &url, code),
+                EngineEvent::InternalMessage { view, host, message } if host == crate::network::HOST => {
+                    self.network_page_message(view, &message);
+                }
                 EngineEvent::InternalMessage { view, host, message } => {
                     self.internal_message(view, &host, &message);
                 }
@@ -4669,6 +4706,8 @@ impl Browser {
         self.playlist_housekeeping();
         self.update_home();
         self.update_photos();
+        self.network_tick();
+        self.network_chooser_tick();
         if count > 0 {
             let took = started.elapsed();
             let stats = &mut self.frame_stats;
@@ -4699,6 +4738,7 @@ impl Browser {
                 }
                 self.engine.set_download_options(Downloads::options(&self.config));
                 self.apply_shields_config();
+                self.apply_network_config();
                 self.apply_theme();
                 self.update_layout();
                 self.tabs_changed = true;
@@ -4832,6 +4872,7 @@ impl Browser {
                 self.import_page_opened();
             }
             Outcome::Import(request) => self.import_request(request),
+            Outcome::Network(request) => self.network_request(request),
             Outcome::ChooseDownloadFolder => self.downloads.choose_folder(),
             Outcome::ChoosePlaylistFolder => self.downloads.choose_playlist_folder(),
             Outcome::ChooseBackground => self.home.choose_background(),
@@ -5495,6 +5536,7 @@ impl Browser {
     /// Rebuilds the open settings page (after data it shows arrived).
     fn refresh_settings(&mut self) {
         if self.settings.is_open() {
+            self.push_network_state();
             self.settings.show(&mut self.ui, &self.config, &self.keymap);
         }
     }
@@ -5576,6 +5618,7 @@ impl Browser {
                     self.config = config;
                     self.engine.set_download_options(Downloads::options(&self.config));
                     self.apply_shields_config();
+                    self.apply_network_config();
                     self.apply_theme();
                     self.update_layout();
                     self.sync_frame_rate();
@@ -6289,6 +6332,14 @@ impl Browser {
             return;
         }
         if pressed
+            && self.network_popover.is_open()
+            && !self.network_popover.contains(&self.ui, p)
+            && !self.chrome.network_button_frame(&self.ui).contains(p)
+        {
+            self.network_popover.close(&mut self.ui, &self.config);
+            return;
+        }
+        if pressed
             && self.reading.popovers_open()
             && !self.reading.contains(&self.ui, p)
             && !self.chrome.translate_button_frame(&self.ui).contains(p)
@@ -6523,6 +6574,11 @@ impl Browser {
             self.shields_popover.close(&mut self.ui, &self.config);
             return false;
         }
+        if pressed && self.network_popover.is_open() && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            self.network_popover.close(&mut self.ui, &self.config);
+            return false;
+        }
         if pressed && self.reading.popovers_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.reading.close_popovers(&mut self.ui, &self.config);
             return false;
@@ -6750,6 +6806,7 @@ impl Browser {
             self.chrome.set_capture(&mut self.ui, capture);
             let level = self.tabs.active().map(|t| self.shields.level(&t.url));
             self.chrome.set_shield_active(&mut self.ui, level.is_some_and(|l| l != Level::Off));
+            self.update_network_chip();
             // A locked private tab's title stays out of the window title too.
             let title =
                 self.tabs.active().filter(|_| !self.is_locked()).map(|t| t.label()).unwrap_or_default();
@@ -6908,6 +6965,11 @@ impl Browser {
                 }
                 // Capture aid: "Clear Browsing Data" with the configured choices.
                 "clear-data" => self.settings_outcome(Outcome::ClearBrowsingData),
+                "network-settings" => {
+                    self.settings.set_category(Category::Network);
+                    self.run(Action::OpenSettings);
+                }
+                "network-popover" => self.toggle_network_popover(),
                 "data-settings" => {
                     self.settings.set_category(Category::Data);
                     self.run(Action::OpenSettings);
@@ -7705,6 +7767,7 @@ impl Browser {
         self.tab_search.animate(&mut self.ui, dt);
         self.poll_tab_search();
         self.shields_popover.animate(&mut self.ui, dt);
+        self.network_popover.animate(&mut self.ui, dt);
         self.downloads_popover.animate(&mut self.ui, dt);
         self.extensions_popover.animate(&mut self.ui, dt);
         self.ext_popup_tick(dt);

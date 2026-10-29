@@ -1,0 +1,21 @@
+[package]
+name = "axion-net"
+description = "Axion's privacy network: upstream proxies, WireGuard and Tor behind one tunnel interface, routing rules, leak protection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64 = "0.22"
+getrandom = "0.3"
+serde = { version = "1", features = ["derive"] }
+thiserror.workspace = true
+tracing.workspace = true
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+toml = "1"
+
+[lints]
+workspace = true
