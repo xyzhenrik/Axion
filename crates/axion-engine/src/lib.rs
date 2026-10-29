@@ -170,6 +170,13 @@ pub enum EngineEvent {
         view: ViewId,
         cursor: CursorKind,
     },
+    /// The address of the link under the pointer, or keyboard-focused, changed (`None`: no link
+    /// any more). Links in iframes, inside text, on buttons and images are reported alike;
+    /// `javascript:` links arrive as they are (the browser decides what to show).
+    LinkHover {
+        view: ViewId,
+        url: Option<String>,
+    },
     FullscreenRequested {
         view: ViewId,
         fullscreen: bool,

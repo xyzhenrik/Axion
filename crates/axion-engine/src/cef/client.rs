@@ -655,6 +655,13 @@ wrap_display_handler! {
             }
         }
 
+        // Chromium's status bubble text: since CEF dropped loading texts this is only the
+        // target URL of a hovered or keyboard-focused link (empty when there is none).
+        fn on_status_message(&self, browser: Option<&mut Browser>, value: Option<&CefString>) {
+            let url = value.map(|v| v.to_string()).filter(|v| !v.is_empty());
+            self.ctx.emit(browser, EngineEvent::LinkHover { view: self.ctx.view, url });
+        }
+
         fn on_title_change(&self, browser: Option<&mut Browser>, title: Option<&CefString>) {
             let title = title.map(|t| t.to_string()).unwrap_or_default();
             self.ctx.emit(browser, EngineEvent::TitleChanged { view: self.ctx.view, title });

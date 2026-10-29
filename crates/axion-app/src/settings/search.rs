@@ -313,6 +313,11 @@ pub const INDEX: &[Entry] = &[
         S::TextScale,
         &["font", "zoom", "bigger text", "schrift", "schriftgröße", "text size"],
     ),
+    control(
+        C::Appearance,
+        S::LinkPreview,
+        &["link", "url", "status", "hover", "address", "adresse", "vorschau"],
+    ),
     control(C::Appearance, S::FloatSidebar, &["sidebar", "overlay", "floating", "seitenleiste", "schweben"]),
     control(C::Appearance, S::PageCorner, &["rounded", "radius", "corners", "ecken", "abrunden"]),
     control(C::LiquidGlass, S::ReduceTransparency, &["accessibility", "opaque", "transparenz", "glass off"]),

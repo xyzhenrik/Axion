@@ -190,6 +190,7 @@ enum Setting {
     TextScale,
     PageCorner,
     FloatSidebar,
+    LinkPreview,
     ReduceTransparency,
     ReduceMotion,
     Refraction,
@@ -278,6 +279,7 @@ impl Setting {
             Setting::TextScale => tr_mark("Text size"),
             Setting::PageCorner => tr_mark("Page corner radius"),
             Setting::FloatSidebar => tr_mark("Float sidebar over the page"),
+            Setting::LinkPreview => tr_mark("Show where a link leads"),
             Setting::ReduceTransparency => tr_mark("Reduce transparency"),
             Setting::ReduceMotion => tr_mark("Reduce motion"),
             Setting::Refraction => tr_mark("Refraction"),
@@ -357,6 +359,7 @@ impl Setting {
                 | Setting::DevTools
                 | Setting::TintFromPage
                 | Setting::FloatSidebar
+                | Setting::LinkPreview
                 | Setting::AdaptToPage
                 | Setting::ReduceTransparency
                 | Setting::ReduceMotion
@@ -500,6 +503,7 @@ impl Setting {
             Setting::HomeBlur => c.home.background_blur,
             Setting::TintFromPage => return c.appearance.tint_from_page as u8 as f32,
             Setting::FloatSidebar => return c.layout.float_sidebar as u8 as f32,
+            Setting::LinkPreview => return c.link_preview.enabled as u8 as f32,
             Setting::AdaptToPage => return c.appearance.adapt_to_page as u8 as f32,
             Setting::ReduceTransparency => return c.glass.reduce_transparency as u8 as f32,
             Setting::ReduceMotion => return c.glass.reduce_motion as u8 as f32,
@@ -595,6 +599,7 @@ impl Setting {
                 }
             }
             Setting::FloatSidebar => c.layout.float_sidebar = on,
+            Setting::LinkPreview => c.link_preview.enabled = on,
             Setting::AdaptToPage => c.appearance.adapt_to_page = on,
             Setting::ReduceTransparency => c.glass.reduce_transparency = on,
             Setting::ReduceMotion => c.glass.reduce_motion = on,
@@ -1912,9 +1917,13 @@ impl SettingsSheet {
                     .map(|(i, &(name, ..))| (tr(name), SettingsAction::IconWeight(i).id()))
                     .collect();
                 segmented(ui, row_node, &weights, icon_weight_preset(config));
-                for setting in
-                    [Setting::AdaptToPage, Setting::TextScale, Setting::PageCorner, Setting::FloatSidebar]
-                {
+                for setting in [
+                    Setting::AdaptToPage,
+                    Setting::TextScale,
+                    Setting::PageCorner,
+                    Setting::FloatSidebar,
+                    Setting::LinkPreview,
+                ] {
                     self.control(ui, config, setting);
                 }
             }
