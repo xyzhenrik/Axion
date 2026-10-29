@@ -13,6 +13,7 @@ mod input;
 pub mod internal;
 mod permission;
 mod policy;
+pub mod proxy;
 mod snapshot;
 mod transfer;
 
@@ -24,6 +25,7 @@ pub use permission::{PermissionAnswer, PermissionId, PermissionKind};
 pub use policy::{
     MediaViewOptions, NavigationRequest, RequestPolicy, RequestVerdict, ResourceKind, ResourceRequest,
 };
+pub use proxy::{ProxyLogin, ProxySetting, is_proxy_error};
 pub use snapshot::PdfOptions;
 pub use transfer::{DropData, FindRequest, PasteData, PastedFile};
 
@@ -198,6 +200,14 @@ pub enum EngineEvent {
         view: ViewId,
         message: String,
     },
+    /// The page could not load because the proxy it was routed through failed (`code` is
+    /// Chromium's network error, see [`is_proxy_error`]). The browser decides whether this is
+    /// the kill switch and shows an explanation.
+    ProxyFailed {
+        view: ViewId,
+        url: String,
+        code: i32,
+    },
     /// The [`RequestPolicy`] blocked a request of the view's page.
     RequestBlocked {
         view: ViewId,
@@ -357,6 +367,13 @@ pub trait Engine {
     /// Light or dark for pages (`prefers-color-scheme`, form controls, scrollbars), applied to
     /// open pages at once.
     fn set_color_scheme(&mut self, dark: bool);
+    /// Sets the proxy of the account's tabs (`private: false`) or of private tabs, and
+    /// whether the leak protections (WebRTC, DNS prefetch, secure DNS, ...) are on for them.
+    /// Applies to new requests at once; open connections end with their requests.
+    fn set_proxy(&mut self, private: bool, setting: ProxySetting, leak_protection: bool);
+    /// The logins proxies may ask for (HTTP and HTTPS proxies, and Axion's own loopback
+    /// front). Replaces the previous list.
+    fn set_proxy_logins(&mut self, logins: Vec<ProxyLogin>);
     /// Where downloads are saved, and whether to ask each time.
     fn set_download_options(&mut self, options: DownloadOptions);
     fn download_action(&mut self, id: u32, action: DownloadAction);

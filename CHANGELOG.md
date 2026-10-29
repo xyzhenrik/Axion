@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### New
+- **Network & VPN**: route an account, private tabs or single sites through an upstream proxy
+  (SOCKS5, HTTP, HTTPS; with login), with a **kill switch** (a down connection blocks instead of
+  falling back to direct, with an explanation page), leak protection (WebRTC, DNS, background
+  services), a connection chip with a per-site popover in the address field, and the
+  `toggle_network` shortcut. Passwords and keys live in the password vault. WireGuard (import a
+  `.conf`) is prepared and arrives with its backend. See docs/network.md.
+- **Tor** (built-in Arti client, not Tor Browser): per-site circuits, `.onion` support, plain
+  bridges, bootstrap progress in the chip, and a **circuit display** (route button in the address
+  field) listing the guard, middle and exit relays of the site with country and IP, plus "New Tor
+  circuit for this site" and "New Tor identity".
+
 ## 0.2.0
 
 ### New

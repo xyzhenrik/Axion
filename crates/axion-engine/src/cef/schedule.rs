@@ -77,6 +77,10 @@ wrap_browser_process_handler! {
     }
 
     impl BrowserProcessHandler {
+        fn on_context_initialized(&self) {
+            tracing::info!("Chromium context initialized");
+        }
+
         fn on_schedule_message_pump_work(&self, delay_ms: i64) {
             self.schedule.schedule(Duration::from_millis(delay_ms.max(0).unsigned_abs()));
         }

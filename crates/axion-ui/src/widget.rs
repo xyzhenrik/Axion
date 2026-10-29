@@ -466,7 +466,8 @@ pub(crate) fn set_buffer_text(
 ) {
     let (_, _, weight) = style.metrics();
     let text = if style == TextStyle::Caption { text.to_uppercase() } else { text.to_owned() };
-    let attrs = Attrs::new().family(Family::Name(family)).weight(Weight(weight));
+    let family = if style == TextStyle::Mono { Family::Monospace } else { Family::Name(family) };
+    let attrs = Attrs::new().family(family).weight(Weight(weight));
     let align = match align {
         Align::Start => None,
         Align::Center => Some(glyphon::cosmic_text::Align::Center),

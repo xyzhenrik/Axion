@@ -11,6 +11,7 @@ mod drag;
 mod gpu;
 mod input;
 mod mediaproxy;
+mod netprefs;
 mod network;
 mod paste;
 mod permission;
@@ -35,13 +36,15 @@ pub use stats::Counters;
 use crate::{
     DevToolsOptions, DevToolsPanel, DropData, Engine, EngineError, EngineEvent, FindRequest, Frame,
     InputEvent, MediaViewOptions, Modifiers, PasteData, PermissionAnswer, PermissionId, PermissionKind,
-    RequestPolicy, ViewId, ViewSize,
+    ProxyLogin, ProxySetting, RequestPolicy, ViewId, ViewSize,
 };
 use client::{FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, build_client, favicon_callback};
 use input::InputState;
 use network::Network;
 use schedule::{BrowserProcessHandlerBuilder, PumpSchedule};
 
+/// How long a new page waits for its context to accept the proxy settings.
+const PROXY_READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long [`CefEngine::shutdown`] waits for views to close before giving up.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 /// `browser_id` of a view without a page: matches no CEF browser.
@@ -289,6 +292,15 @@ pub struct CefEngine {
     input: InputState,
     /// In-memory profile shared by private views, created on first use.
     private_context: Option<RequestContext>,
+    /// Proxy and leak protection of the account's and the private context (applied again
+    /// when the private context is created).
+    proxy_settings: [(ProxySetting, bool); 2],
+    /// Whether each context has taken its `proxy_settings` (a context accepts them only once
+    /// Chromium has initialized it).
+    proxy_applied: [bool; 2],
+    /// A context has been given a non-default setting at some point (so going back to the
+    /// default must be applied too).
+    proxy_touched: [bool; 2],
     net: Arc<Network>,
     /// Pages' colour scheme (`None` until the browser sets one: Chromium's default).
     dark: Option<bool>,
@@ -343,6 +355,9 @@ impl CefEngine {
             max_frame_rate: options.max_frame_rate,
             input: InputState::default(),
             private_context: None,
+            proxy_settings: [(ProxySetting::Direct, false), (ProxySetting::Direct, false)],
+            proxy_applied: [true, true],
+            proxy_touched: [false, false],
             net,
             dark: None,
             schedule,
@@ -392,6 +407,35 @@ impl CefEngine {
         self.private_context.clone()
     }
 
+    /// Gives a context its proxy settings if it takes them now.
+    fn try_apply_proxy(&mut self, private: bool) -> bool {
+        let slot = usize::from(private);
+        if self.proxy_applied[slot] {
+            return true;
+        }
+        let context =
+            if private { self.private_context.clone() } else { request_context_get_global_context() };
+        let Some(context) = context else { return false };
+        let (setting, protect) = &self.proxy_settings[slot];
+        self.proxy_applied[slot] = netprefs::apply(&context, setting, *protect);
+        self.proxy_applied[slot]
+    }
+
+    /// No page may load before its context has the route: waits (pumping Chromium so the
+    /// context can finish initializing) until the settings are taken. Fails closed.
+    fn ensure_proxy(&mut self, private: bool) -> Result<(), EngineError> {
+        let started = Instant::now();
+        while !self.try_apply_proxy(private) {
+            if started.elapsed() > PROXY_READY_TIMEOUT {
+                tracing::error!("the proxy settings were not accepted in time; not loading anything");
+                return Err(EngineError::CreateView("the network route could not be applied".into()));
+            }
+            do_message_loop_work();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    }
+
     fn create_browser(
         &mut self,
         ctx: &ViewContext,
@@ -403,6 +447,7 @@ impl CefEngine {
         } else {
             None
         };
+        self.ensure_proxy(private)?;
         let mut client = build_client(ctx);
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
@@ -649,6 +694,25 @@ impl Engine for CefEngine {
                 emulate_color_scheme(&host, dark);
             }
         }
+    }
+
+    fn set_proxy(&mut self, private: bool, setting: ProxySetting, leak_protection: bool) {
+        let slot = usize::from(private);
+        let untouched_default =
+            setting == ProxySetting::Direct && !leak_protection && !self.proxy_touched[slot];
+        self.proxy_settings[slot] = (setting, leak_protection);
+        if untouched_default {
+            return;
+        }
+        self.proxy_touched[slot] = true;
+        self.proxy_applied[slot] = false;
+        // A context that is not ready yet (or not created) takes it in `ensure_proxy`, which
+        // every page waits for.
+        self.try_apply_proxy(private);
+    }
+
+    fn set_proxy_logins(&mut self, logins: Vec<ProxyLogin>) {
+        *self.net.proxy_logins.write().unwrap_or_else(PoisonError::into_inner) = logins;
     }
 
     fn set_download_options(&mut self, options: crate::DownloadOptions) {
@@ -1214,6 +1278,12 @@ impl Engine for CefEngine {
         self.schedule.pumping();
         do_message_loop_work();
         dispatch_glib_sources();
+        // A route that was refused while its context was still starting is retried.
+        for private in [false, true] {
+            if !self.proxy_applied[usize::from(private)] {
+                self.try_apply_proxy(private);
+            }
+        }
         self.shared.stats.pump(started.elapsed());
         self.adopt_devtools_browsers();
         self.fall_back_to_software_if_needed();
@@ -1252,6 +1322,7 @@ impl Engine for CefEngine {
                 | EngineEvent::FullscreenRequested { view, .. }
                 | EngineEvent::PageMessage { view, .. }
                 | EngineEvent::RequestBlocked { view, .. }
+                | EngineEvent::ProxyFailed { view, .. }
                 | EngineEvent::MediaSniffed { view, .. }
                 | EngineEvent::NavigationBlocked { view, .. }
                 | EngineEvent::RendererGone { view, .. }
