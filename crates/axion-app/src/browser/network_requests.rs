@@ -75,6 +75,32 @@ impl Browser {
         self.refresh_settings();
     }
 
+    /// Capture aid (see `--open=wg-test:PATH`).
+    pub(super) fn capture_wireguard(&mut self, path: &std::path::Path) {
+        let parsed = std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|text| {
+            axion_net::wgconf::parse(&text).map_err(|e| e.to_string())
+        });
+        let parsed = match parsed {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "wg-test: cannot use the config");
+                return;
+            }
+        };
+        let (config, secrets) = parsed.config.split_secrets();
+        let id = Connection::new_id();
+        self.network_save(ConnectionDraft {
+            id: Some(id.clone()),
+            name: "Test WireGuard".to_owned(),
+            kind: ConnectionKind::WireGuard(config),
+            password: None,
+            wireguard: Some(secrets),
+        });
+        self.config.network.default_connection = Target::Connection(id.clone());
+        self.apply_network_config();
+        self.net.manager.start(&id);
+    }
+
     fn wireguard_conf_text(&mut self, text: &str) {
         let result = match axion_net::wgconf::parse(text) {
             Ok(parsed) => Ok((parsed.config, parsed.ignored)),

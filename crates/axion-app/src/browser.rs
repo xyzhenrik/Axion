@@ -7577,6 +7577,13 @@ impl Browser {
                     self.passwords.seed_test_data();
                     self.open_passwords();
                 }
+                // Capture aid (throwaway profiles only): "wg-test:PATH" sets up the test vault,
+                // imports the WireGuard config at PATH like the Settings form does, and makes
+                // that connection the account's route.
+                wg if wg.starts_with("wg-test:") && std::env::var_os("AXION_PROFILE_DIR").is_some() => {
+                    self.passwords.seed_test_data();
+                    self.capture_wireguard(std::path::Path::new(&wg["wg-test:".len()..]));
+                }
                 step if step.starts_with("passwords-") && self.passwords.is_open() => {
                     let step = &step["passwords-".len()..];
                     let outcome = self.passwords.capture_step(&mut self.ui, &mut self.config, step);
