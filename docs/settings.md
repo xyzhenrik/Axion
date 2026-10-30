@@ -514,8 +514,12 @@ Version information and updates. See [Updates](features/updates.md).
 |---|---|---|---|
 | **Check for Updates** | Asks the update source for the newest version now. | - | - |
 | **Check for updates automatically** | Looks for a new version a few seconds after Axion starts, at most once a day. | On | `updates.auto_check_on_start` |
+| **Notify me about updates** | Also announces a new version with a desktop notification (**Update** / **Later**) while Axion's window is in the background. The in-app message always shows. | On | `updates.desktop_notification`, `updates.desktop_notification_when_focused` |
 | **Include pre-releases** | Also offers alpha, beta and release-candidate versions. | Off | `updates.channel` (`stable`, `prerelease`) |
 | **Repository** (**Save**) | Where releases are published, written `owner/name`. The field is empty and shows the default as a placeholder; typing your own repository overrides it, clearing the field returns to the default (nothing is stored for the default). | `xyzhenrik/Axion` (empty field) | `updates.repository` |
+
+While an update runs, the page shows its progress with **Cancel**; afterwards **Restart Axion** and
+**Later**, or the reason it failed with **Try again**.
 
 When an update is available the page also shows the release notes and the buttons **Update** (or
 **Update from Git**, or **Open Release Page**), **Skip This Version** and **Remind Me Later**.

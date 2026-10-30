@@ -764,6 +764,11 @@ pub const INDEX: &[Entry] = &[
         S::UpdatePrereleases,
         &["update", "beta", "channel", "preview", "vorabversion", "kanal", "testversion"],
     ),
+    control(
+        C::About,
+        S::UpdateNotifications,
+        &["update", "notification", "notify", "desktop", "benachrichtigung", "meldung", "hinweis"],
+    ),
 ];
 
 /// Lower-case, with German umlauts also findable as ae/oe/ue/ss.
