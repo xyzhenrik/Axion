@@ -20,6 +20,12 @@
   var IGNORED = (function (host, sites) {
     return sites.some(function (s) { return host === s || host.slice(-s.length - 1) === '.' + s; });
   })(location.hostname, __AXION_IGNORED__);
+  // Hover previews and tiles (see `isPreview`): whether they are told apart at all, and how
+  // narrow (fraction of the viewport width) a controls-less, looping/autoplaying video must
+  // be to count as one (0: no size rule).
+  var DETECT_PREVIEWS = __AXION_DETECT_PREVIEWS__;
+  var PREVIEW_MAX_WIDTH = __AXION_PREVIEW_MAX_WIDTH__;
+  var HOST_IS = function (s) { return location.hostname === s || location.hostname.slice(-s.length - 1) === '.' + s; };
   var MARK = '\u0001axion:';
   var log = console.debug.bind(console);
   var isTop = window === window.top;
@@ -73,13 +79,61 @@
     };
   }
 
+  // A live stream's position state (`setPositionState({duration: Infinity})`), and the media
+  // sources the page attached to elements (`blob:` URL -> MediaSource), for `isLive`.
+  var positionLive = false;
+  if (window.MediaSession && MediaSession.prototype.setPositionState) {
+    var setPosition = MediaSession.prototype.setPositionState;
+    MediaSession.prototype.setPositionState = function (state) {
+      positionLive = !!state && state.duration === Infinity;
+      return setPosition.apply(this, arguments);
+    };
+  }
+  var sources = new Map();
+  if (window.MediaSource && URL.createObjectURL) {
+    var createURL = URL.createObjectURL, revokeURL = URL.revokeObjectURL;
+    URL.createObjectURL = function (obj) {
+      var url = createURL.apply(this, arguments);
+      try {
+        if (obj instanceof MediaSource) {
+          if (sources.size > 64) sources.delete(sources.keys().next().value);
+          sources.set(url, WEAK ? new WeakRef(obj) : obj);
+        }
+      } catch (e) {}
+      return url;
+    };
+    URL.revokeObjectURL = function (url) {
+      sources.delete(url);
+      return revokeURL.apply(this, arguments);
+    };
+  }
+
   var style = document.createElement('style');
+  // The video that covers the page in a takeover (stylesheet rules with !important: a site's
+  // own resize logic keeps setting plain inline `width`/`top`..., which replace our inline
+  // declarations but never an !important rule), and the ancestors that must not trap a
+  // `position:fixed` child in their own box (transform, contain, filter... make it relative).
+  var COVER =
+    'position:fixed!important;inset:0!important;top:0!important;left:0!important;right:0!important;bottom:0!important;' +
+    'width:100vw!important;height:100vh!important;min-width:0!important;min-height:0!important;' +
+    'max-width:none!important;max-height:none!important;margin:0!important;padding:0!important;border:0!important;' +
+    'transform:none!important;translate:none!important;rotate:none!important;scale:none!important;' +
+    'z-index:2147483647!important;background:#000!important;object-fit:contain!important;opacity:1!important';
+  var FREE =
+    'transform:none!important;translate:none!important;rotate:none!important;scale:none!important;' +
+    'contain:none!important;content-visibility:visible!important;container-type:normal!important;' +
+    'filter:none!important;backdrop-filter:none!important;perspective:none!important;will-change:auto!important;' +
+    'clip-path:none!important;mask:none!important;opacity:1!important;offset-path:none!important';
+  function takeoverRules(prefix) {
+    return prefix + '[data-axion-takeover]{' + COVER + '}' + prefix + '[data-axion-anc]{' + FREE + '}';
+  }
   // Takeover hides everything but the video: `visibility` (unlike z-index) is not trapped by
   // the site's stacking contexts, and hidden elements take no clicks.
   style.textContent =
     'html.axion-takeover,html.axion-takeover body{background:#000!important}' +
     'html.axion-takeover *{visibility:hidden!important}' +
     'html.axion-takeover [data-axion-takeover]{visibility:visible!important}' +
+    takeoverRules('html.axion-takeover ') +
     'html.axion-takeover video::-webkit-media-controls{display:none!important}' +
     // A fullscreen <video> shows Axion's player, not the built-in controls.
     (OWN_FULLSCREEN ? 'video:fullscreen::-webkit-media-controls{display:none!important}' : '');
@@ -163,19 +217,90 @@
         return !!h.levels[h.currentLevel].details.live;
       }
     } catch (e) {}
+    try { return siteLive(el); } catch (e) { return false; }
+  }
+
+  // Live streams whose element reports a finite duration: YouTube's DVR streams, Twitch's
+  // live indicator, MSE sources whose duration is endless, a position state without an end,
+  // and a seekable window that slides along while playing.
+  function visible(node) { return !!node && getComputedStyle(node).display !== 'none'; }
+  function siteLive(el) {
+    if (el.tagName !== 'VIDEO' && el.tagName !== 'AUDIO') return false;
+    if (HOST_IS('youtube.com')) {
+      var yt = el.closest('.html5-video-player');
+      if (yt) {
+        // An ad in front of a stream (finite, and nothing to go live on) is not the stream.
+        if (yt.classList.contains('ad-showing')) return false;
+        var data = typeof yt.getVideoData === 'function' ? yt.getVideoData() : null;
+        if (data && data.isLive) return true;
+        if (yt.classList.contains('ytp-live') || visible(yt.querySelector('.ytp-live-badge'))) return true;
+        if (data) return false;
+      }
+    }
+    if (HOST_IS('twitch.tv')) {
+      var tw = el.closest('[data-a-target="video-player"],.video-player');
+      if (tw && visible(tw.querySelector('.live-indicator-container,[data-a-target="player-overlay-live-indicator"]'))) return true;
+    }
+    if (positionLive && !el.paused) return true;
+    var src = el.currentSrc || el.src;
+    var ref = src && sources.get(src);
+    var ms = ref && (WEAK ? ref.deref() : ref);
+    if (ms && ms.duration === Infinity) return true;
+    // The seekable window of a finite-duration stream moves while it plays: its start
+    // creeps up (a recording's stays put).
+    if (isFinite(el.duration) && el.seekable && el.seekable.length) {
+      var start = el.seekable.start(0), w = el.__axWindow;
+      if (!w || w.src !== src) w = el.__axWindow = { src: src, start: start, at: Date.now(), live: false };
+      else if (!w.live && !el.paused && start - w.start > 5 && Date.now() - w.at > 3000 &&
+        el.seekable.end(el.seekable.length - 1) > el.duration - 30) w.live = true;
+      return w.live;
+    }
     return false;
   }
 
-  // Hover previews and autoplaying tiles (YouTube's home page): muted, no controls, and the
-  // page says nothing about them (no media session). They are not what the Now Playing card
-  // or the desktop's media controls are about.
-  // Never one that Axion's own view plays, one that was heard (audible and playing) or one the
-  // user muted through Axion's controls: muting a video does not make it a preview.
+  // Hover previews and autoplaying tiles (YouTube's home page and result grids, Twitch's
+  // directory): they are not what the Now Playing card, the desktop's media controls or the
+  // "playing" mark of a tab are about. Told apart by where they sit (known preview
+  // containers, YouTube's pages other than the player's), by being small controls-less
+  // looping/autoplaying tiles, and (without a media session) by being muted without controls.
+  // Never one that Axion's own view plays, one the user touched through Axion's controls,
+  // and for the loose rules one that was heard (audible and playing). Real playback is kept:
+  // the player of a watch page, Shorts, YouTube's miniplayer.
+  var PREVIEW_PLACES = 'ytd-video-preview,#inline-preview-player,ytd-thumbnail,ytd-rich-item-renderer,' +
+    'ytd-grid-video-renderer,ytd-compact-video-renderer,ytd-playlist-thumbnail,ytd-moving-thumbnail-renderer,' +
+    'ytd-playlist-video-renderer,ytd-video-renderer,[data-preview],.ytp-preview,' +
+    '[data-a-target="video-preview"],[data-test-selector="video-preview"],[data-a-target="preview-card-image-link"]';
+  var REAL_PLAYERS = 'ytd-reel-video-renderer,ytd-shorts,ytd-miniplayer,ytd-watch-flexy,ytd-watch-grid,[data-axion-takeover]';
+  // `closest` across shadow roots.
+  function closestDeep(el, selector) {
+    for (var n = el; n; ) {
+      var found = n.closest && n.closest(selector);
+      if (found) return found;
+      var root = n.getRootNode && n.getRootNode();
+      n = root && root.host;
+    }
+    return null;
+  }
   function isPreview(el) {
-    if (location.protocol === 'axion:' || el.__axOwn) return false;
+    if (!DETECT_PREVIEWS || location.protocol === 'axion:' || el.__axTouched) return false;
+    // The page's main player never sits inside a thumbnail or list item, so this holds even
+    // for a preview that was unmuted or that the page gave a media session.
+    if (closestDeep(el, PREVIEW_PLACES)) return true;
+    if ((HOST_IS('youtube.com') && !HOST_IS('music.youtube.com')) && !closestDeep(el, REAL_PLAYERS) &&
+      !/^\/(watch|shorts|live|embed|clip)(\/|$)/.test(location.pathname)) return true;
     if (!el.muted && !el.paused && el.volume > 0) el.__axOwn = true;
+    if (el.__axOwn) return false;
     var meta = navigator.mediaSession && navigator.mediaSession.metadata;
-    return !!el.muted && !meta && !el.controls && !el.__axOwn;
+    if (!!el.muted && !meta && !el.controls) return true;
+    if (el.controls) return false;
+    // A muted, looping or autoplaying inline tile inside a link (a card).
+    if (el.muted && (el.loop || el.autoplay) && el.hasAttribute('playsinline') && el.closest('a[href]')) return true;
+    // A small controls-less video that loops or autoplays, whatever the page's media session.
+    if (PREVIEW_MAX_WIDTH > 0 && el.tagName === 'VIDEO' && !meta && (el.loop || el.autoplay) && !document.fullscreenElement) {
+      var r = el.getBoundingClientRect();
+      if (r.width > 0 && r.width < PREVIEW_MAX_WIDTH * window.innerWidth) return true;
+    }
+    return false;
   }
 
   function describe(el) {
@@ -295,28 +420,64 @@
     return found;
   }
 
+  // Tells the site its viewport is the whole window now (or again), so it lays out for it.
+  function relayout() {
+    var fire = function () { try { window.dispatchEvent(new Event('resize')); } catch (e) {} };
+    setTimeout(fire, 0);
+    setTimeout(fire, 300);
+  }
+
+  // The video covers the whole window: by stylesheet rules (!important, so the site's own
+  // inline `width`/`top`... from its resize logic cannot undo them), with the ancestors that
+  // would trap `position:fixed` freed of transform/contain/filter, in every shadow root on the
+  // way up. Everything is restored on exit.
   function setTakeover(el, on) {
     if (on && !takeover) {
-      takeover = { el: el, style: el.getAttribute('style'), overflow: document.documentElement.style.overflow };
-      el.style.cssText += ';position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;' +
-        'max-width:none!important;max-height:none!important;margin:0!important;transform:none!important;' +
-        'z-index:2147483647!important;background:#000!important;object-fit:contain!important';
+      takeover = { el: el, style: el.getAttribute('style'), overflow: document.documentElement.style.overflow,
+        ancestors: [], styles: [] };
+      var roots = new Set();
+      var addRootStyle = function (root) {
+        if (root === document || roots.has(root)) return;
+        roots.add(root);
+        var s = document.createElement('style');
+        s.textContent = takeoverRules('');
+        root.appendChild(s);
+        takeover.styles.push(s);
+      };
       el.setAttribute('data-axion-takeover', '');
+      var node = el;
+      while (node) {
+        var root = node.getRootNode && node.getRootNode();
+        if (root && root !== document && root.host) addRootStyle(root);
+        var up = node.parentNode;
+        if (!up || up.nodeType === 9) break;
+        if (up.nodeType === 11) up = up.host;
+        if (!up || up === document.documentElement) break;
+        up.setAttribute('data-axion-anc', '');
+        takeover.ancestors.push(up);
+        node = up;
+      }
+      // Inline copy of the cover as a fallback (a page's CSP may refuse the stylesheet).
+      el.style.cssText += ';' + COVER;
       document.documentElement.classList.add('axion-takeover');
       document.documentElement.style.overflow = 'hidden';
+      relayout();
     } else if (!on && takeover) {
       if (takeover.style === null) takeover.el.removeAttribute('style'); else takeover.el.setAttribute('style', takeover.style);
       takeover.el.removeAttribute('data-axion-takeover');
+      takeover.ancestors.forEach(function (a) { a.removeAttribute('data-axion-anc'); });
+      takeover.styles.forEach(function (s) { if (s.parentNode) s.parentNode.removeChild(s); });
       document.documentElement.classList.remove('axion-takeover');
       document.documentElement.style.overflow = takeover.overflow;
       takeover = null;
+      relayout();
     }
   }
 
   function apply(el, c) {
     var v = c.value;
     // The user's volume controls: this is their video now, not a hover preview.
-    if (c.action === 'volume' || c.action === 'mute') el.__axOwn = true;
+    if (c.action === 'volume' || c.action === 'mute') el.__axTouched = true;
     switch (c.action) {
       case 'play': holdUntil = 0; ownPlay = true; try { el.play(); } finally { ownPlay = false; } break;
       case 'pause': el.pause(); break;

@@ -40,7 +40,7 @@ textures, and the interface, the glass and the page are composited in a single f
 genuinely refracts whatever is underneath it.
 
 > [!NOTE]
-> Axion is in **early development** (version 0.0.x). It is usable day to day on the author's machine,
+> Axion is in **early development** (version 0.x). It is usable day to day on the author's machine,
 > but expect rough edges, missing features and breaking changes. See [Status and roadmap](#status-and-roadmap).
 
 ## Features
@@ -59,13 +59,18 @@ genuinely refracts whatever is underneath it.
   (and then refracts it). The page is a rounded card; the chrome flips between light and dark to
   match the page's top edge.
 - **Tab overview** - a grid of live tab thumbnails with a Private / tabs switch and search.
+- **Tab groups and tab search** - name and colour groups of tabs (right-click a tab); they show in
+  the sidebar, the tab bar and the overview, fold away, and come back after a restart.
+  `Ctrl+Shift+A` searches open tabs by title, address or group.
+- **Command palette** - `Ctrl+K` finds any action by name and shows its shortcut.
+- **Link preview** - a small glass bubble shows where the link under the pointer leads.
 - **Sidebar** - tab groups, a locked *Private* section, Bookmarks, Reading List, History, Playlist,
   Downloads and Passwords, plus the account switcher at the bottom.
 - **Start page** - clock and greeting, search field, your top sites, Shields statistics (trackers
   blocked, bandwidth and time saved) and your own backgrounds, including animated and **video live
   wallpapers**.
-- **Context menus**, address-bar suggestions, find on page, zoom, share, downloads popover and a
-  glass toast/alert system - all native Axion UI, not web content.
+- **Context menus**, address-bar suggestions, find on page, page zoom (remembered per site), share,
+  downloads popover and a glass toast/alert system - all native Axion UI, not web content.
 - **Light, dark or automatic** theme, accent colours, text scale, icon weight and corner radius.
 - **English and German** interface.
 - **First-run tour** - a five-step introduction that lets you pick language, theme, accent, tab bar
@@ -84,6 +89,12 @@ genuinely refracts whatever is underneath it.
   (XChaCha20-Poly1305 per item). The vault key needs two factors: your master password (Argon2id)
   *and* a device secret, which is sealed in the **TPM** when one is available (otherwise a key file
   outside the profile). Copying the profile to another machine does not expose the vault.
+- **Network & VPN** - send an account's tabs, its private tabs or single sites through an upstream
+  proxy (SOCKS5, HTTP, HTTPS), a **WireGuard** VPN (userspace, no root) or **Tor** (built in, with
+  a circuit view that shows the hops of the current site). A kill switch blocks instead of falling
+  back to a direct connection, and leak protection switches off WebRTC leaks and Chromium's
+  background services while a route is active. Tor here is not Tor Browser: it adds no
+  fingerprinting resistance. See [Network & VPN](docs/network.md).
 - **Local accounts** - every account is a fully separate profile (tabs, history, bookmarks,
   downloads, passwords, website data, settings, keymap) with an avatar and its own password.
   Switching accounts relaunches Axion into the other profile.
@@ -108,6 +119,20 @@ genuinely refracts whatever is underneath it.
   viewing. A dedicated page with a thumbnail list, search, sorting, shuffle/repeat, speed, sleep
   timer, remembered positions and "continue watching". Playback shows only the video, never the
   surrounding site.
+
+### Reading, extensions and everyday tools
+
+- **Chrome extensions** - Manifest V3 extensions from the Chrome Web Store, a `.crx` file or an
+  unpacked folder, with a permission review before anything is installed, an extensions button
+  and popover, and automatic updates. See [Chrome extensions](docs/features/extensions.md) for
+  what works and what does not.
+- **Reader View and translation** - a distraction-free reader with its own text and colour
+  options, and page translation that runs on your computer (Bergamot, WebAssembly); an optional
+  LibreTranslate server can be set instead.
+- **Print or Save as PDF** with paper, orientation, margins and scale choices, and a
+  **screenshot tool** (selection, visible area or the full page) with copy and save.
+- **Site permissions** for microphone, camera, screen sharing, notifications and location, with
+  a recording indicator.
 
 ### Productivity and developer tools
 
@@ -147,11 +172,31 @@ genuinely refracts whatever is underneath it.
   </tr>
   <tr>
     <td width="50%"><img src="assets/screenshots/overview-light.webp" alt="Tab overview in light mode"><br><sub><b>Tab overview</b> (light).</sub></td>
-    <td width="50%"><img src="assets/screenshots/onboarding-light.webp" alt="First-run tour: choose your look"><br><sub><b>First-run tour</b> - choose your look.</sub></td>
+    <td width="50%"><img src="assets/screenshots/onboarding-light.webp" alt="First-run tour: welcome"><br><sub><b>First-run tour</b> - language, theme, accent and more.</sub></td>
   </tr>
 </table>
 
-<sub>The screenshots show a local demo page and generated wallpapers.</sub>
+<table>
+  <tr>
+    <td width="50%"><img src="assets/screenshots/groups-dark.webp" alt="Tab groups in the sidebar and the tab bar"><br><sub><b>Tab groups</b> - coloured groups in the sidebar and the tab bar.</sub></td>
+    <td width="50%"><img src="assets/screenshots/palette-dark.webp" alt="The command palette"><br><sub><b>Command palette</b> (<code>Ctrl+K</code>).</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="assets/screenshots/network-dark.webp" alt="Settings, Network and VPN page with a connected proxy"><br><sub><b>Network &amp; VPN</b> - proxy, WireGuard and Tor, per account, private tab or site.</sub></td>
+    <td width="50%"><img src="assets/screenshots/extensions-dark.webp" alt="The extensions popover"><br><sub><b>Extensions</b> - the popover under the extensions button.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="assets/screenshots/reader-light.webp" alt="Reader View with its options popover"><br><sub><b>Reader View</b> with its text options.</sub></td>
+    <td width="50%"><img src="assets/screenshots/print-light.webp" alt="The Print or Save as PDF dialog"><br><sub><b>Print or Save as PDF</b>.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="assets/screenshots/screenshot-tool-light.webp" alt="The screenshot tool: selection, visible area, full page"><br><sub><b>Screenshot tool</b> - selection, visible area or full page.</sub></td>
+    <td width="50%"><img src="assets/screenshots/link-preview-light.webp" alt="The link preview bubble at the bottom of the page"><br><sub><b>Link preview</b> - where the link leads.</sub></td>
+  </tr>
+</table>
+
+<sub>The screenshots show a local demo page, generated wallpapers and a throwaway profile. A few
+more are in [`docs/screenshots`](docs/screenshots).</sub>
 
 ## Documentation
 
@@ -160,8 +205,16 @@ User documentation lives in [`docs/`](docs/README.md):
 - [Getting started](docs/getting-started.md) - first launch, tabs, sidebar, start page, private tabs.
 - [Settings reference](docs/settings.md) - every setting, with defaults and config keys.
 - [Keyboard shortcuts](docs/keyboard-shortcuts.md) - defaults and how to remap them.
-- [Features](docs/README.md#features) - Shields, tabs and memory, accounts and privacy, passwords,
-  media and Playlist, appearance, hardware acceleration, updates.
+- [Network & VPN](docs/network.md) - proxies, WireGuard, Tor, the kill switch and the threat model.
+- [Features](docs/README.md#features) - [Shields](docs/features/shields.md),
+  [tabs and memory](docs/features/tabs-and-memory.md) (including tab groups),
+  [accounts and privacy](docs/features/accounts-and-privacy.md), [passwords](docs/features/passwords.md),
+  [media and Playlist](docs/features/media-and-playlist.md),
+  [reading and translation](docs/features/reading-and-translation.md),
+  [Chrome extensions](docs/features/extensions.md),
+  [site permissions](docs/features/site-permissions.md),
+  [appearance](docs/features/appearance-and-glass.md),
+  [hardware acceleration](docs/features/hardware-acceleration.md), [updates](docs/features/updates.md).
 - [Configuration files](docs/configuration.md) and [Troubleshooting](docs/troubleshooting.md).
 
 ## Install
@@ -179,6 +232,10 @@ entry and the icons (`./install.sh --uninstall` removes them again). What your s
 sandbox on Ubuntu 24.04 and how releases are made: [docs/install.md](docs/install.md).
 
 ## Requirements
+
+The **official releases** (AppImage and tarball, x86_64) need glibc 2.39 or newer (Ubuntu 24.04,
+Debian 13, Fedora 40, Arch and newer) and a Vulkan-capable GPU with its driver; the full list is in
+[docs/install.md](docs/install.md#what-your-system-needs).
 
 To **build from source** you need:
 
@@ -369,6 +426,10 @@ non-rendering crates (`engine`, `shields`, `tabs`, `store`, `config`, `accounts`
 | `axion-tabs` | Tab lifecycle planner (freeze/discard by idle time and memory budget) and the memory monitor. |
 | `axion-media` | The media bridge script and protocol; MPRIS lives in the app. |
 | `axion-i18n` | Gettext-style translations (English source text is the key; German catalog included). |
+| `axion-net` | Network routes: upstream proxies, userspace WireGuard, Tor (Arti), the local relays, kill switch and leak protection. |
+| `axion-extensions` | Chrome extension manifests, ids, permissions and `.crx`/`.zip` unpacking. |
+| `axion-reader` | The reader-view article extractor and its page script. |
+| `axion-translate` | Local page translation (Bergamot WASM) and the optional LibreTranslate endpoint. |
 | `axion-update` | Release checks (GitHub or a manifest), checksum verification, AppImage and Git updates. |
 
 **Rendering model.** CEF renders each visible tab off-screen and hands frames over as dma-buf
@@ -389,16 +450,22 @@ Axion is **early alpha**. What works today:
 - Tab freezing and discarding with a memory budget.
 - The media player, fullscreen, Picture-in-Picture, MPRIS and the Playlist with offline downloads.
 - The first-run tour, English and German UI, and the updater.
+- Tab groups and tab search, the command palette, link preview, Reader View, local page
+  translation, print/PDF and the screenshot tool.
+- Chrome extensions (Manifest V3) with Chrome Web Store installs.
+- Network & VPN: proxies, WireGuard and Tor, per account, private tab or site.
 
 Known gaps and ideas:
 
 - **H.264/AAC** requires a self-built CEF (see above); some streaming sites will not play without it.
 - HLS/DASH streams cannot be downloaded for offline viewing (they can be watched online).
 - Switching accounts relaunches Axion instead of switching in-process.
-- Share sheet, reading-list entries beyond the basics, a few page-menu items (translate, reader mode, request mobile site).
+- Share sheet, reading-list entries beyond the basics, a few page-menu items (request mobile site).
+- Extensions: only Manifest V3 runs, and Chromium loads extensions at start, so a change needs a restart (see [Chrome extensions](docs/features/extensions.md)).
+- Tor is not Tor Browser: no fingerprinting resistance (see [Network & VPN](docs/network.md)).
 - Touch-screen polish; touchpad and mouse are the primary inputs.
 - Packaging (AUR, Flatpak, AppImage) and crash handling.
-- Later: a subset of Chrome extensions, encrypted sync, reader mode, an alternative engine behind
+- Later: encrypted sync, an alternative engine behind
   the `Engine` trait (for example Servo), and other operating systems.
 
 ## Updating

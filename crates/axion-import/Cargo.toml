@@ -10,7 +10,7 @@ publish.workspace = true
 axion-store.workspace = true
 base64 = "0.22"
 image.workspace = true
-rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde_json = "1"
 tempfile = "3"
 thiserror.workspace = true

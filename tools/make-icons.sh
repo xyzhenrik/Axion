@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Regenerates the app icon set from assets/icons/source/axion-logo-new.webp (ImageMagick).
+# Regenerates the app icon set from assets/icons/source/axion-logo-globe.png (ImageMagick).
 #   assets/icons/axion.png                      1024 px master (square, transparent)
 #   assets/icons/hicolor/<n>x<n>/apps/axion.png 16 .. 512
 #   assets/icons/hicolor/scalable/apps/axion.svg  the master embedded in an SVG wrapper
-# Run from the repository root. The logo is already a rounded glass tile: it is only trimmed,
-# centred and scaled, never masked again.
+# Run from the repository root. The logo is a transparent globe (not square): it is trimmed, centred on a square
+# canvas and scaled, never masked.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-src=assets/icons/source/axion-logo-new.webp
+src=assets/icons/source/axion-logo-globe.png
 out=assets/icons
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# Trim the transparent margin (alpha above ~5 %, so faint haze does not widen the box).
-box=$(magick "$src" -alpha extract -threshold 5% -format '%@' info:)
+# Trim the transparent margin (alpha above ~2 %, so faint haze does not widen the box).
+box=$(magick "$src" -alpha extract -threshold 2% -format '%@' info:)
 magick "$src" -crop "$box" +repage "$tmp/trim.png"
 
 # fit <percent of the canvas the tile's long side fills> <size> <file>
@@ -24,7 +24,7 @@ fit() {
     -gravity center -extent "${size}x${size}" "$file"
 }
 
-fit 94 1024 "$out/axion.png"
+fit 92 1024 "$out/axion.png"
 for n in 512 256 128 64 48; do
   magick "$out/axion.png" -filter Lanczos -resize "${n}x${n}" -unsharp 0x0.6+0.5+0.02 \
     "$out/hicolor/${n}x${n}/apps/axion.png"
@@ -35,7 +35,7 @@ for n in 32 24 16; do
     -extent "${n}x${n}" -unsharp 0x0.8+0.8+0.02 "$out/hicolor/${n}x${n}/apps/axion.png"
 done
 for f in "$out"/hicolor/*/apps/axion.png "$out/axion.png"; do
-  magick "$f" -strip -define png:compression-level=9 "$f"
+  magick "$f" -strip -define png:compression-level=9 "PNG32:$f"
 done
 
 b64=$(magick "$out/axion.png" -resize 512x512 -strip -define png:compression-level=9 png:- | base64 -w0)

@@ -34,6 +34,10 @@ const SCRUB_SETTLE: Duration = Duration::from_millis(600);
 pub const MIN_HIT_HEIGHT: f32 = 24.0;
 const SETTLED: f32 = 0.01;
 const SPEED_MENU_WIDTH: f32 = 200.0;
+/// Space inside the heading pill, left and right of its text (logical px).
+const HEADING_PAD: f32 = 16.0;
+/// A heading pill narrower than this is not worth showing.
+const HEADING_MIN_WIDTH: f32 = 120.0;
 const SPEED_ROW: f32 = 34.0;
 /// Space between neighbouring glass circles: wide enough that they don't flow into each other.
 const CIRCLE_GAP: f32 = 16.0;
@@ -124,6 +128,9 @@ pub struct Context<'a> {
     pub page_fullscreen: bool,
     /// The cover to show when the video is only sound (see [`Player::audio_only`]).
     pub cover: Option<crate::favicons::SiteIcon>,
+    /// The page's title and address (what the heading falls back on), and a Playlist item's.
+    pub page_title: &'a str,
+    pub page_url: &'a str,
 }
 
 /// What the browser should do after a click on the controls.
@@ -147,6 +154,15 @@ pub struct PlayerOverlay {
     volume_capsule: NodeId,
     volume: NodeId,
     mute_icon: NodeId,
+    /// The heading at the top centre: a row the width of the gap between the buttons, holding
+    /// the glass pill with "Title - Channel - Site".
+    heading_row: NodeId,
+    heading_pill: NodeId,
+    heading_title: NodeId,
+    heading_channel: NodeId,
+    heading_site: NodeId,
+    /// What the heading labels show now (to set them only when it changes).
+    heading_key: Option<axion_media::title::Heading>,
     centre: NodeId,
     skip_back: NodeId,
     play: NodeId,
@@ -332,6 +348,47 @@ impl PlayerOverlay {
         let mute_icon =
             ui.add(mute, Widget::icon(Icon::Volume, 18.0).with_paint(Paint::Label), Style::default());
 
+        // Top centre: what plays, "Title - Channel - Site", in a glass pill. The row spans the
+        // gap between the buttons; the pill is as wide as its text and shrinks into the row,
+        // the title giving way first (an ellipsis), then the channel; the site keeps its width.
+        let heading_row =
+            ui.add(root, Widget::container(), Style { justify_content: JustifyContent::CENTER, ..row(0.0) });
+        let heading_pill = ui.add(
+            heading_row,
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thick))
+                .with_button_tint()
+                .with_glass_density(CONTROL_DENSITY)
+                .with_radius(CAPSULE),
+            Style {
+                padding: Rect {
+                    left: length(HEADING_PAD),
+                    right: length(HEADING_PAD),
+                    top: length(0.0),
+                    bottom: length(0.0),
+                },
+                flex_shrink: 1.0,
+                min_size: Size { width: length(0.0), height: auto() },
+                ..row(0.0)
+            },
+        );
+        let heading_part = |ui: &mut Ui, shrink: f32, can_shrink: bool| {
+            ui.add_label(
+                heading_pill,
+                "",
+                TextStyle::Callout,
+                Style {
+                    flex_shrink: shrink,
+                    min_size: Size { width: if can_shrink { length(0.0) } else { auto() }, height: auto() },
+                    ..Default::default()
+                },
+            )
+        };
+        let heading_title = heading_part(ui, 1000.0, true);
+        let heading_channel = heading_part(ui, 1.0, true);
+        let heading_site = heading_part(ui, 0.0, false);
+        ui.set_visible(heading_row, false);
+
         // Centre: skip back, play/pause, skip forward. The row covers the video but takes no
         // clicks itself (no background, no action).
         let centre = ui.add(
@@ -414,6 +471,12 @@ impl PlayerOverlay {
             volume_capsule,
             volume,
             mute_icon,
+            heading_row,
+            heading_pill,
+            heading_title,
+            heading_channel,
+            heading_site,
+            heading_key: None,
             centre,
             skip_back,
             play,
@@ -510,6 +573,7 @@ impl PlayerOverlay {
         self.place(ui, rect);
         self.show_cover(ui, config, rect, &player, cx.cover.as_ref());
         self.show_state(ui, &player);
+        self.show_heading(ui, config, &player, cx, rect);
         // While it loads the ring takes the play button's place (and its room).
         let loading = player.loading && !player.paused;
         let ring = self.spinner.update(ui, config, loading, dt);
@@ -562,6 +626,17 @@ impl PlayerOverlay {
             st.inset = Rect { left: auto(), top: length(m.margin), right: length(m.margin), bottom: auto() };
             st.size = Size { width: length(m.volume.x), height: length(m.volume.y) };
         });
+        // The heading's row: between the left buttons and the volume pill, centred in the window
+        // (the same room on both sides, the wider of the two).
+        let left_buttons = 3.0 * m.corner + 2.0 * CIRCLE_GAP;
+        let reserve = m.margin + left_buttons.max(m.volume.x) + CIRCLE_GAP;
+        set(ui, self.heading_row, &|st| {
+            st.position = Position::Absolute;
+            st.inset =
+                Rect { left: length(reserve), top: length(m.margin), right: length(reserve), bottom: auto() };
+            st.size = Size { width: auto(), height: length(m.corner) };
+        });
+        set(ui, self.heading_pill, &|st| st.size.height = length(m.corner));
         set(ui, self.centre, &|st| {
             st.position = Position::Absolute;
             st.inset = Rect { left: length(0.0), top: length(0.0), right: auto(), bottom: auto() };
@@ -644,6 +719,30 @@ impl PlayerOverlay {
         if style != ui.style(self.root) {
             ui.set_style(self.root, style);
         }
+    }
+
+    /// "Title - Channel - Site" at the top centre (`media.fullscreen_title`), when there is a
+    /// title and room for it between the buttons.
+    fn show_heading(&mut self, ui: &mut Ui, config: &Config, player: &Player, cx: &Context<'_>, rect: Frame) {
+        let session = cx.media.and_then(|m| m.session.as_ref());
+        let heading = axion_media::title::heading(session, cx.page_title, cx.page_url, &player.src);
+        let m = FULLSCREEN;
+        let room =
+            rect.size.x - 2.0 * (m.margin + (3.0 * m.corner + 2.0 * CIRCLE_GAP).max(m.volume.x) + CIRCLE_GAP);
+        let shown = config.media.fullscreen_title && !heading.is_empty() && room >= HEADING_MIN_WIDTH;
+        ui.set_visible(self.heading_row, shown);
+        if !shown || self.heading_key.as_ref() == Some(&heading) {
+            return;
+        }
+        ui.set_text(self.heading_title, &heading.title);
+        let channel =
+            if heading.channel.is_empty() { String::new() } else { format!(" - {}", heading.channel) };
+        ui.set_text(self.heading_channel, &channel);
+        ui.set_visible(self.heading_channel, !channel.is_empty());
+        let site = if heading.site.is_empty() { String::new() } else { format!(" - {}", heading.site) };
+        ui.set_text(self.heading_site, &site);
+        ui.set_visible(self.heading_site, !site.is_empty());
+        self.heading_key = Some(heading);
     }
 
     fn show_state(&mut self, ui: &mut Ui, player: &Player) {

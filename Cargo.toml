@@ -24,6 +24,7 @@ axion-import = { path = "crates/axion-import" }
 axion-physics = { path = "crates/axion-physics" }
 axion-shields = { path = "crates/axion-shields" }
 axion-tabs = { path = "crates/axion-tabs" }
+axion-net = { path = "crates/axion-net" }
 axion-media = { path = "crates/axion-media" }
 axion-reader = { path = "crates/axion-reader" }
 axion-translate = { path = "crates/axion-translate" }
@@ -43,6 +44,23 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wgpu = "30"
 winit = "0.30"
+
+# The userspace WireGuard stack (axion-net) runs its crypto and TCP/IP code in debug builds
+# too: keep it fast enough that the loopback tests move tens of megabytes in seconds.
+[profile.dev.package.boringtun]
+opt-level = 3
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.dev.package.smoltcp]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

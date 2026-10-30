@@ -174,7 +174,7 @@ impl Tab {
     /// Whether visits to this tab's pages go into the history (and the top sites): not for
     /// private tabs or the page source.
     pub fn records_history(&self) -> bool {
-        !self.private && !self.url.starts_with("view-source:")
+        !self.private && !self.url.starts_with("view-source:") && !self.url.starts_with("axion://network/")
     }
 
     /// Title, or the host while the page has none.

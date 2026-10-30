@@ -655,6 +655,13 @@ wrap_display_handler! {
             }
         }
 
+        // Chromium's status bubble text: since CEF dropped loading texts this is only the
+        // target URL of a hovered or keyboard-focused link (empty when there is none).
+        fn on_status_message(&self, browser: Option<&mut Browser>, value: Option<&CefString>) {
+            let url = value.map(|v| v.to_string()).filter(|v| !v.is_empty());
+            self.ctx.emit(browser, EngineEvent::LinkHover { view: self.ctx.view, url });
+        }
+
         fn on_title_change(&self, browser: Option<&mut Browser>, title: Option<&CefString>) {
             let title = title.map(|t| t.to_string()).unwrap_or_default();
             self.ctx.emit(browser, EngineEvent::TitleChanged { view: self.ctx.view, title });
@@ -732,6 +739,23 @@ wrap_load_handler! {
                 && let Some(panel) = self.ctx.devtools_panel.borrow_mut().take()
             {
                 show_devtools_panel(frame, panel);
+            }
+        }
+
+        fn on_load_error(
+            &self,
+            browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            error_code: Errorcode,
+            _error_text: Option<&CefString>,
+            failed_url: Option<&CefString>,
+        ) {
+            // A main-frame load that failed because the proxy did: the browser says whether
+            // that is the kill switch and shows its own page.
+            let code = *error_code.as_ref() as i32;
+            if frame.is_some_and(|f| f.is_main() == 1) && crate::is_proxy_error(code) {
+                let url = failed_url.map(ToString::to_string).unwrap_or_default();
+                self.ctx.emit(browser, EngineEvent::ProxyFailed { view: self.ctx.view, url, code });
             }
         }
 

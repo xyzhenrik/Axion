@@ -66,6 +66,7 @@ changes. The names in the last column are what you use in `keymap.toml` (see
 | Action | Keys | Name in `keymap.toml` |
 |---|---|---|
 | Lock private tabs and password filling | Ctrl+L | `lock` |
+| Use the network connection (proxy, VPN, Tor) for this site, or go direct | not bound | `toggle_network` |
 
 ## Developer
 

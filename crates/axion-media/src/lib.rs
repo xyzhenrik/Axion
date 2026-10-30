@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 mod source;
+pub mod title;
 pub use source::{
     Capture, MediaSource, Sniffed, StreamKind, WHY_BLOB, WHY_DASH, capture, classify_response, origin_of,
 };
@@ -34,6 +35,11 @@ pub struct BridgeOptions {
     pub ignored_sites: Vec<String>,
     /// How long a paused element that left the document is still reported (seconds).
     pub keep_seconds: f32,
+    /// Tell hover previews and tiles from real playback (`Player::preview`).
+    pub detect_previews: bool,
+    /// Part (0–1) of the viewport width below which a controls-less looping/autoplaying video
+    /// counts as a preview; 0 turns the size rule off.
+    pub preview_max_width: f32,
 }
 
 /// The bridge script. `secret` keeps the frames' postMessage traffic apart from the page's.
@@ -45,6 +51,8 @@ pub fn bridge_script(secret: &str, options: &BridgeOptions) -> String {
     let ignored = serde_json::to_string(&ignored).unwrap_or_else(|_| "[]".into());
     SOURCE
         .replace("__AXION_IGNORED__", &ignored)
+        .replace("__AXION_DETECT_PREVIEWS__", if options.detect_previews { "true" } else { "false" })
+        .replace("__AXION_PREVIEW_MAX_WIDTH__", &format!("{}", options.preview_max_width.clamp(0.0, 1.0)))
         .replace("__AXION_KEEP__", &format!("{}", (options.keep_seconds.max(0.0) * 1000.0).round()))
         .replace("__AXION_SECRET__", &secret)
         .replace("__AXION_TRUSTED__", &trusted)
@@ -222,8 +230,14 @@ impl PageMedia {
         self.players.iter().find(|p| p.id == id)
     }
 
+    /// Something real plays aloud (a hover preview does not count: it never keeps a tab awake).
     pub fn is_audible(&self) -> bool {
-        self.players.iter().any(Player::is_audible)
+        self.players.iter().any(|p| !p.preview && p.is_audible())
+    }
+
+    /// Something real plays (previews do not count).
+    pub fn is_playing(&self) -> bool {
+        self.players.iter().any(|p| !p.preview && p.is_playing())
     }
 }
 
@@ -424,12 +438,15 @@ mod tests {
             trusted_sites: vec!["YouTube.com".into()],
             ignored_sites: vec!["Discord.com".into()],
             keep_seconds: 30.0,
+            detect_previews: true,
+            preview_max_width: 0.4,
         };
         let s = bridge_script("abc'; alert(1)//", &options);
         assert!(s.contains(r#"})(location.hostname, ["youtube.com"]);"#));
         assert!(s.contains("var SECRET = 'abcalert1';"), "secret must be sanitised");
         assert!(s.contains("var OWN_FULLSCREEN = true;"));
         assert!(s.contains(r#"["discord.com"]"#));
+        assert!(s.contains("var DETECT_PREVIEWS = true;") && s.contains("var PREVIEW_MAX_WIDTH = 0.4;"));
         assert!(!s.contains("__AXION_"));
     }
 
@@ -489,8 +506,91 @@ mod tests {
     fn bridge_never_flags_muted_own_videos_as_previews() {
         // Guards in `isPreview`: Axion's own view, a heard video and a video the user's
         // volume/mute commands touched are never previews.
-        assert!(SOURCE.contains("location.protocol === 'axion:' || el.__axOwn"));
-        assert!(SOURCE.contains("if (c.action === 'volume' || c.action === 'mute') el.__axOwn = true;"));
+        assert!(SOURCE.contains("location.protocol === 'axion:' || el.__axTouched"));
+        assert!(SOURCE.contains("if (c.action === 'volume' || c.action === 'mute') el.__axTouched = true;"));
+        // The loose rules (muted without controls, small tiles) yield to a heard video.
+        let loose = SOURCE.find("if (el.__axOwn) return false;").expect("heard guard");
+        let muted_rule =
+            SOURCE.find("if (!!el.muted && !meta && !el.controls) return true;").expect("muted rule");
+        assert!(loose < muted_rule);
+    }
+
+    #[test]
+    fn bridge_knows_youtube_previews_and_real_players() {
+        // Structural preview places come before the heard guard (an unmuted preview is one too)...
+        let places = SOURCE.find("if (closestDeep(el, PREVIEW_PLACES)) return true;").expect("places rule");
+        let heard = SOURCE.find("if (el.__axOwn) return false;").expect("heard guard");
+        assert!(places < heard);
+        for sel in [
+            "ytd-video-preview",
+            "#inline-preview-player",
+            "ytd-thumbnail",
+            "ytd-rich-item-renderer",
+            "ytd-grid-video-renderer",
+            "ytd-compact-video-renderer",
+            "ytd-playlist-thumbnail",
+            "[data-a-target=\"video-preview\"]",
+        ] {
+            assert!(SOURCE.contains(sel), "{sel}");
+        }
+        // ...while Shorts, the miniplayer and the watch page's player stay real.
+        for real in ["ytd-reel-video-renderer", "ytd-miniplayer", "ytd-watch-flexy"] {
+            assert!(SOURCE.contains(real), "{real}");
+        }
+        assert!(SOURCE.contains(r"/^\/(watch|shorts|live|embed|clip)(\/|$)/"));
+    }
+
+    #[test]
+    fn bridge_detects_live_streams_with_a_finite_duration() {
+        for needle in [
+            "getVideoData",
+            "ad-showing",
+            "ytp-live-badge",
+            "live-indicator-container",
+            "ms.duration === Infinity",
+            "setPositionState",
+            "__axWindow",
+        ] {
+            assert!(SOURCE.contains(needle), "{needle}");
+        }
+    }
+
+    #[test]
+    fn bridge_takeover_survives_the_sites_inline_styles() {
+        // Stylesheet rules with !important cover the video and free its ancestors; the site's
+        // resize logic rewrites inline `width`/`top` (a plain declaration replaces our inline
+        // !important one), which is what broke fullscreen with YouTube's chat open.
+        assert!(SOURCE.contains("[data-axion-takeover]{' + COVER + '}"));
+        assert!(SOURCE.contains("[data-axion-anc]{' + FREE + '}"));
+        assert!(SOURCE.contains("contain:none!important"));
+        assert!(SOURCE.contains("new Event('resize')"));
+        assert!(SOURCE.contains("removeAttribute('data-axion-anc')"));
+    }
+
+    #[test]
+    fn a_preview_never_counts_as_playing_media() {
+        let preview = Player {
+            id: "tile".into(),
+            paused: false,
+            muted: false,
+            volume: 1.0,
+            preview: true,
+            ..Default::default()
+        };
+        let m = PageMedia { players: vec![preview], ..Default::default() };
+        assert!(!m.is_audible() && !m.is_playing() && m.primary().is_none());
+        // The real video next to it still is, and the preview never takes its place.
+        let mut m = m;
+        m.players.push(Player {
+            id: "main".into(),
+            paused: false,
+            volume: 1.0,
+            w: 800.0,
+            h: 450.0,
+            ..Default::default()
+        });
+        assert!(m.is_audible() && m.is_playing());
+        assert_eq!(m.primary().map(|p| p.id.as_str()), Some("main"));
     }
 
     #[test]

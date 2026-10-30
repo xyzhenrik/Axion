@@ -24,9 +24,11 @@ use crate::permissions::Group;
 use crate::update::{AboutInfo, AboutState, InstallMode};
 
 mod import;
+mod network;
 mod search;
 
 pub use import::{ImportAction, ImportRequest, ImportSource, ImportStatus, ImportView};
+pub use network::{ConnectionDraft, ConnectionRow, NetAction, NetRequest};
 
 const ACTION_BASE: u32 = 8000;
 const SHEET_MAX: Vec2 = Vec2::new(920.0, 660.0);
@@ -101,6 +103,7 @@ pub enum Category {
     Reading,
     Keyboard,
     Shields,
+    Network,
     Privacy,
     Data,
     Passwords,
@@ -109,7 +112,7 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 14] = [
+    pub const ALL: [Category; 15] = [
         Category::Account,
         Category::General,
         Category::Appearance,
@@ -119,6 +122,7 @@ impl Category {
         Category::Reading,
         Category::Keyboard,
         Category::Shields,
+        Category::Network,
         Category::Privacy,
         Category::Data,
         Category::Passwords,
@@ -143,6 +147,7 @@ impl Category {
             Category::Reading => tr_mark("Reading & Translation"),
             Category::Keyboard => tr_mark("Keyboard"),
             Category::Shields => tr_mark("Shields"),
+            Category::Network => tr_mark("Network & VPN"),
             Category::Privacy => tr_mark("Privacy"),
             Category::Data => tr_mark("Data & Downloads"),
             Category::Passwords => tr_mark("Passwords"),
@@ -162,6 +167,7 @@ impl Category {
             Category::Reading => Icon::TextSize,
             Category::Keyboard => Icon::Menu,
             Category::Shields => Icon::Shield,
+            Category::Network => Icon::Network,
             Category::Privacy => Icon::Lock,
             Category::Data => Icon::Download,
             Category::Passwords => Icon::Key,
@@ -190,6 +196,7 @@ enum Setting {
     TextScale,
     PageCorner,
     FloatSidebar,
+    LinkPreview,
     ReduceTransparency,
     ReduceMotion,
     Refraction,
@@ -222,6 +229,8 @@ enum Setting {
     DragOutImage,
     HomeButton,
     OwnFullscreenControls,
+    FullscreenTitle,
+    DetectPreviews,
     HideControlsAfter,
     HardwareDecoding,
     HardwareEnabled,
@@ -251,6 +260,13 @@ enum Setting {
     TranslateChanges,
     AutoCheckUpdates,
     UpdatePrereleases,
+    NetKillSwitch,
+    NetLeakProtection,
+    NetDisableQuic,
+    NetStrictDns,
+    NetConnectAtStart,
+    NetShowChip,
+    NetNotify,
 }
 
 impl Setting {
@@ -278,6 +294,7 @@ impl Setting {
             Setting::TextScale => tr_mark("Text size"),
             Setting::PageCorner => tr_mark("Page corner radius"),
             Setting::FloatSidebar => tr_mark("Float sidebar over the page"),
+            Setting::LinkPreview => tr_mark("Show where a link leads"),
             Setting::ReduceTransparency => tr_mark("Reduce transparency"),
             Setting::ReduceMotion => tr_mark("Reduce motion"),
             Setting::Refraction => tr_mark("Refraction"),
@@ -310,6 +327,8 @@ impl Setting {
             Setting::DragOutImage => tr_mark("Show a preview while dragging a tab out"),
             Setting::HomeButton => tr_mark("Show home button"),
             Setting::OwnFullscreenControls => tr_mark("Axion's player in fullscreen"),
+            Setting::FullscreenTitle => tr_mark("Show the title in fullscreen"),
+            Setting::DetectPreviews => tr_mark("Ignore video previews"),
             Setting::HideControlsAfter => tr_mark("Hide controls while playing after"),
             Setting::HardwareDecoding => tr_mark("Hardware video decoding (after restart)"),
             Setting::HardwareEnabled => tr_mark("Use hardware acceleration"),
@@ -324,6 +343,15 @@ impl Setting {
             Setting::ClearCacheItem => tr_mark("Cached images and files"),
             Setting::ClearDownloadsItem => tr_mark("Downloads list"),
             Setting::OfferToSavePasswords => tr_mark("Offer to save passwords"),
+            Setting::NetKillSwitch => tr_mark("Kill switch: block instead of going direct"),
+            Setting::NetLeakProtection => {
+                tr_mark("Leak protection (WebRTC, DNS prefetch, background services)")
+            }
+            Setting::NetDisableQuic => tr_mark("Turn QUIC off while a connection is used (after restart)"),
+            Setting::NetStrictDns => tr_mark("Never resolve names on this computer (after restart)"),
+            Setting::NetConnectAtStart => tr_mark("Connect when Axion starts"),
+            Setting::NetShowChip => tr_mark("Show the connection in the address field"),
+            Setting::NetNotify => tr_mark("Tell me when a connection comes up or goes down"),
             Setting::ExtensionsEnabled => tr_mark("Chrome extensions (after restart)"),
             Setting::ExtensionsWebStore => tr_mark("Install from the Chrome Web Store (after restart)"),
             Setting::ExtensionsAutoUpdate => tr_mark("Update Web Store extensions automatically"),
@@ -357,6 +385,7 @@ impl Setting {
                 | Setting::DevTools
                 | Setting::TintFromPage
                 | Setting::FloatSidebar
+                | Setting::LinkPreview
                 | Setting::AdaptToPage
                 | Setting::ReduceTransparency
                 | Setting::ReduceMotion
@@ -380,6 +409,8 @@ impl Setting {
                 | Setting::DragOutLinks
                 | Setting::DragOutImage
                 | Setting::OwnFullscreenControls
+                | Setting::FullscreenTitle
+                | Setting::DetectPreviews
                 | Setting::HardwareDecoding
                 | Setting::HardwareEnabled
                 | Setting::GpuRasterization
@@ -393,6 +424,13 @@ impl Setting {
                 | Setting::ClearCacheItem
                 | Setting::ClearDownloadsItem
                 | Setting::OfferToSavePasswords
+                | Setting::NetKillSwitch
+                | Setting::NetLeakProtection
+                | Setting::NetDisableQuic
+                | Setting::NetStrictDns
+                | Setting::NetConnectAtStart
+                | Setting::NetShowChip
+                | Setting::NetNotify
                 | Setting::ExtensionsEnabled
                 | Setting::ExtensionsWebStore
                 | Setting::ExtensionsAutoUpdate
@@ -500,6 +538,7 @@ impl Setting {
             Setting::HomeBlur => c.home.background_blur,
             Setting::TintFromPage => return c.appearance.tint_from_page as u8 as f32,
             Setting::FloatSidebar => return c.layout.float_sidebar as u8 as f32,
+            Setting::LinkPreview => return c.link_preview.enabled as u8 as f32,
             Setting::AdaptToPage => return c.appearance.adapt_to_page as u8 as f32,
             Setting::ReduceTransparency => return c.glass.reduce_transparency as u8 as f32,
             Setting::ReduceMotion => return c.glass.reduce_motion as u8 as f32,
@@ -524,6 +563,8 @@ impl Setting {
             Setting::DragOutImage => return c.tabs.drag_out_image as u8 as f32,
             Setting::HomeButton => return c.layout.home_button as u8 as f32,
             Setting::OwnFullscreenControls => return c.media.fullscreen_player as u8 as f32,
+            Setting::FullscreenTitle => return c.media.fullscreen_title as u8 as f32,
+            Setting::DetectPreviews => return c.media.detect_previews as u8 as f32,
             Setting::HardwareDecoding => return c.media.hardware_decoding as u8 as f32,
             Setting::HardwareEnabled => return c.hardware.enabled as u8 as f32,
             Setting::GpuRasterization => return c.hardware.gpu_rasterization as u8 as f32,
@@ -537,6 +578,13 @@ impl Setting {
             Setting::ClearCacheItem => return c.data.clear_cache as u8 as f32,
             Setting::ClearDownloadsItem => return c.data.clear_downloads as u8 as f32,
             Setting::OfferToSavePasswords => return c.passwords.offer_to_save as u8 as f32,
+            Setting::NetKillSwitch => return c.network.kill_switch as u8 as f32,
+            Setting::NetLeakProtection => return c.network.leak_protection as u8 as f32,
+            Setting::NetDisableQuic => return c.network.disable_quic_when_routed as u8 as f32,
+            Setting::NetStrictDns => return c.network.strict_dns as u8 as f32,
+            Setting::NetConnectAtStart => return c.network.connect_at_start as u8 as f32,
+            Setting::NetShowChip => return c.network.show_chip as u8 as f32,
+            Setting::NetNotify => return c.network.notify_changes as u8 as f32,
             Setting::ExtensionsEnabled => return c.extensions.enabled as u8 as f32,
             Setting::ExtensionsWebStore => return c.extensions.web_store as u8 as f32,
             Setting::ExtensionsAutoUpdate => return c.extensions.auto_update as u8 as f32,
@@ -595,6 +643,7 @@ impl Setting {
                 }
             }
             Setting::FloatSidebar => c.layout.float_sidebar = on,
+            Setting::LinkPreview => c.link_preview.enabled = on,
             Setting::AdaptToPage => c.appearance.adapt_to_page = on,
             Setting::ReduceTransparency => c.glass.reduce_transparency = on,
             Setting::ReduceMotion => c.glass.reduce_motion = on,
@@ -619,6 +668,8 @@ impl Setting {
             Setting::DragOutImage => c.tabs.drag_out_image = on,
             Setting::HomeButton => c.layout.home_button = on,
             Setting::OwnFullscreenControls => c.media.fullscreen_player = on,
+            Setting::FullscreenTitle => c.media.fullscreen_title = on,
+            Setting::DetectPreviews => c.media.detect_previews = on,
             Setting::HardwareDecoding => c.media.hardware_decoding = on,
             Setting::HardwareEnabled => c.hardware.enabled = on,
             Setting::GpuRasterization => c.hardware.gpu_rasterization = on,
@@ -632,6 +683,13 @@ impl Setting {
             Setting::ClearCacheItem => c.data.clear_cache = on,
             Setting::ClearDownloadsItem => c.data.clear_downloads = on,
             Setting::OfferToSavePasswords => c.passwords.offer_to_save = on,
+            Setting::NetKillSwitch => c.network.kill_switch = on,
+            Setting::NetLeakProtection => c.network.leak_protection = on,
+            Setting::NetDisableQuic => c.network.disable_quic_when_routed = on,
+            Setting::NetStrictDns => c.network.strict_dns = on,
+            Setting::NetConnectAtStart => c.network.connect_at_start = on,
+            Setting::NetShowChip => c.network.show_chip = on,
+            Setting::NetNotify => c.network.notify_changes = on,
             Setting::ExtensionsEnabled => c.extensions.enabled = on,
             Setting::ExtensionsWebStore => c.extensions.web_store = on,
             Setting::ExtensionsAutoUpdate => c.extensions.auto_update = on,
@@ -770,6 +828,7 @@ pub enum SettingsAction {
     ResetPermissions,
     /// Data & Downloads: importing from other browsers.
     Import(ImportAction),
+    Network(NetAction),
 }
 
 /// Privacy › Site Permissions: the defaults' segments, "Reset All", then one forget button per
@@ -1018,6 +1077,7 @@ impl SettingsAction {
                     SettingsAction::SaveRepository => UPDATE_BASE + 5,
                     SettingsAction::RelaunchNow => UPDATE_BASE + 6,
                     SettingsAction::Import(action) => action.id(),
+                    SettingsAction::Network(action) => action.id(),
                     SettingsAction::PageFrames(f) => HARDWARE_BASE + page_frames_index(f),
                     SettingsAction::GpuCard(g) => HARDWARE_BASE + 3 + gpu_card_index(g),
                     SettingsAction::CopyDiagnostics => HARDWARE_BASE + 6,
@@ -1126,6 +1186,7 @@ impl SettingsAction {
                 SettingsAction::RelaunchNow,
             ][(n - UPDATE_BASE) as usize],
             n if ImportAction::from_id(n).is_some() => SettingsAction::Import(ImportAction::from_id(n)?),
+            n if NetAction::from_id(n).is_some() => SettingsAction::Network(NetAction::from_id(n)?),
             _ => return None,
         })
     }
@@ -1198,6 +1259,8 @@ pub enum Outcome {
     RestartAxion,
     /// Data & Downloads: import from another browser or a file.
     Import(ImportRequest),
+    /// A request from the Network & VPN page.
+    Network(NetRequest),
     /// Hardware: ask before "Shared GPU memory" is used on AMD graphics.
     ConfirmGpuFrames,
     /// The repository changed (`config.updates.repository`); save it and look for updates.
@@ -1260,6 +1323,7 @@ pub struct SettingsSheet {
     confirm_reset_permissions: bool,
     /// Data page: the browsers to import from and what the import group shows.
     import: ImportView,
+    net: network::NetView,
     open: bool,
     /// The search field above the categories, and what it held when the page was built.
     search: NodeId,
@@ -1485,6 +1549,7 @@ impl SettingsSheet {
             site_permissions: Vec::new(),
             confirm_reset_permissions: false,
             import: ImportView::default(),
+            net: network::NetView::default(),
             open: false,
             search,
             query: String::new(),
@@ -1744,6 +1809,7 @@ impl SettingsSheet {
                 };
             }
         }
+        self.capture_network_form(ui);
         ui.clear_children(self.content);
         self.controls.clear();
         self.values.clear();
@@ -1912,9 +1978,13 @@ impl SettingsSheet {
                     .map(|(i, &(name, ..))| (tr(name), SettingsAction::IconWeight(i).id()))
                     .collect();
                 segmented(ui, row_node, &weights, icon_weight_preset(config));
-                for setting in
-                    [Setting::AdaptToPage, Setting::TextScale, Setting::PageCorner, Setting::FloatSidebar]
-                {
+                for setting in [
+                    Setting::AdaptToPage,
+                    Setting::TextScale,
+                    Setting::PageCorner,
+                    Setting::FloatSidebar,
+                    Setting::LinkPreview,
+                ] {
                     self.control(ui, config, setting);
                 }
             }
@@ -2034,7 +2104,12 @@ impl SettingsSheet {
                 }
             }
             Category::Media => {
-                for setting in [Setting::OwnFullscreenControls, Setting::HideControlsAfter] {
+                for setting in [
+                    Setting::OwnFullscreenControls,
+                    Setting::FullscreenTitle,
+                    Setting::DetectPreviews,
+                    Setting::HideControlsAfter,
+                ] {
                     self.control(ui, config, setting);
                 }
                 self.note(ui, tr("Pages keep their own player; in fullscreen, Axion's takes over."));
@@ -2143,6 +2218,7 @@ impl SettingsSheet {
                 let row_node = self.row(ui, &label);
                 pill_button(ui, row_node, tr("Update Now"), SettingsAction::UpdateFilterLists, false);
             }
+            Category::Network => self.network_page(ui, config),
             Category::Privacy => {
                 self.control(ui, config, Setting::LockPrivateTabs);
                 if config.privacy.lock_private_tabs && !self.account.has_password {
@@ -2355,7 +2431,7 @@ impl SettingsSheet {
                 ..row(16.0)
             },
         );
-        // The logo is a rounded glass tile with its own soft edge: no plate or clip behind it
+        // The logo is a free-standing globe with its own soft glow: no plate or clip behind it
         // (the accent plate is only the fallback symbol's ground).
         let icon_box = ui.add(
             header,
@@ -3424,10 +3500,10 @@ impl SettingsSheet {
         group
     }
 
-    fn row_with_height(&mut self, ui: &mut Ui, label: &str, height: f32) -> NodeId {
+    /// A row without its label (the caller adds its own content), at least `height` tall.
+    fn row_bare(&mut self, ui: &mut Ui, height: f32) -> NodeId {
         let parent = self.group_for_row(ui);
-        // At least `height` tall, taller when a long label wraps.
-        let row_node = ui.add(
+        ui.add(
             parent,
             Widget::container(),
             Style {
@@ -3436,7 +3512,12 @@ impl SettingsSheet {
                 flex_shrink: 0.0,
                 ..row(10.0)
             },
-        );
+        )
+    }
+
+    fn row_with_height(&mut self, ui: &mut Ui, label: &str, height: f32) -> NodeId {
+        // At least `height` tall, taller when a long label wraps.
+        let row_node = self.row_bare(ui, height);
         let label = ui.add_label(row_node, label, TextStyle::Body, grow_label());
         ui.set_label_lines(label, LABEL_LINES);
         row_node
@@ -3805,6 +3886,7 @@ impl SettingsSheet {
             SettingsAction::CopyDiagnostics => return Outcome::CopyDiagnostics,
             SettingsAction::RestartAxion => return Outcome::RestartAxion,
             SettingsAction::Import(action) => self.import_action(action),
+            SettingsAction::Network(action) => self.network_action(ui, action, config),
             SettingsAction::SaveRepository => {
                 let text = self
                     .repository_field
@@ -4184,6 +4266,7 @@ fn shortcut_actions() -> Vec<KeyAction> {
         ToggleFullscreen,
         Quit,
         Lock,
+        ToggleNetwork,
         DevTools,
         DevToolsConsole,
         ViewSource,
@@ -4212,7 +4295,7 @@ pub(crate) fn shortcut_group(action: KeyAction) -> &'static str {
         | Screenshot => tr("Page"),
         BookmarkPage | ShowBookmarks | ShowHistory | OpenPlaylist | PlaylistAdd | OpenPasswords
         | ToggleSidebar => tr("Panels"),
-        Lock => tr("Privacy"),
+        Lock | ToggleNetwork => tr("Privacy"),
         DevTools | DevToolsConsole | ViewSource => tr("Developer"),
         OpenSettings | CommandPalette | ToggleFullscreen | Quit => tr("Window"),
         _ => tr("Media (fullscreen video)"),
@@ -4265,6 +4348,7 @@ fn shortcut_source_name(action: KeyAction) -> &'static str {
         ToggleFullscreen => tr_mark("Toggle fullscreen"),
         Quit => tr_mark("Quit"),
         Lock => tr_mark("Lock"),
+        ToggleNetwork => tr_mark("Toggle network connection"),
         DevTools => tr_mark("Developer tools"),
         DevToolsConsole => tr_mark("Developer console"),
         ViewSource => tr_mark("View source"),
