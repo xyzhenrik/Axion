@@ -1,23 +1,39 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 ### New
-- **Network & VPN**: route an account, private tabs or single sites through an upstream proxy
-  (SOCKS5, HTTP, HTTPS; with login), with a **kill switch** (a down connection blocks instead of
-  falling back to direct, with an explanation page), leak protection (WebRTC, DNS, background
-  services), a connection chip with a per-site popover in the address field, and the
-  `toggle_network` shortcut. Passwords and keys live in the password vault. WireGuard (import a
-  `.conf`) is a fully userspace client (boringtun + smoltcp: no root, no TUN device) with DNS
-  inside the tunnel and AllowedIPs enforcement. See docs/network.md.
-- **WireGuard**: import a `.conf` and browse through it, in userspace with no root. Names are
-  resolved by the tunnel's DNS, destinations outside AllowedIPs are refused, a silent server is
-  reported as failed after `network.wireguard_handshake_timeout_secs`, and the connection list
-  in Settings uses two lines so a failure reason shows in full.
-- **Tor** (built-in Arti client, not Tor Browser): per-site circuits, `.onion` support, plain
-  bridges, bootstrap progress in the chip, and a **circuit display** (route button in the address
-  field) listing the guard, middle and exit relays of the site with country and IP, plus "New Tor
-  circuit for this site" and "New Tor identity".
+- **Network & VPN**: route an account, private tabs or single sites through a connection, with a
+  **kill switch** (a down connection blocks instead of falling back to direct, with an explanation
+  page), leak protection (WebRTC, DNS, background services), a connection chip with a per-site
+  popover in the address field, and the `toggle_network` shortcut. Passwords and keys live in the
+  password vault. See docs/network.md.
+  - **Proxy** (SOCKS5, HTTP, HTTPS; with login).
+  - **WireGuard**: import a `.conf`; a fully userspace client (boringtun + smoltcp: no root, no TUN
+    device) with DNS inside the tunnel, AllowedIPs enforcement and a failure reason in the
+    connection list. TCP only (no UDP/QUIC through the tunnel).
+  - **Tor** (built-in Arti client, not Tor Browser): per-site circuits, `.onion` support, plain
+    bridges, bootstrap progress in the chip, and a **circuit display** (route button in the address
+    field) listing the guard, middle and exit relays of the site with country and IP, plus "New Tor
+    circuit for this site" and "New Tor identity".
+- **Link preview**: hovering a link shows where it leads (host emphasised, middle-ellipsis, moves
+  out of the way of the pointer and of toasts).
+- **Import site icons** from Chromium-family browsers, Firefox and HTML bookmark exports.
+- **Fullscreen player**: the title, channel and site on top (`Title - Channel - Site`), YouTube
+  livestreams are recognised as live, and the video fills the window when YouTube's chat is open.
+- **New app logo** and refreshed README screenshots.
+
+### Fixed
+- Video previews (YouTube grids, hover previews) no longer count as playback in the mini player.
+- Muting a Playlist video no longer unloads it; a live stream's timer starts at 0:00.
+- The fullscreen player hides the pointer together with its controls.
+- Glass pills that sit close together (for example in the network popover) no longer merge into one blob.
+- Tor shutdown and restart no longer block the interface; background work runs at low priority.
+- Reduce Transparency no longer covers the label under a slider or segmented knob.
+
+### Notes
+- `rusqlite` went back to 0.40 (required by Arti). The `priority-queue` crate is used under MPL-2.0
+  (see docs/third-party.md).
 
 ## 0.2.0
 
