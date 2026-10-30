@@ -22,6 +22,8 @@ fn main() {
         connect_timeout: Duration::from_secs(15),
         data_dir: dir,
         wireguard_handshake_timeout: Duration::from_secs(20),
+        background_priority: true,
+        tor_worker_threads: 2,
     };
     let tunnel = match axion_net::tor::create(&TorConfig::default(), &options) {
         Ok(t) => t,

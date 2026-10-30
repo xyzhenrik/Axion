@@ -28,6 +28,10 @@ pub struct NetOptions {
     pub data_dir: std::path::PathBuf,
     /// How long a WireGuard handshake may stay unanswered (`network.wireguard_handshake_timeout_secs`).
     pub wireguard_handshake_timeout: Duration,
+    /// Heavy background work (Tor's bootstrap) runs at low CPU priority.
+    pub background_priority: bool,
+    /// Worker threads of the Tor client.
+    pub tor_worker_threads: usize,
 }
 
 impl Default for NetOptions {
@@ -37,6 +41,8 @@ impl Default for NetOptions {
             server: ServerOptions::default(),
             data_dir: std::env::temp_dir(),
             wireguard_handshake_timeout: Duration::from_secs(20),
+            background_priority: true,
+            tor_worker_threads: 2,
         }
     }
 }
@@ -48,6 +54,8 @@ pub struct TunnelOptions {
     pub connect_timeout: Duration,
     pub data_dir: std::path::PathBuf,
     pub wireguard_handshake_timeout: Duration,
+    pub background_priority: bool,
+    pub tor_worker_threads: usize,
 }
 
 /// How a connection is doing, for the UI and the routing.
@@ -188,6 +196,9 @@ struct Entry {
     generation: u64,
     running: Option<Running>,
     gateway: Option<Gateway>,
+    /// The thread that is still stopping the previous run (a Tor runtime takes seconds to wind
+    /// down, and must be gone before the same state directory opens again).
+    stopping: Option<std::thread::JoinHandle<()>>,
 }
 
 struct Inner {
@@ -199,10 +210,16 @@ struct Inner {
 
 pub type Waker = Box<dyn Fn() + Send + Sync>;
 
+/// Replaces the backends that build tunnels (tests): `None` falls back to the real one.
+#[doc(hidden)]
+pub type TunnelFactory = Arc<dyn Fn(&Connection) -> Option<Result<Arc<dyn Tunnel>, NetError>> + Send + Sync>;
+
 struct Shared {
     inner: Mutex<Inner>,
     secrets: Arc<dyn SecretStore>,
     options: NetOptions,
+    /// Builds the tunnels instead of the real backends (tests).
+    factory: Mutex<Option<TunnelFactory>>,
     waker: Mutex<Option<Waker>>,
 }
 
@@ -228,9 +245,16 @@ impl NetManager {
                 }),
                 secrets,
                 options,
+                factory: Mutex::new(None),
                 waker: Mutex::new(None),
             }),
         }
+    }
+
+    /// Builds tunnels with this instead of the real backends (tests).
+    #[doc(hidden)]
+    pub fn set_tunnel_factory(&self, factory: Option<TunnelFactory>) {
+        *lock(&self.shared.factory) = factory;
     }
 
     /// Called from worker threads when a status may have changed (wake the UI loop).
@@ -282,6 +306,7 @@ impl NetManager {
                                 generation: 0,
                                 running: None,
                                 gateway: None,
+                                stopping: None,
                             },
                         );
                     }
@@ -294,12 +319,23 @@ impl NetManager {
         }
     }
 
+    /// Stops what runs, on a thread of its own: stopping may take seconds (Tor winds its runtime
+    /// down) and this is called with the manager locked from the UI thread.
     fn halt(entry: &mut Entry) {
         entry.generation += 1;
-        if let Some(r) = entry.running.take() {
-            r.stop();
-        }
         entry.gateway = None;
+        let Some(r) = entry.running.take() else { return };
+        let before = entry.stopping.take();
+        let spawned = std::thread::Builder::new().name("net-stop".into()).spawn(move || {
+            if let Some(b) = before {
+                let _ = b.join();
+            }
+            r.stop();
+        });
+        match spawned {
+            Ok(handle) => entry.stopping = Some(handle),
+            Err(e) => tracing::error!(error = %e, "could not start the stop thread"),
+        }
     }
 
     pub fn status(&self, id: &str) -> Option<ConnectionStatus> {
@@ -332,10 +368,11 @@ impl NetManager {
 
     /// Starts (or restarts) a connection on a worker thread.
     pub fn start(&self, id: &str) {
-        let (conn, generation) = {
+        let (conn, generation, stopping) = {
             let mut inner = lock(&self.shared.inner);
             let Some(entry) = inner.entries.get_mut(id) else { return };
             Self::halt(entry);
+            let stopping = entry.stopping.take();
             let was = std::mem::replace(&mut entry.status, ConnectionStatus::Connecting);
             let (conn, generation) = (entry.conn.clone(), entry.generation);
             let name = conn.name.clone();
@@ -345,11 +382,14 @@ impl NetManager {
                 status: ConnectionStatus::Connecting,
                 was,
             });
-            (conn, generation)
+            (conn, generation, stopping)
         };
         let shared = Arc::clone(&self.shared);
         let id = id.to_owned();
         let spawned = std::thread::Builder::new().name("net-start".into()).spawn(move || {
+            if let Some(previous) = stopping {
+                let _ = previous.join();
+            }
             let outcome = build(&shared, &conn);
             Self::finish(&shared, &id, generation, outcome);
             Self::wake(&shared);
@@ -405,9 +445,15 @@ impl NetManager {
     /// Stops everything (the browser is closing).
     pub fn shutdown(&self) {
         let mut inner = lock(&self.shared.inner);
+        let mut pending = Vec::new();
         for entry in inner.entries.values_mut() {
             Self::halt(entry);
+            pending.extend(entry.stopping.take());
             entry.status = ConnectionStatus::Stopped;
+        }
+        // The browser is closing: wait until everything has really stopped.
+        for handle in pending {
+            let _ = handle.join();
         }
         if let Some(mut sink) = inner.sink.take() {
             sink.stop();
@@ -594,8 +640,14 @@ fn build(shared: &Arc<Shared>, conn: &Connection) -> Result<(Running, Gateway), 
         connect_timeout: timings.connect_timeout,
         data_dir: shared.options.data_dir.clone(),
         wireguard_handshake_timeout: shared.options.wireguard_handshake_timeout,
+        background_priority: shared.options.background_priority,
+        tor_worker_threads: shared.options.tor_worker_threads,
     };
     let fail = |e: NetError| Started::Failed(e.to_string());
+    let made = lock(&shared.factory).clone().and_then(|f| f(conn));
+    if let Some(made) = made {
+        return front(made.map_err(fail)?, shared).map_err(fail);
+    }
     match &conn.kind {
         ConnectionKind::Direct => Err(Started::Blocked("A direct connection needs no start.".into())),
         ConnectionKind::Proxy(p) => {
@@ -677,4 +729,94 @@ fn front(tunnel: Arc<dyn Tunnel>, shared: &Arc<Shared>) -> Result<(Running, Gate
 #[doc(hidden)]
 pub fn no_password() -> Secret {
     Secret::default()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::time::Instant;
+
+    use super::*;
+    use crate::connection::TorConfig;
+    use crate::secrets::NoSecrets;
+
+    /// A backend whose start and stop are slow, as Tor's can be.
+    struct Slow {
+        start: Duration,
+        stop: Duration,
+        stopped: std::sync::atomic::AtomicBool,
+    }
+
+    impl Tunnel for Slow {
+        fn start(&self) -> Result<crate::tunnel::LocalEndpoint, NetError> {
+            std::thread::sleep(self.start);
+            Ok(crate::tunnel::LocalEndpoint {
+                addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9),
+                credentials: Credentials::random_session(),
+            })
+        }
+        fn status(&self) -> TunnelStatus {
+            TunnelStatus::Connecting
+        }
+        fn stop(&self) {
+            std::thread::sleep(self.stop);
+            self.stopped.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    fn manager(start: Duration, stop: Duration) -> NetManager {
+        let m = NetManager::new(Arc::new(NoSecrets), NetOptions::default());
+        m.set_routing(RoutingConfig {
+            connections: vec![Connection {
+                id: "c-1".into(),
+                name: "Tor".into(),
+                kind: ConnectionKind::Tor(TorConfig::default()),
+            }],
+            default: Target::Connection("c-1".into()),
+            private: None,
+            site_rules: Vec::new(),
+            kill_switch: true,
+        });
+        m.set_tunnel_factory(Some(Arc::new(move |_| {
+            let tunnel: Arc<dyn Tunnel> =
+                Arc::new(Slow { start, stop, stopped: std::sync::atomic::AtomicBool::new(false) });
+            Some(Ok(tunnel))
+        })));
+        m
+    }
+
+    fn quick(f: impl FnOnce()) -> Duration {
+        let t = Instant::now();
+        f();
+        t.elapsed()
+    }
+
+    #[test]
+    fn starting_a_slow_backend_never_blocks_the_caller() {
+        let m = manager(Duration::from_secs(3), Duration::ZERO);
+        let limit = Duration::from_millis(250);
+        assert!(quick(|| m.ensure_started(false)) < limit, "ensure_started waits for the backend");
+        assert_eq!(m.status("c-1"), Some(ConnectionStatus::Connecting));
+        // While the backend is still starting, everything the UI thread calls stays quick.
+        assert!(quick(|| drop(m.plan())) < limit, "plan waits");
+        assert!(quick(|| drop(m.poll())) < limit, "poll waits");
+        assert!(quick(|| drop(m.progress("c-1"))) < limit, "progress waits");
+        // The route of a connection that is not up is the sink, never a direct route.
+        assert_eq!(m.plan().normal.down, vec!["c-1".to_owned()]);
+        assert!(quick(|| m.stop("c-1")) < limit, "stop waits for the start");
+    }
+
+    #[test]
+    fn stopping_a_slow_backend_does_not_block_the_caller() {
+        let m = manager(Duration::ZERO, Duration::from_secs(3));
+        m.ensure_started(false);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while m.status("c-1").is_some_and(|s| s == ConnectionStatus::Stopped) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(quick(|| m.stop("c-1")) < Duration::from_millis(250), "stop waits for the backend");
+        // Starting again waits for the old run on its own thread, not on the caller's.
+        assert!(quick(|| m.start("c-1")) < Duration::from_millis(250), "start waits for the stop");
+    }
 }

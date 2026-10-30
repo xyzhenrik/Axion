@@ -25,6 +25,11 @@ pub trait ProcSource: Send + Sync {
     fn tcp_table(&self) -> String;
     /// Every process id.
     fn pids(&self) -> Vec<u32>;
+    /// The child processes of a process, if the kernel can list them cheaply
+    /// (`/proc/<pid>/task/<tid>/children`, needs `CONFIG_PROC_CHILDREN`); `None`: cannot say.
+    fn children(&self, _pid: u32) -> Option<Vec<u32>> {
+        None
+    }
     /// The inodes of the sockets a process has open.
     fn socket_inodes(&self, pid: u32) -> Vec<u64>;
     /// The contents of `/proc/<pid>/stat`.
@@ -42,6 +47,16 @@ impl ProcSource for ProcFs {
     fn pids(&self) -> Vec<u32> {
         let Ok(dir) = std::fs::read_dir("/proc") else { return Vec::new() };
         dir.filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok()).collect()
+    }
+
+    fn children(&self, pid: u32) -> Option<Vec<u32>> {
+        let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
+        let mut out = Vec::new();
+        for task in tasks.filter_map(Result::ok) {
+            let text = std::fs::read_to_string(task.path().join("children")).ok()?;
+            out.extend(text.split_whitespace().filter_map(|c| c.parse::<u32>().ok()));
+        }
+        Some(out)
     }
 
     fn socket_inodes(&self, pid: u32) -> Vec<u64> {
@@ -112,6 +127,51 @@ pub fn descends_from(src: &dyn ProcSource, mut pid: u32, root: u32) -> bool {
 /// How long a verdict about an untrusted source port is remembered.
 const REFUSAL_MEMORY: Duration = Duration::from_secs(5);
 
+/// How long the list of processes of our own tree is reused (Chromium starts few processes,
+/// rarely).
+const TREE_MEMORY: Duration = Duration::from_secs(2);
+
+/// Most processes of the tree that are looked at (a runaway fork bomb ends here).
+const MAX_TREE: usize = 512;
+
+/// A connection nobody in the (older than this) list owns makes the list be made again.
+const TREE_RETRY_AFTER: Duration = Duration::from_millis(250);
+
+/// `root` and all its descendants. Uses the kernel's child lists when it has them (a few
+/// small reads); otherwise one pass over every `stat` (never the `fd` directories).
+pub fn own_tree(src: &dyn ProcSource, root: u32) -> Vec<u32> {
+    let mut tree = vec![root];
+    let mut i = 0;
+    let mut listed = true;
+    while i < tree.len() && tree.len() < MAX_TREE {
+        match src.children(tree[i]) {
+            Some(children) => {
+                for c in children {
+                    if !tree.contains(&c) {
+                        tree.push(c);
+                    }
+                }
+            }
+            None => {
+                listed = false;
+                break;
+            }
+        }
+        i += 1;
+    }
+    if listed {
+        return tree;
+    }
+    // No child lists: every process whose parent chain reaches the root (stat files only).
+    let mut tree = vec![root];
+    for pid in src.pids() {
+        if pid != root && tree.len() < MAX_TREE && descends_from(src, pid, root) {
+            tree.push(pid);
+        }
+    }
+    tree
+}
+
 /// Decides whether a loopback peer is part of this program's process tree.
 pub struct PeerCheck {
     src: Box<dyn ProcSource>,
@@ -126,6 +186,8 @@ struct State {
     trusted: HashSet<u32>,
     /// Source ports that were refused, and when.
     refused: HashMap<u16, Instant>,
+    /// The processes of the own tree and when the list was made.
+    tree: Option<(Instant, Vec<u32>)>,
 }
 
 impl PeerCheck {
@@ -136,6 +198,11 @@ impl PeerCheck {
     /// For this process on the real `/proc`.
     pub fn for_this_process() -> Self {
         Self::new(Box::new(ProcFs), std::process::id())
+    }
+
+    fn tree_age(&self) -> Duration {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.tree.as_ref().map_or(Duration::MAX, |(at, _)| at.elapsed())
     }
 
     /// Whether the connection from `peer` to `local` (both loopback IPv4) comes from a process
@@ -157,15 +224,36 @@ impl PeerCheck {
         let Some(inode) = socket_inode(&table, (peer_ip, peer.port()), (local_ip, local.port())) else {
             return false;
         };
-        let trusted: Vec<u32> = {
+        // Only processes of our own tree are searched: a connection of anyone else is not
+        // found, which is a refusal. (Scanning every process's descriptors for each accepted
+        // connection cost a lot while the browser opened dozens of them.)
+        let (trusted, tree): (Vec<u32>, Vec<u32>) = {
             let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            state.trusted.iter().copied().collect()
+            let trusted = state.trusted.iter().copied().collect();
+            let stale = state.tree.as_ref().is_none_or(|(at, _)| at.elapsed() >= TREE_MEMORY);
+            if stale {
+                drop(state);
+                let tree = own_tree(self.src.as_ref(), self.root);
+                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                state.tree = Some((Instant::now(), tree.clone()));
+                // Processes that left the tree are no longer trusted.
+                state.trusted.retain(|p| tree.contains(p));
+                (state.trusted.iter().copied().collect(), tree)
+            } else {
+                (trusted, state.tree.as_ref().map(|(_, t)| t.clone()).unwrap_or_default())
+            }
         };
-        let owner =
-            trusted.into_iter().find(|pid| self.src.socket_inodes(*pid).contains(&inode)).or_else(|| {
-                self.src.pids().into_iter().find(|pid| self.src.socket_inodes(*pid).contains(&inode))
-            });
-        let own = owner.is_some_and(|pid| descends_from(self.src.as_ref(), pid, self.root));
+        let mut owner =
+            trusted.into_iter().chain(tree).find(|pid| self.src.socket_inodes(*pid).contains(&inode));
+        if owner.is_none() && self.tree_age() >= TREE_RETRY_AFTER {
+            // A process started since the list was made (Chromium restarts its network
+            // service): look at the tree once more.
+            let tree = own_tree(self.src.as_ref(), self.root);
+            self.state.lock().unwrap_or_else(PoisonError::into_inner).tree =
+                Some((Instant::now(), tree.clone()));
+            owner = tree.into_iter().find(|pid| self.src.socket_inodes(*pid).contains(&inode));
+        }
+        let own = owner.is_some();
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         match (owner, own) {
             (Some(pid), true) => {
@@ -189,6 +277,10 @@ mod tests {
         /// pid -> (parent, socket inodes)
         procs: HashMap<u32, (u32, Vec<u64>)>,
         table: String,
+        /// Whether `children` answers (as with CONFIG_PROC_CHILDREN).
+        child_lists: bool,
+        /// How many descriptor directories were read.
+        fd_reads: std::sync::atomic::AtomicUsize,
     }
 
     impl ProcSource for Fake {
@@ -199,7 +291,16 @@ mod tests {
             self.procs.keys().copied().collect()
         }
         fn socket_inodes(&self, pid: u32) -> Vec<u64> {
+            self.fd_reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.procs.get(&pid).map(|p| p.1.clone()).unwrap_or_default()
+        }
+        fn children(&self, pid: u32) -> Option<Vec<u32>> {
+            self.child_lists.then(|| {
+                let mut v: Vec<u32> =
+                    self.procs.iter().filter(|(_, p)| p.0 == pid).map(|(k, _)| *k).collect();
+                v.sort_unstable();
+                v
+            })
         }
         fn stat(&self, pid: u32) -> Option<String> {
             // A name with spaces and a parenthesis, like real ones.
@@ -265,6 +366,46 @@ mod tests {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
     }
 
+    /// Lets a test look at the fake after the check owns it.
+    struct Shared(std::sync::Arc<Fake>);
+
+    impl ProcSource for Shared {
+        fn tcp_table(&self) -> String {
+            self.0.tcp_table()
+        }
+        fn pids(&self) -> Vec<u32> {
+            self.0.pids()
+        }
+        fn children(&self, pid: u32) -> Option<Vec<u32>> {
+            self.0.children(pid)
+        }
+        fn socket_inodes(&self, pid: u32) -> Vec<u64> {
+            self.0.socket_inodes(pid)
+        }
+        fn stat(&self, pid: u32) -> Option<String> {
+            self.0.stat(pid)
+        }
+    }
+
+    #[test]
+    fn only_the_own_tree_has_its_descriptors_read() {
+        for child_lists in [true, false] {
+            let mut f = fake();
+            f.child_lists = child_lists;
+            // Many unrelated programs with sockets.
+            for pid in 1000..1200 {
+                f.procs.insert(pid, (1, vec![5000 + u64::from(pid)]));
+            }
+            f.table.push_str(&row("0100007F:C360", "0100007F:1F90", 5100));
+            let f = std::sync::Arc::new(f);
+            let check = PeerCheck::new(Box::new(Shared(f.clone())), 100);
+            assert!(check.is_own(addr(0xC350), addr(0x1F90)));
+            assert!(!check.is_own(addr(0xC360), addr(0x1F90)), "a stranger is refused");
+            let reads = f.fd_reads.load(std::sync::atomic::Ordering::Relaxed);
+            assert!(reads < 20, "{reads} descriptor directories read (child lists: {child_lists})");
+        }
+    }
+
     #[test]
     fn the_walker_follows_parents() {
         let f = fake();
@@ -310,5 +451,24 @@ mod tests {
             !other.is_own(server_side.peer_addr().expect("peer"), server_side.local_addr().expect("local"))
         );
         drop(client);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod cost {
+    use super::*;
+
+    /// Prints what one lookup costs on this computer (`--ignored --nocapture`).
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn lookup_cost() {
+        let src = ProcFs;
+        let t = Instant::now();
+        let pids = src.pids();
+        let n: usize = pids.iter().map(|p| src.socket_inodes(*p).len()).sum();
+        eprintln!("scan of all {} processes: {:?} ({n} sockets)", pids.len(), t.elapsed());
+        let t = Instant::now();
+        let tree = own_tree(&src, std::process::id());
+        eprintln!("own tree {:?}: {:?}", tree.len(), t.elapsed());
     }
 }

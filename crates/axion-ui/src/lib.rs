@@ -1826,22 +1826,28 @@ impl Ui {
         // Glass is drawn in one pass per (thickness, opacity) group; only shapes in the same
         // pass flow into each other.
         for stack in stacks {
-            let mut groups: Vec<(GlassLevel, f32, Option<[f32; 4]>, bool)> = Vec::new();
+            let mut groups: Vec<GlassGroup> = Vec::new();
             for item in &stack.glass {
-                let key = (item.level, item.fade, item.tint, item.dark);
+                let key = (item.level, item.fade, item.tint, item.dark, item.isolated);
                 if !groups.contains(&key) {
                     groups.push(key);
                 }
             }
-            groups.sort_by_key(|(level, fade, tint, dark)| {
-                (*level as u8, (fade * GLASS_FADE_STEPS) as u32, tint.is_some(), *dark)
+            groups.sort_by_key(|(level, fade, tint, dark, isolated)| {
+                (*level as u8, (fade * GLASS_FADE_STEPS) as u32, tint.is_some(), *dark, *isolated)
             });
-            for (level, fade, tint, dark) in groups {
+            for (level, fade, tint, dark, isolated) in groups {
                 let theme = if dark { &self.dark_theme } else { &self.theme };
                 let shapes: Vec<GlassShape> = stack
                     .glass
                     .iter()
-                    .filter(|g| g.level == level && g.fade == fade && g.tint == tint && g.dark == dark)
+                    .filter(|g| {
+                        g.level == level
+                            && g.fade == fade
+                            && g.tint == tint
+                            && g.dark == dark
+                            && g.isolated == isolated
+                    })
                     .map(|g| {
                         let mut shape = g.shape;
                         if let Some(opacity) = &mut shape.tint_opacity {
@@ -1851,6 +1857,10 @@ impl Ui {
                     })
                     .collect();
                 let mut params = theme.glass(level, s);
+                if isolated {
+                    // Pills stacked closely stay separate drops (no blob between them).
+                    params.merge_smoothness = 0.0;
+                }
                 if let Some(tint) = tint {
                     let glass = theme.tinted_glass(tint).0;
                     params.tint = [glass[0], glass[1], glass[2], theme.tinted_opacity()];
@@ -2044,7 +2054,16 @@ impl Ui {
                 let mut shape = GlassShape::rounded_rect(bg_px.center(), bg_px.size * 0.5, bg_radius);
                 shape.tint_opacity = glass_tint_opacity(widget, theme);
                 shape.shadow = glass_shadow(widget, theme);
-                shape.merge = widget.glass_merge.map(|m| m * s);
+                // A glass button on a card (a popover's or sheet's row of pills) is a drop of its
+                // own: stacked closer than `glass.merge_distance` it would bridge to its
+                // neighbours as one blob. Buttons that are meant to join say so (`glass_merge`).
+                let isolated = widget.isolated
+                    || (depth >= 1
+                        && widget.action.is_some()
+                        && widget.glass_merge.is_none()
+                        && !widget.join_only
+                        && level == GlassLevel::Thin);
+                shape.merge = widget.glass_merge.filter(|_| !isolated).map(|m| m * s);
                 shape.join_only = widget.join_only;
                 if let Some(xf) = &press_xf {
                     shape.center += xf.offset;
@@ -2060,6 +2079,7 @@ impl Ui {
                     tint,
                     shape,
                     dark: self.painting_dark.get(),
+                    isolated,
                 });
                 child_depth = depth + 1;
             }
@@ -2111,6 +2131,7 @@ impl Ui {
                         tint,
                         shape,
                         dark: self.painting_dark.get(),
+                        isolated: false,
                     });
                 }
             }
@@ -2442,6 +2463,7 @@ impl Ui {
                 tint: None,
                 shape,
                 dark: self.painting_dark.get(),
+                isolated: false,
             });
         }
     }
@@ -2482,6 +2504,7 @@ impl Ui {
                 tint: None,
                 shape,
                 dark: self.painting_dark.get(),
+                isolated: false,
             });
         }
     }
@@ -2585,7 +2608,12 @@ struct GlassItem {
     shape: GlassShape,
     /// Painted in the dark scheme (a dark plane, see `Ui::set_plane_dark`).
     dark: bool,
+    /// No smooth union with neighbouring glass (see `Widget::isolated`).
+    isolated: bool,
 }
+
+/// What glass is drawn together in one pass: level, fade, tint, dark scheme, isolated.
+type GlassGroup = (GlassLevel, f32, Option<[f32; 4]>, bool, bool);
 
 /// The press transform of held glass (physical px).
 struct PressXf {

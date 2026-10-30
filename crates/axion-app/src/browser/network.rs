@@ -163,7 +163,11 @@ impl Browser {
                 } else {
                     // Starts it again; the page loads by itself once it is up.
                     self.net.blocked.insert(view, net::Blocked { url, connection: connection.clone() });
-                    self.net.manager.start(&connection);
+                    // A connection that is still starting is left alone: starting it again
+                    // would throw its bootstrap away.
+                    if !matches!(self.net.manager.status(&connection), Some(ConnectionStatus::Connecting)) {
+                        self.net.manager.start(&connection);
+                    }
                     self.network_tick();
                 }
             }
