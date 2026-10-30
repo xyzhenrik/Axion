@@ -8,6 +8,7 @@ use rusqlite::Connection;
 use serde_json::Value;
 
 use crate::error::{ImportError, Result};
+use crate::icons::{Candidates, ImportIcon, WantedIcons};
 use crate::model::{ImportBookmark, ImportHistory, Limits, Wanted};
 use crate::sqlite::{DbCopy, history_count, history_top, int, text};
 use crate::text::{clean_title, clean_url, firefox_to_unix, read_text_file};
@@ -155,6 +156,66 @@ pub fn read(
         Vec::new()
     };
     Ok((bookmarks, history))
+}
+
+/// The site icons for the wanted hosts: `favicons.sqlite` (`moz_icons` with the pages they
+/// belong to), or, in old profiles without it, `moz_favicons` of `places.sqlite`.
+pub fn read_icons(profile: &Path, wanted: &WantedIcons, limits: &Limits) -> Result<Vec<ImportIcon>> {
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let modern = profile.join("favicons.sqlite");
+    if modern.is_file() {
+        let db = DbCopy::open(&modern, limits.max_db_bytes)?;
+        let mut candidates = Candidates::default();
+        // The pages an icon was seen on, then icons of the site itself (root icons) that no
+        // page row ties to a page. Width 65535 marks SVG (cannot be rasterised here).
+        for sql in [
+            "SELECT p.page_url, i.id, i.width, length(i.data)
+             FROM moz_icons_to_pages ip
+             JOIN moz_pages_w_icons p ON p.id = ip.page_id
+             JOIN moz_icons i ON i.id = ip.icon_id
+             WHERE i.data IS NOT NULL",
+            "SELECT icon_url, id, width, length(data) FROM moz_icons WHERE data IS NOT NULL",
+        ] {
+            let mut stmt = db.conn.prepare(sql)?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let side = int(row, 2);
+                if side == 65535 {
+                    continue;
+                }
+                let side = side.clamp(0, 4096) as u32;
+                candidates.add(wanted, &text(row, 0), int(row, 1), side, int(row, 3), limits);
+            }
+        }
+        let mut blob = db.conn.prepare("SELECT data FROM moz_icons WHERE id = ?1")?;
+        return Ok(
+            candidates.resolve(wanted, limits, |id| blob.query_row([id], |r| r.get::<_, Vec<u8>>(0)).ok())
+        );
+    }
+    let places = profile.join("places.sqlite");
+    if !places.is_file() {
+        return Ok(Vec::new());
+    }
+    // Old profiles keep icons in `moz_favicons` of `places.sqlite`, tied to pages through
+    // `moz_places.favicon_id`; newer ones have neither.
+    let db = DbCopy::open(&places, limits.max_db_bytes)?;
+    let Ok(mut stmt) = db.conn.prepare(
+        "SELECT p.url, f.id, 0, length(f.data) FROM moz_places p
+         JOIN moz_favicons f ON f.id = p.favicon_id WHERE f.data IS NOT NULL",
+    ) else {
+        return Ok(Vec::new());
+    };
+    let mut candidates = Candidates::default();
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        candidates.add(wanted, &text(row, 0), int(row, 1), 0, int(row, 3), limits);
+    }
+    drop(rows);
+    drop(stmt);
+    let mut blob = db.conn.prepare("SELECT data FROM moz_favicons WHERE id = ?1")?;
+    Ok(candidates.resolve(wanted, limits, |id| blob.query_row([id], |r| r.get::<_, Vec<u8>>(0)).ok()))
 }
 
 /// Counts of what is there: `(bookmarks, history entries)`.

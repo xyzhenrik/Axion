@@ -393,6 +393,7 @@ import it under [Settings > Passwords](#import-and-export).
 |---|---|---|---|
 | Browser list | The browsers and profiles found (Chrome, Chromium, Brave, Edge, Vivaldi, Opera; Firefox, LibreWolf, Zen, Waterfox, Floorp; also their Flatpak and Snap versions), each with the number of bookmarks and history entries. Tick the ones to import; the most recently used one is ticked at first. | - | - |
 | **Bookmarks**, **History** | What to import from the ticked browsers. | Both | - |
+| **Import site icons** | Brings the sites' icons along (the icons in the other browser's icon database), so imported bookmarks, the sidebar lists, history and the start page's top sites show them at once instead of a globe. A site that already has an icon in Axion keeps it. | On | `import.favicons` |
 | **Import** | Starts the import in the background. The result is shown under the list (for example “Imported 312 bookmarks and 8,450 history entries; 40 already existed”) and as a notification. The sidebar lists, the bookmarks bar and the start page's top sites update by themselves. | - | - |
 | **Import from File…** | Imports bookmarks from a file: the HTML export every browser can make (**Export bookmarks**), a Chromium `Bookmarks` file or a Firefox JSON backup. | - | - |
 | **Open Passwords** | Goes to the Passwords page. | - | - |
@@ -400,6 +401,17 @@ import it under [Settings > Passwords](#import-and-export).
 | Limit for bookmarks | At most this many bookmarks per profile or file. | 50000 | `import.max_bookmarks` |
 | Size limit for databases | Larger browser databases are skipped (MB). They are copied to a temporary file, so this much space is needed. | 512 | `import.max_database_mb` |
 | Size limit for files | Larger bookmark files are refused (MB). | 64 | `import.max_file_mb` |
+| Limit for site icons | At most this many icons (one per site) are imported per browser profile or file. | 10000 | `import.max_favicons` |
+| Size limit for one icon | An icon image larger than this is skipped (bytes). | 262144 | `import.max_favicon_bytes` |
+
+Site icons are read from Chromium's `Favicons` database, Firefox's `favicons.sqlite` (older Firefox
+versions: `places.sqlite`) and from the `ICON="data:image/…"` attributes of an exported HTML bookmarks
+file. For every imported site Axion takes the icon stored for exactly that page, else any icon of the
+same site, and the size closest to 32 px; it is stored like an icon loaded while browsing, so the next
+visit may replace it with the site's current one. SVG icons cannot be converted and are skipped
+(the site shows the globe until you visit it); broken or oversized images are skipped too, without
+affecting the rest of the import. The result line then also names the icons (for example “Imported
+312 bookmarks, 8,450 history entries and 120 site icons”).
 
 Entries you already have (same address) are kept as they are and counted as “already existed”, so
 importing twice is safe. Bookmarks from a browser's bookmarks bar land on Axion's bookmarks bar; those

@@ -33,6 +33,8 @@ pub struct Imported {
     pub bookmarks: Vec<ImportBookmark>,
     /// Most recent first.
     pub history: Vec<ImportHistory>,
+    /// Site icons for the hosts of the bookmarks and history above (see [`crate::write_icons`]).
+    pub icons: Vec<crate::ImportIcon>,
     /// Parts that could not be read while others could.
     pub warnings: Vec<String>,
 }
@@ -58,6 +60,12 @@ pub struct Limits {
     pub max_db_bytes: u64,
     /// Bookmark files larger than this are refused (bytes).
     pub max_text_bytes: u64,
+    /// Whether site icons are imported too.
+    pub favicons: bool,
+    /// An icon image larger than this is skipped (bytes).
+    pub max_favicon_bytes: usize,
+    /// At most this many site icons (one per host) are imported per profile or file.
+    pub max_favicons: usize,
 }
 
 impl Default for Limits {
@@ -67,6 +75,9 @@ impl Default for Limits {
             max_bookmarks: 50_000,
             max_db_bytes: 512 * 1024 * 1024,
             max_text_bytes: 64 * 1024 * 1024,
+            favicons: true,
+            max_favicon_bytes: 256 * 1024,
+            max_favicons: 10_000,
         }
     }
 }

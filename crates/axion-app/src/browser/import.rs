@@ -12,6 +12,7 @@ impl Browser {
     /// The Data page opened: look for browsers again (the list is kept until the answer comes).
     pub(super) fn import_page_opened(&mut self) {
         self.settings.set_import_available(self.importer.available());
+        self.settings.set_import_icons_default(self.config.import.favicons);
         self.importer.scan(&self.config);
     }
 
@@ -19,14 +20,14 @@ impl Browser {
     pub(super) fn import_request(&mut self, request: ImportRequest) {
         match request {
             ImportRequest::ChooseFile => self.importer.choose_file(),
-            ImportRequest::Run { sources, bookmarks, history } => {
+            ImportRequest::Run { sources, bookmarks, history, icons } => {
                 let picked: Vec<_> =
                     sources.iter().filter_map(|&i| self.importer.sources().get(i).cloned()).collect();
                 if picked.is_empty() || !(bookmarks || history) {
                     return;
                 }
                 self.settings.set_import_busy(true);
-                self.importer.run(picked, Wanted { bookmarks, history }, &self.config);
+                self.importer.run(picked, Wanted { bookmarks, history }, icons, &self.config);
             }
         }
     }
@@ -62,6 +63,7 @@ impl Browser {
             _ => match what {
                 "bookmarks" => Some(ImportAction::Bookmarks),
                 "history" => Some(ImportAction::History),
+                "icons" => Some(ImportAction::Icons),
                 "run" => Some(ImportAction::Run),
                 _ => None,
             },
@@ -85,7 +87,8 @@ impl Browser {
         if sources.is_empty() || !self.importer.available() {
             return;
         }
-        self.importer.run(sources, Wanted::ALL, &self.config);
+        let icons = self.config.import.favicons;
+        self.importer.run(sources, Wanted::ALL, icons, &self.config);
     }
 
     /// Results of background work: the scan, a chosen file, a finished import. Call every frame.
@@ -122,10 +125,11 @@ impl Browser {
                 tracing::info!(
                     bookmarks = report.bookmarks_added,
                     history = report.history_added,
+                    icons = report.icons_added,
                     existing = report.existing(),
                     "import finished"
                 );
-                if report.bookmarks_added + report.history_added > 0 {
+                if report.bookmarks_added + report.history_added + report.icons_added > 0 {
                     self.import_refresh_views();
                     self.show_toast(Icon::Check, &import::toast_text(&report, finished.wanted));
                 }
@@ -142,6 +146,8 @@ impl Browser {
     /// New bookmarks and history are in the store: the lists, the bookmarks bar and the start
     /// page's top sites show them.
     fn import_refresh_views(&mut self) {
+        // Icons were written to the cache folder behind the icon cache's back.
+        self.favicons.rescan_disk();
         self.bookmarks_changed = true;
         if let Some((panel, _)) = self.panel {
             self.show_panel_with(panel, true);

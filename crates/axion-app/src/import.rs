@@ -26,6 +26,9 @@ pub fn limits(config: &Config) -> Limits {
         max_bookmarks: c.max_bookmarks as usize,
         max_db_bytes: u64::from(c.max_database_mb) * MB,
         max_text_bytes: u64::from(c.max_file_mb) * MB,
+        favicons: c.favicons,
+        max_favicon_bytes: c.max_favicon_bytes as usize,
+        max_favicons: c.max_favicons as usize,
     }
 }
 
@@ -56,6 +59,8 @@ pub struct Importer {
     jobs: Arc<Mutex<Jobs>>,
     /// The account's store file; imports go here.
     store_path: Option<PathBuf>,
+    /// The account's site icon cache folder (`<profile>/favicons`); imported icons go here.
+    icon_dir: Option<PathBuf>,
     home: Option<Home>,
     /// The browsers found by the last scan (what Settings lists).
     sources: Vec<Source>,
@@ -67,10 +72,11 @@ pub struct Importer {
 
 impl Importer {
     /// `store_path`: the open account's `axion.sqlite`, or `None` when it could not be opened.
-    pub fn new(store_path: Option<PathBuf>) -> Self {
+    pub fn new(store_path: Option<PathBuf>, icon_dir: Option<PathBuf>) -> Self {
         Self {
             jobs: Arc::default(),
             store_path,
+            icon_dir,
             home: Home::from_env(),
             sources: Vec::new(),
             offered: Vec::new(),
@@ -118,17 +124,18 @@ impl Importer {
         });
     }
 
-    /// Imports `wanted` from these browser profiles, on a thread; the result arrives as
-    /// [`Event::Finished`].
-    pub fn run(&mut self, sources: Vec<Source>, wanted: Wanted, config: &Config) {
-        let limits = limits(config);
+    /// Imports `wanted` from these browser profiles, on a thread (with their site icons when
+    /// `icons`); the result arrives as [`Event::Finished`].
+    pub fn run(&mut self, sources: Vec<Source>, wanted: Wanted, icons: bool, config: &Config) {
+        let limits = Limits { favicons: icons, ..limits(config) };
+        let icon_dir = self.icon_dir.clone();
         self.start(wanted, move |store| {
             let mut total = Report::default();
             let mut first_error = None;
             let mut worked = false;
             for source in &sources {
                 let imported = axion_import::read(source, wanted, &limits)
-                    .and_then(|data| axion_import::apply(store, &data, unix_now()));
+                    .and_then(|data| apply_all(store, icon_dir.as_deref(), &data));
                 match imported {
                     Ok(report) => {
                         worked = true;
@@ -150,9 +157,10 @@ impl Importer {
     /// Imports the bookmarks of an exported file.
     pub fn run_file(&mut self, path: PathBuf, config: &Config) {
         let limits = limits(config);
+        let icon_dir = self.icon_dir.clone();
         self.start(Wanted { bookmarks: true, history: false }, move |store| {
             let data = axion_import::read_file(&path, &limits).map_err(|e| e.to_string())?;
-            axion_import::apply(store, &data, unix_now()).map_err(|e| e.to_string())
+            apply_all(store, icon_dir.as_deref(), &data).map_err(|e| e.to_string())
         });
     }
 
@@ -210,6 +218,20 @@ impl Importer {
     }
 }
 
+/// Writes what was read: bookmarks and history into the store, site icons into the icon cache
+/// folder (a host that has an icon keeps it).
+fn apply_all(
+    store: &Store,
+    icon_dir: Option<&std::path::Path>,
+    data: &axion_import::Imported,
+) -> axion_import::Result<Report> {
+    let mut report = axion_import::apply(store, data, unix_now())?;
+    if let Some(dir) = icon_dir {
+        report.icons_added = axion_import::write_icons(dir, &data.icons).added;
+    }
+    Ok(report)
+}
+
 fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
@@ -246,15 +268,28 @@ pub fn history_text(n: usize) -> String {
     counted(tr_mark("{n} history entry"), tr_mark("{n} history entries"), n)
 }
 
-/// "Imported 312 bookmarks and 8,450 history entries; 40 already existed" for a finished
-/// import (only the kinds that were asked for are named).
+pub fn icons_text(n: usize) -> String {
+    counted(tr_mark("{n} site icon"), tr_mark("{n} site icons"), n)
+}
+
+/// "Imported 312 bookmarks, 8,450 history entries and 120 site icons; 40 already existed" for
+/// a finished import (only the kinds that were asked for are named; icons when some arrived).
 pub fn summary(report: &Report, wanted: Wanted) -> String {
-    let added = [
-        wanted.bookmarks.then(|| bookmarks_text(report.bookmarks_added)),
-        wanted.history.then(|| history_text(report.history_added)),
-    ];
-    let nothing_new =
-        (!wanted.bookmarks || report.bookmarks_added == 0) && (!wanted.history || report.history_added == 0);
+    let mut parts: Vec<String> = Vec::new();
+    // Zero counts are only named when nothing else is: with icons they would be noise.
+    let named = |n: usize| n > 0 || report.icons_added == 0;
+    if wanted.bookmarks && named(report.bookmarks_added) {
+        parts.push(bookmarks_text(report.bookmarks_added));
+    }
+    if wanted.history && named(report.history_added) {
+        parts.push(history_text(report.history_added));
+    }
+    if report.icons_added > 0 {
+        parts.push(icons_text(report.icons_added));
+    }
+    let nothing_new = (!wanted.bookmarks || report.bookmarks_added == 0)
+        && (!wanted.history || report.history_added == 0)
+        && report.icons_added == 0;
     let existing = report.existing();
     if nothing_new {
         return if existing == 0 {
@@ -263,10 +298,11 @@ pub fn summary(report: &Report, wanted: Wanted) -> String {
             tr_fmt!("Nothing new to import; {count} already existed", count = group_digits(existing))
         };
     }
-    let items = match added {
-        [Some(a), Some(b)] => tr_fmt!("{first} and {second}", first = a, second = b),
-        [Some(a), None] | [None, Some(a)] => a,
-        [None, None] => String::new(),
+    let items = match parts.as_slice() {
+        [] => String::new(),
+        [a] => a.clone(),
+        [a, b] => tr_fmt!("{first} and {second}", first = a, second = b),
+        [a, b, c, ..] => tr_fmt!("{first}, {second} and {third}", first = a, second = b, third = c),
     };
     let base = tr_fmt!("Imported {items}", items = items);
     if existing == 0 {
@@ -313,6 +349,18 @@ mod tests {
         assert_eq!(summary(&report(0, 0, 0), both), "Nothing to import");
         assert_eq!(summary(&report(0, 0, 7), both), "Nothing new to import; 7 already existed");
         assert_eq!(toast_text(&report(3, 4, 9), both), "Imported 3 bookmarks and 4 history entries");
+        let with_icons = |r: Report, icons| Report { icons_added: icons, ..r };
+        assert_eq!(
+            summary(&with_icons(report(312, 8450, 40), 120), both),
+            "Imported 312 bookmarks, 8,450 history entries and 120 site icons; 40 already existed"
+        );
+        assert_eq!(summary(&with_icons(report(0, 0, 0), 1), both), "Imported 1 site icon");
+        // Only icons were new (the entries were imported before).
+        let bookmarks_only = Wanted { bookmarks: true, history: false };
+        assert_eq!(
+            summary(&with_icons(report(0, 0, 7), 2), bookmarks_only),
+            "Imported 2 site icons; 7 already existed"
+        );
     }
 
     #[test]

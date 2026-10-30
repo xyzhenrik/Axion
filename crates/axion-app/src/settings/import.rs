@@ -20,6 +20,8 @@ pub enum ImportAction {
     History,
     Run,
     File,
+    /// "Import site icons".
+    Icons,
 }
 
 impl ImportAction {
@@ -30,6 +32,7 @@ impl ImportAction {
                 ImportAction::History => 1,
                 ImportAction::Run => 2,
                 ImportAction::File => 3,
+                ImportAction::Icons => 4,
                 ImportAction::Source(i) => 8 + i.min(MAX_SOURCES - 1) as u32,
             }
     }
@@ -40,6 +43,7 @@ impl ImportAction {
             1 => ImportAction::History,
             2 => ImportAction::Run,
             3 => ImportAction::File,
+            4 => ImportAction::Icons,
             i @ 8.. if ((i - 8) as usize) < MAX_SOURCES => ImportAction::Source((i - 8) as usize),
             _ => return None,
         })
@@ -50,7 +54,7 @@ impl ImportAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ImportRequest {
     /// Import these browser profiles (indexes into the listed ones).
-    Run { sources: Vec<usize>, bookmarks: bool, history: bool },
+    Run { sources: Vec<usize>, bookmarks: bool, history: bool, icons: bool },
     /// Pick a bookmarks file to import.
     ChooseFile,
 }
@@ -79,6 +83,8 @@ pub struct ImportView {
     pub selected: Vec<bool>,
     pub bookmarks: bool,
     pub history: bool,
+    /// Site icons come along (starts as `import.favicons`).
+    pub icons: bool,
     /// An import is running.
     pub busy: bool,
     /// Without a history database nothing can be imported.
@@ -93,6 +99,7 @@ impl Default for ImportView {
             selected: Vec::new(),
             bookmarks: true,
             history: true,
+            icons: true,
             busy: false,
             available: true,
             status: None,
@@ -134,6 +141,13 @@ impl SettingsSheet {
         self.import.sources = sources;
     }
 
+    /// The Data page opened: the icons choice starts as the configuration says.
+    pub fn set_import_icons_default(&mut self, icons: bool) {
+        if !self.import.busy {
+            self.import.icons = icons;
+        }
+    }
+
     pub fn set_import_busy(&mut self, busy: bool) {
         self.import.busy = busy;
     }
@@ -155,6 +169,7 @@ impl SettingsSheet {
             }
             ImportAction::Bookmarks => self.import.bookmarks = !self.import.bookmarks,
             ImportAction::History => self.import.history = !self.import.history,
+            ImportAction::Icons => self.import.icons = !self.import.icons,
             ImportAction::File => return Outcome::Import(ImportRequest::ChooseFile),
             ImportAction::Run => {
                 if self.import.can_run() {
@@ -171,6 +186,7 @@ impl SettingsSheet {
                         sources,
                         bookmarks: self.import.bookmarks,
                         history: self.import.history,
+                        icons: self.import.icons,
                     });
                 }
             }
@@ -205,6 +221,13 @@ impl SettingsSheet {
                 }
                 self.check_row(ui, ImportAction::Bookmarks, tr("Bookmarks"), None, self.import.bookmarks);
                 self.check_row(ui, ImportAction::History, tr("History"), None, self.import.history);
+                self.check_row(
+                    ui,
+                    ImportAction::Icons,
+                    tr("Import site icons"),
+                    Some(tr("So imported bookmarks and history show their icons at once")),
+                    self.import.icons,
+                );
                 let row_node = self.row(ui, "");
                 if self.import.busy {
                     idle_pill(ui, row_node, tr("Importing…"));
@@ -310,14 +333,19 @@ mod tests {
 
     #[test]
     fn ids_round_trip() {
-        let mut all =
-            vec![ImportAction::Bookmarks, ImportAction::History, ImportAction::Run, ImportAction::File];
+        let mut all = vec![
+            ImportAction::Bookmarks,
+            ImportAction::History,
+            ImportAction::Run,
+            ImportAction::File,
+            ImportAction::Icons,
+        ];
         all.extend((0..MAX_SOURCES).map(ImportAction::Source));
         for action in all {
             assert_eq!(ImportAction::from_id(action.id()), Some(action));
         }
         assert_eq!(ImportAction::from_id(IMPORT_BASE - 1), None);
-        assert_eq!(ImportAction::from_id(IMPORT_BASE + 4), None);
+        assert_eq!(ImportAction::from_id(IMPORT_BASE + 5), None);
         assert_eq!(ImportAction::from_id(IMPORT_BASE + 8 + MAX_SOURCES as u32), None);
     }
 

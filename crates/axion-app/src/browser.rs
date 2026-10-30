@@ -918,7 +918,7 @@ impl Browser {
             store,
             favicons,
             downloads,
-            importer: Importer::new(store_path),
+            importer: Importer::new(store_path, Some(profile.join("favicons"))),
             overview_query: String::new(),
             last_frame: Instant::now(),
             window_tint: None,

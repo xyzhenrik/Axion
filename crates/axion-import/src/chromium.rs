@@ -5,8 +5,9 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::error::{ImportError, Result};
+use crate::icons::{Candidates, ImportIcon, WantedIcons};
 use crate::model::{ImportBookmark, ImportHistory, Limits};
-use crate::sqlite::{DbCopy, history_count, history_top};
+use crate::sqlite::{DbCopy, history_count, history_top, int, text};
 use crate::text::{clean_title, clean_url, read_text_file, webkit_to_unix};
 
 /// Folders nested deeper than this are not followed.
@@ -89,6 +90,31 @@ const HISTORY_SQL: &str = "SELECT url, title, visit_count, last_visit_time FROM 
 pub fn read_history(profile: &Path, limits: &Limits) -> Result<Vec<ImportHistory>> {
     let db = DbCopy::open(&profile.join("History"), limits.max_db_bytes)?;
     history_top(&db.conn, HISTORY_SQL, webkit_to_unix, limits.max_history_items)
+}
+
+/// The site icons of `Favicons` (`icon_mapping` ties pages to icons, `favicon_bitmaps` holds
+/// the PNGs in one or more sizes) for the wanted hosts. No `Favicons` file: no icons.
+pub fn read_icons(profile: &Path, wanted: &WantedIcons, limits: &Limits) -> Result<Vec<ImportIcon>> {
+    let path = profile.join("Favicons");
+    if wanted.is_empty() || !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let db = DbCopy::open(&path, limits.max_db_bytes)?;
+    let mut candidates = Candidates::default();
+    {
+        let mut stmt = db.conn.prepare(
+            "SELECT m.page_url, b.id, b.width, b.height, length(b.image_data)
+             FROM icon_mapping m JOIN favicon_bitmaps b ON b.icon_id = m.icon_id",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let (w, h) = (int(row, 2), int(row, 3));
+            let side = w.min(h).clamp(0, 4096) as u32;
+            candidates.add(wanted, &text(row, 0), int(row, 1), side, int(row, 4), limits);
+        }
+    }
+    let mut blob = db.conn.prepare("SELECT image_data FROM favicon_bitmaps WHERE id = ?1")?;
+    Ok(candidates.resolve(wanted, limits, |id| blob.query_row([id], |r| r.get::<_, Vec<u8>>(0)).ok()))
 }
 
 /// How many history entries there are to import (not capped).

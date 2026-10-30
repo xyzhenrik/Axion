@@ -926,10 +926,13 @@
 "Nothing new to import; {count} already existed" = "Nichts Neues zu importieren; {count} waren schon vorhanden"
 "Nothing to import" = "Nichts zu importieren"
 "{first} and {second}" = "{first} und {second}"
+"{first}, {second} and {third}" = "{first}, {second} und {third}"
 "{n} bookmark" = "{n} Lesezeichen"
 "{n} bookmarks" = "{n} Lesezeichen"
 "{n} history entries" = "{n} Verlaufseinträge"
 "{n} history entry" = "{n} Verlaufseintrag"
+"{n} site icon" = "{n} Website-Symbol"
+"{n} site icons" = "{n} Website-Symbole"
 "{summary}; {count} already existed" = "{summary}; {count} waren schon vorhanden"
 
 # crates/axion-app/src/onboarding.rs
@@ -943,7 +946,9 @@
 "Import" = "Importieren"
 "Import from File…" = "Aus Datei importieren…"
 "Import from another browser" = "Aus einem anderen Browser importieren"
+"Import site icons" = "Website-Symbole importieren"
 "Importing…" = "Importiere…"
+"So imported bookmarks and history show their icons at once" = "Damit importierte Lesezeichen und der Verlauf ihre Symbole sofort zeigen"
 "Looking for other browsers…" = "Suche nach anderen Browsern…"
 "No other browsers found" = "Keine anderen Browser gefunden"
 "Passwords are encrypted by the other browser and can't be read from here. Export them there as a CSV file and import it in Passwords." = "Passwörter verschlüsselt der andere Browser; von hier aus lassen sie sich nicht lesen. Exportiere sie dort als CSV-Datei und importiere sie unter Passwörter."

@@ -221,6 +221,12 @@ impl Favicons {
         this
     }
 
+    /// Icon files were added to the cache folder by someone else (an import): hosts that had
+    /// none on disk are looked up again.
+    pub fn rescan_disk(&self) {
+        self.not_on_disk.borrow_mut().clear();
+    }
+
     /// Where the icons are cached (`None`: nowhere, they live in memory only).
     pub fn dir(&self) -> Option<&Path> {
         self.dir.as_deref()
@@ -738,6 +744,16 @@ mod tests {
         ];
         assert_eq!(links_for(&links, Scheme::Dark), ["https://x/dark.svg", "https://x/general.png"]);
         assert_eq!(links_for(&links, Scheme::Light), ["https://x/light.svg", "https://x/general.png"]);
+    }
+
+    #[test]
+    fn imported_icons_use_the_cache_file_names() {
+        for host in ["de.wikipedia.org", "localhost:8765", "../etc", "a b"] {
+            assert_eq!(axion_import::icon_file_name(host), cache_file_name(host, false));
+        }
+        for url in ["https://www.github.com/a", "http://u@x.org:81/b?c", "https://de.wikipedia.org/wiki/X"] {
+            assert_eq!(axion_import::host_key(url).as_deref(), Some(display_host(url).as_str()));
+        }
     }
 
     #[test]

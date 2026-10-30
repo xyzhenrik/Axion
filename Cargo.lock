@@ -534,6 +534,8 @@ name = "axion-import"
 version = "0.2.0"
 dependencies = [
  "axion-store",
+ "base64 0.22.1",
+ "image",
  "rusqlite",
  "serde_json",
  "tempfile",

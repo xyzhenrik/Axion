@@ -2,7 +2,10 @@
 //! and `<DT><A HREF>` links). Parsed with a tolerant scanner, not an HTML parser: exports are
 //! sloppy (unclosed `<p>`, `<DT>`, no closing quotes in old files) and may be hand-edited.
 
-use crate::model::ImportBookmark;
+use std::collections::HashMap;
+
+use crate::icons::{self, ImportIcon};
+use crate::model::{ImportBookmark, Limits};
 use crate::text::{clean_title, clean_url, guess_to_unix};
 
 /// Lists nested deeper than this are flattened.
@@ -21,6 +24,23 @@ struct Frame {
 }
 
 pub fn parse_bookmarks(src: &str) -> Vec<ImportBookmark> {
+    parse(src, None).0
+}
+
+/// How often the `ICON` data of links of one host is tried before the host is given up on.
+const ICON_TRIES: u8 = 2;
+
+/// The bookmarks and, when `icon_limits` is given, the site icons of the `ICON="data:image/…"`
+/// attributes: the first usable one per host (exports repeat the same icon on every link), at
+/// most `max_favicons` of them.
+pub fn parse_with_icons(src: &str, icon_limits: &Limits) -> (Vec<ImportBookmark>, Vec<ImportIcon>) {
+    parse(src, Some(icon_limits))
+}
+
+fn parse(src: &str, icon_limits: Option<&Limits>) -> (Vec<ImportBookmark>, Vec<ImportIcon>) {
+    let mut found: Vec<ImportIcon> = Vec::new();
+    // Hosts seen -> failed attempts (`ICON_TRIES`, or done).
+    let mut tried: HashMap<String, u8> = HashMap::new();
     // ASCII lowercasing keeps every byte offset, so tags are matched in `lower` and values
     // are cut from `src`.
     let lower = src.to_ascii_lowercase();
@@ -76,12 +96,28 @@ pub fn parse_bookmarks(src: &str) -> Vec<ImportBookmark> {
                 let added = attribute(tag, "add_date")
                     .and_then(|d| d.trim().parse::<i64>().ok())
                     .map_or(0, guess_to_unix);
+                if let Some(limits) = icon_limits
+                    && found.len() < limits.max_favicons
+                    && let Some(host) = icons::host_key(&url)
+                    && tried.get(&host).is_none_or(|&n| n < ICON_TRIES)
+                    && let Some(data) = attribute(tag, "icon")
+                {
+                    let blob = icons::decode_data_uri(&decode(&data), limits.max_favicon_bytes)
+                        .and_then(|b| icons::normalize(&b, limits.max_favicon_bytes));
+                    match blob {
+                        Some((png, width, height)) => {
+                            tried.insert(host.clone(), ICON_TRIES);
+                            found.push(ImportIcon { host, png, width, height });
+                        }
+                        None => *tried.entry(host).or_default() += 1,
+                    }
+                }
                 out.push(ImportBookmark { url, title, folders: folders_of(&frames), added });
             }
             _ => {}
         }
     }
-    out
+    (out, found)
 }
 
 /// The folder path of a link inside `frames`: relative to the bookmarks bar when it is in

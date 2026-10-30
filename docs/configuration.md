@@ -109,7 +109,7 @@ ask_where_to_save = false
 | `downloads`, `data` | Download behaviour, what "Clear Browsing Data" clears. |
 | `passwords` | Saving, filling, generator, clipboard. |
 | `accounts` | Profile picture size and limit. |
-| `import` | Limits of the import from other browsers (history entries, bookmarks, file sizes). |
+| `import` | Limits of the import from other browsers (history entries, bookmarks, file sizes) and whether site icons are imported with them. |
 | `extensions` | Chrome extensions: on or off (`enabled`), the Chrome Web Store (`web_store`), automatic updates (`auto_update`, `update_interval_hours`, `timeout_seconds`), user scripts (`allow_user_scripts`), the request APIs (`block_request_apis`) and the popup's size limits (`popup_*`). `show_in_address_bar` is gone (old files that set it still load). See [Chrome extensions](features/extensions.md). |
 | `hardware` | Acceleration, page frames, graphics card. |
 | `devtools`, `find`, `clipboard`, `toast`, `sidebar`, `ui` | Smaller options. |

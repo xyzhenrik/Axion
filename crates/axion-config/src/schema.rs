@@ -59,11 +59,27 @@ pub struct Import {
     pub max_database_mb: u32,
     /// Bookmark files (HTML, JSON) larger than this are refused (MB).
     pub max_file_mb: u32,
+    /// Import the sites' icons too (from the other browser's icon database, or from the
+    /// `ICON` attributes of an exported bookmarks file), so imported bookmarks and history
+    /// show them at once. The default of the "Import site icons" choice in Settings.
+    pub favicons: bool,
+    /// An icon image larger than this is skipped (bytes).
+    pub max_favicon_bytes: u32,
+    /// At most this many icons (one per site) are imported per browser profile or file.
+    pub max_favicons: u32,
 }
 
 impl Default for Import {
     fn default() -> Self {
-        Self { max_history_items: 20_000, max_bookmarks: 50_000, max_database_mb: 512, max_file_mb: 64 }
+        Self {
+            max_history_items: 20_000,
+            max_bookmarks: 50_000,
+            max_database_mb: 512,
+            max_file_mb: 64,
+            favicons: true,
+            max_favicon_bytes: 256 * 1024,
+            max_favicons: 10_000,
+        }
     }
 }
 

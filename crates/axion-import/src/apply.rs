@@ -10,6 +10,9 @@ pub struct Report {
     pub bookmarks_existing: usize,
     pub history_added: usize,
     pub history_existing: usize,
+    /// Site icons newly written to the icon cache (see [`crate::write_icons`]; the app fills
+    /// this in, [`apply`] only writes to the store).
+    pub icons_added: usize,
     /// Parts that could not be read.
     pub warnings: Vec<String>,
 }
@@ -21,6 +24,7 @@ impl Report {
         self.bookmarks_existing += other.bookmarks_existing;
         self.history_added += other.history_added;
         self.history_existing += other.history_existing;
+        self.icons_added += other.icons_added;
         self.warnings.extend(other.warnings);
     }
 
@@ -60,6 +64,7 @@ pub fn apply(store: &Store, data: &Imported, now: i64) -> Result<Report> {
         bookmarks_existing: b.existing,
         history_added: h.added,
         history_existing: h.existing,
+        icons_added: 0,
         warnings: data.warnings.clone(),
     })
 }

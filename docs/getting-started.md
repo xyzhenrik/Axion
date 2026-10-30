@@ -46,7 +46,7 @@ installed). Your choices apply live, so you see the result right away.
 4. **Glass or flat** - **Liquid Glass**, or **Flat** for weaker graphics hardware. You can also turn
    on **Reduce transparency** and **Reduce motion** here.
 5. **Bring your bookmarks** - only shown when Axion finds other browsers (Chrome, Firefox, Brave and
-   so on) on this computer. Tick the ones to import bookmarks and history from; the most recently
+   so on) on this computer. Tick the ones to import bookmarks, history and site icons from; the most recently
    used one is ticked. Continue starts the import in the background. Nothing is changed in the other
    browsers.
 6. **Your account** - name, picture and an optional password. (Step 5 without other browsers.)
