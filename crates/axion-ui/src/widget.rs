@@ -191,6 +191,9 @@ pub struct Widget {
     /// surface of its own (see `Ui::glass_at`); and it has no tint of its own, so across it
     /// the tint blends from the glass it joins.
     pub join_only: bool,
+    /// Glass that never flows into its neighbours (rows of pills stacked closer than
+    /// `glass.merge_distance`): drawn in a pass of its own that has no smooth union.
+    pub isolated: bool,
     /// How a glass background is drawn in flat mode (see [`FlatRole`]); ignored with glass.
     pub flat_role: FlatRole,
     /// Glass that is one element (the toolbar's nav capsule, the address field): pressing any
@@ -232,6 +235,7 @@ impl Widget {
             button_tint: false,
             glass_merge: None,
             join_only: false,
+            isolated: false,
             flat_role: FlatRole::Auto,
             press_whole: false,
             hover_fill: true,
@@ -347,6 +351,12 @@ impl Widget {
     /// See [`Widget::flat_role`].
     pub fn with_flat_role(mut self, role: FlatRole) -> Self {
         self.flat_role = role;
+        self
+    }
+
+    /// See [`Widget::isolated`].
+    pub fn with_isolated(mut self) -> Self {
+        self.isolated = true;
         self
     }
 

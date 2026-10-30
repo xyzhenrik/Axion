@@ -145,6 +145,7 @@ impl NetworkPopover {
                 self.plate,
                 Widget::container()
                     .with_action(ActionId(CHOICE_BASE + i as u32))
+                    .with_isolated()
                     .with_radius(CAPSULE)
                     .with_background(Background::Glass(GlassLevel::Thin)),
                 Style {
@@ -192,6 +193,7 @@ impl NetworkPopover {
             footer,
             Widget::container()
                 .with_action(SETTINGS)
+                .with_isolated()
                 .with_radius(CAPSULE)
                 .with_background(Background::Glass(GlassLevel::Thin)),
             Style {
