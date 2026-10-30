@@ -43,8 +43,13 @@ use crate::{CircuitInfo, NetError, TunnelOptions};
 /// Whether this build can run Tor connections.
 pub const AVAILABLE: bool = true;
 
-/// Worker threads of the private runtime: Arti's tasks, not one per connection.
-const WORKER_THREADS: usize = 2;
+/// Niceness of the runtime's threads when `background_priority` is on: the browser's own
+/// threads (UI, Chromium) always win against the directory download and its verification.
+const BACKGROUND_NICE: i32 = 15;
+
+/// Progress changes reach the UI at most this often (the last one is never lost: the status
+/// change that ends a bootstrap always notifies).
+const PROGRESS_NOTIFY_INTERVAL: Duration = Duration::from_millis(250);
 
 /// A Tor circuit takes longer to build than a TCP connection: a stream may take this many
 /// times the connect timeout of the other backends.
@@ -73,6 +78,9 @@ pub fn create(config: &TorConfig, options: &TunnelOptions) -> Result<Arc<dyn Tun
             status: Mutex::new(TunnelStatus::Stopped),
             progress: Mutex::new(None),
             ready: AtomicBool::new(false),
+            threads: options.tor_worker_threads.clamp(1, 8),
+            background: options.background_priority,
+            last_progress_notify: Mutex::new(None),
             client: Mutex::new(None),
             isolation: Isolation::new(config.isolation, IsolationToken::new),
             circuits: CircuitBook::new(),
@@ -139,6 +147,12 @@ struct Shared {
     progress: Mutex<Option<TunnelProgress>>,
     /// Arti can carry traffic.
     ready: AtomicBool,
+    /// Worker threads of the private runtime.
+    threads: usize,
+    /// The runtime's threads run at low priority.
+    background: bool,
+    /// When the UI was last told about a progress change.
+    last_progress_notify: Mutex<Option<std::time::Instant>>,
     client: Mutex<Option<Arc<Client>>>,
     isolation: Isolation<IsolationToken>,
     circuits: CircuitBook,
@@ -181,8 +195,21 @@ impl Shared {
             *current = progress;
             changed
         };
-        if changed {
+        if changed && self.progress_notify_due() {
             self.notify();
+        }
+    }
+
+    /// At most one progress notification per [`PROGRESS_NOTIFY_INTERVAL`].
+    fn progress_notify_due(&self) -> bool {
+        let mut last = lock(&self.last_progress_notify);
+        let now = std::time::Instant::now();
+        match *last {
+            Some(at) if now.duration_since(at) < PROGRESS_NOTIFY_INTERVAL => false,
+            _ => {
+                *last = Some(now);
+                true
+            }
         }
     }
 }
@@ -309,12 +336,31 @@ fn install_crypto_provider() {
     });
 }
 
+/// Lowers the calling thread's CPU priority (Linux: a thread has its own niceness; elsewhere
+/// nothing happens). A failure only means the thread keeps its priority.
+fn lower_priority() {
+    #[cfg(target_os = "linux")]
+    {
+        // No pid means the calling thread: on Linux `setpriority(PRIO_PROCESS, 0)` is per thread.
+        if rustix::process::setpriority_process(None, BACKGROUND_NICE).is_err() {
+            tracing::debug!("could not lower a Tor thread's priority");
+        }
+    }
+}
+
 fn start_inner(shared: &Arc<Shared>) -> Result<Running, NetError> {
     install_crypto_provider();
     let config = client_config(shared)?;
+    let background = shared.background;
     let runtime = Builder::new_multi_thread()
-        .worker_threads(WORKER_THREADS)
+        .worker_threads(shared.threads)
+        .max_blocking_threads(shared.threads.max(2))
         .thread_name("tor-runtime")
+        .on_thread_start(move || {
+            if background {
+                lower_priority();
+            }
+        })
         .enable_all()
         .build()?;
     let client = {
@@ -467,6 +513,26 @@ mod tests {
         assert!(parse_bridge("not a bridge").is_err());
     }
 
+    /// The runtime's threads take the low priority, and only the thread that asked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lowering_the_priority_affects_only_the_calling_thread() {
+        fn nice() -> i32 {
+            let stat = std::fs::read_to_string("/proc/thread-self/stat").unwrap_or_default();
+            let rest = &stat[stat.rfind(')').map_or(0, |i| i + 1)..];
+            rest.split_whitespace().nth(16).and_then(|n| n.parse().ok()).unwrap_or(-99)
+        }
+        let before = nice();
+        let low = std::thread::spawn(|| {
+            lower_priority();
+            nice()
+        })
+        .join()
+        .unwrap_or(-99);
+        assert!(low >= BACKGROUND_NICE.min(19), "{low}");
+        assert_eq!(nice(), before);
+    }
+
     #[test]
     fn config_is_checked_once() {
         let mut config = TorConfig { exit_country: "de".into(), ..Default::default() };
@@ -494,6 +560,8 @@ mod tests {
             connect_timeout: Duration::from_secs(15),
             data_dir: dir.clone(),
             wireguard_handshake_timeout: Duration::from_secs(20),
+            background_priority: true,
+            tor_worker_threads: 2,
         };
         let tunnel = create(&TorConfig::default(), &options).expect("create");
         let endpoint = tunnel.start().expect("start");

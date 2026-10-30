@@ -1826,7 +1826,7 @@ impl Ui {
         // Glass is drawn in one pass per (thickness, opacity) group; only shapes in the same
         // pass flow into each other.
         for stack in stacks {
-            let mut groups: Vec<(GlassLevel, f32, Option<[f32; 4]>, bool, bool)> = Vec::new();
+            let mut groups: Vec<GlassGroup> = Vec::new();
             for item in &stack.glass {
                 let key = (item.level, item.fade, item.tint, item.dark, item.isolated);
                 if !groups.contains(&key) {
@@ -1841,7 +1841,13 @@ impl Ui {
                 let shapes: Vec<GlassShape> = stack
                     .glass
                     .iter()
-                    .filter(|g| g.level == level && g.fade == fade && g.tint == tint && g.dark == dark && g.isolated == isolated)
+                    .filter(|g| {
+                        g.level == level
+                            && g.fade == fade
+                            && g.tint == tint
+                            && g.dark == dark
+                            && g.isolated == isolated
+                    })
                     .map(|g| {
                         let mut shape = g.shape;
                         if let Some(opacity) = &mut shape.tint_opacity {
@@ -2605,6 +2611,9 @@ struct GlassItem {
     /// No smooth union with neighbouring glass (see `Widget::isolated`).
     isolated: bool,
 }
+
+/// What glass is drawn together in one pass: level, fade, tint, dark scheme, isolated.
+type GlassGroup = (GlassLevel, f32, Option<[f32; 4]>, bool, bool);
 
 /// The press transform of held glass (physical px).
 struct PressXf {

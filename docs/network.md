@@ -153,6 +153,15 @@ crates/axion-app   network.rs (state, vault cache, kill-switch page), settings/n
   a backend from a `Dialer` (opens a stream by *name*; the far end resolves it).
 * `NetManager` owns the named connections, starts them lazily on worker threads, polls their
   status, and turns the routing rules into a `Plan` for the engine.
+* **Nothing here blocks the UI thread.** Starting, stopping and restarting a connection happen on
+  `net-start` / `net-stop` threads (a restart waits for the previous run to finish stopping, so Tor's
+  state directory is free); `ensure_started`, `plan`, `poll`, `status` and `stop` only take a short lock
+  (regression tests in `manager.rs` use backends that start and stop in 3 s). Tor's runtime runs
+  `tor_worker_threads` (default 2) threads at nice 15 while `background_priority` is on, so the
+  directory download and its verification never compete with the browser for CPU. Tor's bootstrap
+  progress reaches the UI at most four times a second, and the front's peer check only searches the
+  own process tree (child lists from `/proc/<pid>/task/*/children`, cached 2 s) instead of every
+  process's descriptors.
 * Chromium cannot log in to SOCKS5. So Chromium is pointed at `LocalServer::http_front`, an
   HTTP proxy on loopback with a per-session Basic login (answered through CEF's
   `GetAuthCredentials`) that dials through the tunnel's authenticated SOCKS5. Neither loopback
@@ -247,7 +256,7 @@ Axion, not by Chromium, and do not use the route yet).
 `leak_protection`, `disable_quic_when_routed`, `strict_dns`, `check_ip_url` (empty: no
 check; Axion never calls it on its own, the button opens it in a tab through the tab's route),
 `connect_timeout_secs`, `health_check_secs`, `max_relay_connections`,
-`wireguard_handshake_timeout_secs`, `connect_at_start`,
+`wireguard_handshake_timeout_secs`, `background_priority`, `tor_worker_threads`, `connect_at_start`,
 `show_chip`, `notify_changes`. The keymap action `toggle_network` (unbound) switches the current
 site between its route and direct; it also appears in the command palette.
 

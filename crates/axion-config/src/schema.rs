@@ -1903,6 +1903,11 @@ pub struct Network {
     /// Seconds a WireGuard handshake may stay unanswered before the connection counts as
     /// failed (wrong key, server down or UDP blocked all look the same).
     pub wireguard_handshake_timeout_secs: f32,
+    /// Run the heavy work of a starting connection (Tor's directory download and
+    /// verification) at low CPU priority, so the browser stays smooth while it bootstraps.
+    pub background_priority: bool,
+    /// Worker threads of the Tor client (1-8). More bootstrap faster and use more CPU.
+    pub tor_worker_threads: u32,
     /// Start the connections of the default routes when Axion starts. Off: they start when
     /// the first tab that needs them opens.
     pub connect_at_start: bool,
@@ -1929,6 +1934,8 @@ impl Default for Network {
             health_check_secs: 10.0,
             max_relay_connections: 512,
             wireguard_handshake_timeout_secs: 20.0,
+            background_priority: true,
+            tor_worker_threads: 2,
             connect_at_start: true,
             show_chip: true,
             notify_changes: true,

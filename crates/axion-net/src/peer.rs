@@ -243,10 +243,8 @@ impl PeerCheck {
                 (trusted, state.tree.as_ref().map(|(_, t)| t.clone()).unwrap_or_default())
             }
         };
-        let mut owner = trusted
-            .into_iter()
-            .chain(tree)
-            .find(|pid| self.src.socket_inodes(*pid).contains(&inode));
+        let mut owner =
+            trusted.into_iter().chain(tree).find(|pid| self.src.socket_inodes(*pid).contains(&inode));
         if owner.is_none() && self.tree_age() >= TREE_RETRY_AFTER {
             // A process started since the list was made (Chromium restarts its network
             // service): look at the tree once more.
@@ -453,5 +451,24 @@ mod tests {
             !other.is_own(server_side.peer_addr().expect("peer"), server_side.local_addr().expect("local"))
         );
         drop(client);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod cost {
+    use super::*;
+
+    /// Prints what one lookup costs on this computer (`--ignored --nocapture`).
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn lookup_cost() {
+        let src = ProcFs;
+        let t = Instant::now();
+        let pids = src.pids();
+        let n: usize = pids.iter().map(|p| src.socket_inodes(*p).len()).sum();
+        eprintln!("scan of all {} processes: {:?} ({n} sockets)", pids.len(), t.elapsed());
+        let t = Instant::now();
+        let tree = own_tree(&src, std::process::id());
+        eprintln!("own tree {:?}: {:?}", tree.len(), t.elapsed());
     }
 }

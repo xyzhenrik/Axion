@@ -352,6 +352,8 @@ pub fn options(network: &Network, profile: &std::path::Path) -> NetOptions {
         wireguard_handshake_timeout: Duration::from_secs_f32(
             network.wireguard_handshake_timeout_secs.clamp(2.0, 300.0),
         ),
+        background_priority: network.background_priority,
+        tor_worker_threads: network.tor_worker_threads.clamp(1, 8) as usize,
     }
 }
 
