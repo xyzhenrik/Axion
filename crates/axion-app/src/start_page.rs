@@ -456,11 +456,12 @@ impl StartPage {
             UiWidget::container().with_radius(8.0),
             Style { size: square(26.0), justify_content: JustifyContent::CENTER, ..row(0.0) },
         );
-        ui.add(
+        let chevron = ui.add(
             engine,
             UiWidget::icon(Icon::ChevronDown, 12.0).with_paint(Paint::Secondary),
             Style::default(),
         );
+        labels.push((chevron, Ink::Secondary));
         let query = ui.add_text_field(
             search,
             tr("Search or enter website"),
@@ -471,11 +472,14 @@ impl StartPage {
                 ..Default::default()
             },
         );
-        ui.add(
+        // The field's text and glyphs turn light over a wallpaper like the labels do.
+        labels.push((query, Ink::Primary));
+        let magnifier = ui.add(
             search,
             UiWidget::icon(Icon::Search, 18.0).with_paint(Paint::Secondary),
             Style { flex_shrink: 0.0, ..Default::default() },
         );
+        labels.push((magnifier, Ink::Secondary));
 
         // ---- top sites ----
         let sites =
@@ -1281,7 +1285,12 @@ impl StartPage {
                 ..row(0.0)
             },
         );
-        ui.add(face, UiWidget::icon(Icon::Plus, 26.0).with_paint(Paint::Secondary), Style::default());
+        let plus = ui.add(
+            face,
+            UiWidget::icon(Icon::Plus, 26.0).with_paint(paint_of(Ink::Secondary, self.over_image)),
+            Style::default(),
+        );
+        self.tile_labels.push((plus, Ink::Secondary));
         let name_box = ui.add(
             root,
             UiWidget::container().with_action(StartAction::AddSite.id()).without_hover_fill(),
