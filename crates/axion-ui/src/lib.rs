@@ -93,10 +93,9 @@ const LENS_ROW_ASPECT: f32 = 2.5;
 const LENS_PRESS_GLOW: [f32; 2] = [0.16, 0.09];
 /// Content on glass whose background is animated (`Widget::visual_frame`: popovers dripping
 /// out of a button, alerts scaling in) is mapped onto that background and shows only once it
-/// has grown to this share of its layout size …
-const CONTENT_REVEAL_FROM: f32 = 0.55;
-/// … and fully from this share on, so glass and content appear and vanish together.
-const CONTENT_REVEAL_TO: f32 = 0.9;
+/// has grown to `motion.content_reveal_from` of its layout size, fully from
+/// `motion.content_reveal_to` on, so glass and content appear and vanish together and text is
+/// never drawn much smaller than it is.
 /// Fading glass is grouped into this many opacity steps (each step is one glass pass).
 const GLASS_FADE_STEPS: f32 = 24.0;
 /// A rebuilt control this close (logical px) to where a moving one was takes its knob over.
@@ -2012,9 +2011,9 @@ impl Ui {
                     text_scale: ratio.min_element(),
                     carry: Some(Carry { from: px.center(), to: bg_px.center() }),
                 };
-                let t = ((ratio.min_element() - CONTENT_REVEAL_FROM)
-                    / (CONTENT_REVEAL_TO - CONTENT_REVEAL_FROM))
-                    .clamp(0.0, 1.0);
+                let (from, to) =
+                    (theme.config().motion.content_reveal_from, theme.config().motion.content_reveal_to);
+                let t = ((ratio.min_element() - from) / (to - from).max(1e-3)).clamp(0.0, 1.0);
                 (Some(xf), t * t * (3.0 - 2.0 * t))
             }
             _ => (None, 1.0),

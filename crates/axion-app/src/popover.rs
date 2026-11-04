@@ -232,7 +232,7 @@ impl Popover {
         // Flat mode fades the card in and out instead (1 otherwise: nothing changes).
         ui.set_opacity(self.root, self.drip.fade());
         // Flat mode has no bridges: the card is just a card.
-        let mut bridge = self.join.filter(|_| !ui.theme().flat() && !self.unjoined).and_then(|(join, r)| {
+        let mut bridge = self.join.filter(|_| !self.drip.fades() && !self.unjoined).and_then(|(join, r)| {
             bridge_frame_reaching(join, r, frame, self.radius, self.bridge_depth, self.bridge_into_join)
         });
         if self.detach {
