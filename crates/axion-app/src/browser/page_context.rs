@@ -34,7 +34,7 @@ impl Browser {
         // The media bridge's player under the click (its rectangles are in CSS px).
         let player = tab.media.as_ref().and_then(|media| {
             let css = params.pos * self.scale() / media.dpr.max(f32::EPSILON);
-            page_menu::player_at(&media.players, css, &params.source_url).cloned()
+            page_menu::player_at(media.real_players(), css, &params.source_url).cloned()
         });
         let info = PageMenuInfo {
             can_go_back: tab.can_go_back,

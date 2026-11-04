@@ -17,11 +17,12 @@ use zeroize::Zeroizing;
 
 use axion_engine::PermissionKind;
 
+use crate::default_browser::State as DefaultState;
 use crate::home::Image;
 use crate::morph::{Origin, SheetMorph};
 use crate::passwords::MIN_MASTER_LENGTH;
 use crate::permissions::Group;
-use crate::update::{AboutInfo, AboutState, InstallMode};
+use crate::update::{AboutInfo, AboutState, InstallMode, Phase, RunInfo};
 
 mod import;
 mod network;
@@ -223,6 +224,7 @@ enum Setting {
     MiddleClickClosesTab,
     NewTabJoinsGroup,
     GroupChipsInBar,
+    HideSingleTabBar,
     ShowAudioIndicator,
     RememberSiteMute,
     DragOutLinks,
@@ -237,6 +239,8 @@ enum Setting {
     GpuRasterization,
     DesktopIntegration,
     AppMenuEntry,
+    DefaultBrowserHint,
+    SingleInstance,
     AskWhereToSave,
     OpenSafeFiles,
     ClearCookiesOnQuit,
@@ -260,6 +264,7 @@ enum Setting {
     TranslateChanges,
     AutoCheckUpdates,
     UpdatePrereleases,
+    UpdateNotifications,
     NetKillSwitch,
     NetLeakProtection,
     NetDisableQuic,
@@ -321,6 +326,7 @@ impl Setting {
             Setting::MiddleClickClosesTab => tr_mark("Middle click closes tabs"),
             Setting::NewTabJoinsGroup => tr_mark("New tabs join the group they open from"),
             Setting::GroupChipsInBar => tr_mark("Show tab group names in the tab bar"),
+            Setting::HideSingleTabBar => tr_mark("Hide the tab bar with a single tab"),
             Setting::ShowAudioIndicator => tr_mark("Show a speaker on tabs playing sound"),
             Setting::RememberSiteMute => tr_mark("Remember muted sites"),
             Setting::DragOutLinks => tr_mark("Drag tabs out as links"),
@@ -335,6 +341,8 @@ impl Setting {
             Setting::GpuRasterization => tr_mark("Smooth WebGL, canvas and GPU rasterization"),
             Setting::DesktopIntegration => tr_mark("Desktop media controls and media keys (after restart)"),
             Setting::AppMenuEntry => tr_mark("Add Axion to the application menu"),
+            Setting::DefaultBrowserHint => tr_mark("Suggest making Axion the default browser"),
+            Setting::SingleInstance => tr_mark("Open links from other apps in the running window"),
             Setting::AskWhereToSave => tr_mark("Ask where to save each file"),
             Setting::OpenSafeFiles => tr_mark("Open “safe” files after downloading"),
             Setting::ClearCookiesOnQuit => tr_mark("Clear cookies and site data when Axion quits"),
@@ -367,6 +375,7 @@ impl Setting {
             Setting::TranslateChanges => tr_mark("Translate text that appears later"),
             Setting::AutoCheckUpdates => tr_mark("Check for updates automatically"),
             Setting::UpdatePrereleases => tr_mark("Include pre-releases"),
+            Setting::UpdateNotifications => tr_mark("Notify me about updates"),
         }
     }
 
@@ -404,6 +413,7 @@ impl Setting {
                 | Setting::MiddleClickClosesTab
                 | Setting::NewTabJoinsGroup
                 | Setting::GroupChipsInBar
+                | Setting::HideSingleTabBar
                 | Setting::ShowAudioIndicator
                 | Setting::RememberSiteMute
                 | Setting::DragOutLinks
@@ -416,6 +426,8 @@ impl Setting {
                 | Setting::GpuRasterization
                 | Setting::DesktopIntegration
                 | Setting::AppMenuEntry
+                | Setting::DefaultBrowserHint
+                | Setting::SingleInstance
                 | Setting::AskWhereToSave
                 | Setting::OpenSafeFiles
                 | Setting::ClearCookiesOnQuit
@@ -445,6 +457,7 @@ impl Setting {
                 | Setting::TranslateChanges
                 | Setting::AutoCheckUpdates
                 | Setting::UpdatePrereleases
+                | Setting::UpdateNotifications
         )
     }
 
@@ -557,6 +570,7 @@ impl Setting {
             Setting::MiddleClickClosesTab => return c.tabs.middle_click_closes_tab as u8 as f32,
             Setting::NewTabJoinsGroup => return c.tabs.new_tab_joins_group as u8 as f32,
             Setting::GroupChipsInBar => return c.tabs.group_chips_in_bar as u8 as f32,
+            Setting::HideSingleTabBar => return c.layout.hide_single_tab_bar as u8 as f32,
             Setting::ShowAudioIndicator => return c.tabs.show_audio_indicator as u8 as f32,
             Setting::RememberSiteMute => return c.tabs.remember_site_mute as u8 as f32,
             Setting::DragOutLinks => return c.tabs.drag_out_links as u8 as f32,
@@ -570,6 +584,8 @@ impl Setting {
             Setting::GpuRasterization => return c.hardware.gpu_rasterization as u8 as f32,
             Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
             Setting::AppMenuEntry => return c.general.desktop_integration as u8 as f32,
+            Setting::DefaultBrowserHint => return c.general.default_browser_hint as u8 as f32,
+            Setting::SingleInstance => return c.general.single_instance as u8 as f32,
             Setting::AskWhereToSave => return c.downloads.ask_where_to_save as u8 as f32,
             Setting::OpenSafeFiles => return c.downloads.open_safe_files as u8 as f32,
             Setting::ClearCookiesOnQuit => return c.data.clear_cookies_on_quit as u8 as f32,
@@ -598,6 +614,7 @@ impl Setting {
             Setting::TranslatePrompt => return c.translation.prompt as u8 as f32,
             Setting::TranslateChanges => return c.translation.translate_changes as u8 as f32,
             Setting::AutoCheckUpdates => return c.updates.auto_check_on_start as u8 as f32,
+            Setting::UpdateNotifications => return c.updates.desktop_notification as u8 as f32,
             Setting::UpdatePrereleases => {
                 return (c.updates.channel == axion_config::UpdateChannel::Prerelease) as u8 as f32;
             }
@@ -662,6 +679,7 @@ impl Setting {
             Setting::MiddleClickClosesTab => c.tabs.middle_click_closes_tab = on,
             Setting::NewTabJoinsGroup => c.tabs.new_tab_joins_group = on,
             Setting::GroupChipsInBar => c.tabs.group_chips_in_bar = on,
+            Setting::HideSingleTabBar => c.layout.hide_single_tab_bar = on,
             Setting::ShowAudioIndicator => c.tabs.show_audio_indicator = on,
             Setting::RememberSiteMute => c.tabs.remember_site_mute = on,
             Setting::DragOutLinks => c.tabs.drag_out_links = on,
@@ -675,6 +693,8 @@ impl Setting {
             Setting::GpuRasterization => c.hardware.gpu_rasterization = on,
             Setting::DesktopIntegration => c.media.desktop_integration = on,
             Setting::AppMenuEntry => c.general.desktop_integration = on,
+            Setting::DefaultBrowserHint => c.general.default_browser_hint = on,
+            Setting::SingleInstance => c.general.single_instance = on,
             Setting::AskWhereToSave => c.downloads.ask_where_to_save = on,
             Setting::OpenSafeFiles => c.downloads.open_safe_files = on,
             Setting::ClearCookiesOnQuit => c.data.clear_cookies_on_quit = on,
@@ -703,6 +723,7 @@ impl Setting {
             Setting::TranslatePrompt => c.translation.prompt = on,
             Setting::TranslateChanges => c.translation.translate_changes = on,
             Setting::AutoCheckUpdates => c.updates.auto_check_on_start = on,
+            Setting::UpdateNotifications => c.updates.desktop_notification = on,
             Setting::UpdatePrereleases => {
                 c.updates.channel = if on {
                     axion_config::UpdateChannel::Prerelease
@@ -781,6 +802,8 @@ pub enum SettingsAction {
     Language(UiLanguage),
     /// Runs the first-run introduction again.
     ShowWelcomeTour,
+    /// Makes Axion the system's default browser.
+    MakeDefaultBrowser,
     CloseAfter(u32),
     AddTrustedSite,
     /// Index into `media.trusted_player_sites`.
@@ -815,6 +838,10 @@ pub enum SettingsAction {
     /// Store the repository typed into the field.
     SaveRepository,
     RelaunchNow,
+    /// The running update: stop it, dismiss its result ("Later"), run it again.
+    CancelUpdate,
+    DismissUpdate,
+    RetryUpdate,
     /// Hardware page: how page frames reach Axion, and which graphics card.
     PageFrames(PageFrames),
     GpuCard(GpuChoice),
@@ -845,7 +872,7 @@ const HARDWARE_BASE: u32 = 880;
 
 /// The About page's actions: the ids after the background picker's.
 const UPDATE_BASE: u32 = 990;
-const UPDATE_ACTIONS: u32 = 7;
+const UPDATE_ACTIONS: u32 = 10;
 
 /// The background picker's actions (after the categories' ids).
 const NO_BACKGROUND: u32 = 920;
@@ -1013,6 +1040,7 @@ impl SettingsAction {
                     SettingsAction::GlassStyle(GlassStyle::Liquid) => 26,
                     SettingsAction::GlassStyle(GlassStyle::Flat) => 27,
                     SettingsAction::ShowWelcomeTour => 28,
+                    SettingsAction::MakeDefaultBrowser => 29,
                     SettingsAction::SearchEngine(i) => 30 + i as u32,
                     SettingsAction::Accent(i) => 40 + i as u32,
                     SettingsAction::ClearHistory => 50,
@@ -1092,6 +1120,9 @@ impl SettingsAction {
                     SettingsAction::OpenReleasePage => UPDATE_BASE + 4,
                     SettingsAction::SaveRepository => UPDATE_BASE + 5,
                     SettingsAction::RelaunchNow => UPDATE_BASE + 6,
+                    SettingsAction::CancelUpdate => UPDATE_BASE + 7,
+                    SettingsAction::DismissUpdate => UPDATE_BASE + 8,
+                    SettingsAction::RetryUpdate => UPDATE_BASE + 9,
                     SettingsAction::Import(action) => action.id(),
                     SettingsAction::Network(action) => action.id(),
                     SettingsAction::PageFrames(f) => HARDWARE_BASE + page_frames_index(f),
@@ -1118,6 +1149,7 @@ impl SettingsAction {
             26 => SettingsAction::GlassStyle(GlassStyle::Liquid),
             27 => SettingsAction::GlassStyle(GlassStyle::Flat),
             28 => SettingsAction::ShowWelcomeTour,
+            29 => SettingsAction::MakeDefaultBrowser,
             30..=39 if ((n - 30) as usize) < SEARCH_ENGINES.len() => {
                 SettingsAction::SearchEngine((n - 30) as usize)
             }
@@ -1204,6 +1236,9 @@ impl SettingsAction {
                 SettingsAction::OpenReleasePage,
                 SettingsAction::SaveRepository,
                 SettingsAction::RelaunchNow,
+                SettingsAction::CancelUpdate,
+                SettingsAction::DismissUpdate,
+                SettingsAction::RetryUpdate,
             ][(n - UPDATE_BASE) as usize],
             n if ImportAction::from_id(n).is_some() => SettingsAction::Import(ImportAction::from_id(n)?),
             n if NetAction::from_id(n).is_some() => SettingsAction::Network(NetAction::from_id(n)?),
@@ -1217,6 +1252,8 @@ pub enum Outcome {
     Nothing,
     /// Close Settings and run the first-run introduction.
     ShowWelcomeTour,
+    /// Make Axion the system's default browser.
+    MakeDefaultBrowser,
     /// The configuration changed; save and apply it.
     Changed,
     Close,
@@ -1273,6 +1310,9 @@ pub enum Outcome {
     RemindLater,
     OpenReleasePage,
     RelaunchNow,
+    CancelUpdate,
+    DismissUpdate,
+    RetryUpdate,
     /// Hardware: copy the GPU diagnostics to the clipboard.
     CopyDiagnostics,
     /// Hardware: relaunch Axion to apply the changed settings.
@@ -1285,6 +1325,43 @@ pub enum Outcome {
     ConfirmGpuFrames,
     /// The repository changed (`config.updates.repository`); save it and look for updates.
     SourceChanged,
+}
+
+/// What the General page says about the default browser.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DefaultBrowserView {
+    pub state: Option<DefaultState>,
+    /// A change is under way.
+    pub busy: bool,
+    /// Why the last change did not work.
+    pub error: Option<String>,
+}
+
+impl DefaultBrowserView {
+    /// The line under the row.
+    fn status(&self) -> String {
+        if self.busy {
+            return tr("Setting Axion as the default browser…").to_owned();
+        }
+        if let Some(error) = &self.error {
+            return tr_fmt!("Axion could not be made the default browser: {reason}", reason = error);
+        }
+        match &self.state {
+            None => tr("Checking which browser is the default…").to_owned(),
+            Some(DefaultState::Axion) => tr("Axion is your default browser.").to_owned(),
+            Some(DefaultState::Other(id)) if id.is_empty() => {
+                tr("No default browser is set. Links open in whatever the system picks.").to_owned()
+            }
+            Some(DefaultState::Other(id)) => tr_fmt!(
+                "Your default browser is {name}. Links from other apps open there.",
+                name = crate::default_browser::display_name(id)
+            ),
+            Some(DefaultState::Unavailable) => {
+                tr("This system cannot say which browser is the default (xdg-settings is missing).")
+                    .to_owned()
+            }
+        }
+    }
 }
 
 pub struct SettingsSheet {
@@ -1334,6 +1411,8 @@ pub struct SettingsSheet {
     /// Data page: the cache's size, the sites with cookies (`None` while unknown) and
     /// which destructive button asks for confirmation.
     cache_size: Option<u64>,
+    /// Who the system's default browser is, and whether a change is under way.
+    default_browser: DefaultBrowserView,
     site_data: Option<Vec<(String, usize)>>,
     confirm_clear_data: bool,
     confirm_remove_all: bool,
@@ -1368,8 +1447,27 @@ pub struct SettingsSheet {
     /// What was typed in the repository field when it was refused (put back after a redraw).
     repository_draft: Option<String>,
     notes: Option<(NodeId, NodeId)>,
+    /// The running update's live lines and bar (changed in place while it runs).
+    run_nodes: Option<RunNodes>,
     notes_scroll: f32,
     about_badge: NodeId,
+}
+
+/// The nodes of a running update that change while it runs.
+#[derive(Clone, Copy)]
+struct RunNodes {
+    status: NodeId,
+    detail: NodeId,
+    fill: NodeId,
+}
+
+const RUN_BAR_HEIGHT: f32 = 6.0;
+/// The indeterminate bar's moving part: its width (share of the bar) and steps per sweep.
+const RUN_SWEEP_WIDTH: f32 = 0.3;
+const RUN_SWEEP_STEPS: u32 = 16;
+
+fn zero_rect() -> Rect<LengthPercentageAuto> {
+    Rect { left: length(0.0), right: length(0.0), top: length(0.0), bottom: length(0.0) }
 }
 
 fn row(gap: f32) -> Style {
@@ -1563,6 +1661,7 @@ impl SettingsSheet {
             group: None,
             confirm_clear: false,
             cache_size: None,
+            default_browser: DefaultBrowserView::default(),
             site_data: None,
             confirm_clear_data: false,
             confirm_remove_all: false,
@@ -1585,6 +1684,7 @@ impl SettingsSheet {
             repository_status: None,
             repository_draft: None,
             notes: None,
+            run_nodes: None,
             notes_scroll: 0.0,
             about_badge,
         }
@@ -1720,6 +1820,12 @@ impl SettingsSheet {
         }
     }
 
+    /// Who the default browser is (`None`: not asked yet), whether a change is under way and
+    /// why the last one failed; the General page shows it.
+    pub fn set_default_browser(&mut self, view: DefaultBrowserView) {
+        self.default_browser = view;
+    }
+
     pub fn set_memory_used(&mut self, used: Option<u64>) {
         self.memory_used = used;
     }
@@ -1850,6 +1956,7 @@ impl SettingsSheet {
         self.background_path = None;
         self.repository_field = None;
         self.notes = None;
+        self.run_nodes = None;
         if !self.query.is_empty() {
             self.show_results(ui, config);
             return;
@@ -1924,6 +2031,20 @@ impl SettingsSheet {
                         tr("Gives Axion its icon in the taskbar and the application menu. Applies after restarting Axion."),
                     );
                 }
+                if cfg!(target_os = "linux") {
+                    let row_node = self.row(ui, tr("Default browser"));
+                    let view = self.default_browser.clone();
+                    if view.state.as_ref().is_some_and(DefaultState::can_change) && !view.busy {
+                        glass_pill(ui, row_node, tr("Make Default"), SettingsAction::MakeDefaultBrowser);
+                    }
+                    self.note(ui, &view.status());
+                    self.control(ui, config, Setting::DefaultBrowserHint);
+                }
+                self.control(ui, config, Setting::SingleInstance);
+                self.note(
+                    ui,
+                    tr("A link opened from another app, or axion URL, adds a tab to the open window instead of starting a second browser. Applies after restarting Axion."),
+                );
                 let row_node = self.row(ui, tr("Welcome tour"));
                 glass_pill(ui, row_node, tr("Show Welcome Tour"), SettingsAction::ShowWelcomeTour);
                 self.control(ui, config, Setting::HomeButton);
@@ -2077,6 +2198,7 @@ impl SettingsSheet {
             }
             Category::Tabs => {
                 self.tab_bar_choice(ui, config);
+                self.control(ui, config, Setting::HideSingleTabBar);
                 self.control(ui, config, Setting::TintFromPage);
                 if config.appearance.tint_from_page {
                     let row_node = self.row(ui, tr("Page colour"));
@@ -2530,10 +2652,19 @@ impl SettingsSheet {
         secondary(ui, text, &version);
         let install = match about.mode {
             InstallMode::AppImage => tr("Installed as an AppImage"),
+            InstallMode::Tarball => tr("Installed from a tarball (portable folder)"),
             InstallMode::Source => tr("Built from a Git checkout"),
             InstallMode::Other => tr("Installed with a package manager or by hand"),
         };
         secondary(ui, text, install);
+        if let Some(version) = &about.pending_restart {
+            // The line above is the build that is running; the files on disk are newer.
+            let line = tr_fmt!(
+                "Axion {version} is installed. Restart Axion to finish the update.",
+                version = version.as_str()
+            );
+            secondary(ui, text, &line);
+        }
 
         self.section(ui, tr("Software update"));
         let source_set = !matches!(about.state, AboutState::NoSource);
@@ -2553,15 +2684,22 @@ impl SettingsSheet {
             }
             AboutState::Error(message) => message.clone(),
         };
-        let row_node = self.row(ui, &status);
-        match &about.state {
-            AboutState::Checking => idle_pill(ui, row_node, tr("Checking…")),
-            AboutState::NoSource => {}
-            AboutState::Installed { .. } => {
-                primary_button(ui, row_node, tr("Relaunch Now"), SettingsAction::RelaunchNow)
+        let live_run = about.run.as_ref().filter(|r| !r.collapsed);
+        if let Some(run) = live_run {
+            self.run_block(ui, run);
+        } else {
+            let row_node = self.row(ui, &status);
+            match &about.state {
+                AboutState::Checking => idle_pill(ui, row_node, tr("Checking…")),
+                AboutState::NoSource => {}
+                AboutState::Installed { .. } => {
+                    primary_button(ui, row_node, tr("Restart Axion"), SettingsAction::RelaunchNow)
+                }
+                _ if about.busy => {}
+                _ => {
+                    pill_button(ui, row_node, tr("Check for Updates"), SettingsAction::CheckForUpdates, false)
+                }
             }
-            _ if about.busy => {}
-            _ => pill_button(ui, row_node, tr("Check for Updates"), SettingsAction::CheckForUpdates, false),
         }
         if source_set {
             let row_node = self.row(ui, tr("Last checked"));
@@ -2575,7 +2713,14 @@ impl SettingsSheet {
                 w.set_paint(Paint::Secondary);
             }
         }
-        if let AboutState::Available { .. } = &about.state {
+        if let Some(path) = &about.read_only {
+            let line = tr_fmt!(
+                "Axion is installed in {path}, which it can't write to. This installation is managed elsewhere or needs permissions: download the new version from the release page.",
+                path = path.as_str()
+            );
+            self.note(ui, &line);
+        }
+        if let (AboutState::Available { .. }, true) = (&about.state, about.run.is_none()) {
             if !about.notes.is_empty() {
                 self.section(ui, tr("Release notes"));
                 self.notes_box(ui, &about.notes);
@@ -2583,7 +2728,9 @@ impl SettingsSheet {
             let row_node = self.button_row(ui);
             if !about.busy {
                 let (text, action) = match about.mode {
-                    InstallMode::AppImage => (tr("Update"), SettingsAction::InstallUpdate),
+                    InstallMode::AppImage | InstallMode::Tarball => {
+                        (tr("Update"), SettingsAction::InstallUpdate)
+                    }
                     InstallMode::Source => (tr("Update from Git"), SettingsAction::InstallUpdate),
                     InstallMode::Other => (tr("Open Release Page"), SettingsAction::OpenReleasePage),
                 };
@@ -2616,6 +2763,7 @@ impl SettingsSheet {
         self.section(ui, tr("Updates"));
         self.control(ui, config, Setting::AutoCheckUpdates);
         self.control(ui, config, Setting::UpdatePrereleases);
+        self.control(ui, config, Setting::UpdateNotifications);
         let row_node = self.row(ui, tr("Repository"));
         // The default repository is the placeholder; the field holds only what the user typed.
         let placeholder = if axion_config::DEFAULT_REPOSITORY.is_empty() {
@@ -2642,6 +2790,143 @@ impl SettingsSheet {
                 tr("updates.manifest_url is set in config.toml and is used instead of the repository."),
             );
         }
+    }
+
+    /// The update that is running or has just ended, in the "Software update" section: a
+    /// progress bar with the step and the newest output line (changed in place by
+    /// [`Self::update_run`]), or the result with its buttons.
+    fn run_block(&mut self, ui: &mut Ui, run: &RunInfo) {
+        let row_node = self.row(ui, &run.title);
+        match run.phase {
+            Phase::Running => {
+                if run.cancellable {
+                    pill_button(ui, row_node, tr("Cancel"), SettingsAction::CancelUpdate, false);
+                }
+                let parent = self.group_for_row(ui);
+                let track = ui.add(
+                    parent,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Label, 0.10))
+                        .with_radius(CAPSULE),
+                    Style {
+                        size: Size { width: percent(1.0), height: length(RUN_BAR_HEIGHT) },
+                        flex_shrink: 0.0,
+                        margin: Rect {
+                            left: length(GROUP_INSET),
+                            right: length(GROUP_INSET),
+                            top: length(8.0),
+                            bottom: length(4.0),
+                        },
+                        ..Default::default()
+                    },
+                );
+                let fill = ui.add(
+                    track,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Accent, 1.0))
+                        .with_radius(CAPSULE),
+                    Style::default(),
+                );
+                let status = ui.add_label(
+                    parent,
+                    &run.status,
+                    TextStyle::Callout,
+                    Style { margin: Rect { left: length(GROUP_INSET), ..zero_rect() }, ..Default::default() },
+                );
+                let detail = ui.add_label(
+                    parent,
+                    &run.detail,
+                    TextStyle::Footnote,
+                    Style {
+                        min_size: Size { width: length(0.0), height: auto() },
+                        margin: Rect { left: length(GROUP_INSET), ..zero_rect() },
+                        ..Default::default()
+                    },
+                );
+                ui.set_label_lines(detail, 1);
+                if let Some(w) = ui.widget_mut(detail) {
+                    w.set_paint(Paint::Secondary);
+                }
+                self.run_nodes = Some(RunNodes { status, detail, fill });
+                self.update_run(ui, run, 0);
+            }
+            Phase::Done => {
+                primary_button(ui, row_node, tr("Restart Axion"), SettingsAction::RelaunchNow);
+                pill_button(ui, row_node, tr("Later"), SettingsAction::DismissUpdate, false);
+                self.note(ui, &run.status);
+            }
+            Phase::Failed => {
+                primary_button(ui, row_node, tr("Try again"), SettingsAction::RetryUpdate);
+                pill_button(ui, row_node, tr("Close"), SettingsAction::DismissUpdate, false);
+                if run.release_page {
+                    pill_button(
+                        ui,
+                        row_node,
+                        tr("Open Release Page"),
+                        SettingsAction::OpenReleasePage,
+                        false,
+                    );
+                }
+                for line in &run.lines {
+                    self.note(ui, line);
+                }
+                if !run.log.is_empty() {
+                    self.note(ui, tr("Last output:"));
+                    for line in &run.log {
+                        let label = ui.add_label(
+                            self.content,
+                            line,
+                            TextStyle::Footnote,
+                            Style {
+                                min_size: Size { width: length(0.0), height: auto() },
+                                margin: Rect { left: length(GROUP_INSET + 8.0), ..zero_rect() },
+                                ..Default::default()
+                            },
+                        );
+                        ui.set_label_lines(label, 1);
+                    }
+                }
+            }
+            Phase::Idle | Phase::Confirm => {}
+        }
+    }
+
+    /// Changes the running update's lines and bar without rebuilding the page. `tick` moves
+    /// the indeterminate bar. Does nothing when the page is not showing a running update.
+    pub fn update_run(&mut self, ui: &mut Ui, run: &RunInfo, tick: u32) {
+        let Some(nodes) = self.run_nodes else { return };
+        if run.phase != Phase::Running {
+            return;
+        }
+        ui.set_text(nodes.status, &run.status);
+        ui.set_text(nodes.detail, &run.detail);
+        let style = match run.progress {
+            Some(fraction) => Style {
+                size: Size { width: percent(fraction.clamp(0.0, 1.0)), height: length(RUN_BAR_HEIGHT) },
+                ..Default::default()
+            },
+            None => {
+                // A third of the bar sweeps from end to end.
+                let phase = (tick % RUN_SWEEP_STEPS) as f32 / RUN_SWEEP_STEPS as f32;
+                let left = phase * (1.0 - RUN_SWEEP_WIDTH);
+                Style {
+                    size: Size { width: percent(RUN_SWEEP_WIDTH), height: length(RUN_BAR_HEIGHT) },
+                    margin: Rect {
+                        left: percent(left),
+                        right: length(0.0),
+                        top: length(0.0),
+                        bottom: length(0.0),
+                    },
+                    ..Default::default()
+                }
+            }
+        };
+        ui.set_style(nodes.fill, style);
+    }
+
+    /// Whether the page currently shows a running update that [`Self::update_run`] can change.
+    pub fn shows_run(&self) -> bool {
+        self.run_nodes.is_some()
     }
 
     /// The release notes in a box of their own that scrolls when they are longer.
@@ -3814,6 +4099,7 @@ impl SettingsSheet {
                 Outcome::Changed
             }
             SettingsAction::ShowWelcomeTour => return Outcome::ShowWelcomeTour,
+            SettingsAction::MakeDefaultBrowser => return Outcome::MakeDefaultBrowser,
             SettingsAction::IconWeight(i) => {
                 set_icon_weight(config, i);
                 Outcome::Changed
@@ -3965,6 +4251,9 @@ impl SettingsSheet {
             SettingsAction::RemindLater => return Outcome::RemindLater,
             SettingsAction::OpenReleasePage => return Outcome::OpenReleasePage,
             SettingsAction::RelaunchNow => return Outcome::RelaunchNow,
+            SettingsAction::CancelUpdate => return Outcome::CancelUpdate,
+            SettingsAction::DismissUpdate => return Outcome::DismissUpdate,
+            SettingsAction::RetryUpdate => return Outcome::RetryUpdate,
             SettingsAction::PageFrames(frames) => {
                 let amd = self
                     .hardware
@@ -4543,6 +4832,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_default_browser_button_has_an_id_of_its_own() {
+        let id = SettingsAction::MakeDefaultBrowser.id();
+        assert_eq!(SettingsAction::from_id(id), Some(SettingsAction::MakeDefaultBrowser));
+        // No other id in the whole range maps to it, and the id maps to nothing else.
+        let hits = (0..20_000)
+            .filter(|&n| SettingsAction::from_id(ActionId(n)) == Some(SettingsAction::MakeDefaultBrowser));
+        assert_eq!(hits.count(), 1);
+        assert_ne!(id, SettingsAction::ShowWelcomeTour.id());
+    }
+
+    #[test]
     fn sliders_round_trip_through_config() {
         let mut config = Config::default();
         for setting in [
@@ -4636,6 +4936,9 @@ mod tests {
             SettingsAction::OpenReleasePage,
             SettingsAction::SaveRepository,
             SettingsAction::RelaunchNow,
+            SettingsAction::CancelUpdate,
+            SettingsAction::DismissUpdate,
+            SettingsAction::RetryUpdate,
             SettingsAction::PageFrames(PageFrames::Auto),
             SettingsAction::PageFrames(PageFrames::Gpu),
             SettingsAction::PageFrames(PageFrames::Software),

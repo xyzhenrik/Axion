@@ -347,6 +347,9 @@ pub struct Relaunch {
     /// The program to start; none: this executable again. An update points it at the new
     /// AppImage or the rebuilt binary (the running one may be gone by then).
     pub exe: Option<PathBuf>,
+    /// A tarball update that was unpacked next to the installation: swapped in right before the
+    /// new process starts (Chromium has shut down, so nothing reads the old files any more).
+    pub swap: Option<axion_update::Staged>,
 }
 
 impl Relaunch {
@@ -374,7 +377,16 @@ impl Relaunch {
             Some(exe) => exe.clone(),
             None => axion_update::install::current_exe().context("finding Axion's executable")?,
         };
-        tracing::info!(account = %self.account, "starting Axion in the other account");
+        if let Some(staged) = &self.swap {
+            match axion_update::tarball::apply_staged(staged) {
+                Ok(backup) => {
+                    tracing::info!(version = %staged.version, backup = %backup.display(), "installed the update");
+                }
+                // The old installation is still in place (the swap rolls itself back).
+                Err(e) => tracing::error!("installing the update failed, starting the current version: {e}"),
+            }
+        }
+        tracing::info!(account = %self.account, "starting Axion");
         std::process::Command::new(&exe)
             .args(self.args())
             .spawn()
@@ -396,6 +408,7 @@ mod tests {
             maximized: true,
             capture: Some(PathBuf::from("/tmp/x.png")),
             exe: None,
+            swap: None,
         };
         assert_eq!(
             relaunch.args(),

@@ -18,7 +18,9 @@ mod avatars;
 mod browser;
 mod chrome;
 mod circuit_popover;
+mod click_probe;
 mod context_menu;
+mod default_browser;
 mod desktop;
 mod desktop_integration;
 mod downloads;
@@ -42,6 +44,7 @@ mod history;
 mod home;
 mod import;
 mod input;
+mod instance;
 mod lifecycle;
 mod link_preview;
 mod locale;
@@ -104,7 +107,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
-use browser::{Browser, CaptureDone, Options};
+use browser::{Browser, CaptureDone, Forwarded, Options};
 
 /// How long `--capture` waits for the page to load before saving.
 const CAPTURE_AFTER: Duration = Duration::from_secs(8);
@@ -129,7 +132,7 @@ fn main() -> Result<()> {
         std::process::exit(check_update_cli(&args));
     }
     let mut options = Options {
-        urls: args.iter().filter(|a| !a.starts_with("--")).cloned().collect(),
+        urls: instance::urls_from_args(&args, &std::env::current_dir().unwrap_or_default()),
         overview: args.iter().any(|a| a == "--overview"),
         address: args.iter().find_map(|a| a.strip_prefix("--address=")).map(str::to_owned),
         open: args.iter().find_map(|a| a.strip_prefix("--open=")).map(str::to_owned),
@@ -180,6 +183,7 @@ fn main() -> Result<()> {
     let relaunch = app.browser.as_mut().and_then(Browser::take_relaunch);
     // Dropping the browser saves everything, then shuts Chromium down; a watchdog ends the
     // process if that takes longer than `window.shutdown_timeout_ms`.
+    let pending_swap = app.browser.as_ref().and_then(Browser::pending_swap);
     let quit_started = std::time::Instant::now();
     if let Some(mut browser) = app.browser.take() {
         let guard = shutdown::arm(browser.shutdown_limit(), relaunch.clone());
@@ -188,12 +192,22 @@ fn main() -> Result<()> {
         guard.finished();
     }
     tracing::info!(ms = quit_started.elapsed().as_millis() as u64, "shut down");
-    // Switching accounts: Axion starts again in the other one.
+    // Switching accounts or finishing an update: Axion starts again.
     if let Some(relaunch) = relaunch {
         relaunch.spawn()?;
+    } else if let Some(staged) = pending_swap {
+        // An update that was unpacked but not restarted into: it takes effect at the next start.
+        match axion_update::tarball::apply_staged(&staged) {
+            Ok(backup) => {
+                tracing::info!(version = %staged.version, backup = %backup.display(), "installed the update")
+            }
+            Err(e) => tracing::error!("installing the update failed: {e}"),
+        }
     }
     match app.error {
-        Some(e) if e.downcast_ref::<CaptureDone>().is_none() => Err(e),
+        Some(e) if e.downcast_ref::<CaptureDone>().is_none() && e.downcast_ref::<Forwarded>().is_none() => {
+            Err(e)
+        }
         _ => Ok(()),
     }
 }

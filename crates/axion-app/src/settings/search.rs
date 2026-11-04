@@ -339,6 +339,11 @@ pub const INDEX: &[Entry] = &[
         &["keys", "hotkeys", "keymap", "tastatur", "tastenkürzel", "bindings"],
     ),
     page(C::Tabs, tr_mark("Tab bar layout"), &["compact", "separate", "tab strip", "tableiste", "kompakt"]),
+    control(
+        C::Tabs,
+        S::HideSingleTabBar,
+        &["tab bar", "single", "hide", "one tab", "tableiste", "ausblenden"],
+    ),
     control(C::Tabs, S::TintFromPage, &["color", "page colour", "tint", "farbe"]),
     control(C::Tabs, S::OpenInBackground, &["new tab", "links", "hintergrund", "middle click"]),
     control(C::Tabs, S::CloseAnimation, &["close", "animation", "schließen", "animieren", "shrink"]),
@@ -768,6 +773,11 @@ pub const INDEX: &[Entry] = &[
         C::About,
         S::UpdatePrereleases,
         &["update", "beta", "channel", "preview", "vorabversion", "kanal", "testversion"],
+    ),
+    control(
+        C::About,
+        S::UpdateNotifications,
+        &["update", "notification", "notify", "desktop", "benachrichtigung", "meldung", "hinweis"],
     ),
 ];
 
