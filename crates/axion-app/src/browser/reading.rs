@@ -455,15 +455,9 @@ impl Browser {
 
     /// The language pages are translated into.
     fn translate_target(&self) -> String {
-        lang::normalize(&self.config.translation.target_language).filter(|l| !l.is_empty()).unwrap_or_else(
-            || {
-                match axion_i18n::language() {
-                    axion_i18n::Language::German => "de",
-                    axion_i18n::Language::English => "en",
-                }
-                .to_owned()
-            },
-        )
+        lang::normalize(&self.config.translation.target_language)
+            .filter(|l| !l.is_empty())
+            .unwrap_or_else(|| axion_i18n::language().translation_code().to_owned())
     }
 
     /// Whether `tab` is worth offering a translation: its language differs from the target and

@@ -40,6 +40,7 @@ pub mod generator;
 pub mod import;
 mod item;
 mod platform;
+pub mod sealed;
 pub mod site;
 
 use std::cell::RefCell;
@@ -55,6 +56,7 @@ use zeroize::Zeroizing;
 pub use crypto::KdfParams;
 pub use device::{DeviceKey, DeviceKeyError, MemoryDeviceKey, SystemDeviceKey};
 pub use item::{Address, Card, Item, ItemData, Kind, Login, Note};
+pub use sealed::{SealedError, SealedStore};
 
 use crypto::{Key, SALT_LEN};
 

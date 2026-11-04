@@ -626,7 +626,7 @@ fn build(shared: &Arc<Shared>, conn: &Connection) -> Result<(Running, Gateway), 
         Ok(s) => s,
         Err(SecretError::Locked) => {
             return Err(Started::Blocked(
-                "The password vault is locked, so the secrets of this connection are not available.".into(),
+                "The secrets of this connection are still in the locked password vault (an older version put them there). Unlock Passwords once and they move out of it.".into(),
             ));
         }
         Err(e) => return Err(Started::Blocked(format!("The connection's secrets cannot be read: {e}"))),
@@ -680,7 +680,7 @@ fn build(shared: &Arc<Shared>, conn: &Connection) -> Result<(Running, Gateway), 
                 None => w.clone(),
             };
             if config.interface.private_key.is_empty() {
-                return Err(Started::Blocked("The WireGuard private key is missing from the vault.".into()));
+                return Err(Started::Blocked("The WireGuard private key is missing.".into()));
             }
             let tunnel = crate::wireguard::create(&config, &tunnel_options).map_err(|e| match e {
                 NetError::NotAvailable(_) => Started::Blocked(e.to_string()),

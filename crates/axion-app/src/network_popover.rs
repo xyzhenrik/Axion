@@ -1,9 +1,11 @@
 //! The network popover: drips out of the chip in the address field and shows the route of the
-//! current site, with a choice per site (the default, direct, or a connection).
+//! current site. Its primary action is "Use <connection> for this session" (every tab through
+//! one connection until it is switched off); below it a choice per site (the default, direct,
+//! or a connection).
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::Config;
-use axion_i18n::tr;
+use axion_i18n::{tr, tr_fmt};
 use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
@@ -11,8 +13,15 @@ use glam::Vec2;
 use crate::network::ChipState;
 use crate::popover::Popover;
 
+/// This popover owns ids `ACTION_BASE..ACTION_BASE + 20` (the circuit popover starts at 6970).
 const ACTION_BASE: u32 = 6950;
 const SETTINGS: ActionId = ActionId(ACTION_BASE + 1);
+/// Switches the session route off.
+const SESSION_OFF: ActionId = ActionId(ACTION_BASE + 2);
+/// `SESSION_BASE + i`: use the i-th offered connection for the session.
+const SESSION_BASE: u32 = ACTION_BASE + 3;
+/// Most connections offered for a session route.
+pub const MAX_SESSION: usize = 7;
 const CHOICE_BASE: u32 = ACTION_BASE + 10;
 /// Most connections the popover lists.
 pub const MAX_CHOICES: usize = 8;
@@ -26,7 +35,9 @@ const HEADER: f32 = 40.0;
 const LABEL: f32 = 18.0;
 const CHOICE: f32 = 36.0;
 const NOTE: f32 = 36.0;
+const SESSION_NOTE: f32 = 54.0;
 const FOOTER: f32 = 32.0;
+const SESSION_BUTTON: f32 = 40.0;
 
 /// What the popover shows.
 pub struct NetworkInfo {
@@ -42,11 +53,20 @@ pub struct NetworkInfo {
     pub choices: Vec<(String, bool)>,
     /// A rule for this site exists (the note says so).
     pub has_rule: bool,
+    /// The connection of the active session route, if there is one.
+    pub session_active: Option<String>,
+    /// Connections that can be used for the session: the first is the primary action, the
+    /// rest are listed under it (while a session route is on, these switch to another one).
+    pub session_offers: Vec<String>,
 }
 
 pub enum PopoverAction {
     /// The choice at this index (0 = the default, 1 = direct, then the connections).
     Choose(usize),
+    /// Use the i-th offered connection for the whole session.
+    SessionOn(usize),
+    /// Switch the session route off; the normal routes come back.
+    SessionOff,
     OpenSettings,
 }
 
@@ -85,9 +105,7 @@ impl NetworkPopover {
         window_width: f32,
         info: &NetworkInfo,
     ) {
-        self.fill(ui, info);
-        let n = info.choices.len().min(MAX_CHOICES) as f32;
-        let height = 2.0 * (PADDING + INSET) + HEADER + LABEL + n * CHOICE + NOTE + FOOTER + (n + 4.0) * GAP;
+        let height = self.fill(ui, info);
         let left = (anchor.origin.x - PADDING - 8.0).clamp(8.0, (window_width - WIDTH - 8.0).max(8.0));
         let target = Frame::new(left, anchor.origin.y + anchor.size.y + GAP_BELOW_ANCHOR, WIDTH, height);
         self.popover.open(ui, config, anchor, target);
@@ -107,8 +125,11 @@ impl NetworkPopover {
         }
     }
 
-    fn fill(&mut self, ui: &mut Ui, info: &NetworkInfo) {
+    /// Builds the content; returns the popover's height.
+    fn fill(&mut self, ui: &mut Ui, info: &NetworkInfo) -> f32 {
         ui.clear_children(self.plate);
+        // Content heights, summed to size the popover (children are GAP apart).
+        let mut heights: Vec<f32> = vec![HEADER];
         let header = ui.add(self.plate, Widget::container(), fixed_row(HEADER, 12.0));
         let (icon, paint) = match info.state {
             ChipState::Up => (Icon::Network, Paint::Shield),
@@ -132,60 +153,97 @@ impl NetworkPopover {
         ui.set_label_lines(t, 1);
         secondary(ui, titles, &info.detail, TextStyle::Footnote);
 
-        let label_row = ui.add(self.plate, Widget::container(), fixed_row(LABEL, 0.0));
-        secondary(
-            ui,
-            label_row,
-            &axion_i18n::tr_fmt!("Route for {site}", site = info.site),
-            TextStyle::Footnote,
-        );
-
-        for (i, (label, selected)) in info.choices.iter().take(MAX_CHOICES).enumerate() {
-            let row = ui.add(
+        // The session route: the primary action.
+        if let Some(name) = &info.session_active {
+            heights.push(SESSION_NOTE);
+            let note_row = ui.add(self.plate, Widget::container(), fixed_row(SESSION_NOTE, 0.0));
+            let n = secondary(
+                ui,
+                note_row,
+                &tr_fmt!(
+                    "Session route: every tab goes through {name} until you switch it off. Site routes are set aside meanwhile.",
+                    name = name
+                ),
+                TextStyle::Footnote,
+            );
+            ui.set_label_lines(n, 3);
+            heights.push(SESSION_BUTTON);
+            session_button(
+                ui,
                 self.plate,
-                Widget::container()
-                    .with_action(ActionId(CHOICE_BASE + i as u32))
-                    .with_isolated()
-                    .with_radius(CAPSULE)
-                    .with_background(Background::Glass(GlassLevel::Thin)),
-                Style {
-                    size: Size { width: auto(), height: length(CHOICE) },
-                    flex_shrink: 0.0,
-                    padding: Rect {
-                        left: length(14.0),
-                        right: length(12.0),
-                        top: length(0.0),
-                        bottom: length(0.0),
-                    },
-                    ..row_style(8.0)
-                },
+                SESSION_OFF,
+                &tr_fmt!("Stop using {name} for this session", name = name),
+                true,
             );
-            let l = ui.add_label(
-                row,
-                label,
-                TextStyle::Body,
-                Style {
-                    flex_grow: 1.0,
-                    flex_shrink: 1.0,
-                    min_size: Size { width: length(0.0), height: auto() },
-                    ..Default::default()
-                },
+        }
+        for (i, name) in info.session_offers.iter().take(MAX_SESSION).enumerate() {
+            let primary = i == 0 && info.session_active.is_none();
+            heights.push(SESSION_BUTTON);
+            session_button(
+                ui,
+                self.plate,
+                ActionId(SESSION_BASE + i as u32),
+                &tr_fmt!("Use {name} for this session", name = name),
+                primary,
             );
-            ui.set_label_lines(l, 1);
-            if *selected {
-                ui.add(row, Widget::icon(Icon::Check, 16.0).with_paint(Paint::Accent), Style::default());
-            }
         }
 
-        let note = if info.has_rule {
-            tr("This site has its own route. Choose Default to remove it.")
-        } else {
-            tr("Applies to this site and its subdomains, and is saved in the network settings.")
-        };
-        let note_row = ui.add(self.plate, Widget::container(), fixed_row(NOTE, 0.0));
-        let n = secondary(ui, note_row, note, TextStyle::Footnote);
-        ui.set_label_lines(n, 2);
+        // The route of this site, as long as no session route sets site routes aside.
+        if info.session_active.is_none() {
+            heights.push(LABEL);
+            let label_row = ui.add(self.plate, Widget::container(), fixed_row(LABEL, 0.0));
+            secondary(ui, label_row, &tr_fmt!("Route for {site}", site = info.site), TextStyle::Footnote);
 
+            for (i, (label, selected)) in info.choices.iter().take(MAX_CHOICES).enumerate() {
+                heights.push(CHOICE);
+                let row = ui.add(
+                    self.plate,
+                    Widget::container()
+                        .with_action(ActionId(CHOICE_BASE + i as u32))
+                        .with_isolated()
+                        .with_radius(CAPSULE)
+                        .with_background(Background::Glass(GlassLevel::Thin)),
+                    Style {
+                        size: Size { width: auto(), height: length(CHOICE) },
+                        flex_shrink: 0.0,
+                        padding: Rect {
+                            left: length(14.0),
+                            right: length(12.0),
+                            top: length(0.0),
+                            bottom: length(0.0),
+                        },
+                        ..row_style(8.0)
+                    },
+                );
+                let l = ui.add_label(
+                    row,
+                    label,
+                    TextStyle::Body,
+                    Style {
+                        flex_grow: 1.0,
+                        flex_shrink: 1.0,
+                        min_size: Size { width: length(0.0), height: auto() },
+                        ..Default::default()
+                    },
+                );
+                ui.set_label_lines(l, 1);
+                if *selected {
+                    ui.add(row, Widget::icon(Icon::Check, 16.0).with_paint(Paint::Accent), Style::default());
+                }
+            }
+
+            let note = if info.has_rule {
+                tr("This site has its own route. Choose Default to remove it.")
+            } else {
+                tr("Applies to this site and its subdomains, and is saved in the network settings.")
+            };
+            heights.push(NOTE);
+            let note_row = ui.add(self.plate, Widget::container(), fixed_row(NOTE, 0.0));
+            let n = secondary(ui, note_row, note, TextStyle::Footnote);
+            ui.set_label_lines(n, 2);
+        }
+
+        heights.push(FOOTER);
         let footer = ui.add(self.plate, Widget::container(), fixed_row(FOOTER, 8.0));
         let spacer = ui.add(footer, Widget::container(), Style { flex_grow: 1.0, ..Default::default() });
         let _ = spacer;
@@ -209,6 +267,7 @@ impl NetworkPopover {
         );
         ui.add_label(button, tr("Network settings…"), TextStyle::Callout, Style::default());
         ui.add(button, Widget::icon(Icon::ChevronRight, 14.0).with_paint(Paint::Secondary), Style::default());
+        content_height(&heights)
     }
 
     pub fn close(&mut self, ui: &mut Ui, config: &Config) {
@@ -220,8 +279,20 @@ impl NetworkPopover {
     }
 
     pub fn action(&self, id: ActionId) -> Option<PopoverAction> {
+        Self::action_of(id)
+    }
+
+    fn action_of(id: ActionId) -> Option<PopoverAction> {
         if id == SETTINGS {
             return Some(PopoverAction::OpenSettings);
+        }
+        if id == SESSION_OFF {
+            return Some(PopoverAction::SessionOff);
+        }
+        if let Some(i) = id.0.checked_sub(SESSION_BASE).map(|i| i as usize)
+            && i < MAX_SESSION
+        {
+            return Some(PopoverAction::SessionOn(i));
         }
         let i = id.0.checked_sub(CHOICE_BASE)? as usize;
         (i < MAX_CHOICES).then_some(PopoverAction::Choose(i))
@@ -229,6 +300,51 @@ impl NetworkPopover {
 
     pub fn contains(&self, ui: &Ui, p: Vec2) -> bool {
         self.popover.contains(ui, p)
+    }
+}
+
+/// The popover's height for these content rows: padding, the rows and the gaps between them.
+fn content_height(rows: &[f32]) -> f32 {
+    let gaps = rows.len().saturating_sub(1) as f32 * GAP;
+    2.0 * (PADDING + INSET) + rows.iter().sum::<f32>() + gaps
+}
+
+/// A full-width glass button: the primary one is tinted with the accent, the others are plain
+/// glass (never a fill behind the glass).
+fn session_button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, primary: bool) {
+    let background = if primary {
+        Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
+    } else {
+        Background::Glass(GlassLevel::Thin)
+    };
+    let button = ui.add(
+        parent,
+        Widget::container()
+            .with_action(action)
+            .with_isolated()
+            .with_radius(CAPSULE)
+            .with_background(background),
+        Style {
+            size: Size { width: auto(), height: length(SESSION_BUTTON) },
+            flex_shrink: 0.0,
+            justify_content: JustifyContent::CENTER,
+            padding: Rect { left: length(14.0), right: length(14.0), top: length(0.0), bottom: length(0.0) },
+            ..row_style(8.0)
+        },
+    );
+    let label = ui.add_label(
+        button,
+        text,
+        if primary { TextStyle::BodyEmphasis } else { TextStyle::Body },
+        Style {
+            flex_shrink: 1.0,
+            min_size: Size { width: length(0.0), height: auto() },
+            ..Default::default()
+        },
+    );
+    ui.set_label_lines(label, 1);
+    if primary && let Some(w) = ui.widget_mut(label) {
+        w.set_paint(Paint::OnAccent);
     }
 }
 
@@ -259,4 +375,46 @@ fn secondary(ui: &mut Ui, parent: NodeId, text: &str, style: TextStyle) -> NodeI
         w.set_paint(Paint::Secondary);
     }
     label
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every id the popover can produce.
+    fn all_ids() -> Vec<u32> {
+        let mut ids = vec![SETTINGS.0, SESSION_OFF.0];
+        ids.extend((0..MAX_SESSION as u32).map(|i| SESSION_BASE + i));
+        ids.extend((0..MAX_CHOICES as u32).map(|i| CHOICE_BASE + i));
+        ids
+    }
+
+    #[test]
+    fn action_ids_are_unique_and_stay_in_this_popovers_range() {
+        let ids = all_ids();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len(), "two actions share an id: {ids:?}");
+        // The translate popover owns 6900.., the circuit popover 6970..: stay in between.
+        assert!(ids.iter().all(|id| (6950..6970).contains(id)), "{ids:?}");
+        assert!(SESSION_BASE + MAX_SESSION as u32 <= CHOICE_BASE, "session ids must not reach the choices");
+    }
+
+    #[test]
+    fn ids_map_back_to_their_actions() {
+        let p = NetworkPopover::action_of;
+        assert!(matches!(p(SETTINGS), Some(PopoverAction::OpenSettings)));
+        assert!(matches!(p(SESSION_OFF), Some(PopoverAction::SessionOff)));
+        assert!(matches!(p(ActionId(SESSION_BASE + 2)), Some(PopoverAction::SessionOn(2))));
+        assert!(matches!(p(ActionId(CHOICE_BASE + 3)), Some(PopoverAction::Choose(3))));
+        assert!(p(ActionId(ACTION_BASE)).is_none());
+        assert!(p(ActionId(CHOICE_BASE + MAX_CHOICES as u32)).is_none());
+    }
+
+    #[test]
+    fn height_counts_padding_rows_and_gaps() {
+        assert_eq!(content_height(&[]), 2.0 * (PADDING + INSET));
+        assert_eq!(content_height(&[10.0, 20.0]), 2.0 * (PADDING + INSET) + 30.0 + GAP);
+    }
 }

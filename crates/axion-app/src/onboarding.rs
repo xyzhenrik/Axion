@@ -235,7 +235,8 @@ const SKIP: ActionId = ActionId(BASE + 2);
 const CHOOSE_PHOTO: ActionId = ActionId(BASE + 3);
 const REMOVE_PHOTO: ActionId = ActionId(BASE + 4);
 const MAKE_DEFAULT: ActionId = ActionId(BASE + 5);
-const LANGUAGE_BASE: u32 = BASE + 10;
+/// One id per `UiLanguage::ALL` entry (more than the 10 ids between the other groups).
+const LANGUAGE_BASE: u32 = BASE + 200;
 const THEME_BASE: u32 = BASE + 20;
 const ACCENT_BASE: u32 = BASE + 30;
 const TAB_BAR_BASE: u32 = BASE + 40;
@@ -245,8 +246,6 @@ const IMPORT_BASE: u32 = BASE + 70;
 /// Browsers listed in the import step.
 pub const MAX_SOURCES: usize = 4;
 
-const LANGUAGES: [(&str, UiLanguage); 3] =
-    [("System", UiLanguage::System), ("English", UiLanguage::English), ("Deutsch", UiLanguage::German)];
 const THEMES: [ThemeMode; 3] = [ThemeMode::Light, ThemeMode::Dark, ThemeMode::Auto];
 const TAB_BARS: [TabBarStyle; 2] = [TabBarStyle::Compact, TabBarStyle::Separate];
 const GLASS_STYLES: [GlassStyle; 2] = [GlassStyle::Liquid, GlassStyle::Flat];
@@ -307,8 +306,8 @@ fn click_of(id: ActionId) -> Option<Click> {
         REMOVE_PHOTO => Click::RemovePhoto,
         MAKE_DEFAULT => Click::MakeDefault,
         _ => {
-            if let Some(i) = index(LANGUAGE_BASE, LANGUAGES.len()) {
-                Click::Pick(Pick::Language(LANGUAGES[i].1))
+            if let Some(i) = index(LANGUAGE_BASE, UiLanguage::ALL.len()) {
+                Click::Pick(Pick::Language(UiLanguage::ALL[i]))
             } else if let Some(i) = index(THEME_BASE, THEMES.len()) {
                 Click::Pick(Pick::Theme(THEMES[i]))
             } else if let Some(i) = index(ACCENT_BASE, ACCENT_SWATCHES.len()) {
@@ -1573,12 +1572,12 @@ impl Onboarding {
     /// A capsule button.
     fn pill(&mut self, ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, kind: PillKind) -> NodeId {
         let (background, label_paint) = match kind {
-            PillKind::Primary | PillKind::Selected => {
+            PillKind::Primary | PillKind::SmallSelected => {
                 (Background::TintedGlass(GlassLevel::Thin, Paint::Accent), Some(Paint::OnAccent))
             }
             PillKind::Plain | PillKind::Small => (Background::Glass(GlassLevel::Thin), None),
         };
-        let height = if kind == PillKind::Small { 32.0 } else { BUTTON_HEIGHT };
+        let height = if kind.is_small() { 32.0 } else { BUTTON_HEIGHT };
         let node = ui.add(
             parent,
             Widget::container().with_action(action).with_radius(CAPSULE).with_background(background),
@@ -1589,7 +1588,7 @@ impl Onboarding {
                     height: auto(),
                 },
                 flex_shrink: 0.0,
-                padding: pad(if kind == PillKind::Small { 16.0 } else { 24.0 }, 0.0),
+                padding: pad(if kind.is_small() { 16.0 } else { 24.0 }, 0.0),
                 justify_content: JustifyContent::CENTER,
                 align_items: AlignItems::CENTER,
                 ..Default::default()
@@ -1598,7 +1597,11 @@ impl Onboarding {
         let label = ui.add_label(
             node,
             text,
-            if kind == PillKind::Small { TextStyle::Footnote } else { TextStyle::BodyEmphasis },
+            match kind {
+                PillKind::Small => TextStyle::Footnote,
+                PillKind::SmallSelected => TextStyle::Callout,
+                _ => TextStyle::BodyEmphasis,
+            },
             Style::default(),
         );
         if let Some(paint) = label_paint
@@ -1783,15 +1786,26 @@ impl Onboarding {
         if let Some(w) = ui.widget_mut(label) {
             w.set_paint(Paint::Secondary);
         }
-        let languages = ui.add(body, Widget::container(), row(self.apart));
-        for (i, &(name, language)) in LANGUAGES.iter().enumerate() {
+        // Many choices: small pills that wrap, each language in its own name.
+        let languages = ui.add(
+            body,
+            Widget::container(),
+            Style {
+                flex_wrap: FlexWrap::Wrap,
+                gap: Size { width: length(self.apart), height: length(self.apart * 0.5) },
+                max_size: Size { width: length(inner), height: auto() },
+                ..row(self.apart)
+            },
+        );
+        for (i, &language) in UiLanguage::ALL.iter().enumerate() {
             let selected = config.general.language == language;
+            let name = crate::locale::native_name(language).unwrap_or_else(|| tr("System default"));
             self.pill(
                 ui,
                 languages,
                 ActionId(LANGUAGE_BASE + i as u32),
                 name,
-                if selected { PillKind::Selected } else { PillKind::Plain },
+                if selected { PillKind::SmallSelected } else { PillKind::Small },
             );
         }
     }
@@ -2260,9 +2274,15 @@ impl Onboarding {
 enum PillKind {
     Plain,
     Primary,
-    /// A chosen option among pills.
-    Selected,
     Small,
+    /// A chosen option among many small pills (the language list).
+    SmallSelected,
+}
+
+impl PillKind {
+    fn is_small(self) -> bool {
+        matches!(self, PillKind::Small | PillKind::SmallSelected)
+    }
 }
 
 #[cfg(test)]

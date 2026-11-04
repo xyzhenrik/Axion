@@ -48,7 +48,7 @@ The [Settings reference](settings.md) lists the key of every setting. A worked e
 # ~/.config/axion/accounts/<id>/config.toml
 
 [general]
-language = "en"                      # "system", "en" or "de"
+language = "en"                      # "system", "en", "de", "es", "fr", "tr", "ja", "pt-BR", "it", "ru", "zh-Hans", "ko", "nl", "pl"
 search_url = "https://search.brave.com/search?q={}"   # {} becomes the search words
 
 [appearance]
