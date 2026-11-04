@@ -126,8 +126,8 @@ icons! {
     Minus => "M5 12h14",
     // The window zoom button: two triangles in opposite corners, right angles outward (zoom in)
     // or at the centre (restore). Both fill the 4..20 box, so they sit centred.
-    ZoomArrows => "M3.2 3.2h13.3L3.2 16.5zM20.8 20.8H7.5l13.3-13.3z",
-    RestoreArrows => "M9.9 9.9H2.6l7.3-7.3zM14.1 14.1h7.3l-7.3 7.3z",
+    ZoomArrows => "M1.8 1.8h9.6L1.8 11.4zM22.2 22.2h-9.6l9.6-9.6z",
+    RestoreArrows => "M11.4 11.4H1.8l9.6-9.6zM12.6 12.6h9.6l-9.6 9.6z",
     // The window buttons' glyphs: bold, drawn at a fixed weight (see `Drawing`).
     WindowClose => "M5.4 5.4 18.6 18.6M18.6 5.4 5.4 18.6",
     WindowMinimize => "M3.8 12h16.4",
