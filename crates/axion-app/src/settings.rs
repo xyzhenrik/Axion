@@ -21,7 +21,7 @@ use crate::home::Image;
 use crate::morph::{Origin, SheetMorph};
 use crate::passwords::MIN_MASTER_LENGTH;
 use crate::permissions::Group;
-use crate::update::{AboutInfo, AboutState, InstallMode};
+use crate::update::{AboutInfo, AboutState, InstallMode, Phase, RunInfo};
 
 mod import;
 mod network;
@@ -261,6 +261,7 @@ enum Setting {
     TranslateChanges,
     AutoCheckUpdates,
     UpdatePrereleases,
+    UpdateNotifications,
     NetKillSwitch,
     NetLeakProtection,
     NetDisableQuic,
@@ -369,6 +370,7 @@ impl Setting {
             Setting::TranslateChanges => tr_mark("Translate text that appears later"),
             Setting::AutoCheckUpdates => tr_mark("Check for updates automatically"),
             Setting::UpdatePrereleases => tr_mark("Include pre-releases"),
+            Setting::UpdateNotifications => tr_mark("Notify me about updates"),
         }
     }
 
@@ -448,6 +450,7 @@ impl Setting {
                 | Setting::TranslateChanges
                 | Setting::AutoCheckUpdates
                 | Setting::UpdatePrereleases
+                | Setting::UpdateNotifications
         )
     }
 
@@ -602,6 +605,7 @@ impl Setting {
             Setting::TranslatePrompt => return c.translation.prompt as u8 as f32,
             Setting::TranslateChanges => return c.translation.translate_changes as u8 as f32,
             Setting::AutoCheckUpdates => return c.updates.auto_check_on_start as u8 as f32,
+            Setting::UpdateNotifications => return c.updates.desktop_notification as u8 as f32,
             Setting::UpdatePrereleases => {
                 return (c.updates.channel == axion_config::UpdateChannel::Prerelease) as u8 as f32;
             }
@@ -708,6 +712,7 @@ impl Setting {
             Setting::TranslatePrompt => c.translation.prompt = on,
             Setting::TranslateChanges => c.translation.translate_changes = on,
             Setting::AutoCheckUpdates => c.updates.auto_check_on_start = on,
+            Setting::UpdateNotifications => c.updates.desktop_notification = on,
             Setting::UpdatePrereleases => {
                 c.updates.channel = if on {
                     axion_config::UpdateChannel::Prerelease
@@ -820,6 +825,10 @@ pub enum SettingsAction {
     /// Store the repository typed into the field.
     SaveRepository,
     RelaunchNow,
+    /// The running update: stop it, dismiss its result ("Later"), run it again.
+    CancelUpdate,
+    DismissUpdate,
+    RetryUpdate,
     /// Hardware page: how page frames reach Axion, and which graphics card.
     PageFrames(PageFrames),
     GpuCard(GpuChoice),
@@ -850,7 +859,7 @@ const HARDWARE_BASE: u32 = 880;
 
 /// The About page's actions: the ids after the background picker's.
 const UPDATE_BASE: u32 = 990;
-const UPDATE_ACTIONS: u32 = 7;
+const UPDATE_ACTIONS: u32 = 10;
 
 /// The background picker's actions (after the categories' ids).
 const NO_BACKGROUND: u32 = 920;
@@ -1081,6 +1090,9 @@ impl SettingsAction {
                     SettingsAction::OpenReleasePage => UPDATE_BASE + 4,
                     SettingsAction::SaveRepository => UPDATE_BASE + 5,
                     SettingsAction::RelaunchNow => UPDATE_BASE + 6,
+                    SettingsAction::CancelUpdate => UPDATE_BASE + 7,
+                    SettingsAction::DismissUpdate => UPDATE_BASE + 8,
+                    SettingsAction::RetryUpdate => UPDATE_BASE + 9,
                     SettingsAction::Import(action) => action.id(),
                     SettingsAction::Network(action) => action.id(),
                     SettingsAction::PageFrames(f) => HARDWARE_BASE + page_frames_index(f),
@@ -1189,6 +1201,9 @@ impl SettingsAction {
                 SettingsAction::OpenReleasePage,
                 SettingsAction::SaveRepository,
                 SettingsAction::RelaunchNow,
+                SettingsAction::CancelUpdate,
+                SettingsAction::DismissUpdate,
+                SettingsAction::RetryUpdate,
             ][(n - UPDATE_BASE) as usize],
             n if ImportAction::from_id(n).is_some() => SettingsAction::Import(ImportAction::from_id(n)?),
             n if NetAction::from_id(n).is_some() => SettingsAction::Network(NetAction::from_id(n)?),
@@ -1258,6 +1273,9 @@ pub enum Outcome {
     RemindLater,
     OpenReleasePage,
     RelaunchNow,
+    CancelUpdate,
+    DismissUpdate,
+    RetryUpdate,
     /// Hardware: copy the GPU diagnostics to the clipboard.
     CopyDiagnostics,
     /// Hardware: relaunch Axion to apply the changed settings.
@@ -1353,8 +1371,27 @@ pub struct SettingsSheet {
     /// What was typed in the repository field when it was refused (put back after a redraw).
     repository_draft: Option<String>,
     notes: Option<(NodeId, NodeId)>,
+    /// The running update's live lines and bar (changed in place while it runs).
+    run_nodes: Option<RunNodes>,
     notes_scroll: f32,
     about_badge: NodeId,
+}
+
+/// The nodes of a running update that change while it runs.
+#[derive(Clone, Copy)]
+struct RunNodes {
+    status: NodeId,
+    detail: NodeId,
+    fill: NodeId,
+}
+
+const RUN_BAR_HEIGHT: f32 = 6.0;
+/// The indeterminate bar's moving part: its width (share of the bar) and steps per sweep.
+const RUN_SWEEP_WIDTH: f32 = 0.3;
+const RUN_SWEEP_STEPS: u32 = 16;
+
+fn zero_rect() -> Rect<LengthPercentageAuto> {
+    Rect { left: length(0.0), right: length(0.0), top: length(0.0), bottom: length(0.0) }
 }
 
 fn row(gap: f32) -> Style {
@@ -1570,6 +1607,7 @@ impl SettingsSheet {
             repository_status: None,
             repository_draft: None,
             notes: None,
+            run_nodes: None,
             notes_scroll: 0.0,
             about_badge,
         }
@@ -1835,6 +1873,7 @@ impl SettingsSheet {
         self.background_path = None;
         self.repository_field = None;
         self.notes = None;
+        self.run_nodes = None;
         if !self.query.is_empty() {
             self.show_results(ui, config);
             return;
@@ -2506,10 +2545,19 @@ impl SettingsSheet {
         secondary(ui, text, &version);
         let install = match about.mode {
             InstallMode::AppImage => tr("Installed as an AppImage"),
+            InstallMode::Tarball => tr("Installed from a tarball (portable folder)"),
             InstallMode::Source => tr("Built from a Git checkout"),
             InstallMode::Other => tr("Installed with a package manager or by hand"),
         };
         secondary(ui, text, install);
+        if let Some(version) = &about.pending_restart {
+            // The line above is the build that is running; the files on disk are newer.
+            let line = tr_fmt!(
+                "Axion {version} is installed. Restart Axion to finish the update.",
+                version = version.as_str()
+            );
+            secondary(ui, text, &line);
+        }
 
         self.section(ui, tr("Software update"));
         let source_set = !matches!(about.state, AboutState::NoSource);
@@ -2529,15 +2577,22 @@ impl SettingsSheet {
             }
             AboutState::Error(message) => message.clone(),
         };
-        let row_node = self.row(ui, &status);
-        match &about.state {
-            AboutState::Checking => idle_pill(ui, row_node, tr("Checking…")),
-            AboutState::NoSource => {}
-            AboutState::Installed { .. } => {
-                primary_button(ui, row_node, tr("Relaunch Now"), SettingsAction::RelaunchNow)
+        let live_run = about.run.as_ref().filter(|r| !r.collapsed);
+        if let Some(run) = live_run {
+            self.run_block(ui, run);
+        } else {
+            let row_node = self.row(ui, &status);
+            match &about.state {
+                AboutState::Checking => idle_pill(ui, row_node, tr("Checking…")),
+                AboutState::NoSource => {}
+                AboutState::Installed { .. } => {
+                    primary_button(ui, row_node, tr("Restart Axion"), SettingsAction::RelaunchNow)
+                }
+                _ if about.busy => {}
+                _ => {
+                    pill_button(ui, row_node, tr("Check for Updates"), SettingsAction::CheckForUpdates, false)
+                }
             }
-            _ if about.busy => {}
-            _ => pill_button(ui, row_node, tr("Check for Updates"), SettingsAction::CheckForUpdates, false),
         }
         if source_set {
             let row_node = self.row(ui, tr("Last checked"));
@@ -2551,7 +2606,14 @@ impl SettingsSheet {
                 w.set_paint(Paint::Secondary);
             }
         }
-        if let AboutState::Available { .. } = &about.state {
+        if let Some(path) = &about.read_only {
+            let line = tr_fmt!(
+                "Axion is installed in {path}, which it can't write to. This installation is managed elsewhere or needs permissions: download the new version from the release page.",
+                path = path.as_str()
+            );
+            self.note(ui, &line);
+        }
+        if let (AboutState::Available { .. }, true) = (&about.state, about.run.is_none()) {
             if !about.notes.is_empty() {
                 self.section(ui, tr("Release notes"));
                 self.notes_box(ui, &about.notes);
@@ -2559,7 +2621,9 @@ impl SettingsSheet {
             let row_node = self.button_row(ui);
             if !about.busy {
                 let (text, action) = match about.mode {
-                    InstallMode::AppImage => (tr("Update"), SettingsAction::InstallUpdate),
+                    InstallMode::AppImage | InstallMode::Tarball => {
+                        (tr("Update"), SettingsAction::InstallUpdate)
+                    }
                     InstallMode::Source => (tr("Update from Git"), SettingsAction::InstallUpdate),
                     InstallMode::Other => (tr("Open Release Page"), SettingsAction::OpenReleasePage),
                 };
@@ -2592,6 +2656,7 @@ impl SettingsSheet {
         self.section(ui, tr("Updates"));
         self.control(ui, config, Setting::AutoCheckUpdates);
         self.control(ui, config, Setting::UpdatePrereleases);
+        self.control(ui, config, Setting::UpdateNotifications);
         let row_node = self.row(ui, tr("Repository"));
         // The default repository is the placeholder; the field holds only what the user typed.
         let placeholder = if axion_config::DEFAULT_REPOSITORY.is_empty() {
@@ -2618,6 +2683,143 @@ impl SettingsSheet {
                 tr("updates.manifest_url is set in config.toml and is used instead of the repository."),
             );
         }
+    }
+
+    /// The update that is running or has just ended, in the "Software update" section: a
+    /// progress bar with the step and the newest output line (changed in place by
+    /// [`Self::update_run`]), or the result with its buttons.
+    fn run_block(&mut self, ui: &mut Ui, run: &RunInfo) {
+        let row_node = self.row(ui, &run.title);
+        match run.phase {
+            Phase::Running => {
+                if run.cancellable {
+                    pill_button(ui, row_node, tr("Cancel"), SettingsAction::CancelUpdate, false);
+                }
+                let parent = self.group_for_row(ui);
+                let track = ui.add(
+                    parent,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Label, 0.10))
+                        .with_radius(CAPSULE),
+                    Style {
+                        size: Size { width: percent(1.0), height: length(RUN_BAR_HEIGHT) },
+                        flex_shrink: 0.0,
+                        margin: Rect {
+                            left: length(GROUP_INSET),
+                            right: length(GROUP_INSET),
+                            top: length(8.0),
+                            bottom: length(4.0),
+                        },
+                        ..Default::default()
+                    },
+                );
+                let fill = ui.add(
+                    track,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Accent, 1.0))
+                        .with_radius(CAPSULE),
+                    Style::default(),
+                );
+                let status = ui.add_label(
+                    parent,
+                    &run.status,
+                    TextStyle::Callout,
+                    Style { margin: Rect { left: length(GROUP_INSET), ..zero_rect() }, ..Default::default() },
+                );
+                let detail = ui.add_label(
+                    parent,
+                    &run.detail,
+                    TextStyle::Footnote,
+                    Style {
+                        min_size: Size { width: length(0.0), height: auto() },
+                        margin: Rect { left: length(GROUP_INSET), ..zero_rect() },
+                        ..Default::default()
+                    },
+                );
+                ui.set_label_lines(detail, 1);
+                if let Some(w) = ui.widget_mut(detail) {
+                    w.set_paint(Paint::Secondary);
+                }
+                self.run_nodes = Some(RunNodes { status, detail, fill });
+                self.update_run(ui, run, 0);
+            }
+            Phase::Done => {
+                primary_button(ui, row_node, tr("Restart Axion"), SettingsAction::RelaunchNow);
+                pill_button(ui, row_node, tr("Later"), SettingsAction::DismissUpdate, false);
+                self.note(ui, &run.status);
+            }
+            Phase::Failed => {
+                primary_button(ui, row_node, tr("Try again"), SettingsAction::RetryUpdate);
+                pill_button(ui, row_node, tr("Close"), SettingsAction::DismissUpdate, false);
+                if run.release_page {
+                    pill_button(
+                        ui,
+                        row_node,
+                        tr("Open Release Page"),
+                        SettingsAction::OpenReleasePage,
+                        false,
+                    );
+                }
+                for line in &run.lines {
+                    self.note(ui, line);
+                }
+                if !run.log.is_empty() {
+                    self.note(ui, tr("Last output:"));
+                    for line in &run.log {
+                        let label = ui.add_label(
+                            self.content,
+                            line,
+                            TextStyle::Footnote,
+                            Style {
+                                min_size: Size { width: length(0.0), height: auto() },
+                                margin: Rect { left: length(GROUP_INSET + 8.0), ..zero_rect() },
+                                ..Default::default()
+                            },
+                        );
+                        ui.set_label_lines(label, 1);
+                    }
+                }
+            }
+            Phase::Idle | Phase::Confirm => {}
+        }
+    }
+
+    /// Changes the running update's lines and bar without rebuilding the page. `tick` moves
+    /// the indeterminate bar. Does nothing when the page is not showing a running update.
+    pub fn update_run(&mut self, ui: &mut Ui, run: &RunInfo, tick: u32) {
+        let Some(nodes) = self.run_nodes else { return };
+        if run.phase != Phase::Running {
+            return;
+        }
+        ui.set_text(nodes.status, &run.status);
+        ui.set_text(nodes.detail, &run.detail);
+        let style = match run.progress {
+            Some(fraction) => Style {
+                size: Size { width: percent(fraction.clamp(0.0, 1.0)), height: length(RUN_BAR_HEIGHT) },
+                ..Default::default()
+            },
+            None => {
+                // A third of the bar sweeps from end to end.
+                let phase = (tick % RUN_SWEEP_STEPS) as f32 / RUN_SWEEP_STEPS as f32;
+                let left = phase * (1.0 - RUN_SWEEP_WIDTH);
+                Style {
+                    size: Size { width: percent(RUN_SWEEP_WIDTH), height: length(RUN_BAR_HEIGHT) },
+                    margin: Rect {
+                        left: percent(left),
+                        right: length(0.0),
+                        top: length(0.0),
+                        bottom: length(0.0),
+                    },
+                    ..Default::default()
+                }
+            }
+        };
+        ui.set_style(nodes.fill, style);
+    }
+
+    /// Whether the page currently shows a running update that [`Self::update_run`] can change.
+    pub fn shows_run(&self) -> bool {
+        self.run_nodes.is_some()
     }
 
     /// The release notes in a box of their own that scrolls when they are longer.
@@ -3874,6 +4076,9 @@ impl SettingsSheet {
             SettingsAction::RemindLater => return Outcome::RemindLater,
             SettingsAction::OpenReleasePage => return Outcome::OpenReleasePage,
             SettingsAction::RelaunchNow => return Outcome::RelaunchNow,
+            SettingsAction::CancelUpdate => return Outcome::CancelUpdate,
+            SettingsAction::DismissUpdate => return Outcome::DismissUpdate,
+            SettingsAction::RetryUpdate => return Outcome::RetryUpdate,
             SettingsAction::PageFrames(frames) => {
                 let amd = self
                     .hardware
@@ -4540,6 +4745,9 @@ mod tests {
             SettingsAction::OpenReleasePage,
             SettingsAction::SaveRepository,
             SettingsAction::RelaunchNow,
+            SettingsAction::CancelUpdate,
+            SettingsAction::DismissUpdate,
+            SettingsAction::RetryUpdate,
             SettingsAction::PageFrames(PageFrames::Auto),
             SettingsAction::PageFrames(PageFrames::Gpu),
             SettingsAction::PageFrames(PageFrames::Software),
