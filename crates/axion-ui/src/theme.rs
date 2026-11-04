@@ -51,6 +51,10 @@ pub enum TextStyle {
     Mono,
     /// 11/14 semibold, upper case — section headers.
     Caption,
+    /// 96/96 light — the start page's clock; the two smaller sizes serve narrow windows.
+    Clock,
+    ClockMedium,
+    ClockSmall,
 }
 
 impl TextStyle {
@@ -66,6 +70,9 @@ impl TextStyle {
             TextStyle::Footnote => (13.0, 18.0, 400),
             TextStyle::Mono => (13.0, 18.0, 400),
             TextStyle::Caption => (11.0, 14.0, 600),
+            TextStyle::Clock => (96.0, 96.0, 250),
+            TextStyle::ClockMedium => (76.0, 76.0, 250),
+            TextStyle::ClockSmall => (56.0, 56.0, 250),
         }
     }
 }

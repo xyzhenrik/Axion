@@ -38,6 +38,7 @@ pub fn load_config(paths: &ConfigPaths) -> Result<Config, ConfigError> {
     // Round-trip through text so errors (wrong types, unknown keys) carry the file's name.
     let mut config: Config = toml::from_str(&toml::to_string(&merged)?).map_err(parse_err)?;
     config.general.upgrade_homepage();
+    config.network = config.network.without_session_state();
     Ok(config)
 }
 
@@ -85,7 +86,9 @@ fn changed_settings(config: &Config) -> Result<toml::Table, ConfigError> {
             (_, None) => true,
         });
     }
-    let mut table = toml::Table::try_from(config)?;
+    let mut config = config.clone();
+    config.network = config.network.without_session_state();
+    let mut table = toml::Table::try_from(&config)?;
     diff(&mut table, &toml::Table::try_from(Config::default())?);
     Ok(table)
 }
@@ -142,6 +145,56 @@ mod tests {
         let loaded = load_config(&paths).unwrap();
         assert!((loaded.playlist.volume - 0.3).abs() < 1e-6 && loaded.playlist.muted);
         std::fs::remove_dir_all(&paths.dir).unwrap();
+    }
+
+    fn with_connection(config: &mut Config) {
+        config.network.connections.push(axion_net::Connection {
+            id: "c-1".into(),
+            name: "VPN".into(),
+            kind: axion_net::ConnectionKind::Tor(Default::default()),
+        });
+        config.network.session_route = Some(axion_net::Target::Connection("c-1".into()));
+    }
+
+    #[test]
+    fn the_session_route_is_not_saved_unless_persist_is_on() {
+        let paths = ConfigPaths::in_dir(temp_dir("session-route"));
+        let mut config = Config::default();
+        with_connection(&mut config);
+        save_config(&paths, &config).unwrap();
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(!text.contains("session_route"), "{text}");
+        assert_eq!(load_config(&paths).unwrap().network.session_route, None);
+
+        config.network.session_route_persist = true;
+        save_config(&paths, &config).unwrap();
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(
+            text.contains("session_route_persist = true") && text.contains("session_route = \"c-1\""),
+            "{text}"
+        );
+        let loaded = load_config(&paths).unwrap();
+        assert_eq!(loaded.network.session_route, Some(axion_net::Target::Connection("c-1".into())));
+        assert!(loaded.network.session_target().is_some());
+
+        // A hand-edited route is ignored while persistence is off.
+        std::fs::write(
+            &paths.config,
+            text.replace("session_route_persist = true", "session_route_persist = false"),
+        )
+        .unwrap();
+        assert_eq!(load_config(&paths).unwrap().network.session_route, None);
+        std::fs::remove_dir_all(&paths.dir).unwrap();
+    }
+
+    #[test]
+    fn a_session_route_to_a_removed_connection_is_ignored() {
+        let mut config = Config::default();
+        with_connection(&mut config);
+        assert!(config.network.session_target().is_some());
+        config.network.connections.clear();
+        assert_eq!(config.network.session_target(), None);
+        assert_eq!(config.network.effective_routing(), config.network.routing());
     }
 
     #[test]

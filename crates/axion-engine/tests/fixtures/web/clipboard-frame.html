@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Copy button in a frame</title>
+<!-- Embedded by clipboard.html (cross-origin, allow="clipboard-write"): a copy button inside an
+     iframe, as in embedded widgets. Click it at x=120, y=380+30 of the parent page. -->
+<style>
+  body { margin: 0; }
+  button { width: 200px; height: 50px; margin: 10px; }
+</style>
+<button id="copy">writeText in frame</button>
+<script>
+  const report = (outcome) => fetch('/report?' + new URLSearchParams({ step: 'copy frame', outcome }), { keepalive: true });
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText('axion-frame'); report('ok'); }
+    catch (e) { report('failed: ' + e.name + ' ' + e.message); }
+  };
+</script>

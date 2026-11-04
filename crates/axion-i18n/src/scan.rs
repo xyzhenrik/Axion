@@ -228,6 +228,36 @@ pub fn placeholders(text: &str) -> Vec<String> {
             _ => rest = tail,
         }
     }
+    found.extend(printf_specifiers(text));
+    found
+}
+
+/// printf-style `%s`, `%d` and `%1$s` in `text` (a lone `%` or `%%` is not one), as written.
+fn printf_specifiers(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < chars.len() && chars[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j > i + 1 && chars.get(j) == Some(&'$') {
+            j += 1;
+        } else {
+            j = i + 1;
+        }
+        if matches!(chars.get(j), Some('s' | 'd')) {
+            found.push(chars[i..=j].iter().collect());
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
     found
 }
 

@@ -5,7 +5,7 @@ use axion_net::Target;
 use super::network::rule_host;
 use super::*;
 use crate::network::{self as net, ChipState};
-use crate::network_popover::{NetworkInfo, PopoverAction};
+use crate::network_popover::{MAX_SESSION, NetworkInfo, PopoverAction};
 
 impl Browser {
     /// The page the chip is about: the active tab's address (behind the kill-switch page, the
@@ -38,6 +38,9 @@ impl Browser {
                     _ => c.detail.clone(),
                 },
             ),
+            (Some(c), Target::Direct) if c.target.is_direct() => {
+                (ChipState::Bypassed, tr("Direct connection").to_owned(), String::new())
+            }
             (Some(c), Target::Direct) => (
                 ChipState::Bypassed,
                 tr("Direct for this site").to_owned(),
@@ -52,7 +55,95 @@ impl Browser {
         for c in &routing.connections {
             choices.push((c.name.clone(), rule == Some(Target::Connection(c.id.clone()))));
         }
-        Some(NetworkInfo { site, state, title, detail, choices, has_rule: rule.is_some() })
+        let session_active = network.session_target().map(|t| net::target_label(network, &t));
+        let session_offers = self.session_offers(&target).into_iter().map(|(_, name)| name).collect();
+        Some(NetworkInfo {
+            site,
+            state,
+            title,
+            detail,
+            choices,
+            has_rule: rule.is_some(),
+            session_active,
+            session_offers,
+        })
+    }
+
+    /// The connections the popover offers for a session route (id and name): all but the one
+    /// in use (the session's, or else the page's own route).
+    fn session_offers(&self, page_route: &Target) -> Vec<(String, String)> {
+        let network = &self.config.network;
+        let current = network.session_target().unwrap_or_else(|| page_route.clone());
+        network
+            .connections
+            .iter()
+            .filter(|c| current.connection_id() != Some(c.id.as_str()) && c.kind.is_available())
+            .take(MAX_SESSION)
+            .map(|c| (c.id.clone(), c.name.clone()))
+            .collect()
+    }
+
+    /// Switches the session route on (`Some`) or off (`None`): every tab, private ones too,
+    /// goes through that connection until it is switched off, and the settings' routes
+    /// (default, private, site rules) come back when it is. New tabs follow it because it is
+    /// part of the routing the engine is told; open tabs reload so their pages use it at once.
+    pub(super) fn set_session_route(&mut self, target: Option<Target>) {
+        if self.config.network.session_target() == target {
+            return;
+        }
+        let persist = self.config.network.session_route_persist;
+        self.config.network.session_route = target.clone();
+        if persist {
+            self.config_dirty_since.get_or_insert(Instant::now());
+        }
+        // The connection starts on its own thread; until it is up the kill switch blocks (and
+        // the pages load by themselves once it is).
+        self.net.apply_config(&self.config);
+        self.net.manager.ensure_started(false);
+        self.net.manager.ensure_started(true);
+        self.apply_network_config();
+        self.network_tick();
+        self.reload_tabs_for_route_change();
+        self.update_network_chip();
+        self.refresh_network_popover();
+        self.refresh_settings();
+        let message = match &target {
+            Some(t) => {
+                tr_fmt!("Using {name} for this session", name = net::target_label(&self.config.network, t))
+            }
+            None => tr("Session route off").to_owned(),
+        };
+        self.show_toast(Icon::Network, &message);
+    }
+
+    /// Reloads what is open so it takes the new route: the pages that are running (frozen and
+    /// discarded tabs load through it when they wake), and kill-switch pages are retried.
+    fn reload_tabs_for_route_change(&mut self) {
+        self.net.suspects.clear();
+        let views: Vec<(ViewId, String)> = self
+            .tabs
+            .all()
+            .iter()
+            .chain(self.parked.all())
+            .filter(|t| !matches!(t.lifecycle, Lifecycle::Frozen | Lifecycle::Discarded))
+            .map(|t| (t.view, t.url.clone()))
+            .collect();
+        for (view, url) in views {
+            if let Some((original, _)) = net::parse_blocked_url(&url) {
+                self.net.blocked.remove(&view);
+                self.navigate_view_to_url(view, &original);
+            } else if url.starts_with("http://") || url.starts_with("https://") {
+                self.engine.reload(view, false);
+            }
+        }
+        self.tabs_changed = true;
+    }
+
+    fn navigate_view_to_url(&mut self, view: ViewId, url: &str) {
+        if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
+            tab.url = url.to_owned();
+        }
+        self.engine.navigate(view, url);
     }
 
     /// Opens or closes the chip's popover.
@@ -95,7 +186,22 @@ impl Browser {
                     self.run(Action::OpenSettings);
                 }
             }
+            PopoverAction::SessionOn(i) => {
+                let Some((url, private)) = self.network_page() else { return };
+                let route = self.net.route_of(&self.config, &url, private);
+                let Some((id, _)) = self.session_offers(&route).into_iter().nth(i) else { return };
+                self.network_popover.close(&mut self.ui, &self.config);
+                self.set_session_route(Some(Target::Connection(id)));
+            }
+            PopoverAction::SessionOff => {
+                self.network_popover.close(&mut self.ui, &self.config);
+                self.set_session_route(None);
+            }
             PopoverAction::Choose(i) => {
+                // Site routes are set aside during a session; the popover does not show them.
+                if self.config.network.session_target().is_some() {
+                    return;
+                }
                 let Some((url, _)) = self.network_page() else { return };
                 let Some(site) = rule_host(&url) else { return };
                 let connections: Vec<String> =
