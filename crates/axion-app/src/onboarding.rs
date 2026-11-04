@@ -235,7 +235,10 @@ const SKIP: ActionId = ActionId(BASE + 2);
 const CHOOSE_PHOTO: ActionId = ActionId(BASE + 3);
 const REMOVE_PHOTO: ActionId = ActionId(BASE + 4);
 const MAKE_DEFAULT: ActionId = ActionId(BASE + 5);
-/// One id per `UiLanguage::ALL` entry (more than the 10 ids between the other groups).
+/// The language button of the first step (it opens the dropdown list).
+const LANGUAGE_PICKER: ActionId = ActionId(BASE + 6);
+/// One id per `UiLanguage::ALL` entry: the rows of the language dropdown (more than the 10 ids
+/// between the other groups).
 const LANGUAGE_BASE: u32 = BASE + 200;
 const THEME_BASE: u32 = BASE + 20;
 const ACCENT_BASE: u32 = BASE + 30;
@@ -290,6 +293,8 @@ pub enum Click {
     RemovePhoto,
     /// Make Axion the default browser (the default browser step).
     MakeDefault,
+    /// Opens the language dropdown (the first step).
+    LanguagePicker,
     /// Selects or deselects the browser at this index in the import step.
     Import(usize),
     Pick(Pick),
@@ -305,6 +310,7 @@ fn click_of(id: ActionId) -> Option<Click> {
         CHOOSE_PHOTO => Click::ChoosePhoto,
         REMOVE_PHOTO => Click::RemovePhoto,
         MAKE_DEFAULT => Click::MakeDefault,
+        LANGUAGE_PICKER => Click::LanguagePicker,
         _ => {
             if let Some(i) = index(LANGUAGE_BASE, UiLanguage::ALL.len()) {
                 Click::Pick(Pick::Language(UiLanguage::ALL[i]))
@@ -361,6 +367,8 @@ pub enum Reaction {
     RemovePhoto,
     /// Make Axion the default browser; the step stays.
     MakeDefault,
+    /// Open the language dropdown below the language button.
+    OpenLanguagePicker,
     /// The import step was left with these browsers (indexes into the offered ones) selected:
     /// start importing their bookmarks and history. The step has moved on.
     Import(Vec<usize>),
@@ -1019,6 +1027,8 @@ pub struct Onboarding {
     fields: Option<Fields>,
     reduce_transparency: Option<NodeId>,
     reduce_motion: Option<NodeId>,
+    /// The language button of the first step (the dropdown opens below it).
+    language_button: Option<NodeId>,
     /// What the account step says is wrong.
     error: Option<String>,
     /// Whether the account has a password already (the step then leaves it alone).
@@ -1075,6 +1085,7 @@ impl Onboarding {
             fields: None,
             reduce_transparency: None,
             reduce_motion: None,
+            language_button: None,
             error: None,
             has_password: false,
             max_size: Vec2::new(880.0, 640.0),
@@ -1277,6 +1288,7 @@ impl Onboarding {
                 Reaction::RemovePhoto
             }
             Click::MakeDefault => Reaction::MakeDefault,
+            Click::LanguagePicker => Reaction::OpenLanguagePicker,
             Click::Import(i) => {
                 if let Some(source) = self.sources.get_mut(i) {
                     source.selected = !source.selected;
@@ -1507,6 +1519,7 @@ impl Onboarding {
         self.fields = None;
         self.reduce_transparency = None;
         self.reduce_motion = None;
+        self.language_button = None;
         let inner = card_size.x - CARD_PAD_X * 2.0;
 
         let body = ui.add(
@@ -1572,7 +1585,7 @@ impl Onboarding {
     /// A capsule button.
     fn pill(&mut self, ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, kind: PillKind) -> NodeId {
         let (background, label_paint) = match kind {
-            PillKind::Primary | PillKind::SmallSelected => {
+            PillKind::Primary => {
                 (Background::TintedGlass(GlassLevel::Thin, Paint::Accent), Some(Paint::OnAccent))
             }
             PillKind::Plain | PillKind::Small => (Background::Glass(GlassLevel::Thin), None),
@@ -1599,7 +1612,6 @@ impl Onboarding {
             text,
             match kind {
                 PillKind::Small => TextStyle::Footnote,
-                PillKind::SmallSelected => TextStyle::Callout,
                 _ => TextStyle::BodyEmphasis,
             },
             Style::default(),
@@ -1786,28 +1798,55 @@ impl Onboarding {
         if let Some(w) = ui.widget_mut(label) {
             w.set_paint(Paint::Secondary);
         }
-        // Many choices: small pills that wrap, each language in its own name.
-        let languages = ui.add(
+        // Many choices: one glass button with the current language; it opens the same dropdown
+        // list (search, scrolling) as Settings.
+        let current =
+            crate::locale::native_name(config.general.language).unwrap_or_else(|| tr("System default"));
+        let button = ui.add(
             body,
-            Widget::container(),
+            Widget::container()
+                .with_action(LANGUAGE_PICKER)
+                .with_radius(CAPSULE)
+                .with_background(Background::Glass(GlassLevel::Thin)),
             Style {
-                flex_wrap: FlexWrap::Wrap,
-                gap: Size { width: length(self.apart), height: length(self.apart * 0.5) },
-                max_size: Size { width: length(inner), height: auto() },
-                ..row(self.apart)
+                size: Size { width: auto(), height: length(BUTTON_HEIGHT) },
+                padding: pad(20.0, 0.0),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..row(8.0)
             },
         );
-        for (i, &language) in UiLanguage::ALL.iter().enumerate() {
-            let selected = config.general.language == language;
-            let name = crate::locale::native_name(language).unwrap_or_else(|| tr("System default"));
-            self.pill(
-                ui,
-                languages,
-                ActionId(LANGUAGE_BASE + i as u32),
-                name,
-                if selected { PillKind::SmallSelected } else { PillKind::Small },
-            );
-        }
+        ui.add(button, Widget::icon(Icon::Globe, 16.0).with_paint(Paint::Secondary), Style::default());
+        ui.add_label(button, current, TextStyle::BodyEmphasis, Style::default());
+        ui.add(
+            button,
+            Widget::icon(Icon::ChevronUpDown, 14.0).with_paint(Paint::Secondary),
+            Style::default(),
+        );
+        self.register(ui, button, Target::Action(LANGUAGE_PICKER));
+        self.language_button = Some(button);
+    }
+
+    /// Where the language dropdown drips out of: the language button of the first step.
+    pub fn language_frame(&self, ui: &Ui) -> Option<Frame> {
+        self.language_button.map(|node| ui.frame(node))
+    }
+
+    /// The rows of the language dropdown, the current language ticked; each row carries the
+    /// click id of its choice.
+    pub fn language_items(&self, config: &Config) -> Vec<crate::dropdown::DropdownItem> {
+        UiLanguage::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, &language)| crate::dropdown::DropdownItem {
+                label: crate::locale::native_name(language)
+                    .unwrap_or_else(|| tr("System default"))
+                    .to_owned(),
+                action: ActionId(LANGUAGE_BASE + i as u32),
+                selected: config.general.language == language,
+            })
+            .collect()
     }
 
     fn appearance(&mut self, ui: &mut Ui, body: NodeId, config: &Config, inner: f32) {
@@ -2275,13 +2314,11 @@ enum PillKind {
     Plain,
     Primary,
     Small,
-    /// A chosen option among many small pills (the language list).
-    SmallSelected,
 }
 
 impl PillKind {
     fn is_small(self) -> bool {
-        matches!(self, PillKind::Small | PillKind::SmallSelected)
+        matches!(self, PillKind::Small)
     }
 }
 
@@ -2307,10 +2344,24 @@ mod tests {
     #[test]
     fn the_offer_button_is_a_click_of_its_own() {
         assert_eq!(click_of(MAKE_DEFAULT), Some(Click::MakeDefault));
-        let others = [CONTINUE, BACK, SKIP, CHOOSE_PHOTO, REMOVE_PHOTO];
+        let others = [CONTINUE, BACK, SKIP, CHOOSE_PHOTO, REMOVE_PHOTO, LANGUAGE_PICKER];
         assert!(others.iter().all(|&id| id != MAKE_DEFAULT));
         // Nothing else maps to the same click.
         assert_eq!((0..40_000).filter(|&n| click_of(ActionId(n)) == Some(Click::MakeDefault)).count(), 1);
+    }
+
+    #[test]
+    fn the_language_button_and_its_rows_have_ids_of_their_own() {
+        assert_eq!(click_of(LANGUAGE_PICKER), Some(Click::LanguagePicker));
+        assert_eq!((0..40_000).filter(|&n| click_of(ActionId(n)) == Some(Click::LanguagePicker)).count(), 1);
+        // Every language row maps to its own pick, none to the button.
+        for (i, &language) in UiLanguage::ALL.iter().enumerate() {
+            assert_eq!(
+                click_of(ActionId(LANGUAGE_BASE + i as u32)),
+                Some(Click::Pick(Pick::Language(language)))
+            );
+        }
+        assert_ne!(LANGUAGE_PICKER.0, LANGUAGE_BASE);
     }
 
     #[test]

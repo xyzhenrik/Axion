@@ -106,10 +106,16 @@ impl Browser {
     /// A click, toggle or Enter in the introduction.
     pub(super) fn onboarding_event(&mut self, event: UiEvent) {
         let reaction = match event {
-            UiEvent::Clicked { action, .. } => match self.onboarding.click(action) {
-                Some(click) => self.onboarding.press(&mut self.ui, &self.config, click),
-                None => Reaction::Nothing,
-            },
+            UiEvent::Clicked { action, .. } => {
+                if self.dropdown.owns(action) {
+                    // A row of the language dropdown: the list closes, the choice is a pick.
+                    self.dropdown.close(&mut self.ui, &self.config);
+                }
+                match self.onboarding.click(action) {
+                    Some(click) => self.onboarding.press(&mut self.ui, &self.config, click),
+                    None => Reaction::Nothing,
+                }
+            }
             UiEvent::ValueChanged { node, value } => match self.onboarding.toggled(node, value) {
                 Some(pick) => Reaction::Config(pick),
                 None => Reaction::Nothing,
@@ -132,9 +138,26 @@ impl Browser {
             Reaction::ChoosePhoto => self.photo_chooser.choose(PhotoFor::Current),
             Reaction::RemovePhoto => self.settings_outcome(Outcome::RemoveAccountPhoto),
             Reaction::MakeDefault => self.make_default_browser(),
+            Reaction::OpenLanguagePicker => self.open_language_picker(),
             Reaction::Import(picks) => self.onboarding_import(picks),
             Reaction::End(ending, choice) => self.finish_onboarding(ending, choice),
         }
+    }
+
+    /// The language dropdown opens below the language button, over the tour.
+    pub(super) fn open_language_picker(&mut self) {
+        let Some(anchor) = self.onboarding.language_frame(&self.ui) else { return };
+        if self.dropdown.is_open() {
+            // The button again: the list goes away.
+            self.dropdown.close(&mut self.ui, &self.config);
+            return;
+        }
+        let items = self.onboarding.language_items(&self.config);
+        let window = self.logical_size();
+        self.place_dropdown(true);
+        self.dropdown.set_centred(true);
+        let events = self.dropdown.open(&mut self.ui, &self.config, anchor, window, items);
+        self.handle_ui_events(events);
     }
 
     /// A choice: written into the config and applied to the interface behind the sheet.
@@ -196,6 +219,9 @@ impl Browser {
             return true;
         }
         let named = |wanted: &str| matches!(&key, Some(Key::Named(name)) if name == wanted);
+        if self.dropdown.is_open() {
+            return self.onboarding_dropdown_key(event, &key);
+        }
         if named("Tab") {
             self.onboarding.move_focus(&mut self.ui, !self.modifiers.shift);
             return false;
@@ -237,6 +263,37 @@ impl Browser {
                 self.onboarding.move_focus(&mut self.ui, forward);
             } else {
                 self.onboarding_click(if forward { Click::Continue } else { Click::Back });
+            }
+        }
+        false
+    }
+
+    /// The keyboard while the language list is open: Up / Down move the highlight, Enter chooses,
+    /// Escape closes the list (not the step), the rest is typed into its search field.
+    fn onboarding_dropdown_key(&mut self, event: &winit::event::KeyEvent, key: &Option<Key>) -> bool {
+        let named = |wanted: &str| matches!(key, Some(Key::Named(name)) if name == wanted);
+        if named("Escape") {
+            self.dropdown.close(&mut self.ui, &self.config);
+        } else if named("Up") || named("Down") {
+            self.dropdown.move_highlight(&mut self.ui, if named("Up") { -1 } else { 1 });
+        } else if named("Enter") {
+            if let Some(action) = self.dropdown.chosen() {
+                self.onboarding_event(UiEvent::Clicked { action, node: self.onboarding.root() });
+            }
+        } else {
+            if let Some(key) = key.clone() {
+                let is_text = matches!(key, Key::Char(_)) && !self.modifiers.ctrl && !self.modifiers.logo;
+                if !is_text {
+                    let (_, events) = self.ui.handle(UiInput::Key { key, modifiers: self.modifiers });
+                    self.handle_ui_events(events);
+                }
+            }
+            if !self.modifiers.ctrl
+                && !self.modifiers.logo
+                && let Some(text) = event.text.as_ref().filter(|t| !t.chars().all(char::is_control))
+            {
+                let (_, events) = self.ui.handle(UiInput::Text(text.to_string()));
+                self.handle_ui_events(events);
             }
         }
         false

@@ -475,6 +475,9 @@ pub struct Browser {
     pending_move: Option<(ViewId, usize)>,
     /// The plane the sidebar is drawn before (its place while nothing is locked).
     sidebar_before: Option<axion_ui::taffy::NodeId>,
+    /// The plane that lies just above the language dropdown while it opens over Settings (it is
+    /// raised over the welcome tour while that is up).
+    dropdown_below: Option<axion_ui::taffy::NodeId>,
     tab_drag: TabDrag,
     /// Closed tabs shrinking away in the bar and the sidebar.
     tab_close: crate::tabclose::TabClose,
@@ -1010,6 +1013,8 @@ impl Browser {
         planes.push(onboarding.root());
         ui.set_children(root, &planes);
         // Where the sidebar goes back to when the lock screen is gone (see `order_lock_planes`).
+        let dropdown_below =
+            planes.iter().position(|&n| n == dropdown.bridge()).and_then(|i| planes.get(i + 1)).copied();
         let sidebar_before =
             planes.iter().position(|&n| n == chrome.sidebar_node()).and_then(|i| planes.get(i + 1)).copied();
 
@@ -1159,6 +1164,7 @@ impl Browser {
             lock_shown: None,
             pending_move: None,
             sidebar_before,
+            dropdown_below,
             tab_drag,
             tab_close,
             close_burst: 0,
@@ -2374,8 +2380,18 @@ impl Browser {
         let Some(anchor) = self.settings.picker_frame(&self.ui, picker) else { return };
         let items = self.settings.picker_items(&self.config, picker);
         let window = self.logical_size();
+        self.place_dropdown(false);
+        self.dropdown.set_centred(false);
         let events = self.dropdown.open(&mut self.ui, &self.config, anchor, window, items);
         self.handle_ui_events(events);
+    }
+
+    /// The dropdown lies over the welcome tour (`over_tour`) or just under the alert, over Settings.
+    fn place_dropdown(&mut self, over_tour: bool) {
+        match self.dropdown_below.filter(|_| !over_tour) {
+            Some(above) => self.dropdown.lower_below(&mut self.ui, above),
+            None => self.dropdown.raise(&mut self.ui),
+        }
     }
 
     /// Enter in a dropdown: the highlighted choice, as if its row was clicked.
@@ -8397,6 +8413,12 @@ impl Browser {
                 "unlock-alert" => {
                     let events = self.lock_screen.action(&mut self.ui, &self.config, LockScreen::SHOW_ALERT);
                     self.handle_ui_events(events);
+                }
+                "tour-language-dropdown" => {
+                    if !self.onboarding.is_open() {
+                        self.open_onboarding(0);
+                    }
+                    self.open_language_picker();
                 }
                 onboarding if onboarding.starts_with("onb") && self.onboarding_capture_step(onboarding) => {}
                 other => tracing::warn!("--open={other} is not a known view"),

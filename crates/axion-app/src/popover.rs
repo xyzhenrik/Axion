@@ -148,6 +148,11 @@ impl Popover {
         ui.set_children(self.parent, &children);
     }
 
+    /// The bridge node that joins the popover to its anchor's glass.
+    pub fn bridge(&self) -> NodeId {
+        self.bridge
+    }
+
     pub fn phase(&self) -> Phase {
         self.drip.phase()
     }

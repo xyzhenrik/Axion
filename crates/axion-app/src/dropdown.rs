@@ -56,6 +56,9 @@ pub struct Dropdown {
     visible_rows: usize,
     anchor: Frame,
     window: Vec2,
+    /// Centred on the anchor's centre line instead of starting at its left edge (the tour's
+    /// language button stands in the middle of the sheet).
+    centred: bool,
 }
 
 /// The indices of the `labels` that contain every word of `query` (case-insensitive).
@@ -184,11 +187,39 @@ impl Dropdown {
             visible_rows: 8,
             anchor: Frame::default(),
             window: Vec2::ZERO,
+            centred: false,
         }
     }
 
     pub fn is_open(&self) -> bool {
         self.popover.is_open()
+    }
+
+    /// The node that joins the list to its anchor (it follows the list in the root's planes).
+    pub fn bridge(&self) -> axion_ui::taffy::NodeId {
+        self.popover.bridge()
+    }
+
+    /// Whether the next lists are centred on their button (else they start at its left edge).
+    pub fn set_centred(&mut self, centred: bool) {
+        self.centred = centred;
+    }
+
+    /// Draws the list above every other plane (over the welcome tour, a modal plane of its own).
+    pub fn raise(&self, ui: &mut Ui) {
+        self.popover.raise(ui);
+    }
+
+    /// Puts the list back below `above` (a plane that must stay over it, like the alert) and
+    /// above the sheets it normally opens over (Settings).
+    pub fn lower_below(&self, ui: &mut Ui, above: axion_ui::taffy::NodeId) {
+        let root = ui.root();
+        let mut planes = ui.children(root);
+        let own = [self.popover.root(), self.popover.bridge()];
+        planes.retain(|n| !own.contains(n));
+        let at = planes.iter().position(|&n| n == above).unwrap_or(planes.len());
+        planes.splice(at..at, own);
+        ui.set_children(root, &planes);
     }
 
     pub fn contains(&self, ui: &Ui, p: Vec2) -> bool {
@@ -242,7 +273,14 @@ impl Dropdown {
     fn target(&self) -> Frame {
         let width = self.anchor.size.x.max(MIN_WIDTH);
         let height = 2.0 * PADDING + FIELD_HEIGHT + FIELD_GAP + self.view_height();
-        target_frame(Placement::BelowStart, self.anchor, self.window, width, height, 8.0)
+        let mut frame = target_frame(Placement::BelowStart, self.anchor, self.window, width, height, 8.0);
+        if self.centred {
+            let margin = 8.0;
+            let left = (self.anchor.center().x - width / 2.0)
+                .clamp(margin, (self.window.x - width - margin).max(margin));
+            frame.origin.x = left;
+        }
+        frame
     }
 
     /// Builds the rows of the matching items.

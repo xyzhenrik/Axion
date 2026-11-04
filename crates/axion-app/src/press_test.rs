@@ -355,3 +355,65 @@ fn only_rows_that_ask_keep_the_focus() {
     assert!(focus_lost(&events));
     assert_eq!(clicked(&events), [ActionId(90_999)]);
 }
+
+/// The welcome tour's language dropdown: a modal plane (the tour) lies under the list, which the
+/// browser raises over it. A real press, move and release on the language button and on a row of
+/// the list must reach the tour as `Click::LanguagePicker` and as that language's pick, with the
+/// search field's focus lost in between (the tour's backdrop and the blur must not swallow it).
+#[test]
+fn the_tour_language_dropdown_is_clicked_above_the_tour() {
+    use crate::dropdown::Dropdown;
+    use crate::onboarding::{Click, Onboarding, Pick};
+    use axion_config::UiLanguage;
+
+    let config = Config::default();
+    let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+    ui.set_viewport(WINDOW, 1.0);
+    // As in the browser: the list is built first, the tour is a later plane over it.
+    let mut dropdown = Dropdown::build(&mut ui);
+    let mut tour = Onboarding::build(&mut ui);
+    let _ = tour.open(&mut ui, &config, WINDOW, 0);
+    let settle = |ui: &mut Ui, tour: &mut Onboarding, dropdown: &mut Dropdown| {
+        for _ in 0..240 {
+            tour.animate(ui, &config, FRAME);
+            dropdown.animate(ui, FRAME);
+            ui.layout();
+        }
+    };
+    settle(&mut ui, &mut tour, &mut dropdown);
+
+    // The button is pressed like any tour control.
+    let button = tour.language_frame(&ui).expect("the first step has a language button");
+    let events = click(&mut ui, button.center(), |_, _| {});
+    let picker = clicked(&events);
+    assert_eq!(picker.len(), 1);
+    assert_eq!(tour.click(picker[0]), Some(Click::LanguagePicker));
+
+    // The browser opens the list over the tour (raised: the tour plane was made after it).
+    dropdown.raise(&mut ui);
+    let items = tour.language_items(&config);
+    assert!(items.len() >= 12 && items.iter().filter(|i| i.selected).count() == 1);
+    let _ = dropdown.open(&mut ui, &config, button, WINDOW, items);
+    settle(&mut ui, &mut tour, &mut dropdown);
+    assert!(dropdown.is_open());
+
+    // The list lies in front of the tour at the row's pixels: scroll so German shows, press it.
+    let german = tour
+        .language_items(&config)
+        .into_iter()
+        .find(|i| i.label == "Deutsch")
+        .expect("German is offered in its own name");
+    let row = node_with_action(&ui, german.action).expect("the row exists");
+    // Rows outside the viewport are clipped: step the highlight until the row is on screen.
+    while !dropdown.contains(&ui, ui.frame(row).center()) && dropdown.chosen() != Some(german.action) {
+        dropdown.move_highlight(&mut ui, 1);
+        ui.layout();
+    }
+    let at = ui.frame(row).center();
+    assert!(dropdown.contains(&ui, at), "the row lies inside the list");
+    let events = click(&mut ui, at, |_, _| {});
+    // Like the browser, the press does not close the list; the focus may go.
+    assert!(dropdown.is_open());
+    assert_eq!(clicked(&events), [german.action]);
+    assert_eq!(tour.click(german.action), Some(Click::Pick(Pick::Language(UiLanguage::German))));
+}
