@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Updater (source checkout)**: clicking "Update from Git" in the confirmation sheet did nothing
+  visible: the sheet's buttons shared their action ids (9200-9202) with the tab overview's header,
+  so the click opened a new tab behind the sheet and the sheet never closed. The update only ran
+  when the app was restarted by hand.
+
+### New
+- **Updater**: the sheet closes at once when you confirm; progress (step, newest output line, bar,
+  **Cancel**), the result ("Updated to X", **Restart Axion** / **Later**) and failures (reason, last
+  output, **Try again**) are on Settings > Info & Updates. The version line says "restart to finish
+  the update" instead of showing the stale build. Only changes to tracked files block a Git update
+  (untracked files no longer do), the dirty files are listed, and a checkout ahead of or diverged
+  from the remote gets a clear message.
+- **Updater (tarball / portable installs)**: downloads and checks the release tarball, unpacks it
+  next to the install folder and swaps it in at the restart (old folder kept as `.old-<version>`).
+  See docs/features/updates.md.
+- **Desktop notification** when an update is found while the window is in the background
+  (`updates.desktop_notification`, Settings > Info & Updates > Notify me about updates).
+
 ## 0.3.0
 
 ### New

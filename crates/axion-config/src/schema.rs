@@ -1652,6 +1652,16 @@ pub struct Updates {
     pub timeout_seconds: u32,
     /// Larger downloads (the AppImage) are refused (MB).
     pub max_download_mb: u32,
+    /// A downloaded tarball may unpack to at most this much (MB); more is refused as a bomb.
+    pub max_extracted_mb: u32,
+    /// While an update runs, its progress lines and bar refresh this often (ms).
+    pub progress_interval_ms: u32,
+    /// Also announce a found update with a desktop notification (freedesktop Notifications),
+    /// besides the in-app toast and badge. Once per version.
+    pub desktop_notification: bool,
+    /// Send the desktop notification even while Axion's window has the focus (then the toast
+    /// is enough, so off by default).
+    pub desktop_notification_when_focused: bool,
     /// When the last check ran (Unix seconds; 0: never). Written by Axion.
     pub last_checked: u64,
     /// A version the user chose to skip: no automatic notice for it. Written by Axion.
@@ -1676,6 +1686,10 @@ impl Default for Updates {
             remind_later_hours: 24,
             timeout_seconds: 10,
             max_download_mb: 1024,
+            max_extracted_mb: 4096,
+            progress_interval_ms: 250,
+            desktop_notification: true,
+            desktop_notification_when_focused: false,
             last_checked: 0,
             skipped_version: String::new(),
             notified_version: String::new(),
@@ -2489,6 +2503,11 @@ pub struct Translation {
     /// The offer opens by itself once such a page has loaded (otherwise only the Translate
     /// button appears in the address field).
     pub prompt: bool,
+    /// The offer opens by itself at most once per page load (per tab and navigation), and
+    /// closing it is final for that page: a repeated language report (dynamic page changes)
+    /// or other popovers closing never bring it back. Off: it may open again whenever the
+    /// page reports its language anew.
+    pub offer_once_per_page: bool,
     /// ISO 639-1 code pages are translated into; empty: the interface language.
     pub target_language: String,
     pub backend: TranslationBackend,
@@ -2541,6 +2560,7 @@ impl Default for Translation {
         Self {
             offer: true,
             prompt: true,
+            offer_once_per_page: true,
             target_language: String::new(),
             backend: TranslationBackend::Local,
             endpoint_url: String::new(),

@@ -287,8 +287,10 @@ fn a_clean_matching_checkout_pulls_and_builds() {
     let r = repos();
     let before = head(&r);
     let events = RefCell::new(Vec::new());
-    update_checkout(&r.checkout, &repository(), &tools(&r, 0), &mut |p| events.borrow_mut().push(p))
-        .expect("updates");
+    update_checkout(&r.checkout, &repository(), &tools(&r, 0), &AtomicBool::new(false), &mut |p| {
+        events.borrow_mut().push(p)
+    })
+    .expect("updates");
     assert_ne!(head(&r), before, "fast-forwarded");
     assert!(r.checkout.join("feature.txt").exists());
     let log = cargo_log(&r);
@@ -297,7 +299,7 @@ fn a_clean_matching_checkout_pulls_and_builds() {
     let events = events.borrow();
     let steps: Vec<Step> =
         events.iter().filter_map(|p| if let Progress::Step(s) = p { Some(*s) } else { None }).collect();
-    assert_eq!(steps, [Step::CheckingTree, Step::Pulling, Step::Building]);
+    assert_eq!(steps, [Step::CheckingTree, Step::Fetching, Step::Pulling, Step::Building]);
     let lines: Vec<&str> = events
         .iter()
         .filter_map(|p| if let Progress::Line(l) = p { Some(l.as_str()) } else { None })
@@ -313,26 +315,31 @@ fn a_dirty_tree_is_never_touched() {
     std::fs::write(r.checkout.join("Cargo.toml"), b"[workspace]\n# local edit\n").expect("write");
     let before = head(&r);
     let err =
-        update_checkout(&r.checkout, &repository(), &tools(&r, 0), &mut |_| {}).expect_err("must refuse");
-    assert!(matches!(err, UpdateError::DirtyTree), "{err}");
+        update_checkout(&r.checkout, &repository(), &tools(&r, 0), &AtomicBool::new(false), &mut |_| {})
+            .expect_err("must refuse");
+    assert!(matches!(err, UpdateError::DirtyTree { .. }), "{err}");
     assert_eq!(head(&r), before);
     assert_eq!(cargo_log(&r), "");
     assert!(!is_clean(&r.checkout, &tools(&r, 0)).expect("status"));
 
-    // An untracked file counts as a change too; an ignored one (target/) does not.
+    // An untracked file or an ignored one (target/) does not block: only tracked changes do.
     let r = repos();
     std::fs::create_dir_all(r.checkout.join("target/release")).expect("mkdir");
     std::fs::write(r.checkout.join("target/release/axion"), b"binary").expect("write");
     assert!(is_clean(&r.checkout, &tools(&r, 0)).expect("status"));
     std::fs::write(r.checkout.join("scratch.txt"), b"x").expect("write");
-    assert!(!is_clean(&r.checkout, &tools(&r, 0)).expect("status"));
+    assert!(is_clean(&r.checkout, &tools(&r, 0)).expect("status"));
+    update_checkout(&r.checkout, &repository(), &tools(&r, 0), &AtomicBool::new(false), &mut |_| {})
+        .expect("untracked files do not stop the update");
+    assert!(r.checkout.join("scratch.txt").exists() && r.checkout.join("feature.txt").exists());
 }
 
 #[test]
 fn a_foreign_remote_is_refused() {
     let r = repos();
     let other = parse_repository("someone/else").expect("valid");
-    let err = update_checkout(&r.checkout, &other, &tools(&r, 0), &mut |_| {}).expect_err("must refuse");
+    let err = update_checkout(&r.checkout, &other, &tools(&r, 0), &AtomicBool::new(false), &mut |_| {})
+        .expect_err("must refuse");
     assert!(matches!(err, UpdateError::RemoteMismatch { .. }), "{err}");
     assert!(!r.checkout.join("feature.txt").exists());
     assert_eq!(cargo_log(&r), "");
@@ -346,8 +353,11 @@ fn a_diverged_branch_does_not_merge_or_force() {
     run(&r.checkout, "git", &["add", "."]);
     run(&r.checkout, "git", &["commit", "-m", "local work"]);
     let before = head(&r);
-    let err = update_checkout(&r.checkout, &repository(), &tools(&r, 0), &mut |_| {}).expect_err("must fail");
-    assert!(matches!(err, UpdateError::CommandFailed { .. }), "{err}");
+    let err =
+        update_checkout(&r.checkout, &repository(), &tools(&r, 0), &AtomicBool::new(false), &mut |_| {})
+            .expect_err("must fail");
+    assert!(matches!(err, UpdateError::Diverged { ahead: 1, behind: 1, .. }), "{err}");
+    assert!(err.to_string().contains("origin/main"), "{err}");
     assert_eq!(head(&r), before, "history untouched");
     assert!(!r.checkout.join("feature.txt").exists());
     assert_eq!(cargo_log(&r), "", "no build after a failed pull");
@@ -357,7 +367,8 @@ fn a_diverged_branch_does_not_merge_or_force() {
 fn a_failing_build_aborts_and_reports() {
     let r = repos();
     let err =
-        update_checkout(&r.checkout, &repository(), &tools(&r, 101), &mut |_| {}).expect_err("must fail");
+        update_checkout(&r.checkout, &repository(), &tools(&r, 101), &AtomicBool::new(false), &mut |_| {})
+            .expect_err("must fail");
     match err {
         UpdateError::CommandFailed { command, status } => {
             assert!(command.starts_with("cargo build"), "{command}");
@@ -382,4 +393,72 @@ fn a_detached_head_or_missing_upstream_is_refused() {
     let r = repos();
     let checkout = inspect_checkout(&r.checkout, &repository(), &tools(&r, 0)).expect("fine");
     assert_eq!((checkout.branch.as_str(), checkout.remote.as_str()), ("main", "origin"));
+}
+
+#[test]
+fn the_dirty_files_are_listed_with_their_status() {
+    let r = repos();
+    std::fs::write(r.checkout.join("Cargo.toml"), b"[workspace]\n# local edit\n").expect("write");
+    let err =
+        update_checkout(&r.checkout, &repository(), &tools(&r, 0), &AtomicBool::new(false), &mut |_| {})
+            .expect_err("must refuse");
+    match err {
+        UpdateError::DirtyTree { files } => assert_eq!(files, [" M Cargo.toml"]),
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn local_commits_without_anything_new_are_a_clear_error() {
+    let r = repos();
+    // Take the new commit, then add a local one: ahead only.
+    run(&r.checkout, "git", &["pull", "--ff-only"]);
+    std::fs::write(r.checkout.join("local.txt"), b"mine\n").expect("write");
+    run(&r.checkout, "git", &["add", "."]);
+    run(&r.checkout, "git", &["commit", "-m", "local work"]);
+    let before = head(&r);
+    let err =
+        update_checkout(&r.checkout, &repository(), &tools(&r, 0), &AtomicBool::new(false), &mut |_| {})
+            .expect_err("must refuse");
+    assert!(matches!(err, UpdateError::LocalAhead { ahead: 1, .. }), "{err}");
+    assert_eq!(head(&r), before);
+    assert_eq!(cargo_log(&r), "");
+}
+
+#[test]
+fn a_checkout_pulled_by_hand_is_only_built() {
+    let r = repos();
+    run(&r.checkout, "git", &["pull", "--ff-only"]);
+    let events = RefCell::new(Vec::new());
+    update_checkout(&r.checkout, &repository(), &tools(&r, 0), &AtomicBool::new(false), &mut |p| {
+        events.borrow_mut().push(p)
+    })
+    .expect("builds");
+    let steps: Vec<Step> = events
+        .borrow()
+        .iter()
+        .filter_map(|p| if let Progress::Step(s) = p { Some(*s) } else { None })
+        .collect();
+    assert_eq!(steps, [Step::CheckingTree, Step::Fetching, Step::Building]);
+    assert!(cargo_log(&r).starts_with("build -p axion-app --release"));
+}
+
+#[test]
+fn cancelling_stops_a_running_build() {
+    let r = repos();
+    let slow = r.dir.path().join("cargo-slow");
+    std::fs::write(&slow, "#!/bin/sh\necho started\nsleep 30\necho finished > done.txt\n").expect("write");
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let tools = Tools { git: "git".into(), cargo: slow };
+    let cancel = AtomicBool::new(false);
+    let started = std::time::Instant::now();
+    let err = update_checkout(&r.checkout, &repository(), &tools, &cancel, &mut |p| {
+        if matches!(&p, Progress::Line(l) if l == "started") {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    })
+    .expect_err("cancelled");
+    assert!(matches!(err, UpdateError::Cancelled), "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "the build was stopped");
+    assert!(!r.checkout.join("done.txt").exists());
 }
