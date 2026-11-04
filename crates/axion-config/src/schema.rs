@@ -415,6 +415,10 @@ pub struct Home {
     pub background_blur: f32,
     /// An open start page refreshes its Shields numbers at most this often.
     pub stats_refresh_seconds: f32,
+    /// The start page reads its top sites from the history at most this often (a site icon
+    /// arriving or the Shields numbers changing reuse the last reading; editing the sites reads
+    /// them at once).
+    pub top_sites_refresh_seconds: f32,
     /// Draws the start page natively (Liquid Glass tiles and search field that refract the
     /// wallpaper) instead of the HTML page at `axion://home/`, which stays the fallback (and is
     /// shown for `axion://home/?html=1`). The tab keeps its web view navigated to the HTML page,
@@ -478,6 +482,7 @@ impl Default for Home {
             background_dim: 0.2,
             background_blur: 0.0,
             stats_refresh_seconds: 2.0,
+            top_sites_refresh_seconds: 30.0,
             native: true,
             top_sites_swipe_px: 80.0,
             top_sites_swipe_lock_ms: 400,
@@ -1768,6 +1773,18 @@ pub struct Ui {
     /// again: while nothing moves the GPU rests (the window still checks for changes once per
     /// display refresh). Off: every frame is drawn.
     pub skip_unchanged_frames: bool,
+    /// After this many frames in a row were skipped as unchanged, the window checks for changes
+    /// less often (`idle_check_interval_ms`): an idle window wakes a few times a second instead
+    /// of at every display refresh. Input, page frames and page events still show at once.
+    pub idle_frames_before_slowing: u32,
+    /// How often an idle window checks for changes once it slowed down (milliseconds; 0: at
+    /// every display refresh). This is also the most a timer-driven change of the interface
+    /// (a tooltip appearing, a notice leaving) can come late.
+    pub idle_check_interval_ms: u32,
+    /// Most site icons kept in memory (and on the graphics card); the least recently shown of
+    /// the ones cached on disk leave memory beyond it and are read again when needed (0: no
+    /// limit).
+    pub max_site_icons_in_memory: u32,
 }
 
 impl Default for Ui {
@@ -1782,6 +1799,9 @@ impl Default for Ui {
             onboarding_max_height: 640.0,
             onboarding_dim: 0.84,
             skip_unchanged_frames: true,
+            idle_frames_before_slowing: 30,
+            idle_check_interval_ms: 50,
+            max_site_icons_in_memory: 512,
         }
     }
 }
@@ -2044,11 +2064,20 @@ pub struct Hardware {
     pub gpu: GpuChoice,
     /// GPU rasterization (also what makes WebGL and canvas smooth) and zero-copy uploads.
     pub gpu_rasterization: bool,
+    /// Software page frames (the path used on AMD and under XWayland) upload only the parts
+    /// Chromium repainted, not the whole page every frame. Off: always the whole frame.
+    pub partial_page_uploads: bool,
 }
 
 impl Default for Hardware {
     fn default() -> Self {
-        Self { enabled: true, page_frames: PageFrames::Auto, gpu: GpuChoice::Auto, gpu_rasterization: true }
+        Self {
+            enabled: true,
+            page_frames: PageFrames::Auto,
+            gpu: GpuChoice::Auto,
+            gpu_rasterization: true,
+            partial_page_uploads: true,
+        }
     }
 }
 

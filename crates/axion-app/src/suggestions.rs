@@ -86,6 +86,23 @@ pub fn suggest(input: &str, store: Option<&Store>, search_url: &str, now: i64) -
     out
 }
 
+/// What can be shown for `input` at once, before the stored matches arrive (see
+/// `suggest_worker`): what the input itself means, then those of `previous` (the list shown for
+/// what was typed before) that still match every word of it. Keeps the card steady while typing
+/// instead of shrinking to one row and growing again at each key.
+pub fn provisional(input: &str, search_url: &str, previous: &[Suggestion]) -> Vec<Suggestion> {
+    let mut out = suggest(input, None, search_url, 0);
+    let words: Vec<String> = input.split_whitespace().map(str::to_lowercase).collect();
+    for old in previous.iter().filter(|s| matches!(s.kind, Kind::Bookmark | Kind::History)) {
+        let (url, title) = (old.url.to_lowercase(), old.title.to_lowercase());
+        let matches = words.iter().all(|w| url.contains(w.as_str()) || title.contains(w.as_str()));
+        if matches && !out.iter().any(|o| o.url == old.url) {
+            out.push(old.clone());
+        }
+    }
+    out
+}
+
 pub struct SuggestionList {
     popover: Popover,
     /// The glass panel the rows sit on.
@@ -143,6 +160,36 @@ impl SuggestionList {
         self.query = query.to_owned();
         self.items = if query.trim().is_empty() { Vec::new() } else { items() };
         self.selected = None;
+        self.rebuild(ui, config, anchor, favicons);
+    }
+
+    /// The query the list was last built for.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// The rows shown now.
+    pub fn items(&self) -> &[Suggestion] {
+        &self.items
+    }
+
+    /// The full list for `query` arrived (from the worker): replaces the rows when the list is
+    /// still for that query. A selected row stays selected while it is still there.
+    pub fn set_items(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        query: &str,
+        items: Vec<Suggestion>,
+        anchor: Frame,
+        favicons: &Favicons,
+    ) {
+        if query != self.query || items == self.items {
+            return;
+        }
+        let selected = self.selected.and_then(|i| self.items.get(i)).map(|s| s.url.clone());
+        self.items = if query.trim().is_empty() { Vec::new() } else { items };
+        self.selected = selected.and_then(|url| self.items.iter().position(|s| s.url == url));
         self.rebuild(ui, config, anchor, favicons);
     }
 
@@ -300,6 +347,21 @@ impl SuggestionList {
 mod tests {
     fn sug(kind: Kind, url: &str) -> Suggestion {
         Suggestion { kind, title: String::new(), url: url.into() }
+    }
+
+    #[test]
+    fn provisional_rows_keep_what_still_matches() {
+        let mut kept = sug(Kind::History, "https://music.example/");
+        kept.title = "Music".into();
+        let previous = [
+            sug(Kind::Search, "https://s/?q=mu"),
+            kept.clone(),
+            sug(Kind::Bookmark, "https://mail.example/"),
+        ];
+        let rows = provisional("mus", "https://s/?q={}", &previous);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].kind, Kind::Search, "what the input means comes first");
+        assert_eq!(rows[1], kept);
     }
 
     #[test]

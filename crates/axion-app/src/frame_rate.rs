@@ -85,9 +85,26 @@ pub fn wake_plan(now: Instant, redraw_at: Option<Instant>, engine_at: Option<Ins
     }
 }
 
+/// How long after a skipped frame the next one is due: one display `refresh`, or `slow` once
+/// `skipped` frames in a row (more than `after`) were unchanged. A `slow` shorter than a
+/// refresh (0 included) never speeds anything up.
+pub fn idle_wait(refresh: Duration, skipped: u32, after: u32, slow: Duration) -> Duration {
+    if skipped > after { refresh.max(slow) } else { refresh }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_idle_window_checks_less_often() {
+        let refresh = Duration::from_millis(4);
+        let slow = Duration::from_millis(50);
+        assert_eq!(idle_wait(refresh, 1, 30, slow), refresh);
+        assert_eq!(idle_wait(refresh, 30, 30, slow), refresh);
+        assert_eq!(idle_wait(refresh, 31, 30, slow), slow);
+        assert_eq!(idle_wait(refresh, 31, 30, Duration::ZERO), refresh, "0: off");
+    }
 
     #[test]
     fn a_skipped_frame_sleeps_until_the_next_refresh_or_chromium() {

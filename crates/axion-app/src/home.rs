@@ -260,7 +260,15 @@ pub struct HomePage {
     stale: bool,
     /// Bumped when site icons arrive (the page's icon URLs change with it).
     icons_version: u64,
+    /// The top sites last read, when, and for which (count, window days): a site icon arriving
+    /// or the Shields total changing rebuilds the page's state but needn't read the history
+    /// again (that scan took ~20 ms with a large history). Read again after
+    /// `home.top_sites_refresh_seconds` or when the sites were edited.
+    top_sites: Option<(Instant, (u32, u32), TopSites)>,
 }
+
+/// The top sites to show, and how many the user removed.
+type TopSites = (Vec<Site>, usize);
 
 impl HomePage {
     pub fn new(profile: &Path, favicons: Option<PathBuf>) -> Self {
@@ -283,6 +291,7 @@ impl HomePage {
             add_error: None,
             stale: true,
             icons_version: 1,
+            top_sites: None,
         }
     }
 
@@ -456,6 +465,7 @@ impl HomePage {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
+        let sites = store.map(|store| self.cached_top_sites(store, config, now));
         let selected = self.selected(config);
         let names: Vec<&str> = self.library.names().collect();
         let mimes: Vec<&str> = self.library.entries().iter().map(|(_, m)| m.as_str()).collect();
@@ -481,18 +491,10 @@ impl HomePage {
             live_setting: config.home.live_wallpapers,
             error: self.add_error.as_deref().unwrap_or_default(),
         };
-        let state = state_json(
-            self.icons_version,
-            config,
-            store,
-            blocked_total,
-            account_name,
-            false,
-            &backgrounds,
-            now,
-        );
+        let state =
+            state_json(self.icons_version, config, sites, blocked_total, account_name, false, &backgrounds);
         let private_state =
-            state_json(self.icons_version, config, None, 0, account_name, true, &Backgrounds::PRIVATE, now);
+            state_json(self.icons_version, config, None, 0, account_name, true, &Backgrounds::PRIVATE);
         let background = selected.and_then(|name| self.library.file(name));
         let mut served = self.service.0.write().unwrap_or_else(PoisonError::into_inner);
         served.state = state.to_string();
@@ -508,9 +510,25 @@ impl HomePage {
         true
     }
 
+    /// The top sites, read again only when the last reading is older than
+    /// `home.top_sites_refresh_seconds` or was for other limits (see `top_sites` field).
+    fn cached_top_sites(&mut self, store: &Store, config: &Config, now: i64) -> TopSites {
+        let home = &config.home;
+        let key = (home.top_sites_count, home.top_sites_window_days);
+        let fresh = Duration::from_secs_f32(home.top_sites_refresh_seconds.max(0.0));
+        match &self.top_sites {
+            Some((at, k, sites)) if *k == key && at.elapsed() < fresh => sites.clone(),
+            _ => {
+                let sites = top_sites(store, home.top_sites_count as usize, home.top_sites_window_days, now);
+                self.top_sites = Some((Instant::now(), key, sites.clone()));
+                sites
+            }
+        }
+    }
+
     /// What the native start page shows (the model the JSON of the HTML page is made from too).
     pub fn start_model(
-        &self,
+        &mut self,
         config: &Config,
         store: Option<&Store>,
         blocked: u64,
@@ -520,6 +538,7 @@ impl HomePage {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
+        let sites = store.filter(|_| !private).map(|store| self.cached_top_sites(store, config, now));
         let entries = self
             .library
             .names()
@@ -538,7 +557,7 @@ impl HomePage {
             ),
             error: self.add_error.as_deref().unwrap_or_default(),
         };
-        StartModel::build(config, store, blocked, account_name, private, &facts, now)
+        StartModel::with_sites(config, sites, blocked, account_name, private, &facts)
     }
 
     /// Bumped when site icons arrive or the icon tone changes: tiles ask for their icons again.
@@ -638,6 +657,7 @@ impl HomePage {
                 if let Err(e) = edit_top_sites(store, &edit, &search_url) {
                     tracing::warn!("changing the top sites failed: {e}");
                 }
+                self.top_sites = None;
                 self.stale = true;
                 return HomeAction::Refresh;
             }
@@ -943,12 +963,11 @@ fn page_translations() -> Value {
 fn state_json(
     icons_version: u64,
     config: &Config,
-    store: Option<&Store>,
+    sites: Option<TopSites>,
     blocked: u64,
     name: &str,
     private: bool,
     backgrounds: &Backgrounds<'_>,
-    now: i64,
 ) -> Value {
     let home = &config.home;
     let h24 = match home.clock_format {
@@ -962,11 +981,7 @@ fn state_json(
         .map(|(name, url)| json!({ "name": name, "host": site_host(url).unwrap_or_default() }))
         .collect();
     let custom_host = site_host(&config.general.search_url).unwrap_or_default();
-    let limit = home.top_sites_count as usize;
-    let (sites, hidden) = match store {
-        Some(store) if !private => top_sites(store, limit, home.top_sites_window_days, now),
-        _ => (Vec::new(), 0),
-    };
+    let (sites, hidden) = sites.filter(|_| !private).unwrap_or_default();
     let sites: Vec<Value> = sites
         .iter()
         .map(|s| json!({ "url": s.url, "title": s.title, "host": s.host, "pinned": s.pinned }))
@@ -1036,7 +1051,7 @@ mod tests {
         assert!(page_html(true).contains("<html data-flat lang=\"en\">"));
         assert!(!page_html(false).contains("data-flat"));
         let mut config = Config::default();
-        let state = |c: &Config| state_json(1, c, None, 0, "", false, &Backgrounds::PRIVATE, 0);
+        let state = |c: &Config| state_json(1, c, None, 0, "", false, &Backgrounds::PRIVATE);
         assert_eq!(state(&config)["flat"], false);
         config.glass.style = axion_config::GlassStyle::Flat;
         assert_eq!(state(&config)["flat"], true);
@@ -1139,6 +1154,19 @@ mod tests {
     }
 
     #[test]
+    fn top_sites_are_read_again_only_when_due() {
+        let store = Store::in_memory().unwrap();
+        store.record_visit("https://a.example/", "A", 100).unwrap();
+        let mut page = HomePage::new(Path::new("/nonexistent"), None);
+        let mut config = Config::default();
+        assert_eq!(page.cached_top_sites(&store, &config, 100).0.len(), 1);
+        store.record_visit("https://b.example/", "B", 100).unwrap();
+        assert_eq!(page.cached_top_sites(&store, &config, 100).0.len(), 1, "the last reading is reused");
+        config.home.top_sites_refresh_seconds = 0.0;
+        assert_eq!(page.cached_top_sites(&store, &config, 100).0.len(), 2, "due: read again");
+    }
+
+    #[test]
     fn settings_messages() {
         let mut config = Config::default();
         let mut page = HomePage::new(Path::new("/nonexistent"), None);
@@ -1191,12 +1219,13 @@ mod tests {
             live_setting: true,
             error: "",
         };
-        let state = state_json(1, &config, Some(&store), 7, "Ada Lovelace", true, &Backgrounds::PRIVATE, 100);
+        let sites = || Some(top_sites(&store, 5, 90, 100));
+        let state = state_json(1, &config, sites(), 7, "Ada Lovelace", true, &Backgrounds::PRIVATE);
         assert_eq!(state["topSites"]["sites"].as_array().map(Vec::len), Some(0));
         assert_eq!(state["stats"]["show"], false);
         assert_eq!(state["background"]["show"], false);
         assert_eq!(state["background"]["list"].as_array().map(Vec::len), Some(0));
-        let state = state_json(1, &config, Some(&store), 7, "Ada Lovelace", false, &backgrounds, 100);
+        let state = state_json(1, &config, sites(), 7, "Ada Lovelace", false, &backgrounds);
         assert_eq!(state["accent"], "#E2457A");
         assert_eq!(state["background"]["show"], true);
         assert_eq!(state["background"]["selected"], "bg-1.png");

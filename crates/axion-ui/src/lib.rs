@@ -443,6 +443,28 @@ impl Ui {
         self.tree.children(node).unwrap_or_default()
     }
 
+    /// `node`'s children without collecting them (hit testing and painting walk every node,
+    /// every frame: a list copied per node added up in long lists).
+    fn child_ids(&self, node: NodeId) -> impl DoubleEndedIterator<Item = NodeId> + '_ {
+        let count = self.tree.child_count(node);
+        (0..count).filter_map(move |i| self.tree.child_at_index(node, i).ok())
+    }
+
+    /// Whether `px` (physical px) lies so far outside the clip of the clipped subtree being
+    /// painted that nothing of it can show: more than the clip's own size away, which leaves
+    /// room for anything a widget draws beyond its frame (shadows, lenses). A long scrolled list
+    /// then paints only the rows near its visible part.
+    fn far_outside_clip(&self, px: Rect) -> bool {
+        let stack = self.clip_stack.borrow();
+        let Some(c) = stack.last() else { return false };
+        let margin = c.size.max_element();
+        let (min, max) = (c.origin - Vec2::splat(margin), c.origin + c.size + Vec2::splat(margin));
+        px.origin.x > max.x
+            || px.origin.y > max.y
+            || px.origin.x + px.size.x < min.x
+            || px.origin.y + px.size.y < min.y
+    }
+
     pub fn clear_children(&mut self, node: NodeId) {
         for child in self.tree.children(node).unwrap_or_default() {
             self.remove(child);
@@ -491,7 +513,10 @@ impl Ui {
     }
 
     pub fn is_visible(&self, node: NodeId) -> bool {
-        self.style(node).display != Display::None
+        // Borrowed, not `style()`: hit testing and painting ask this of every node, and a copy
+        // of the whole style each time added up in long lists. (A missing node has the default
+        // style, which is shown.)
+        self.tree.style(node).map_or(true, |s| s.display != Display::None)
     }
 
     pub fn set_text(&mut self, node: NodeId, text: &str) {
@@ -1003,14 +1028,11 @@ impl Ui {
             return None;
         }
         // A segmented control takes the pointer itself (its segments may carry actions).
-        let children = if matches!(widget.kind, WidgetKind::Segmented { .. }) {
-            Vec::new()
-        } else {
-            self.tree.children(node).unwrap_or_default()
-        };
-        for child in children.into_iter().rev() {
-            if let Some(hit) = self.hit_in(child, p) {
-                return Some(hit);
+        if !matches!(widget.kind, WidgetKind::Segmented { .. }) {
+            for child in self.child_ids(node).rev() {
+                if let Some(hit) = self.hit_in(child, p) {
+                    return Some(hit);
+                }
             }
         }
         let solid = !widget.join_only && widget.background != Background::None
@@ -2022,6 +2044,11 @@ impl Ui {
             && (lens_on.is_some()
                 || matches!(widget.background, Background::Glass(_) | Background::TintedGlass(..)));
         let press_xf = press_xf.filter(|_| lensed || lens_glow.is_none());
+        // Far outside a scrolled list's visible part: the row and everything in it is cut away
+        // (nothing moves it in: not held, not animating its frame).
+        if press_xf.is_none() && widget.visual_frame.is_none() && self.far_outside_clip(px) {
+            return;
+        }
         let mark = press_xf.as_ref().map(|_| marks(stacks));
         // An animated background carries its content along (mapped from the layout frame onto
         // it), and the content fades with the background's growth: both share one value.
@@ -2347,7 +2374,7 @@ impl Ui {
                 let cut = stack.last().map_or(px, |outer| clip(px, *outer));
                 stack.push(cut);
             }
-            for child in self.tree.children(node).unwrap_or_default() {
+            for child in self.child_ids(node) {
                 self.paint_node(child, child_depth, dim, child_fade, &mut sub);
             }
             self.painting_clipped.set(self.painting_clipped.get() - 1);
@@ -2373,7 +2400,7 @@ impl Ui {
             );
             return;
         }
-        for child in self.tree.children(node).unwrap_or_default() {
+        for child in self.child_ids(node) {
             self.paint_node(child, child_depth, dim, child_fade, stacks);
         }
         Self::carry_subtree(stacks, press_xf, mark, frame_xf, frame_mark, glass_mark.as_deref(), child_depth);
@@ -3532,6 +3559,44 @@ mod tests {
                 .sum::<usize>()
         };
         assert_eq!(glass_shapes(&ui), 1, "the visible button is glass, the scrolled-out one is not drawn");
+    }
+
+    #[test]
+    fn a_long_clipped_list_paints_only_rows_near_its_visible_part() {
+        let mut ui = ui();
+        let root = ui.root();
+        let boxed = ui.add(
+            root,
+            Widget::container().with_clip(),
+            Style { size: Size { width: length(200.0), height: length(100.0) }, ..Default::default() },
+        );
+        let list = ui.add(
+            boxed,
+            Widget::container(),
+            Style { flex_direction: FlexDirection::Column, flex_shrink: 0.0, ..Default::default() },
+        );
+        let rows: Vec<NodeId> = (0..200)
+            .map(|_| {
+                ui.add(
+                    list,
+                    Widget::container().with_background(Background::Fill(Paint::Accent, 1.0)),
+                    Style {
+                        size: Size { width: length(200.0), height: length(20.0) },
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        ui.layout();
+        let mut layers = Vec::new();
+        ui.paint(&mut layers);
+        let quads: usize =
+            layers.iter().map(|l| if let Layer::Content(c) = l { c.quads.len() } else { 0 }).sum();
+        // 5 rows show; those within the clip's own height of it are kept (a margin for shadows
+        // and lenses), the other ~185 are left out.
+        assert!((5..=20).contains(&quads), "{quads} rows painted");
+        assert!(ui.frame(rows[199]).origin.y > 3000.0);
     }
 
     fn flat_ui() -> Ui {

@@ -278,6 +278,8 @@ pub struct CefOptions {
     pub max_frame_rate: u32,
     /// How long after Chromium hands over a GPU frame it is copied (see `ViewContext::submit_gpu_frame`).
     pub frame_settle: std::time::Duration,
+    /// Software frames upload only what Chromium repainted (see `ViewContext::upload`).
+    pub partial_uploads: bool,
     /// Decode video on the GPU (VA-API).
     pub hardware_video_decoding: bool,
     /// Run Chromium's extension system (see [`extension_switches`]).
@@ -380,7 +382,11 @@ impl CefEngine {
         // intercepts "Add to Chrome" (see `axion-extensions`); with that switched off the store
         // is not opened at all.
         net.block_web_store.store(options.block_web_store, std::sync::atomic::Ordering::Relaxed);
-        let shared = Rc::new(Shared { frame_settle: options.frame_settle, ..Default::default() });
+        let shared = Rc::new(Shared {
+            frame_settle: options.frame_settle,
+            partial_uploads: options.partial_uploads,
+            ..Default::default()
+        });
         shared.next_view.set(1);
         shared.accelerated.set(options.accelerated);
         shared.max_frame_rate.set(options.max_frame_rate);

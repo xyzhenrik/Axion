@@ -3,10 +3,10 @@
 //! clock text, Shields number formats, paging).
 
 use axion_config::{ClockFormat, Color, Config};
-use axion_store::{Store, site_host};
+use axion_store::site_host;
 
 use super::backgrounds::Kind;
-use super::{BYTES_PER_BLOCKED_REQUEST, SECONDS_PER_BLOCKED_REQUEST, Site, top_sites};
+use super::{BYTES_PER_BLOCKED_REQUEST, SECONDS_PER_BLOCKED_REQUEST, Site};
 use crate::settings::SEARCH_ENGINES;
 
 /// One search engine of the menu.
@@ -114,15 +114,34 @@ pub struct BackgroundFacts<'a> {
 }
 
 impl StartModel {
-    /// Private start pages show no top sites, history, Shields numbers or background.
+    /// Private start pages show no top sites, history, Shields numbers or background. Reads the
+    /// top sites from `store` (the browser passes a cached reading to [`StartModel::with_sites`]).
+    #[cfg(test)]
     pub fn build(
         config: &Config,
-        store: Option<&Store>,
+        store: Option<&axion_store::Store>,
         blocked: u64,
         account_name: &str,
         private: bool,
         backgrounds: &BackgroundFacts<'_>,
         now: i64,
+    ) -> Self {
+        let home = &config.home;
+        let sites = store.filter(|_| !private).map(|store| {
+            super::top_sites(store, home.top_sites_count as usize, home.top_sites_window_days, now)
+        });
+        Self::with_sites(config, sites, blocked, account_name, private, backgrounds)
+    }
+
+    /// The model with the top sites read already (and how many were removed). Private start
+    /// pages show no top sites, history, Shields numbers or background.
+    pub fn with_sites(
+        config: &Config,
+        sites: Option<(Vec<Site>, usize)>,
+        blocked: u64,
+        account_name: &str,
+        private: bool,
+        backgrounds: &BackgroundFacts<'_>,
     ) -> Self {
         let home = &config.home;
         let clock_24h = match home.clock_format {
@@ -135,11 +154,7 @@ impl StartModel {
             .map(|(name, url)| EngineModel { name, host: site_host(url).unwrap_or_default() })
             .collect();
         let current = SEARCH_ENGINES.iter().position(|(_, url)| *url == config.general.search_url);
-        let limit = home.top_sites_count as usize;
-        let (sites, hidden) = match store {
-            Some(store) if !private => top_sites(store, limit, home.top_sites_window_days, now),
-            _ => (Vec::new(), 0),
-        };
+        let (sites, hidden) = sites.filter(|_| !private).unwrap_or_default();
         let selected = backgrounds
             .selected
             .and_then(|name| backgrounds.entries.iter().find(|e| e.name == name))
@@ -336,6 +351,7 @@ pub fn monogram(host: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axion_store::Store;
 
     #[test]
     fn greeting_follows_the_hour() {

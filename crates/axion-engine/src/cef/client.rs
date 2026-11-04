@@ -47,6 +47,8 @@ pub(super) struct Shared {
     pub permissions: super::permission::Permissions,
     /// How long after Chromium hands over a GPU frame it is copied (`ViewContext::submit_gpu_frame`).
     pub frame_settle: Duration,
+    /// Software frames upload only the parts Chromium repainted (see `ViewContext::upload`).
+    pub partial_uploads: bool,
     /// DevTools browsers Chromium created for a view (see `Engine::open_devtools`), until the
     /// engine takes them in `pump`.
     pub devtools_created: RefCell<Vec<(ViewId, Browser)>>,
@@ -125,6 +127,9 @@ pub(super) struct ViewFrames {
     /// Until when frames are checked for the letterboxed page of a resize (see
     /// `is_letterboxed`); `None` once a frame without bars came.
     pub letterbox_until: Cell<Option<Instant>>,
+    /// The texture that holds exactly the last software frame Chromium painted: only into it
+    /// can the next frame's repainted parts be uploaded alone (see `ViewContext::upload`).
+    uploaded: RefCell<Option<wgpu::Texture>>,
 }
 
 impl ViewFrames {
@@ -135,6 +140,7 @@ impl ViewFrames {
         self.pending.borrow_mut().clear();
         self.spare_textures.borrow_mut().clear();
         self.spare_checks.borrow_mut().clear();
+        self.uploaded.borrow_mut().take();
     }
 
     /// When the frame waiting to be copied is due, if there is one.
@@ -198,6 +204,39 @@ fn has_black_bar(pixels: &[u8], width: usize, height: usize) -> bool {
     edge && !(0..width).step_by(4).all(|x| black(x, height / 2))
 }
 
+/// Most separate rectangles a software frame is uploaded in; more are joined into their bounds.
+const MAX_UPLOAD_RECTS: usize = 8;
+/// Repainted parts covering more than this share of the frame are uploaded as the whole frame
+/// (one copy instead of several that add up to nearly the same).
+const PARTIAL_UPLOAD_MAX_SHARE: f64 = 0.75;
+
+/// The parts of a `width` x `height` software frame to upload, from Chromium's repainted
+/// rectangles (`x, y, width, height`), clipped to the frame. `None`: the whole frame (nothing
+/// usable was reported, or the parts cover most of it).
+fn upload_regions(dirty: &[Rect], width: u32, height: u32) -> Option<Vec<(u32, u32, u32, u32)>> {
+    let clip = |r: &Rect| {
+        let x0 = r.x.clamp(0, width as i32) as u32;
+        let y0 = r.y.clamp(0, height as i32) as u32;
+        let x1 = r.x.saturating_add(r.width).clamp(0, width as i32) as u32;
+        let y1 = r.y.saturating_add(r.height).clamp(0, height as i32) as u32;
+        (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
+    };
+    let mut parts: Vec<(u32, u32, u32, u32)> = dirty.iter().filter_map(clip).collect();
+    if parts.is_empty() {
+        return None;
+    }
+    if parts.len() > MAX_UPLOAD_RECTS {
+        let x0 = parts.iter().map(|p| p.0).min().unwrap_or(0);
+        let y0 = parts.iter().map(|p| p.1).min().unwrap_or(0);
+        let x1 = parts.iter().map(|p| p.0 + p.2).max().unwrap_or(width);
+        let y1 = parts.iter().map(|p| p.1 + p.3).max().unwrap_or(height);
+        parts = vec![(x0, y0, x1 - x0, y1 - y0)];
+    }
+    let area: u64 = parts.iter().map(|p| u64::from(p.2) * u64::from(p.3)).sum();
+    let whole = u64::from(width) * u64::from(height);
+    (area as f64 <= whole as f64 * PARTIAL_UPLOAD_MAX_SHARE).then_some(parts)
+}
+
 const MAP_WAITING: u8 = 0;
 const MAP_DONE: u8 = 1;
 const MAP_FAILED: u8 = 2;
@@ -253,7 +292,9 @@ impl ViewContext {
     }
 
     fn store(&self, texture: wgpu::Texture) {
-        if let Some(old) = self.frames.texture.replace(Some(texture)) {
+        if let Some(old) = self.frames.texture.replace(Some(texture.clone()))
+            && old != texture
+        {
             self.recycle_texture(old);
         }
         self.frames.serial.set(self.frames.serial.get() + 1);
@@ -507,7 +548,7 @@ impl ViewContext {
     }
 
     /// Software paint: upload BGRA pixels, reusing the texture while the size is unchanged.
-    fn upload(&self, pixels: &[u8], width: u32, height: u32) {
+    fn upload(&self, pixels: &[u8], width: u32, height: u32, dirty: &[Rect]) {
         // Right after a resize Chromium can hand over the page of the old size scaled into the
         // new buffer with a black bar along one edge (as on the shared-buffer path, see
         // `is_scaled`): skip it, the real frame follows. At most a few in a row, so a page that
@@ -520,6 +561,8 @@ impl ViewContext {
                 self.frames.skipped_bars.set(skipped + 1);
                 self.shared.stats.dropped();
                 self.frames.wants_repaint.set(true);
+                // The next frame's repainted parts are relative to this one, which isn't shown.
+                self.frames.uploaded.borrow_mut().take();
                 return;
             }
         }
@@ -550,16 +593,30 @@ impl ViewContext {
                 view_formats: &[],
             })
         });
-        self.queue.write_texture(
-            texture.as_image_copy(),
-            pixels,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * width),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-        );
+        // Into the texture that holds the frame before this one, only what Chromium repainted is
+        // uploaded (a blinking caret or a small animation instead of the whole page each time).
+        let holds_previous = self.shared.partial_uploads
+            && self.frames.uploaded.borrow().as_ref().is_some_and(|t| *t == texture);
+        let regions = if holds_previous { upload_regions(dirty, width, height) } else { None };
+        let regions = regions.unwrap_or_else(|| vec![(0, 0, width, height)]);
+        for (x, y, w, h) in regions {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x, y, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: (u64::from(y) * u64::from(width) + u64::from(x)) * 4,
+                    bytes_per_row: Some(4 * width),
+                    rows_per_image: Some(h),
+                },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            );
+        }
+        *self.frames.uploaded.borrow_mut() = Some(texture.clone());
         self.store(texture);
     }
 }
@@ -622,7 +679,7 @@ wrap_render_handler! {
             &self,
             _browser: Option<&mut Browser>,
             type_: PaintElementType,
-            _dirty_rects: Option<&[Rect]>,
+            dirty_rects: Option<&[Rect]>,
             buffer: *const u8,
             width: ::std::os::raw::c_int,
             height: ::std::os::raw::c_int,
@@ -635,7 +692,7 @@ wrap_render_handler! {
             // of this callback; we copy out of it before returning.
             let pixels = unsafe { std::slice::from_raw_parts(buffer, len) };
             let started = Instant::now();
-            self.ctx.upload(pixels, width as u32, height as u32);
+            self.ctx.upload(pixels, width as u32, height as u32, dirty_rects.unwrap_or_default());
             self.ctx.shared.stats.paint(started.elapsed());
         }
 
@@ -1541,5 +1598,35 @@ mod screen_pick_tests {
     fn origins_drop_the_path() {
         assert_eq!(origin_of("https://meet.example.com/abc?x=1"), "https://meet.example.com");
         assert_eq!(origin_of("file:///tmp/x.html"), "file://");
+    }
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+
+    fn rect(x: i32, y: i32, width: i32, height: i32) -> Rect {
+        Rect { x, y, width, height }
+    }
+
+    #[test]
+    fn small_repaints_upload_only_their_parts() {
+        let parts = upload_regions(&[rect(10, 20, 40, 40), rect(500, 300, 8, 16)], 1000, 800);
+        assert_eq!(parts, Some(vec![(10, 20, 40, 40), (500, 300, 8, 16)]));
+    }
+
+    #[test]
+    fn parts_are_clipped_to_the_frame() {
+        assert_eq!(upload_regions(&[rect(-5, 790, 20, 50)], 1000, 800), Some(vec![(0, 790, 15, 10)]));
+        // Nothing left inside: the whole frame.
+        assert_eq!(upload_regions(&[rect(2000, 0, 10, 10)], 1000, 800), None);
+        assert_eq!(upload_regions(&[], 1000, 800), None);
+    }
+
+    #[test]
+    fn large_or_many_parts_become_one_copy() {
+        assert_eq!(upload_regions(&[rect(0, 0, 1000, 700)], 1000, 800), None, "most of the frame");
+        let many: Vec<Rect> = (0..20).map(|i| rect(i * 10, i * 5, 4, 4)).collect();
+        assert_eq!(upload_regions(&many, 1000, 800), Some(vec![(0, 0, 194, 99)]));
     }
 }

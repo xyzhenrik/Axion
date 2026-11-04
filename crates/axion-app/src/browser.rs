@@ -391,6 +391,13 @@ pub struct Browser {
     history_sheet: crate::list_sheet::ListSheet,
     /// Reads, searches and deletes History for its sheet off the UI thread (`list_worker`).
     list_worker: Option<crate::list_worker::ListWorker>,
+    /// Looks up the address bar's suggestions and inline completion off the UI thread
+    /// (`suggest_worker`).
+    suggest_worker: Option<crate::suggest_worker::SuggestWorker>,
+    /// The newest suggestion lookup asked for: older answers are dropped.
+    suggest_generation: u64,
+    /// The text typed at the end of the address field whose inline completion is on its way.
+    completion_wanted: Option<String>,
     /// The newest History load asked for: older answers are dropped.
     list_generation: u64,
     /// Whether the answer to the newest load keeps the scroll position.
@@ -580,9 +587,16 @@ pub struct Browser {
     shown_textures: Vec<wgpu::TextureView>,
     /// The shown page frame's texture and a view of it, kept while the texture is the same.
     page_view: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Views of the tab overview's thumbnails, kept while their textures are the same (see
+    /// `texture_views`).
+    overview_views: crate::texture_views::ViewCache<ViewId>,
+    /// The same for the Playlist player's picture.
+    playlist_views: crate::texture_views::ViewCache<ViewId>,
     /// The shown scene's layer fingerprints (trace logging only).
     shown_layers: Vec<u64>,
     idle_redraw_at: Option<Instant>,
+    /// Frames skipped as unchanged in a row (see `ui.idle_frames_before_slowing`).
+    idle_skips: u32,
     /// Whether the pointer was hidden with the fullscreen player's controls at the last check.
     player_pointer_hidden: bool,
     frame_interval: Duration,
@@ -773,6 +787,13 @@ impl Browser {
                 options.waker.clone(),
             )
         });
+        let suggest_worker = store_path.clone().map(|path| {
+            crate::suggest_worker::SuggestWorker::spawn(
+                path,
+                Duration::from_millis(u64::from(config.data.db_busy_timeout_ms)),
+                options.waker.clone(),
+            )
+        });
         PrivateLock::drop_old_password(store.as_ref());
         let muted_sites = tabgroups::load_muted_sites(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
@@ -802,6 +823,7 @@ impl Browser {
                         .max(0.0)
                         / 1000.0,
                 ),
+                partial_uploads: config.hardware.partial_page_uploads,
                 hardware_video_decoding: crate::hardware::video_decoding(&config),
                 extra_switches: {
                     let mut switches = crate::hardware::chromium_switches(&config.hardware);
@@ -889,6 +911,7 @@ impl Browser {
         let mut favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         favicons.set_dark(dark);
         favicons.set_contrast(config.appearance.favicon_contrast);
+        favicons.set_max_in_memory(config.ui.max_site_icons_in_memory as usize);
         let mut home = HomePage::new(&profile, favicons.dir().map(Into::into));
         // The single background image of older versions moves into the backgrounds directory.
         let migrated = home.migrate(&mut config);
@@ -1041,6 +1064,9 @@ impl Browser {
             passwords,
             history_sheet,
             list_worker,
+            suggest_worker,
+            suggest_generation: 0,
+            completion_wanted: None,
             list_generation: 0,
             list_keep_scroll: false,
             downloads_sheet,
@@ -1142,7 +1168,10 @@ impl Browser {
             shown_textures: Vec::new(),
             shown_layers: Vec::new(),
             page_view: None,
+            overview_views: Default::default(),
+            playlist_views: Default::default(),
             idle_redraw_at: None,
+            idle_skips: 0,
             player_pointer_hidden: false,
             frame_interval: frame_rate::display_interval(None),
             refresh_watch: RefreshWatch::default(),
@@ -4531,6 +4560,7 @@ impl Browser {
                     None => {}
                 },
                 UiEvent::Submitted { node, text } if node == self.chrome.address_field => {
+                    let text = self.finish_completion(text);
                     match self.suggestions.selected() {
                         Some(s) => self.navigate_to(s.url.clone()),
                         None => self.navigate_from_address(&text),
@@ -6257,6 +6287,7 @@ impl Browser {
         self.engine.set_color_scheme(self.dark);
         let delay = self.page_color_delay();
         self.page_colors.set_dark(self.dark, self.active_view(), delay);
+        self.favicons.set_max_in_memory(self.config.ui.max_site_icons_in_memory as usize);
         let contrast_changed = self.favicons.set_contrast(self.config.appearance.favicon_contrast);
         if self.favicons.set_dark(self.dark) {
             // Sites with their own icon for the scheme show it at once.
@@ -8378,7 +8409,6 @@ impl Browser {
                 self.overview_query = query;
                 self.rebuild_overview();
             }
-            let engine = &self.engine;
             // A start tab's web view is hidden behind the native page and has no picture of it:
             // its card shows the wallpaper (or nothing, then the card's own look).
             let native = self.config.home.native;
@@ -8390,14 +8420,17 @@ impl Browser {
                 .map(|t| t.view)
                 .collect();
             let card = self.start_card_picture();
+            let (engine, views) = (&self.engine, &mut self.overview_views);
             self.overview.update(&mut self.ui, dt, |view| {
                 if home_views.contains(&view) {
                     return card.clone();
                 }
                 let frame = engine.frame(view)?;
                 let size = (frame.texture.width(), frame.texture.height());
-                Some((frame.texture.create_view(&Default::default()), size))
+                Some((views.view(view, &frame.texture), size))
             });
+        } else {
+            self.overview_views.clear();
         }
         self.settings.poll_search(&mut self.ui, &self.config, &self.keymap);
         self.poll_panel_search();
@@ -8643,9 +8676,11 @@ impl Browser {
         {
             drop(scene);
             self.frames_skipped += 1;
-            self.idle_redraw_at = Some(now + self.frame_interval);
+            self.idle_skips = self.idle_skips.saturating_add(1);
+            self.idle_redraw_at = Some(now + self.idle_wait());
             return Ok(());
         }
+        self.idle_skips = 0;
         self.idle_redraw_at = None;
         if tracing::enabled!(tracing::Level::TRACE) {
             // Debug aid: which layers changed since the frame shown (why it was drawn).
@@ -8751,11 +8786,38 @@ impl Browser {
         if self.ui.field_caret(field) != Some((typed.len(), None)) {
             return;
         }
-        let Some(completion) = self.store.as_ref().and_then(|s| s.autocomplete(&typed).ok().flatten()) else {
+        if self.suggest_worker.is_some() {
+            // Looked up with the suggestions (`update_suggestions`), applied when it arrives.
+            self.completion_wanted = Some(typed);
             return;
-        };
-        if completion.len() > typed.len() && completion.starts_with(&typed) {
-            self.ui.set_field_text_selecting(field, &completion, typed.len()..completion.len());
+        }
+        if let Some(completion) = self.store.as_ref().and_then(|s| s.autocomplete(&typed).ok().flatten()) {
+            self.apply_completion(&typed, &completion);
+        }
+    }
+
+    /// Puts the inline `completion` of `typed` into the address field, its added part selected,
+    /// if the field still holds exactly `typed` with the caret at its end.
+    fn apply_completion(&mut self, typed: &str, completion: &str) {
+        let field = self.chrome.address_field;
+        if self.ui.field_text(field) != Some(typed) || self.ui.field_caret(field) != Some((typed.len(), None))
+        {
+            return;
+        }
+        if completion.len() > typed.len() && completion.starts_with(typed) {
+            self.ui.set_field_text_selecting(field, completion, typed.len()..completion.len());
+        }
+    }
+
+    /// Enter in the address field before the inline completion of `text` arrived: looked up at
+    /// once, so what is opened doesn't depend on how fast the lookup was.
+    fn finish_completion(&mut self, text: String) -> String {
+        if self.completion_wanted.take().is_none_or(|wanted| wanted != text) {
+            return text;
+        }
+        match self.store.as_ref().and_then(|s| s.autocomplete(&text).ok().flatten()) {
+            Some(completion) if completion.len() > text.len() && completion.starts_with(&text) => completion,
+            _ => text,
         }
     }
 
@@ -8773,7 +8835,9 @@ impl Browser {
         let editing = self.ui.focused() == Some(self.chrome.address_field) && !self.overview.is_open();
         let text = self.typed_address();
         let typed = editing && self.tabs.active().is_none_or(|t| t.url != text);
+        let answers = self.suggest_worker.as_ref().map(crate::suggest_worker::SuggestWorker::poll);
         if !typed {
+            self.completion_wanted = None;
             if self.suggestions.is_visible() {
                 self.suggestions.hide(&mut self.ui, &self.config);
             }
@@ -8782,9 +8846,43 @@ impl Browser {
             return;
         }
         let anchor = self.chrome.address_frame(&self.ui);
-        let (store, search_url) = (self.store.as_ref(), self.config.general.search_url.clone());
+        let newest = self.suggest_generation;
+        for answer in answers.unwrap_or_default().into_iter().filter(|a| a.generation == newest) {
+            let (ui, config, favicons) = (&mut self.ui, &self.config, &self.favicons);
+            self.suggestions.set_items(ui, config, &answer.text, answer.items, anchor, favicons);
+            if let Some(completion) = answer.completion
+                && self.completion_wanted.as_deref() == Some(answer.text.as_str())
+            {
+                self.completion_wanted = None;
+                self.apply_completion(&answer.text, &completion);
+            }
+        }
+        let search_url = self.config.general.search_url.clone();
+        let mut asked = false;
+        if text != self.suggestions.query()
+            && let Some(worker) = &self.suggest_worker
+        {
+            self.suggest_generation += 1;
+            asked = worker.send(crate::suggest_worker::Request {
+                generation: self.suggest_generation,
+                text: text.clone(),
+                search_url: search_url.clone(),
+                now: unix_now(),
+                complete: self.completion_wanted.as_deref() == Some(text.as_str()),
+            });
+            if !asked {
+                // The worker is gone (it could not open the database): looked up here from now on.
+                self.suggest_worker = None;
+            }
+        }
+        let store = self.store.as_ref();
+        let previous = if asked { self.suggestions.items().to_vec() } else { Vec::new() };
         self.suggestions.update(&mut self.ui, &self.config, &text, anchor, &self.favicons, || {
-            suggest(&text, store, &search_url, unix_now())
+            if asked {
+                crate::suggestions::provisional(&text, &search_url, &previous)
+            } else {
+                suggest(&text, store, &search_url, unix_now())
+            }
         });
         self.suggestions.reposition(&mut self.ui, anchor);
         let current = self.tabs.active().map(|t| t.url.clone());
@@ -8846,6 +8944,18 @@ impl Browser {
     /// changed, nothing presented, so nothing waited for the display), one display refresh later.
     pub fn redraw_at(&self) -> Option<Instant> {
         self.idle_redraw_at
+    }
+
+    /// How long after a skipped frame the next one runs: a display refresh, or once the window
+    /// has been idle for a while, `ui.idle_check_interval_ms` (see `frame_rate::idle_wait`).
+    fn idle_wait(&self) -> Duration {
+        let ui = &self.config.ui;
+        frame_rate::idle_wait(
+            self.frame_interval,
+            self.idle_skips,
+            ui.idle_frames_before_slowing,
+            Duration::from_millis(u64::from(ui.idle_check_interval_ms)),
+        )
     }
 
     /// While the sidebar slides: the frame to show for the page, drawn from the page
