@@ -879,10 +879,12 @@ name = "axion-update"
 version = "0.3.0"
 dependencies = [
  "axion-config",
+ "flate2",
  "semver",
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "tar",
  "tempfile",
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",

@@ -135,6 +135,11 @@ pub const INDEX: &[Entry] = &[
         &["devtools", "inspect", "inspector", "console", "f12", "source", "debug", "entwickler"],
     ),
     control(C::General, S::HomeButton, &["home", "haus", "startseite", "toolbar", "button"]),
+    page(
+        C::General,
+        tr_mark("Language"),
+        &["language", "interface", "locale", "sprache", "idioma", "langue", "言語", "语言", "язык", "dil"],
+    ),
     page(C::General, tr_mark("Homepage"), &["start page", "new tab", "startseite", "home", "neuer tab"]),
     control(C::General, S::HomeClock, &["start page", "time", "uhr", "uhrzeit", "startseite", "24", "12"]),
     control(C::General, S::HomeGreeting, &["start page", "hello", "name", "begrüßung", "gruß", "startseite"]),
@@ -334,6 +339,11 @@ pub const INDEX: &[Entry] = &[
         &["keys", "hotkeys", "keymap", "tastatur", "tastenkürzel", "bindings"],
     ),
     page(C::Tabs, tr_mark("Tab bar layout"), &["compact", "separate", "tab strip", "tableiste", "kompakt"]),
+    control(
+        C::Tabs,
+        S::HideSingleTabBar,
+        &["tab bar", "single", "hide", "one tab", "tableiste", "ausblenden"],
+    ),
     control(C::Tabs, S::TintFromPage, &["color", "page colour", "tint", "farbe"]),
     control(C::Tabs, S::OpenInBackground, &["new tab", "links", "hintergrund", "middle click"]),
     control(C::Tabs, S::CloseAnimation, &["close", "animation", "schließen", "animieren", "shrink"]),
@@ -680,6 +690,7 @@ pub const INDEX: &[Entry] = &[
     control(C::Network, S::NetConnectAtStart, &["start", "autostart", "connect", "verbinden"]),
     control(C::Network, S::NetShowChip, &["chip", "address field", "adressfeld", "icon"]),
     control(C::Network, S::NetNotify, &["notify", "toast", "melden", "benachrichtigen"]),
+    control(C::Network, S::NetSessionPersist, &["session", "sitzung", "route", "restart", "neustart"]),
     control(
         C::Privacy,
         S::ExtensionsEnabled,
@@ -763,6 +774,11 @@ pub const INDEX: &[Entry] = &[
         C::About,
         S::UpdatePrereleases,
         &["update", "beta", "channel", "preview", "vorabversion", "kanal", "testversion"],
+    ),
+    control(
+        C::About,
+        S::UpdateNotifications,
+        &["update", "notification", "notify", "desktop", "benachrichtigung", "meldung", "hinweis"],
     ),
 ];
 

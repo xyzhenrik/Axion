@@ -236,12 +236,29 @@ fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
+/// The thousands separator of a language: a dot (German, Spanish, Italian, Dutch, Turkish,
+/// Brazilian Portuguese), a no-break space (French, Russian, Polish), else a comma.
+fn group_separator(language: axion_i18n::Language) -> char {
+    use axion_i18n::Language;
+    match language {
+        Language::German
+        | Language::Spanish
+        | Language::Italian
+        | Language::Dutch
+        | Language::Turkish
+        | Language::PortugueseBrazil => '.',
+        Language::French | Language::Russian | Language::Polish => '\u{a0}',
+        Language::English | Language::Japanese | Language::ChineseSimplified | Language::Korean => ',',
+    }
+}
+
 /// `1234567` as "1,234,567" (German: "1.234.567").
 pub fn group_digits(n: usize) -> String {
-    let separator = match axion_i18n::language() {
-        axion_i18n::Language::German => '.',
-        axion_i18n::Language::English => ',',
-    };
+    group_digits_in(n, axion_i18n::language())
+}
+
+fn group_digits_in(n: usize, language: axion_i18n::Language) -> String {
+    let separator = group_separator(language);
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
@@ -328,6 +345,18 @@ mod tests {
         assert_eq!(group_digits(999), "999");
         assert_eq!(group_digits(8450), "8,450");
         assert_eq!(group_digits(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn digit_separator_follows_the_language() {
+        use axion_i18n::Language;
+        assert_eq!(group_digits_in(1_234_567, Language::German), "1.234.567");
+        assert_eq!(group_digits_in(8450, Language::French), "8\u{a0}450");
+        assert_eq!(group_digits_in(8450, Language::Japanese), "8,450");
+        assert_eq!(group_digits_in(999, Language::Polish), "999");
+        for language in Language::all() {
+            assert_eq!(group_digits_in(12, language), "12");
+        }
     }
 
     fn report(bookmarks_added: usize, history_added: usize, existing: usize) -> Report {

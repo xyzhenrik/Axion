@@ -236,6 +236,9 @@ if [ "$do_tarball" = 1 ]; then
   cp -al "$appdir" "$stage/$name-linux-$arch" 2>/dev/null || cp -a "$appdir" "$stage/$name-linux-$arch"
   ( cd "$stage/$name-linux-$arch"
     ln -s AppRun axion
+    # Tells Axion's updater this is a tarball installation (older tarballs are recognised by
+    # their layout: AppRun + usr/bin/axion). Only the tarball has it, not the AppImage.
+    printf '{"kind":"tarball","version":"%s","installed_at":0}\n' "$version" >axion-install.json
     # The tarball and the AppDir are the same tree; the AppImage-only files are harmless.
   )
   install -m 755 tools/install.sh "$stage/$name-linux-$arch/install.sh"

@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use cef::*;
 
 pub use gpu::render_node_for;
-pub use schedule::Waker;
+pub use schedule::{RelaunchHandler, Waker};
 pub use stats::Counters;
 
 use crate::{
@@ -38,7 +38,10 @@ use crate::{
     InputEvent, MediaViewOptions, Modifiers, PasteData, PermissionAnswer, PermissionId, PermissionKind,
     ProxyLogin, ProxySetting, RequestPolicy, ViewId, ViewSize,
 };
-use client::{FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry, build_client, favicon_callback};
+use client::{
+    ClipboardForward, CreatedPopup, FaviconRequest, Shared, ViewContext, ViewFrames, ViewGeometry,
+    build_client, favicon_callback,
+};
 use input::InputState;
 use network::Network;
 use schedule::{BrowserProcessHandlerBuilder, PumpSchedule};
@@ -184,6 +187,28 @@ fn extension_switches(enabled: bool, load: &[PathBuf]) -> Vec<(&'static str, Opt
     vec![("load-extension", Some(list))]
 }
 
+/// Whether pages' copies go through Axion: always where Chromium cannot reach the desktop
+/// clipboard itself (see `Engine::has_system_clipboard`).
+fn clipboard_forwarded(mode: crate::PageCopyMode) -> bool {
+    match mode {
+        crate::PageCopyMode::Always => true,
+        crate::PageCopyMode::Never => false,
+        crate::PageCopyMode::Auto => !on_x11(),
+    }
+}
+
+/// The script that reports copies of pages (`clipboard.js`) with this run's secret.
+fn clipboard_forward(max_bytes: usize) -> ClipboardForward {
+    use std::hash::{BuildHasher, Hasher};
+    // `RandomState` is seeded by the operating system, differently for every instance.
+    let random = || std::collections::hash_map::RandomState::new().build_hasher().finish();
+    let nonce = format!("{:016x}{:016x}", random(), random());
+    let script = include_str!("clipboard.js")
+        .replace("__AXION_NONCE__", &nonce)
+        .replace("__AXION_MAX__", &max_bytes.to_string());
+    ClipboardForward { script, nonce, max_bytes }
+}
+
 /// `AXION_FAKE_MEDIA_DEVICES=1`: tests use Chromium's fake capture devices.
 fn fake_media_devices() -> bool {
     std::env::var("AXION_FAKE_MEDIA_DEVICES").is_ok_and(|v| v == "1")
@@ -267,6 +292,16 @@ pub struct CefOptions {
     pub extra_switches: Vec<(String, Option<String>)>,
     /// Wakes the embedder's event loop when Chromium has work (see [`Engine::next_pump`]).
     pub waker: Option<Waker>,
+    /// Windows a page opens with `window.open()` keep their opener (see [`EngineEvent::PopupOpened`]).
+    pub real_popups: bool,
+    /// Who puts what pages copy on the desktop clipboard.
+    pub page_copy: crate::PageCopyMode,
+    /// Text a page copies is cut off at this size.
+    pub max_page_copy_bytes: usize,
+
+    /// Takes the URLs of a launch that Chromium's process singleton handed over (instead of
+    /// Chromium opening a window of its own).
+    pub on_relaunch: Option<RelaunchHandler>,
 }
 
 struct ViewState {
@@ -288,7 +323,6 @@ pub struct CefEngine {
     queue: wgpu::Queue,
     shared: Rc<Shared>,
     views: BTreeMap<ViewId, ViewState>,
-    next_id: u32,
     accelerated: bool,
     max_frame_rate: u32,
     input: InputState,
@@ -318,6 +352,7 @@ impl CefEngine {
         let args = args::Args::new();
         let schedule = Arc::new(PumpSchedule::default());
         schedule.set_waker(options.waker.clone());
+        schedule.set_relaunch(options.on_relaunch.clone());
         let mut app = AppBuilder::new(ProcessFlags {
             no_sandbox: options.no_sandbox,
             render_node: options.render_node.clone(),
@@ -347,16 +382,23 @@ impl CefEngine {
         // intercepts "Add to Chrome" (see `axion-extensions`); with that switched off the store
         // is not opened at all.
         net.block_web_store.store(options.block_web_store, std::sync::atomic::Ordering::Relaxed);
+        let shared = Rc::new(Shared {
+            frame_settle: options.frame_settle,
+            partial_uploads: options.partial_uploads,
+            ..Default::default()
+        });
+        shared.next_view.set(1);
+        shared.accelerated.set(options.accelerated);
+        shared.max_frame_rate.set(options.max_frame_rate);
+        shared.real_popups.set(options.real_popups);
+        if clipboard_forwarded(options.page_copy) {
+            *shared.clipboard.borrow_mut() = Some(clipboard_forward(options.max_page_copy_bytes));
+        }
         Ok(Self {
             device,
             queue,
-            shared: Rc::new(Shared {
-                frame_settle: options.frame_settle,
-                partial_uploads: options.partial_uploads,
-                ..Default::default()
-            }),
+            shared,
             views: BTreeMap::new(),
-            next_id: 1,
             accelerated: options.accelerated,
             max_frame_rate: options.max_frame_rate,
             input: InputState::default(),
@@ -505,6 +547,42 @@ impl CefEngine {
         }
     }
 
+    /// Takes the popups Chromium created since the last pump into views of their own and
+    /// reports them (before any event of their own).
+    fn adopt_popups(&mut self, events: &mut Vec<EngineEvent>) {
+        let created = std::mem::take(&mut *self.shared.popups.borrow_mut());
+        for CreatedPopup { ctx, browser } in created {
+            let id = browser.identifier();
+            let Some(popup) = ctx.popup.clone() else { continue };
+            let opener = self.views.get(&popup.opener).filter(|v| !v.closing);
+            let Some(private) = opener.map(|v| v.private) else {
+                // The opener is gone: nobody could take the window.
+                if let Some(host) = browser.host() {
+                    host.close_browser(1);
+                }
+                continue;
+            };
+            if let (Some(dark), Some(host)) = (self.dark, browser.host()) {
+                emulate_color_scheme(&host, dark);
+            }
+            tracing::debug!(view = ?ctx.view, browser = id, "popup created");
+            self.views.insert(
+                ctx.view,
+                ViewState {
+                    browser: Some(browser),
+                    private,
+                    browser_id: id,
+                    url: popup.url.clone(),
+                    closing: false,
+                    devtools_of: None,
+                    devtools: None,
+                    ctx: ctx.clone(),
+                },
+            );
+            events.push(EngineEvent::PopupOpened { view: ctx.view, opener: popup.opener, url: popup.url });
+        }
+    }
+
     /// Takes the DevTools browsers Chromium created since the last pump into their views.
     fn adopt_devtools_browsers(&mut self) {
         let created = std::mem::take(&mut *self.shared.devtools_created.borrow_mut());
@@ -559,6 +637,7 @@ impl CefEngine {
         }
         tracing::warn!("GPU frame sharing doesn't work on this system; switching to software paint");
         self.accelerated = false;
+        self.shared.accelerated.set(false);
         let ids: Vec<ViewId> = self.views.keys().copied().collect();
         for id in ids {
             let Some(state) = self.views.get(&id) else { continue };
@@ -652,8 +731,7 @@ impl Engine for CefEngine {
     }
 
     fn create_discarded_view(&mut self, url: &str, size: ViewSize, private: bool) -> ViewId {
-        let view = ViewId(self.next_id);
-        self.next_id += 1;
+        let view = self.shared.alloc_view();
         let ctx = ViewContext {
             view,
             device: self.device.clone(),
@@ -665,6 +743,7 @@ impl Engine for CefEngine {
             drag: Rc::default(),
             devtools: false,
             devtools_panel: Rc::default(),
+            popup: None,
         };
         let state = ViewState {
             browser: None,
@@ -847,8 +926,7 @@ impl Engine for CefEngine {
             return Ok(());
         }
         let private = inspected.private;
-        let tools = ViewId(self.next_id);
-        self.next_id += 1;
+        let tools = self.shared.alloc_view();
         let ctx = ViewContext {
             view: tools,
             device: self.device.clone(),
@@ -860,6 +938,7 @@ impl Engine for CefEngine {
             drag: Rc::default(),
             devtools: true,
             devtools_panel: Rc::new(std::cell::RefCell::new(devtools_panel_name(options.panel))),
+            popup: None,
         };
         // Chromium's own window (windowless DevTools are not supported by the Chrome runtime);
         // our client only watches it open and close.
@@ -1251,6 +1330,7 @@ impl Engine for CefEngine {
     }
 
     fn set_frame_rate(&mut self, fps: u32) {
+        self.shared.max_frame_rate.set(fps);
         let fps = fps.max(1);
         if fps == self.max_frame_rate {
             return;
@@ -1291,7 +1371,9 @@ impl Engine for CefEngine {
             }
         }
         self.shared.stats.pump(started.elapsed());
+        let mut events = Vec::new();
         self.adopt_devtools_browsers();
+        self.adopt_popups(&mut events);
         self.fall_back_to_software_if_needed();
         for state in self.views.values() {
             self.resolve_frames(state);
@@ -1304,11 +1386,12 @@ impl Engine for CefEngine {
 
         let mut raw = std::mem::take(&mut *self.shared.events.borrow_mut());
         raw.extend(self.net.take_events());
-        let mut events = Vec::with_capacity(raw.len());
+        events.reserve(raw.len());
         for (browser_id, event) in raw {
             let view = match &event {
                 EngineEvent::NewViewRequested { opener, .. } => *opener,
-                EngineEvent::AddressChanged { view, .. }
+                EngineEvent::ClipboardWrite { view, .. }
+                | EngineEvent::AddressChanged { view, .. }
                 | EngineEvent::TitleChanged { view, .. }
                 | EngineEvent::LoadingStateChanged { view, .. }
                 | EngineEvent::LoadProgress { view, .. }
@@ -1339,7 +1422,9 @@ impl Engine for CefEngine {
                 | EngineEvent::CaptureChanged { view, .. }
                 | EngineEvent::Closed { view } => *view,
                 // Not tied to a view (and never queued here).
-                EngineEvent::DownloadUpdated(_) | EngineEvent::SiteData(_) => {
+                EngineEvent::DownloadUpdated(_)
+                | EngineEvent::SiteData(_)
+                | EngineEvent::PopupOpened { .. } => {
                     events.push(event);
                     continue;
                 }
@@ -1468,8 +1553,26 @@ fn emulate_color_scheme(host: &BrowserHost, dark: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::extension_switches;
+    use super::{clipboard_forward, clipboard_forwarded, extension_switches, on_x11};
     use std::path::PathBuf;
+
+    #[test]
+    fn the_clipboard_script_carries_its_secret_and_limit() {
+        let forward = clipboard_forward(1234);
+        assert!(forward.script.contains(&forward.nonce));
+        assert!(forward.script.contains("var MAX = 1234;"));
+        assert!(!forward.script.contains("__AXION_"));
+        // Every run has its own secret.
+        assert_ne!(forward.nonce, clipboard_forward(1234).nonce);
+        assert_eq!(forward.nonce.len(), 32);
+    }
+
+    #[test]
+    fn page_copies_are_forwarded_where_chromium_cannot_set_the_clipboard() {
+        assert!(clipboard_forwarded(crate::PageCopyMode::Always));
+        assert!(!clipboard_forwarded(crate::PageCopyMode::Never));
+        assert_eq!(clipboard_forwarded(crate::PageCopyMode::Auto), !on_x11());
+    }
 
     #[test]
     fn extensions_off_disable_the_system() {

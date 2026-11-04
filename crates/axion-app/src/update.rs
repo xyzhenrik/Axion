@@ -2,8 +2,9 @@
 //!
 //! Checks and installs run on background threads and report through a channel that
 //! [`Updater::poll`] drains every frame, so nothing here blocks the UI. Settings › About
-//! shows [`AboutInfo`]; the confirmation and the progress of an install are an
-//! [`AlertView`] in the glass alert. The source is `updates.manifest_url`, else
+//! shows [`AboutInfo`]; the confirmation of an install is an [`AlertView`] in the glass alert
+//! and its progress, result and failure are the page's [`RunInfo`] (the sheet closes as soon
+//! as the update starts). The source is `updates.manifest_url`, else
 //! `updates.repository`, else the default repository; everything stays inert while all are
 //! empty (see `axion-update`).
 
@@ -17,8 +18,8 @@ use axion_compositor::Icon;
 use axion_config::Config;
 use axion_i18n::{tr, tr_fmt};
 use axion_update::{
-    CheckReport, Clock, Http, InstallKind, Progress, Release, Source, Step, SystemClock, UpdateError,
-    Version, plain_notes,
+    CheckReport, Clock, Http, InstallKind, Progress, Release, Source, Staged, Step, SystemClock, Tools,
+    UpdateError, Version, plain_notes,
 };
 
 use crate::home::Image;
@@ -28,8 +29,12 @@ use crate::update_alert::{AlertView, Tone};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BUILD: &str = env!("AXION_GIT_DESCRIBE");
 
-/// Output lines kept of a running command (the alert shows the newest few).
+/// Output lines kept of a running command.
 const LOG_KEPT: usize = 400;
+/// The failure shows this many of the newest output lines.
+const LOG_TAIL: usize = 12;
+/// A line of output shown under the progress bar is cut to this many characters.
+const DETAIL_CHARS: usize = 110;
 /// Paths in the alert longer than this are shortened.
 const SHORT_PATH_CHARS: usize = 34;
 /// Release notes longer than this are cut (the page shows them in a scrolling box).
@@ -57,7 +62,14 @@ struct Running {
 /// What a finished install left behind.
 #[derive(Clone, Debug)]
 enum Installed {
-    AppImage { path: PathBuf, verified: bool },
+    AppImage {
+        path: PathBuf,
+        verified: bool,
+    },
+    /// The tarball is unpacked next to the installation; the swap happens at the restart.
+    Tarball {
+        staged: Staged,
+    },
     Source,
 }
 
@@ -70,6 +82,8 @@ enum Op {
     Done(Installed),
     Failed {
         message: String,
+        /// More lines explaining it (the dirty files, what to do).
+        details: Vec<String>,
         step: Option<Step>,
         log: Vec<String>,
     },
@@ -105,8 +119,31 @@ pub enum Phase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallMode {
     AppImage,
+    Tarball,
     Source,
     Other,
+}
+
+/// What the "Software update" section shows of an install that is running or has just ended.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunInfo {
+    pub phase: Phase,
+    pub title: String,
+    /// The step ("Building Axion…") or the explanation of the result.
+    pub status: String,
+    /// The newest line of the command's output.
+    pub detail: String,
+    /// 0..1, or `None` for a step of unknown length (an indeterminate bar).
+    pub progress: Option<f32>,
+    /// A failure's reason and advice, one paragraph per entry.
+    pub lines: Vec<String>,
+    /// A failure's newest output lines.
+    pub log: Vec<String>,
+    pub cancellable: bool,
+    /// The finished update was put away with "Later": only the one-line reminder shows.
+    pub collapsed: bool,
+    /// A failure offers the release page too.
+    pub release_page: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,6 +181,13 @@ pub struct AboutInfo {
     pub skipped: bool,
     /// An install is running.
     pub busy: bool,
+    /// The install that is running or has just ended.
+    pub run: Option<RunInfo>,
+    /// The version an update installed in this run: the running build is older ("restart to
+    /// finish the update"), so version and build above are stale.
+    pub pending_restart: Option<String>,
+    /// A tarball installation Axion cannot write to (its folder): updates are done by hand.
+    pub read_only: Option<String>,
 }
 
 impl Default for AboutInfo {
@@ -158,6 +202,9 @@ impl Default for AboutInfo {
             notes: String::new(),
             skipped: false,
             busy: false,
+            run: None,
+            pending_restart: None,
+            read_only: None,
         }
     }
 }
@@ -174,6 +221,15 @@ pub struct Updater {
     cancel: Arc<AtomicBool>,
     /// The repository used while none is typed (tests inject another one).
     default_repository: String,
+    /// git and cargo (tests inject stand-ins).
+    tools: Tools,
+    /// A finished update was put away with "Later".
+    later: bool,
+    /// The version being installed (or installed in this run).
+    run_version: String,
+    /// Whether a tarball installation's folder can be replaced (decided when the updater
+    /// starts; `None` for the other kinds).
+    tarball_writable: Option<bool>,
 }
 
 impl Updater {
@@ -183,6 +239,7 @@ impl Updater {
 
     /// An updater for an installation of this kind (tests pick one; `new` detects it).
     pub fn with_kind(kind: InstallKind) -> Self {
+        let kind_for_probe = kind.clone();
         let (sender, events) = mpsc::channel();
         Self {
             status: Status::Idle,
@@ -194,6 +251,13 @@ impl Updater {
             current: axion_update::running_version(VERSION),
             cancel: Arc::new(AtomicBool::new(false)),
             default_repository: axion_config::DEFAULT_REPOSITORY.to_owned(),
+            tools: Tools::default(),
+            later: false,
+            run_version: String::new(),
+            tarball_writable: match &kind_for_probe {
+                InstallKind::Tarball { dir } => Some(axion_update::tarball::check_writable(dir).is_ok()),
+                _ => None,
+            },
         }
     }
 
@@ -208,6 +272,8 @@ impl Updater {
     pub fn mode(&self) -> InstallMode {
         match self.kind {
             InstallKind::AppImage { .. } => InstallMode::AppImage,
+            InstallKind::Tarball { .. } if self.tarball_writable == Some(false) => InstallMode::Other,
+            InstallKind::Tarball { .. } => InstallMode::Tarball,
             InstallKind::SourceCheckout { .. } => InstallMode::Source,
             InstallKind::Other => InstallMode::Other,
         }
@@ -296,10 +362,11 @@ impl Updater {
                         Op::Running(r) => (r.step, r.log.iter().cloned().collect()),
                         _ => (None, Vec::new()),
                     };
+                    self.later = false;
                     self.op = match result {
                         Ok(installed) => Op::Done(installed),
                         Err(UpdateError::Cancelled) => Op::Idle,
-                        Err(e) => Op::Failed { message: describe(&e), step, log },
+                        Err(e) => Op::Failed { message: describe(&e), details: advice(&e), step, log },
                     };
                     changed = true;
                 }
@@ -329,12 +396,15 @@ impl Updater {
             return;
         }
         self.op = Op::Running(Running::default());
+        self.later = false;
+        self.run_version = release.version.to_string();
         self.cancel.store(false, Ordering::Relaxed);
-        let (kind, updates, sender, cancel) = (
+        let (kind, updates, sender, cancel, tools) = (
             self.kind.clone(),
             self.resolved(&config.updates),
             self.sender.clone(),
             Arc::clone(&self.cancel),
+            self.tools.clone(),
         );
         let spawned = std::thread::Builder::new().name("update-install".into()).spawn(move || {
             let progress_sender = sender.clone();
@@ -354,18 +424,27 @@ impl Updater {
                     )
                     .map(|done| Installed::AppImage { path: done.path, verified: done.verified })
                 }
+                InstallKind::Tarball { dir } => {
+                    let http = Http::new(&updates, &axion_update::user_agent(VERSION));
+                    let max_extracted = u64::from(updates.max_extracted_mb) * 1024 * 1024;
+                    axion_update::tarball::stage_tarball(
+                        &release,
+                        &dir,
+                        std::env::consts::ARCH,
+                        &http,
+                        max_extracted,
+                        &cancel,
+                        &mut progress,
+                    )
+                    .map(|staged| Installed::Tarball { staged })
+                }
                 InstallKind::SourceCheckout { root } => {
                     // The checkout's remote must be the configured repository: `repository`,
                     // even when a manifest decides which version is current.
                     axion_update::parse_repository(&updates.repository)
                         .map_err(|_| UpdateError::NoSource)
                         .and_then(|repository| {
-                            axion_update::update_checkout(
-                                &root,
-                                &repository,
-                                &axion_update::Tools::default(),
-                                &mut progress,
-                            )
+                            axion_update::update_checkout(&root, &repository, &tools, &cancel, &mut progress)
                         })
                         .map(|()| Installed::Source)
                 }
@@ -375,22 +454,44 @@ impl Updater {
         });
         if let Err(e) = spawned {
             tracing::warn!("could not start the update: {e}");
-            self.op = Op::Failed { message: e.to_string(), step: None, log: Vec::new() };
+            self.op = Op::Failed { message: e.to_string(), details: Vec::new(), step: None, log: Vec::new() };
         }
     }
 
-    /// Stops a download; a source update cannot be stopped half way.
+    /// Stops the running update: a download or unpacking is dropped, and git / cargo get a
+    /// SIGTERM (cargo keeps the previous binary until a build links, so it stays usable).
     pub fn cancel(&mut self) {
-        if matches!(&self.op, Op::Running(r) if r.step != Some(Step::Pulling) && r.step != Some(Step::Building))
-            && matches!(self.kind, InstallKind::AppImage { .. })
-        {
+        if matches!(self.op, Op::Running(_)) {
             self.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// "Later" on a finished update: only the reminder to restart stays.
+    pub fn defer(&mut self) {
+        if matches!(self.op, Op::Done(_)) {
+            self.later = true;
+        }
+    }
+
+    /// "Try again" after a failure: runs the confirmed update once more.
+    pub fn retry(&mut self, config: &Config) {
+        if matches!(self.op, Op::Failed { .. }) {
+            self.op = Op::Confirm;
+            self.start_install(config);
+        }
+    }
+
+    /// The staged tree of a tarball update that has not been swapped in yet.
+    pub fn pending_swap(&self) -> Option<Staged> {
+        match &self.op {
+            Op::Done(Installed::Tarball { staged }) => Some(staged.clone()),
+            _ => None,
         }
     }
 
     /// The alert is gone (declined, or the result was read).
     pub fn dismiss(&mut self) {
-        if !matches!(self.op, Op::Running(_)) {
+        if matches!(self.op, Op::Confirm | Op::Failed { .. }) {
             self.op = Op::Idle;
         }
     }
@@ -399,7 +500,7 @@ impl Updater {
     pub fn relaunch_exe(&self) -> Option<PathBuf> {
         match &self.op {
             Op::Done(Installed::AppImage { path, .. }) => Some(path.clone()),
-            Op::Done(Installed::Source) => self.exe.clone(),
+            Op::Done(Installed::Source | Installed::Tarball { .. }) => self.exe.clone(),
             _ => None,
         }
     }
@@ -427,65 +528,13 @@ impl Updater {
         self.alert_view(release)
     }
 
+    /// Only the confirmation is a sheet; progress and results are on the page ([`RunInfo`]).
     fn alert_view(&self, release: &Release) -> Option<AlertView> {
         let version = release.version.to_string();
-        Some(match &self.op {
-            Op::Idle => return None,
-            Op::Confirm => self.confirm_view(release, &version),
-            Op::Running(running) => self.running_view(running),
-            Op::Done(installed) => {
-                let mut lines = vec![tr("Relaunch Axion to start using it.").to_owned()];
-                let title = match installed {
-                    Installed::AppImage { path, verified } => {
-                        lines.insert(
-                            0,
-                            if *verified {
-                                tr("The download matched its published checksum.").to_owned()
-                            } else {
-                                tr("This release publishes no checksum, so the download could not be verified.")
-                                    .to_owned()
-                            },
-                        );
-                        let _ = path;
-                        tr_fmt!("Axion {version} is installed", version = version)
-                    }
-                    Installed::Source => tr("Axion was updated from Git").to_owned(),
-                };
-                AlertView {
-                    icon: Some(Icon::Check),
-                    title,
-                    lines,
-                    primary: Some((tr("Relaunch").to_owned(), Tone::Accent)),
-                    secondary: Some(tr("Later").to_owned()),
-                    dismissable: true,
-                    ..Default::default()
-                }
-            }
-            Op::Failed { message, step, log } => {
-                let mut lines = vec![message.clone()];
-                match step {
-                    Some(Step::Building) => lines.push(
-                        tr("The source was updated, but building it failed. The previous build is still in place.")
-                            .to_owned(),
-                    ),
-                    Some(Step::Pulling | Step::CheckingTree) => {
-                        lines.push(tr("Nothing was changed.").to_owned());
-                    }
-                    _ => lines.push(tr("The current version was left as it was.").to_owned()),
-                }
-                AlertView {
-                    icon: Some(Icon::Close),
-                    title: tr("Update failed").to_owned(),
-                    lines,
-                    log: log.clone(),
-                    show_log: !log.is_empty(),
-                    primary: Some((tr("Close").to_owned(), Tone::Plain)),
-                    error: true,
-                    dismissable: true,
-                    ..Default::default()
-                }
-            }
-        })
+        match &self.op {
+            Op::Confirm => Some(self.confirm_view(release, &version)),
+            _ => None,
+        }
     }
 
     fn confirm_view(&self, release: &Release, version: &str) -> AlertView {
@@ -527,15 +576,46 @@ impl Updater {
                     ..Default::default()
                 }
             }
+            InstallKind::Tarball { dir } => {
+                let asset = release.tarball_asset(std::env::consts::ARCH);
+                let file = asset.map_or_else(|| tr("the tarball").to_owned(), |a| a.name.clone());
+                let size = asset
+                    .and_then(|a| a.size)
+                    .map_or_else(|| tr("size unknown").to_owned(), |s| crate::downloads::human_size(s as i64));
+                let checksum = release.checksums_asset().is_some() || asset.is_some_and(|a| a.sha256.is_some());
+                AlertView {
+                    icon: Some(Icon::Download),
+                    title: tr_fmt!("Update Axion to {version}?", version = version),
+                    lines: vec![
+                        tr_fmt!(
+                            "Axion downloads {file} ({size}) and unpacks it next to {path}. {path} itself is replaced only when you restart Axion; the current version is kept as a backup.",
+                            file = file,
+                            size = size,
+                            path = short_path(dir)
+                        ),
+                        if checksum {
+                            tr("The download is checked against the release's published checksum first.")
+                                .to_owned()
+                        } else {
+                            tr("This release publishes no checksum, so the download can't be verified.")
+                                .to_owned()
+                        },
+                    ],
+                    primary: Some((tr("Update").to_owned(), Tone::Accent)),
+                    secondary: Some(tr("Cancel").to_owned()),
+                    dismissable: true,
+                    ..Default::default()
+                }
+            }
             InstallKind::SourceCheckout { root } => AlertView {
                 icon: Some(Icon::Download),
                 title: tr("Update from Git?").to_owned(),
                 lines: vec![
                     tr_fmt!(
-                        "In {path}, Axion runs “git pull --ff-only” and then “cargo build -p axion-app --release”. This can take several minutes.",
+                        "In {path}, Axion runs “git fetch”, then “git pull --ff-only” if there is something new, and “cargo build -p axion-app --release”. This can take several minutes.",
                         path = short_path(root)
                     ),
-                    tr("Only a clean working tree whose remote is the configured repository is updated. Nothing is forced or reset.")
+                    tr("Changes to tracked files stop the update; untracked files are fine. Local commits are never merged, rebased or reset, and nothing is forced.")
                         .to_owned(),
                 ],
                 primary: Some((tr("Update from Git").to_owned(), Tone::Accent)),
@@ -547,42 +627,119 @@ impl Updater {
         }
     }
 
-    fn running_view(&self, running: &Running) -> AlertView {
+    /// What the page shows of the install: progress while it runs, the result after it.
+    pub fn run_info(&self) -> Option<RunInfo> {
+        let version = self.run_version.clone();
+        match &self.op {
+            Op::Idle | Op::Confirm => None,
+            Op::Running(running) => Some(self.running_info(running)),
+            Op::Done(installed) => {
+                let status = match installed {
+                    Installed::AppImage { verified, .. } => {
+                        let check = if *verified {
+                            tr("The download matched its published checksum.")
+                        } else {
+                            tr("This release publishes no checksum, so the download could not be verified.")
+                        };
+                        format!("{check} {}", tr("Restart Axion to start using it."))
+                    }
+                    Installed::Tarball { .. } => tr(
+                        "The new version is unpacked and checked. It replaces the current one when Axion restarts; the current one is kept as a backup.",
+                    )
+                    .to_owned(),
+                    Installed::Source => tr(
+                        "The source was updated and built. Restart Axion to finish the update: until then this window still runs the old build.",
+                    )
+                    .to_owned(),
+                };
+                Some(RunInfo {
+                    phase: Phase::Done,
+                    title: tr_fmt!("Updated to {version}", version = version.as_str()),
+                    status,
+                    detail: String::new(),
+                    progress: Some(1.0),
+                    lines: Vec::new(),
+                    log: Vec::new(),
+                    cancellable: false,
+                    collapsed: self.later,
+                    release_page: false,
+                })
+            }
+            Op::Failed { message, details, step, log } => {
+                let mut lines = vec![message.clone()];
+                match step {
+                    Some(Step::Building) => lines.push(
+                        tr("The source was updated, but building it failed. The previous build is still in place.")
+                            .to_owned(),
+                    ),
+                    Some(Step::CheckingTree | Step::Fetching | Step::Pulling) => {
+                        lines.push(tr("Nothing was changed.").to_owned());
+                    }
+                    _ => lines.push(tr("The current version was left as it was.").to_owned()),
+                }
+                lines.extend(details.iter().cloned());
+                let start = log.len().saturating_sub(LOG_TAIL);
+                Some(RunInfo {
+                    phase: Phase::Failed,
+                    title: tr("Update failed").to_owned(),
+                    status: String::new(),
+                    detail: String::new(),
+                    progress: None,
+                    lines,
+                    log: log[start..].to_vec(),
+                    cancellable: false,
+                    collapsed: false,
+                    release_page: !matches!(self.kind, InstallKind::SourceCheckout { .. }),
+                })
+            }
+        }
+    }
+
+    fn running_info(&self, running: &Running) -> RunInfo {
         let source = matches!(self.kind, InstallKind::SourceCheckout { .. });
         let status = match running.step {
             Some(Step::Downloading) | None => match running.download {
-                Some((done, Some(total))) => Some(tr_fmt!(
+                Some((done, Some(total))) => tr_fmt!(
                     "Downloading… {done} of {total}",
                     done = crate::downloads::human_size(done as i64),
                     total = crate::downloads::human_size(total as i64)
-                )),
+                ),
                 Some((done, None)) => {
-                    Some(tr_fmt!("Downloading… {done}", done = crate::downloads::human_size(done as i64)))
+                    tr_fmt!("Downloading… {done}", done = crate::downloads::human_size(done as i64))
                 }
-                None => Some(tr("Starting…").to_owned()),
+                None => tr("Starting…").to_owned(),
             },
-            Some(Step::Verifying) => Some(tr("Verifying the download…").to_owned()),
-            Some(Step::Installing) => Some(tr("Installing…").to_owned()),
-            Some(Step::CheckingTree) => Some(tr("Checking the working tree…").to_owned()),
-            Some(Step::Pulling) => Some(tr("Pulling changes…").to_owned()),
-            Some(Step::Building) => Some(tr("Building Axion… this takes a while.").to_owned()),
+            Some(Step::Verifying) => tr("Verifying the download…").to_owned(),
+            Some(Step::Extracting) => tr("Unpacking the new version…").to_owned(),
+            Some(Step::Installing) => tr("Installing…").to_owned(),
+            Some(Step::CheckingTree) => tr("Checking the working tree…").to_owned(),
+            Some(Step::Fetching) => tr("Fetching changes…").to_owned(),
+            Some(Step::Pulling) => tr("Pulling changes…").to_owned(),
+            Some(Step::Building) => tr("Building Axion… this takes a while.").to_owned(),
         };
+        // Downloads and unpacking know their size; git and cargo do not (a moving bar).
         let progress = match (running.step, running.download) {
-            (Some(Step::Downloading) | None, Some((done, Some(total)))) if total > 0 => {
-                Some(done as f32 / total as f32)
+            (Some(Step::Downloading | Step::Extracting) | None, Some((done, Some(total)))) if total > 0 => {
+                Some((done as f32 / total as f32).clamp(0.0, 1.0))
             }
             _ => None,
         };
-        let cancellable = !source && matches!(running.step, Some(Step::Downloading) | None);
-        AlertView {
-            icon: Some(Icon::Download),
+        let detail = running
+            .log
+            .back()
+            .map(|line| line.chars().take(DETAIL_CHARS).collect::<String>())
+            .unwrap_or_default();
+        RunInfo {
+            phase: Phase::Running,
             title: if source { tr("Updating from Git…") } else { tr("Updating Axion…") }.to_owned(),
-            log: running.log.iter().cloned().collect(),
-            show_log: source,
-            progress,
             status,
-            secondary: cancellable.then(|| tr("Cancel").to_owned()),
-            ..Default::default()
+            detail,
+            progress,
+            lines: Vec::new(),
+            log: Vec::new(),
+            cancellable: true,
+            collapsed: false,
+            release_page: false,
         }
     }
 
@@ -590,7 +747,7 @@ impl Updater {
     pub fn about(&self, config: &Config, icon: Option<Image>) -> AboutInfo {
         let u = &config.updates;
         let state = match (&self.op, &self.status) {
-            (Op::Done(_), Status::Available(r)) => AboutState::Installed { version: r.version.to_string() },
+            (Op::Done(_), _) => AboutState::Installed { version: self.run_version.clone() },
             (_, Status::Checking) => AboutState::Checking,
             (_, Status::Available(r)) => {
                 AboutState::Available { version: r.version.to_string(), prerelease: r.prerelease }
@@ -614,6 +771,12 @@ impl Updater {
             notes,
             skipped,
             busy: self.is_busy(),
+            run: self.run_info(),
+            pending_restart: matches!(self.op, Op::Done(_)).then(|| self.run_version.clone()),
+            read_only: match (&self.kind, self.tarball_writable) {
+                (InstallKind::Tarball { dir }, Some(false)) => Some(dir.display().to_string()),
+                _ => None,
+            },
         }
     }
 
@@ -648,8 +811,26 @@ fn describe(error: &UpdateError) -> String {
         UpdateError::ChecksumMismatch { .. } => {
             tr("The download doesn't match its published checksum, so it was discarded.").to_owned()
         }
-        UpdateError::DirtyTree => {
-            tr("The checkout has uncommitted changes. Commit or stash them first.").to_owned()
+        UpdateError::DirtyTree { .. } => {
+            tr("The checkout has uncommitted changes to tracked files, so Axion left it alone.").to_owned()
+        }
+        UpdateError::LocalAhead { ahead, upstream } => tr_fmt!(
+            "The checkout is {ahead} commit(s) ahead of {upstream} and has nothing new to take from it.",
+            ahead = ahead.to_string(),
+            upstream = upstream.as_str()
+        ),
+        UpdateError::Diverged { ahead, behind, upstream } => tr_fmt!(
+            "The checkout has diverged from {upstream}: {ahead} local and {behind} new commit(s).",
+            ahead = ahead.to_string(),
+            behind = behind.to_string(),
+            upstream = upstream.as_str()
+        ),
+        UpdateError::NotWritable(path) => tr_fmt!(
+            "Axion can't write to {path}, so it can't replace this installation.",
+            path = path.display().to_string()
+        ),
+        UpdateError::BadArchive(why) => {
+            tr_fmt!("The downloaded archive was rejected: {why}", why = why.as_str())
         }
         UpdateError::NoUpstream => {
             tr("The checkout isn't on a branch that follows a remote branch.").to_owned()
@@ -662,6 +843,36 @@ fn describe(error: &UpdateError) -> String {
         UpdateError::NoAsset => tr("This release has no download for this installation.").to_owned(),
         UpdateError::TooLarge { .. } => tr("The download is larger than the allowed size.").to_owned(),
         other => other.to_string(),
+    }
+}
+
+/// What to do about a failure, one line each (the dirty files first).
+fn advice(error: &UpdateError) -> Vec<String> {
+    match error {
+        UpdateError::DirtyTree { files } => {
+            let mut lines: Vec<String> = files.iter().take(10).cloned().collect();
+            if files.len() > 10 {
+                lines.push(tr_fmt!("…and {count} more", count = (files.len() - 10).to_string()));
+            }
+            lines.push(
+                tr("Commit, stash or revert these changes (see “git status”), then try again. Untracked files do not matter.")
+                    .to_owned(),
+            );
+            lines
+        }
+        UpdateError::LocalAhead { .. } => vec![
+            tr("Push your commits or reset the branch yourself; Axion never rewrites your history.")
+                .to_owned(),
+        ],
+        UpdateError::Diverged { .. } => vec![
+            tr("Rebase or merge the branch yourself (git pull --rebase), then try again. Axion never does it for you.")
+                .to_owned(),
+        ],
+        UpdateError::NotWritable(_) => vec![
+            tr("This installation is managed elsewhere or needs permissions. Download the new version from the release page.")
+                .to_owned(),
+        ],
+        _ => Vec::new(),
     }
 }
 
@@ -681,6 +892,7 @@ pub fn check_cli(config: &Config) -> i32 {
     let _ = writeln!(out, "Axion {VERSION}{build}");
     let kind = match axion_update::detect_current() {
         InstallKind::AppImage { path } => format!("AppImage ({})", path.display()),
+        InstallKind::Tarball { dir } => format!("tarball / portable folder ({})", dir.display()),
         InstallKind::SourceCheckout { root } => format!("source checkout ({})", root.display()),
         InstallKind::Other => "package or other".to_owned(),
     };
@@ -786,22 +998,251 @@ mod tests {
         assert_eq!(format_time(0).len(), "1970-01-01 00:00".len());
     }
 
-    #[test]
-    fn running_view_shows_progress() {
-        let updater = Updater::with_kind(InstallKind::AppImage { path: "/opt/Axion.AppImage".into() });
-        let running =
-            Running { step: Some(Step::Downloading), download: Some((50, Some(200))), ..Default::default() };
-        let view = updater.running_view(&running);
-        assert_eq!(view.progress, Some(0.25));
-        assert!(!view.show_log);
-        assert!(view.secondary.is_some(), "a download can be cancelled");
+    // ---- the install state machine: confirm -> running -> done / failed ----
 
-        let source = Updater::with_kind(InstallKind::SourceCheckout { root: "/src/axion".into() });
-        let building = Running { step: Some(Step::Building), ..Default::default() };
-        let view = source.running_view(&building);
-        assert!(
-            view.show_log && view.secondary.is_none(),
-            "a source update shows its log and cannot be cancelled"
-        );
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.org")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.org")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    struct Checkout {
+        dir: tempfile::TempDir,
+        root: PathBuf,
+    }
+
+    /// A clone of `<tmp>/henrik/axion.git` that is one commit behind it.
+    fn checkout(cargo_script: &str) -> Checkout {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+        let bare = base.join("henrik/axion.git");
+        std::fs::create_dir_all(&bare).expect("mkdir");
+        git(&bare, &["init", "--bare", "-b", "main"]);
+        let root = base.join("checkout");
+        git(base, &["clone", bare.to_str().expect("utf8"), "checkout"]);
+        std::fs::write(root.join("Cargo.toml"), b"[workspace]\n").expect("write");
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-m", "first"]);
+        git(&root, &["push", "-u", "origin", "main"]);
+        git(base, &["clone", bare.to_str().expect("utf8"), "developer"]);
+        let developer = base.join("developer");
+        std::fs::write(developer.join("feature.txt"), b"new\n").expect("write");
+        git(&developer, &["add", "."]);
+        git(&developer, &["commit", "-m", "second"]);
+        git(&developer, &["push"]);
+        let cargo = base.join("cargo");
+        std::fs::write(&cargo, cargo_script).expect("write");
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        Checkout { dir, root }
+    }
+
+    const QUICK_CARGO: &str = "#!/bin/sh\necho '   Compiling axion-app v0.0.1'\nexit 0\n";
+
+    fn release(version: &str) -> Release {
+        Release {
+            version: Version::parse(version).expect("version"),
+            tag: format!("v{version}"),
+            name: String::new(),
+            notes: String::new(),
+            page_url: "https://example.org/release".into(),
+            prerelease: false,
+            assets: Vec::new(),
+        }
+    }
+
+    fn config() -> Config {
+        let mut config = Config::default();
+        config.updates.set_repository("henrik/axion");
+        config
+    }
+
+    fn updater_for(c: &Checkout) -> Updater {
+        let mut updater = Updater::with_kind(InstallKind::SourceCheckout { root: c.root.clone() });
+        updater.tools = Tools { git: "git".into(), cargo: c.dir.path().join("cargo") };
+        updater.status = Status::Available(release("9.0.0"));
+        updater
+    }
+
+    /// Polls until the install is no longer running (like the app's frame loop).
+    fn finish(updater: &mut Updater) -> Vec<Notice> {
+        let mut all = Vec::new();
+        let started = Instant::now();
+        while updater.phase() == Phase::Running {
+            assert!(started.elapsed() < Duration::from_secs(30), "the update never ended");
+            all.extend(updater.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        all.extend(updater.poll());
+        all
+    }
+
+    #[test]
+    fn confirm_then_running_then_done() {
+        let c = checkout(QUICK_CARGO);
+        let config = config();
+        let mut updater = updater_for(&c);
+        assert_eq!(updater.phase(), Phase::Idle);
+        assert!(updater.run_info().is_none());
+
+        let sheet = updater.prepare_install().expect("asks first");
+        assert_eq!(updater.phase(), Phase::Confirm);
+        assert!(sheet.primary.is_some() && sheet.secondary.is_some());
+        assert!(updater.current_alert().is_some(), "the sheet shows while confirming");
+
+        updater.start_install(&config);
+        assert_eq!(updater.phase(), Phase::Running);
+        assert!(updater.current_alert().is_none(), "the sheet is gone as soon as the update runs");
+        let running = updater.run_info().expect("the page shows progress");
+        assert_eq!(running.phase, Phase::Running);
+        assert!(running.cancellable);
+        assert!(updater.about(&config, None).busy);
+
+        let notices = finish(&mut updater);
+        assert!(notices.contains(&Notice::Changed));
+        assert_eq!(updater.phase(), Phase::Done);
+        assert!(c.root.join("feature.txt").exists(), "pulled");
+        let done = updater.run_info().expect("result");
+        assert_eq!(done.phase, Phase::Done);
+        assert!(done.title.contains("9.0.0"), "{}", done.title);
+        assert!(!done.collapsed);
+        let about = updater.about(&config, None);
+        assert_eq!(about.state, AboutState::Installed { version: "9.0.0".into() });
+        assert_eq!(about.pending_restart.as_deref(), Some("9.0.0"), "the stale version line is flagged");
+        assert!(updater.relaunch_exe().is_some());
+
+        // "Later" keeps only the reminder; a new check does not undo the installed state.
+        updater.defer();
+        assert!(updater.run_info().expect("still there").collapsed);
+        updater.status = Status::UpToDate;
+        assert_eq!(updater.about(&config, None).state, AboutState::Installed { version: "9.0.0".into() });
+    }
+
+    #[test]
+    fn a_dirty_tree_fails_with_the_files_and_can_be_retried() {
+        let c = checkout(QUICK_CARGO);
+        let config = config();
+        let mut updater = updater_for(&c);
+        std::fs::write(c.root.join("Cargo.toml"), b"[workspace]\n# edit\n").expect("write");
+        updater.prepare_install().expect("asks first");
+        updater.start_install(&config);
+        finish(&mut updater);
+        assert_eq!(updater.phase(), Phase::Failed);
+        let failed = updater.run_info().expect("result");
+        assert_eq!(failed.phase, Phase::Failed);
+        let text = failed.lines.join("\n");
+        assert!(text.contains(" M Cargo.toml"), "the dirty file is listed: {text}");
+        assert!(text.contains("Nothing was changed"), "{text}");
+        assert!(!failed.release_page, "a source checkout has no tarball to download");
+        assert!(!c.root.join("feature.txt").exists());
+
+        // Fixed by the user: "Try again" runs the confirmed update.
+        git(&c.root, &["checkout", "--", "Cargo.toml"]);
+        updater.retry(&config);
+        assert_eq!(updater.phase(), Phase::Running);
+        finish(&mut updater);
+        assert_eq!(updater.phase(), Phase::Done);
+
+        // Closing a failure goes back to idle.
+        let c = checkout(QUICK_CARGO);
+        let mut updater = updater_for(&c);
+        std::fs::write(c.root.join("Cargo.toml"), b"x").expect("write");
+        updater.prepare_install().expect("asks first");
+        updater.start_install(&config);
+        finish(&mut updater);
+        updater.dismiss();
+        assert_eq!(updater.phase(), Phase::Idle);
+    }
+
+    #[test]
+    fn local_commits_are_explained() {
+        let c = checkout(QUICK_CARGO);
+        let config = config();
+        std::fs::write(c.root.join("mine.txt"), b"x").expect("write");
+        git(&c.root, &["add", "."]);
+        git(&c.root, &["commit", "-m", "local"]);
+        let mut updater = updater_for(&c);
+        updater.prepare_install().expect("asks first");
+        updater.start_install(&config);
+        finish(&mut updater);
+        let failed = updater.run_info().expect("result");
+        let text = failed.lines.join("\n");
+        assert!(text.contains("diverged") && text.contains("origin/main"), "{text}");
+        assert!(text.contains("never"), "advice says Axion does not rewrite history: {text}");
+    }
+
+    #[test]
+    fn cancelling_a_running_build_returns_to_idle() {
+        let c = checkout("#!/bin/sh\necho building\nsleep 30\n");
+        let config = config();
+        let mut updater = updater_for(&c);
+        updater.prepare_install().expect("asks first");
+        updater.start_install(&config);
+        let started = Instant::now();
+        // Wait for the build to be running, then cancel it.
+        loop {
+            updater.poll();
+            if updater.run_info().is_some_and(|r| r.detail == "building") {
+                break;
+            }
+            assert!(started.elapsed() < Duration::from_secs(20), "the build never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        updater.cancel();
+        finish(&mut updater);
+        assert_eq!(updater.phase(), Phase::Idle);
+        assert!(started.elapsed() < Duration::from_secs(25), "stopped instead of waiting for the build");
+        assert!(updater.run_info().is_none());
+    }
+
+    #[test]
+    fn a_read_only_tarball_installation_is_managed_elsewhere() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let install = dir.path().join("opt/axion");
+        std::fs::create_dir_all(install.join("usr/bin")).expect("mkdir");
+        std::fs::write(install.join("usr/bin/axion"), b"x").expect("write");
+        std::fs::write(install.join("AppRun"), b"x").expect("write");
+        let parent = dir.path().join("opt");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+        let updater = Updater::with_kind(InstallKind::Tarball { dir: install.clone() });
+        let about = updater.about(&Config::default(), None);
+        let mode = updater.mode();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        if axion_update::tarball::check_writable(&install).is_ok() {
+            return; // root can write anywhere
+        }
+        assert_eq!(mode, InstallMode::Other);
+        assert_eq!(about.read_only.as_deref(), Some(install.to_str().expect("utf8")));
+
+        let writable = Updater::with_kind(InstallKind::Tarball { dir: install });
+        assert_eq!(writable.mode(), InstallMode::Tarball);
+        assert!(writable.about(&Config::default(), None).read_only.is_none());
+    }
+
+    #[test]
+    fn a_phase_change_is_reported_once() {
+        let c = checkout(QUICK_CARGO);
+        let config = config();
+        let mut updater = updater_for(&c);
+        updater.prepare_install().expect("asks first");
+        updater.start_install(&config);
+        // A second start while running changes nothing.
+        updater.start_install(&config);
+        assert_eq!(updater.phase(), Phase::Running);
+        finish(&mut updater);
+        assert!(updater.poll().is_empty(), "nothing more to report");
     }
 }

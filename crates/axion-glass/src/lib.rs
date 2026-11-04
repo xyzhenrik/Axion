@@ -11,12 +11,13 @@
 //!    turns that into a refraction offset, with per-channel dispersion, frost, tint, a
 //!    specular rim and a soft drop shadow outside.
 
+mod bounds;
 mod params;
 mod renderer;
 mod shape;
 
 pub use params::GlassParams;
-pub use renderer::{GlassFrame, GlassRenderer, MAX_SHAPES};
+pub use renderer::{GlassFrame, GlassInPlace, GlassRenderer, MAX_SHAPES};
 pub use shape::GlassShape;
 
 #[cfg(test)]

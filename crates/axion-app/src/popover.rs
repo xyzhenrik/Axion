@@ -136,6 +136,16 @@ impl Popover {
         self.root
     }
 
+    /// Moves the popover (and its bridge) to the front of its plane's children, so it is drawn
+    /// above planes made after it.
+    pub fn raise(&self, ui: &mut Ui) {
+        let mut children = ui.children(self.parent);
+        children.retain(|&n| n != self.root && n != self.bridge);
+        children.push(self.root);
+        children.push(self.bridge);
+        ui.set_children(self.parent, &children);
+    }
+
     pub fn phase(&self) -> Phase {
         self.drip.phase()
     }
@@ -469,6 +479,67 @@ mod tests {
             }
         }
         (widest, bridged)
+    }
+
+    /// The widest glass shape (half-size, logical px) in the first scene painted after `open`,
+    /// laid out or not.
+    fn first_shape_after_open(layout: bool) -> (Vec2, Vec2) {
+        use axion_ui::{ActionId, Theme};
+        let config = Config::default();
+        let mut ui = Ui::new(Theme::new(&config, true), 1.0);
+        ui.set_viewport(Vec2::new(800.0, 600.0), 1.0);
+        let root = ui.add(
+            ui.root(),
+            Widget::container(),
+            Style { size: Size { width: length(800.0), height: length(600.0) }, ..Default::default() },
+        );
+        let button = ui.add(
+            root,
+            Widget::container()
+                .with_radius(CAPSULE)
+                .with_background(Background::Glass(LEVEL))
+                .with_action(ActionId(1)),
+            Style {
+                position: Position::Absolute,
+                inset: Rect { left: length(100.0), top: length(20.0), right: auto(), bottom: auto() },
+                size: Size { width: length(40.0), height: length(40.0) },
+                ..Default::default()
+            },
+        );
+        let mut popover = Popover::build(
+            &mut ui,
+            root,
+            22.0,
+            Style { size: Size { width: length(210.0), height: length(270.0) }, ..Default::default() },
+        );
+        ui.layout();
+        let anchor = ui.frame(button);
+        let target = Frame::new(60.0, 70.0, 210.0, 270.0);
+        popover.open(&mut ui, &config, anchor, target);
+        if layout {
+            ui.layout();
+        }
+        let mut layers = Vec::new();
+        ui.paint(&mut layers);
+        let mut biggest = (Vec2::ZERO, Vec2::ZERO);
+        for layer in &layers {
+            if let axion_compositor::Layer::Glass { shapes, .. } = layer {
+                for shape in shapes {
+                    if shape.half_size.length() > biggest.0.length() {
+                        biggest = (shape.half_size, shape.center);
+                    }
+                }
+            }
+        }
+        biggest
+    }
+
+    #[test]
+    fn the_first_scene_after_open_shows_the_drop_at_its_anchor_not_the_final_glass() {
+        for layout in [true, false] {
+            let (half, _) = first_shape_after_open(layout);
+            assert!(half.x <= 30.0 && half.y <= 30.0, "layout={layout}: first scene already has {half:?}");
+        }
     }
 
     #[test]

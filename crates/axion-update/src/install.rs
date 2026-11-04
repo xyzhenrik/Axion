@@ -12,7 +12,7 @@ use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use crate::UpdateError;
@@ -26,6 +26,8 @@ use crate::source::Repository;
 pub enum InstallKind {
     /// Running from an AppImage file at this path.
     AppImage { path: PathBuf },
+    /// An unpacked release tarball (portable folder, `tools/install.sh`) at `dir`.
+    Tarball { dir: PathBuf },
     /// Built from a Git working tree at `root`.
     SourceCheckout { root: PathBuf },
     /// A package manager's or an unknown installation.
@@ -38,6 +40,9 @@ pub fn detect(appimage_env: Option<&OsStr>, exe: &Path) -> InstallKind {
         && path.is_file()
     {
         return InstallKind::AppImage { path };
+    }
+    if let Some(dir) = crate::tarball::detect_dir(exe) {
+        return InstallKind::Tarball { dir };
     }
     // `<root>/target/<profile>/axion`, with a `.git` in `<root>`.
     for root in exe.ancestors().skip(1) {
@@ -76,7 +81,9 @@ pub enum Step {
     Downloading,
     Verifying,
     Installing,
+    Extracting,
     CheckingTree,
+    Fetching,
     Pulling,
     Building,
 }
@@ -232,6 +239,19 @@ fn git_command(tools: &Tools, root: &Path) -> Command {
     command
 }
 
+/// Like [`output`], but the output is not trimmed (porcelain lines start with a space).
+fn output_raw(mut command: Command, label: &str) -> Result<String, UpdateError> {
+    let out = command.output().map_err(|e| UpdateError::io(format!("running {label}"), e))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(UpdateError::CommandFailed {
+            command: label.to_owned(),
+            status: stderr.lines().next().unwrap_or("").trim().to_owned(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Runs a command to completion and returns its trimmed stdout.
 fn output(mut command: Command, label: &str) -> Result<String, UpdateError> {
     let out = command.output().map_err(|e| UpdateError::io(format!("running {label}"), e))?;
@@ -248,9 +268,18 @@ fn output(mut command: Command, label: &str) -> Result<String, UpdateError> {
 
 /// Whether the working tree has no changes (tracked or untracked; ignored files do not count).
 pub fn is_clean(root: &Path, tools: &Tools) -> Result<bool, UpdateError> {
+    Ok(dirty_files(root, tools)?.is_empty())
+}
+
+/// The tracked files with uncommitted changes (`git status --porcelain --untracked-files=no`,
+/// one entry per line like `" M Cargo.toml"`). Untracked files do not block an update: a
+/// fast-forward never touches them (git itself refuses if a pull would overwrite one) and
+/// `git describe --dirty`, which the About line shows, ignores them too.
+pub fn dirty_files(root: &Path, tools: &Tools) -> Result<Vec<String>, UpdateError> {
     let mut command = git_command(tools, root);
-    command.args(["status", "--porcelain"]);
-    Ok(output(command, "git status --porcelain")?.is_empty())
+    command.args(["status", "--porcelain", "--untracked-files=no"]);
+    let text = output_raw(command, "git status --porcelain")?;
+    Ok(text.lines().map(|l| l.trim_end().to_owned()).filter(|l| !l.is_empty()).collect())
 }
 
 /// Checks that `root` may be updated: a clean tree on a branch with an upstream whose remote is
@@ -260,8 +289,9 @@ pub fn inspect_checkout(
     repository: &Repository,
     tools: &Tools,
 ) -> Result<Checkout, UpdateError> {
-    if !is_clean(root, tools)? {
-        return Err(UpdateError::DirtyTree);
+    let dirty = dirty_files(root, tools)?;
+    if !dirty.is_empty() {
+        return Err(UpdateError::DirtyTree { files: dirty });
     }
     let mut command = git_command(tools, root);
     command.args(["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -281,13 +311,21 @@ pub fn inspect_checkout(
     Ok(Checkout { branch, remote, remote_url })
 }
 
+/// How often a running command is checked for cancellation.
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Runs `command`, passing each line of its output on as it appears. Fails on a non-zero exit.
+/// Once `cancel` is set the command's whole process group is stopped (cargo's rustc children
+/// too) and the result is [`UpdateError::Cancelled`].
 fn run_streaming(
     mut command: Command,
     label: &str,
+    cancel: &AtomicBool,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<(), UpdateError> {
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    use std::os::unix::process::CommandExt;
+    // Its own process group, so cancelling reaches the children.
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     let mut child = command.spawn().map_err(|e| UpdateError::io(format!("starting {label}"), e))?;
     let (sender, receiver) = mpsc::channel::<String>();
     let mut readers = Vec::new();
@@ -298,17 +336,45 @@ fn run_streaming(
         readers.push(spawn_reader(stderr, sender.clone()));
     }
     drop(sender);
-    for line in receiver {
-        progress(Progress::Line(line));
+    let mut cancelled = false;
+    loop {
+        match receiver.recv_timeout(CANCEL_POLL) {
+            Ok(line) => progress(Progress::Line(line)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        if cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            stop_group(&mut child);
+            break;
+        }
     }
     for reader in readers {
         let _ = reader.join();
     }
     let status = child.wait().map_err(|e| UpdateError::io(format!("waiting for {label}"), e))?;
-    if status.success() {
+    if cancelled {
+        Err(UpdateError::Cancelled)
+    } else if status.success() {
         Ok(())
     } else {
         Err(UpdateError::CommandFailed { command: label.to_owned(), status: status.to_string() })
+    }
+}
+
+/// SIGTERM to the child's process group (the `kill` tool, so no `unsafe` here), then the
+/// child itself in case that failed.
+fn stop_group(child: &mut std::process::Child) {
+    let group = format!("-{}", child.id());
+    let stopped = Command::new("kill")
+        .args(["-TERM", "--", &group])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !stopped {
+        let _ = child.kill();
     }
 }
 
@@ -327,21 +393,57 @@ fn spawn_reader(
     })
 }
 
-/// `git pull --ff-only` and `cargo build -p axion-app --release` in `root`, after
-/// [`inspect_checkout`] passed. Stops at the first failure and leaves things as they are.
+/// Where a checkout stands against its upstream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Divergence {
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+/// Commits only here / only upstream, after a fetch (`HEAD...@{upstream}`).
+pub fn divergence(root: &Path, tools: &Tools) -> Result<Divergence, UpdateError> {
+    let mut command = git_command(tools, root);
+    command.args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]);
+    let text = output(command, "git rev-list")?;
+    let mut numbers = text.split_whitespace().filter_map(|n| n.parse::<u32>().ok());
+    match (numbers.next(), numbers.next()) {
+        (Some(ahead), Some(behind)) => Ok(Divergence { ahead, behind }),
+        _ => Err(UpdateError::Parse(format!("unexpected `git rev-list` output {text:?}"))),
+    }
+}
+
+/// `git fetch`, a fast-forward `git pull` when upstream has new commits, and `cargo build -p
+/// axion-app --release` in `root`, after [`inspect_checkout`] passed. Stops at the first
+/// failure and leaves things as they are: a checkout with local commits (ahead or diverged) is
+/// refused with a clear error, never merged, rebased or reset. When the checkout already has
+/// the newest commits (pulled by hand) only the build runs.
 pub fn update_checkout(
     root: &Path,
     repository: &Repository,
     tools: &Tools,
+    cancel: &AtomicBool,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<(), UpdateError> {
     progress(Progress::Step(Step::CheckingTree));
-    inspect_checkout(root, repository, tools)?;
+    let checkout = inspect_checkout(root, repository, tools)?;
 
-    progress(Progress::Step(Step::Pulling));
-    let mut pull = git_command(tools, root);
-    pull.args(["pull", "--ff-only"]);
-    run_streaming(pull, "git pull --ff-only", progress)?;
+    progress(Progress::Step(Step::Fetching));
+    let mut fetch = git_command(tools, root);
+    fetch.args(["fetch", &checkout.remote]);
+    run_streaming(fetch, "git fetch", cancel, progress)?;
+    let Divergence { ahead, behind } = divergence(root, tools)?;
+    let upstream = format!("{}/{}", checkout.remote, checkout.branch);
+    match (ahead, behind) {
+        (0, 0) => progress(Progress::Line("Already up to date, building the current source.".into())),
+        (0, _) => {
+            progress(Progress::Step(Step::Pulling));
+            let mut pull = git_command(tools, root);
+            pull.args(["pull", "--ff-only"]);
+            run_streaming(pull, "git pull --ff-only", cancel, progress)?;
+        }
+        (ahead, 0) => return Err(UpdateError::LocalAhead { ahead, upstream }),
+        (ahead, behind) => return Err(UpdateError::Diverged { ahead, behind, upstream }),
+    }
 
     progress(Progress::Step(Step::Building));
     let mut build = Command::new(&tools.cargo);
@@ -350,7 +452,7 @@ pub fn update_checkout(
         .current_dir(root)
         .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TERM_PROGRESS_WHEN", "never");
-    run_streaming(build, "cargo build -p axion-app --release", progress)
+    run_streaming(build, "cargo build -p axion-app --release", cancel, progress)
 }
 
 #[cfg(test)]

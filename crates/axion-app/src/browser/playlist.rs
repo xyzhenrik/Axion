@@ -827,6 +827,10 @@ impl Browser {
             self.engine.set_hidden(view, false);
             self.engine.resize(view, self.view_size());
             self.engine.set_focus(view, true);
+            // A start tab's view goes back under the native page.
+            if self.start_ui.hidden_view == Some(view) {
+                self.start_ui.hidden_view = None;
+            }
         }
         self.playlist_ui.button = None;
         self.tabs_changed = true;
@@ -1485,8 +1489,7 @@ impl Browser {
         let wait = Duration::from_secs_f32(cfg.resolve_click_seconds.max(0.2));
         let due = r.clicked_at.is_none_or(|t| t.elapsed() >= wait);
         let click = r.media.as_ref().and_then(|m| {
-            m.players
-                .iter()
+            m.real_players()
                 .filter(|p| {
                     p.kind == axion_media::Kind::Video && !p.native && p.area() > 0.0 && !p.is_playing()
                 })

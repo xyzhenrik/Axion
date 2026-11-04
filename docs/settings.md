@@ -54,10 +54,22 @@ passwords, website data and settings. More in [Accounts and privacy](features/ac
 |---|---|---|---|
 | **Homepage** | The page that opens in new windows and tabs. Leave the field empty for Axion's own start page. | Axion Home (`axion://home/`) | `general.homepage` |
 | **Search engine** | Where searches typed in the address field and on the start page go. Choices: DuckDuckGo, Google, Brave, Startpage, Ecosia. | DuckDuckGo | `general.search_url` |
-| **Language** | The language of Axion's own interface: System, English or Deutsch. Applies after you restart Axion. | System | `general.language` (`system`, `en`, `de`) |
+| **Language** | The language of Axion's own interface. Every language is written in its own name (English, Deutsch, Español, Français, Türkçe, 日本語, Português (Brasil), Italiano, Русский, 简体中文, 한국어, Nederlands, Polski); **System default** follows `LC_ALL`/`LC_MESSAGES`/`LANGUAGE`/`LANG` (English when Axion has no catalog for it). Text a catalog does not translate yet shows English. Applies after you restart Axion. | System default | `general.language` (`system`, `en`, `de`, `es`, `fr`, `tr`, `ja`, `pt-BR`, `it`, `ru`, `zh-Hans`, `ko`, `nl`, `pl`) |
 | **Add Axion to the application menu** | Linux: adds Axion's desktop entry and icons for your user, which gives the window its icon in the taskbar and the application menu (on Wayland this is the only way). Applies after you restart Axion. | On | `general.desktop_integration` |
+| **Default browser** | Linux: shows whether Axion is your default browser and makes it one (the `xdg-settings` default for web links, plus the `http`/`https` handlers and HTML file types). Also offered once in the Welcome tour. | - | - |
+| **Suggest making Axion the default browser** | At start, while Axion is not the default browser, a small notice offers to make it one. Its **Don't ask again** button turns this off for good. | On | `general.default_browser_hint` |
+| **One window per account** | Opening a link from another app (or running `axion URL`) while Axion is open adds a tab to the running window of that account instead of starting a second browser. | On | `general.single_instance` |
 | **Welcome tour** (**Show Welcome Tour**) | Runs the first-start introduction again. | - | `general.onboarding_done` |
+| **History and Downloads as sheets** (config only) | The sidebar's History and Downloads rows (and Ctrl+H, and "Show All Downloads" in the downloads popover) open a large glass sheet over the window, like Settings and Passwords, with a search field for History, the day headings, and the rows' buttons. Off: they are lists inside the sidebar. | On | `general.list_sheets` |
+| **Fold older days in History** (config only) | The History sheet opens with every day but today folded to its heading; click a heading to open or fold its day (days you opened or folded keep that while the sheet stays open). A search shows its matches unfolded. Off: every day starts open. | On | `history.collapse_older_days` |
+| **History sheet size** (config only) | The most entries the History sheet reads (the most recently visited first). They are read, searched and deleted on a background thread, and only the rows in view exist as widgets, so a long history opens at once. | 100000 | `history.sheet_max_entries` |
+| **History search delay** (config only) | How long the History sheet's search field rests after you type before the database is searched (milliseconds). | 150 | `history.search_debounce_ms` |
+| **Rows around the view in sheet lists** (config only) | History and Downloads sheets build the rows in view plus this many above and below, so scrolling shows rows at once. | 6 | `lists.overscan_rows` |
+| **Checkboxes on hover in sheet lists** (config only) | In the History and Downloads sheets a checkbox replaces a row's icon while the pointer is on it. Click it (or **Select** in the sheet's header) to select rows: Shift+click selects a range, Ctrl+click toggles one row, a day heading's checkbox selects the day, Ctrl+A selects every row of the list, **Delete** (the button, or the Delete key) removes the selection, Esc leaves selection mode. Downloads are only removed from the list, never their files. Off: checkboxes only show in selection mode. | On | `lists.hover_checkboxes` |
+| **Rows of the sidebar's History list** (config only) | How many history entries the sidebar's History list shows when the sheets are off (`general.list_sheets`). | 300 | `sidebar.history_rows` |
+| **Context menus** (config only) | A right click (or the Menu key, Shift+F10) on the sidebar's rows, the rows of History, Bookmarks and Downloads, toolbar buttons and the bare toolbar, the tab overview's cards, start page tiles, the fullscreen media player, the rows of the extensions list, the network chip and the toggles and sliders in Settings opens a menu (Settings rows: **Reset to Default**; toolbar buttons: **Hide Button**, **Customize Toolbar…**, **Show Hidden Buttons**). Off: only tabs, tab groups, bookmarks of the bookmarks bar and the page keep their menus. | On | `general.context_menus` |
 | **Show home button** | Puts a home button next to back and forward. It opens your homepage. | On | `layout.home_button` |
+| **Hidden toolbar buttons** (config only) | Buttons taken out of the toolbar with **Hide Button** in their right-click menu: `share`, `new_tab`, `extensions`, `downloads`. **Show Hidden Buttons** (in the menu of any toolbar button or of the bare toolbar) empties the list. | Empty | `layout.hidden_toolbar_buttons` |
 
 ### Start page
 
@@ -80,6 +92,10 @@ What the start page shows. The same switches are in the gear on the page itself.
 | **Dim** | Darkens the background so text stays readable. Shown once a background is selected (search lists it as "Dim background image"). 0 to 80 %. | 20 % | `home.background_dim` |
 | **Blur** | Blurs the background. Shown once a background is selected ("Blur background image" in search). Off to 30 px. | Off | `home.background_blur` |
 | **Chrome colour as default background** | Without a background image the start page uses the neutral grey of the window around the page (light or dark) instead of plain white or black. Private tabs stay dark. | On | `home.glass_ground` |
+| **Native start page** (config only) | Draws the start page with Axion's own Liquid Glass (tiles, search field and panel refract the wallpaper) instead of the HTML page. The HTML page stays as the fallback, and `axion://home/?html=1` always opens it. The page has no screen-reader tree natively. | On | `home.native` |
+| **Top sites swipe distance / lock** (config only) | A horizontal touchpad swipe over the top sites flips a page after `top_sites_swipe_px` of travel, then ignores swipes for `top_sites_swipe_lock_ms`. | 80 px / 400 ms | `home.top_sites_swipe_px`, `home.top_sites_swipe_lock_ms` |
+| **Hand-off time** (config only) | When a native start tab loads a site, the native page stays up until the site's first frame arrives, at most this long. | 800 ms | `home.native_handoff_ms` |
+| **Animated wallpaper limits** (config only) | The native start page keeps at most this many MB of decoded frames of an animated wallpaper (GIF, WebP, APNG; a longer one is cut) and scales them to this longest side. Animated wallpapers pause while any tab, the Playlist or Picture in Picture plays media. Videos show their thumbnail as a still on the native page. | 128 MB / 1280 px | `home.animated_wallpaper_max_mb`, `home.animated_wallpaper_max_edge` |
 | **Live wallpapers (animated images and videos)** | Lets animated images (GIF, WebP) and videos (WebM, MP4) play, muted and looping. Off: they show a still frame. | On | `home.live_wallpapers` |
 | **Play live wallpapers with Reduce Motion** | Keeps live wallpapers playing while **Reduce motion** is on. Off: they show a still frame then. | On | `home.live_wallpapers_ignore_reduce_motion` |
 | **Add from file** (**Add**) | Type a path such as `~/Pictures/sea.jpg` and press **Add**. The file is copied into your account. MP4 needs H.264 support. | - | - |
@@ -100,6 +116,7 @@ How Axion looks. See [Appearance and Liquid Glass](features/appearance-and-glass
 |---|---|---|---|
 | **Appearance** | **Automatic** follows your desktop's light or dark preference, or force **Light** or **Dark**. | Automatic | `appearance.theme` (`auto`, `light`, `dark`) |
 | **Glass** | **Liquid Glass** is the full glass look. **Flat** uses solid cards without refraction, blur or bounce. It is much lighter on weak graphics hardware. | Liquid Glass | `glass.style` (`liquid`, `flat`) |
+| **Destructive colour** (config only) | The red of closing: the tab close button when the pointer is on it, and the rows **Close Tab**, **Close Other Tabs**, **Close Group** and **Delete** in context menus. It tints the glass (in the flat style a solid tint), it is never a fill behind a button. | `#D0362B` | `appearance.destructive` |
 | **Accent colour** | The colour of selections, focus rings and primary buttons. Six swatches. | Blue | `appearance.accent` (a colour such as `"#2E6BFF"`) |
 | **Icon weight** | The line thickness of icons: **Regular**, **Medium** or **Bold**. | Medium | `appearance.icon_stroke_light`, `appearance.icon_stroke_dark` |
 | **Favicon contrast** (config only) | What happens to website icons that would be hard to see on the current bar (for example a black icon on the dark bar): `invert` flips single-colour icons, `backing` puts them on a light or dark tile, `off` leaves them as they are. | `invert` | `appearance.favicon_contrast` |
@@ -122,6 +139,7 @@ Fine-tune the glass material. These settings only matter with **Glass** set to *
 | Motion springs | Apple's presets, `response` = SwiftUI duration, `damping` = damping fraction (`bounce` = 1 - damping): `snappy` 0.5 / 0.85 (bounce 0.15), `smooth` 0.5 / 1.0, `bouncy` 0.5 / 0.7, `interactive` 0.15 / 0.86 (following the pointer). `liquid`, `drain*`, `fling`, `tab_close`, `switch` are Axion's own (see docs/physics.md). `speed` scales every response. | see left | `motion.*` |
 | Switch animation | The spring of a switch's knob (travel, and swelling into a glass lens while held) and of segmented controls: `response` is the period in seconds, `damping` the damping ratio. The default settles in about 0.2 s with a small bounce. Edit in `config.toml`; Reduce motion snaps it. | `response` 0.18, `damping` 0.80 | `motion.switch` |
 | Tap hold | The shortest time (seconds) a click or touchpad tap holds the press swell of a glass button before it springs back, so even a tap that is over within one frame animates. 0 turns it off; Reduce motion has no swell anyway. Edit in `config.toml`. | 0.09 | `motion.tap_hold` |
+| Open guard | A popover, menu or sheet that opens advances at most `open_step_max_ms` per frame for its first `open_guard_frames` frames, so the time spent building it (or one slow frame) does not make its glass leap ahead of the button it grows out of. 0 turns it off. Edit in `config.toml`. | 20 ms, 4 frames | `motion.open_step_max_ms`, `motion.open_guard_frames` |
 | **Refraction** | How strongly the glass bends what is behind it. 0 to 100 %. | 55 % | `glass.light.refraction`, `glass.dark.refraction` |
 | **Blur** | How much the backdrop is blurred, as a share of the normal amount for each glass thickness. 0 to 200 %. | 100 % | `glass.light.blur`, `glass.dark.blur` (`thin`, `regular`, `thick`) |
 | **Colour dispersion** | Colour fringes along the glass rim. 0 to 40 %. | 12 % (10 % in dark mode) | `glass.light.dispersion`, `glass.dark.dispersion` |
@@ -141,11 +159,14 @@ How tabs look and how Axion saves memory. See [Tabs and memory](features/tabs-an
 | Setting | What it does | Default | Config key |
 |---|---|---|---|
 | Tab bar picture (**Separate** / **Compact**) | **Separate** puts tabs in their own row below the address bar. **Compact** uses one row where all tabs are the same width and the current tab holds the address; the address field widens while you type (`layout.compact_address_width`). | Separate | `layout.tab_bar` (`separate`, `compact`) |
+| **Hide the tab bar with a single tab** | With the **Separate** tab bar, the row of tabs slides away while exactly one tab is open and there are no tab groups or pinned tabs; the page grows into the space. It comes back when you open a second tab. It moves on the smooth spring (`motion.smooth`); with **Reduce motion** it is quick and plain, in the flat glass style critically damped. | On | `layout.hide_single_tab_bar` |
 | **Colour in tab bar** | Tints the window around the page with a colour taken from the page, like Safari. | Off | `appearance.tint_from_page` |
 | **Page colour** (**Extreme** / **Dominant**) | Shown when **Colour in tab bar** is on. **Extreme** takes the darkest or lightest prominent colour. **Dominant** takes the main colour, evened out. Turning the colour on switches from neutral to **Extreme**. | Neutral (page colour off) | `appearance.tint_mode` (`neutral`, `extreme`, `dominant`) |
 | **Open new tabs in background** | Tabs opened from links do not take over the screen. | On | `tabs.open_links_in_background` |
+| Windows keep their opener | A page that opens a window (`window.open()`, as "Sign in with Google" does) gets a tab that stays connected to it, so the sign-in can report back and close itself. Config file only; applies after a restart. | On | `tabs.popups_keep_opener` |
 | **Animate closing tabs** | A closed tab shrinks and fades away (tab bar, sidebar and tab overview) while the tabs beside it slide into the gap. With **Reduce motion** or the flat glass style only a short fade stays. The spring is `motion.tab_close`. | On | `tabs.close_animation` |
 | **Keep tab widths while closing** | After closing a tab with the pointer in the tab bar, the other tabs keep their widths until the pointer leaves the bar, so the next close button stays under it. | On | `tabs.keep_widths_while_closing` |
+| **Tab menu on the address field** (config only) | A right click on the address field of the separate tab bar opens the menu of the current tab: reload, duplicate, mute, bookmark, groups, pin, move to private, close (in red) and close other tabs. With the compact tab bar the address is the tab itself, so this always works there. Not while you are typing in the field. | On | `tabs.address_context_menu` |
 | **Middle click closes tabs** | A middle click on a tab (bar, sidebar or tab overview) closes it. | On | `tabs.middle_click_closes_tab` |
 | **New tabs join the group they open from** | A tab opened from a tab of a tab group (a link, **New Tab to the Right**) joins that group. | On | `tabs.new_tab_joins_group` |
 | **Show tab group names in the tab bar** | Tab groups get a coloured chip with their name in front of their tabs. Off: only a colour line under the tabs. | On | `tabs.group_chips_in_bar` |
@@ -243,8 +264,9 @@ Reader View and page translation. See [Reading and translation](features/reading
 |---|---|---|---|
 | **Offer to translate pages in other languages** | Shows the Translate button when a page is in a language other than the target and can be translated. | On | `translation.offer` |
 | **Open the offer by itself** | The offer opens once when such a page has loaded. | On | `translation.prompt` |
+| *(file only)* Offer once per page | The offer opens by itself at most once for each page load in a tab, and closing it is final for that page: dynamic page changes or other popovers closing never bring it back. The Translate button still opens it. Off: it may open again when the page reports its language anew. | On | `translation.offer_once_per_page` |
 | **Translate text that appears later** | New text on a translated page (feeds, comments) is translated too. | On | `translation.translate_changes` |
-| **Translate pages into** | The target language: Interface (Axion's own language), English, German, French or Spanish. Any other code from the list below can be set in the file. | Interface | `translation.target_language` (empty = interface) |
+| **Translate pages into** | The target language: Interface (Axion's own language) or any of the languages the local models cover (every language Mozilla offers, 58 with English; they translate in both directions through English; Chinese is offered as Simplified and Traditional). Languages Mozilla does not offer are not listed. In the file, an ISO 639-1 code such as `ja`, `pt` or `nb`; `zh` is Simplified, `zht` Traditional. | Interface | `translation.target_language` (empty = interface) |
 | **Translate** | Where translating runs: **On this computer** (Bergamot models, nothing leaves the computer) or **Your server** (a LibreTranslate-compatible server; page text is sent to it). | On this computer | `translation.backend` (`local` or `endpoint`) |
 | **Downloaded language data** | Deletes the models downloaded for local translation. | - | - |
 | *(file only)* Server address | LibreTranslate-compatible endpoint, for example `http://localhost:5000/translate`. Only used with `backend = "endpoint"`; empty by default. | empty | `translation.endpoint_url` |
@@ -301,6 +323,7 @@ Blocking of ads, trackers, popups and redirects. See [Shields](features/shields.
 | **Block redirects to ad and tracker sites** | Blocks pages that send you elsewhere without a click, to sites on the block lists. | On | `shields.block_redirects` |
 | **Remove tracking parameters from links** | Cuts click-tracking parts such as `fbclid` and `gclid` out of addresses. | On | `shields.strip_tracking_parameters` |
 | **Block third-party cookies** | Stops sites from setting cookies for other sites. | On | `shields.block_third_party_cookies` |
+| Sign-in providers | Hosts that may always get cookies as a third party (embedded sign-in frames of Google, Apple, Microsoft, Facebook). Config file only. | 6 hosts | `shields.sign_in_hosts` |
 | **Filter lists** (**Update Now**) | The block lists in use and how often they refresh. **Update Now** refreshes them at once. | 5 lists, every 96 hours | `shields.lists`, `shields.update_interval_hours` |
 
 ## Network & VPN
@@ -325,6 +348,7 @@ the password vault, not in `config.toml`.
 | `wireguard_handshake_timeout_secs` | 20 | How long a WireGuard handshake may stay unanswered before the connection is shown as failed (wrong key, dead server and blocked UDP look the same). |
 | `background_priority`, `tor_worker_threads` | on, 2 | Run Tor's directory download and verification at low CPU priority; how many worker threads the Tor client uses (1-8). |
 | `connect_at_start`, `show_chip`, `notify_changes` | on | Start default routes at launch; show the chip in the address field; toast on changes. |
+| `session_route_persist` | off | Keep the session route ("Use X for this session" in the chip's popover) across restarts. Off: it is never written to the file and Axion starts with the normal routes. `session_route` (a connection id) holds it while on. |
 
 ## Privacy
 
@@ -366,6 +390,7 @@ refuses without asking. A decision you made for a site wins over these. See
 | **Notifications** | Desktop notifications from the site. | Ask | `permissions.notifications` |
 | **Location** | Your position. | Ask | `permissions.location` |
 | **Clipboard** | Reading what you copied (writing to the clipboard needs no permission). | Ask | `permissions.clipboard` |
+| Copying in pages | Who puts what you copy in a page (Ctrl+C, Ctrl+X, the context menu's Copy, text in fields and frames) and what a page copies (`writeText`, `execCommand`, Copy buttons) on the desktop clipboard: Axion where Chromium cannot (Wayland), or always / never. Config file only. | auto | `clipboard.page_copy`, `clipboard.max_page_copy_kb` |
 | **Other permissions** | MIDI devices, the local network, window placement on all displays, installed fonts, idle detection, pointer and keyboard lock, motion sensors, several downloads at once. | Ask | `permissions.other` |
 
 ### Remembered for Sites
@@ -386,6 +411,7 @@ listed here.
 | **Download location** (**Change…**) | The folder for downloads. | Your desktop's Downloads folder | `downloads.directory` |
 | **Ask where to save each file** | Shows a file chooser for each download. Off: saves straight into the download location. | On | `downloads.ask_where_to_save` |
 | **Open “safe” files after downloading** | Opens pictures, movies, sounds, PDF and text documents when they finish. | Off | `downloads.open_safe_files` |
+| **Site icons in the downloads list** (config only) | Each download shows the icon of the site it came from; the file's icon only when the site has none. | On | `downloads.show_site_icons` |
 | **Remove download list items** | When finished downloads leave the list: **Manually**, **After One Day**, **When Axion Quits**. | Manually | `downloads.remove_list_items` (`manually`, `after_one_day`, `on_quit`) |
 
 ### Print and screenshots
@@ -514,8 +540,12 @@ Version information and updates. See [Updates](features/updates.md).
 |---|---|---|---|
 | **Check for Updates** | Asks the update source for the newest version now. | - | - |
 | **Check for updates automatically** | Looks for a new version a few seconds after Axion starts, at most once a day. | On | `updates.auto_check_on_start` |
+| **Notify me about updates** | Also announces a new version with a desktop notification (**Update** / **Later**) while Axion's window is in the background. The in-app message always shows. | On | `updates.desktop_notification`, `updates.desktop_notification_when_focused` |
 | **Include pre-releases** | Also offers alpha, beta and release-candidate versions. | Off | `updates.channel` (`stable`, `prerelease`) |
 | **Repository** (**Save**) | Where releases are published, written `owner/name`. The field is empty and shows the default as a placeholder; typing your own repository overrides it, clearing the field returns to the default (nothing is stored for the default). | `xyzhenrik/Axion` (empty field) | `updates.repository` |
+
+While an update runs, the page shows its progress with **Cancel**; afterwards **Restart Axion** and
+**Later**, or the reason it failed with **Try again**.
 
 When an update is available the page also shows the release notes and the buttons **Update** (or
 **Update from Git**, or **Open Release Page**), **Skip This Version** and **Remind Me Later**.

@@ -109,6 +109,11 @@ if [ "$mode" = appimage ]; then
 else
   # A copy that keeps hard links apart from the source (cp -a copies the data).
   cp -a -- "$src/." "$new/"
+  # The updater's marker records when this copy was installed (releases before the marker
+  # are recognised by their layout).
+  if [ -f "$new/axion-install.json" ]; then
+    sed -i "s/\"installed_at\":[0-9]*/\"installed_at\":$(date +%s)/" "$new/axion-install.json"
+  fi
   launcher=$prefix/AppRun
   icon_src=$new/usr/share/icons/hicolor
   entry_src=$new/usr/share/applications/axion.desktop
