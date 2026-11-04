@@ -96,7 +96,8 @@ impl Popover {
                 .with_background(Background::Glass(LEVEL))
                 .with_glass_density(DENSITY)
                 .as_popup()
-                .with_radius(radius),
+                .with_radius(radius)
+                .as_overlay(),
             Style { position: Position::Absolute, ..style },
         );
         // After the popover, so its wider smooth union applies where it meets both the

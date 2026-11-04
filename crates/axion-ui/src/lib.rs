@@ -1401,7 +1401,7 @@ impl Ui {
             } else {
                 events.extend(self.focus(hit));
             }
-        } else {
+        } else if !self.actionable(hit).and_then(|n| self.widget(n)).is_some_and(|w| w.keeps_focus) {
             events.extend(self.blur());
         }
         self.pressed = self.actionable(hit);

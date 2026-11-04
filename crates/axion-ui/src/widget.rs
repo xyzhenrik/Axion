@@ -228,6 +228,13 @@ pub struct Widget {
     /// solid card (or dims, or stays, by `glass.sheet_under_popup`), and so does the glass
     /// inside it.
     pub popup_cover: bool,
+    /// Pressing it leaves the keyboard focus where it is (a row of the list under a text field:
+    /// the field keeps its caret and the list, which closes with the focus, stays until the click
+    /// is done).
+    pub keeps_focus: bool,
+    /// Floats above the bars (a popover's card): never part of the window's own chrome, so a press
+    /// on it is never the start of a window move.
+    pub overlay: bool,
     /// Absolute frame in logical pixels, updated by layout.
     pub(crate) frame: Rect,
 }
@@ -272,6 +279,8 @@ impl Widget {
             passthrough: false,
             popup: Popup::None,
             popup_cover: false,
+            keeps_focus: false,
+            overlay: false,
             frame: Rect::default(),
         }
     }
@@ -398,6 +407,18 @@ impl Widget {
     /// See [`Widget::isolated`].
     pub fn with_isolated(mut self) -> Self {
         self.isolated = true;
+        self
+    }
+
+    /// See [`Widget::overlay`].
+    pub fn as_overlay(mut self) -> Self {
+        self.overlay = true;
+        self
+    }
+
+    /// See [`Widget::keeps_focus`].
+    pub fn keeping_focus(mut self) -> Self {
+        self.keeps_focus = true;
         self
     }
 

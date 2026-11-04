@@ -13,16 +13,35 @@ use axion_config::{Color, Config, WindowDecorations};
 use glam::Vec2;
 use winit::window::{CursorIcon, ResizeDirection};
 
-/// Close, the red light.
-const RED: Color = Color::rgb(0xFF5F57);
-/// Minimize, the yellow light.
-const YELLOW: Color = Color::rgb(0xFEBC2E);
-/// Zoom (maximize), the green light.
-const GREEN: Color = Color::rgb(0x28C840);
-/// The lights of a window that is not in front (they stay grey until the pointer is over them).
-const UNFOCUSED: Color = Color::rgb(0x9A9A9F);
 /// How much darker a pressed light is.
 const PRESSED_DARKEN: f32 = 0.78;
+/// How much darker the ring around a light is than its disc.
+const RING_DARKEN: f32 = 0.78;
+/// How much darker a light is while the pointer is over the lights.
+const HOVER_DARKEN: f32 = 0.94;
+
+/// The colours the lights are drawn in (`window.light_*`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightColors {
+    pub close: Color,
+    pub minimize: Color,
+    pub zoom: Color,
+    pub unfocused: Color,
+    pub glyph: Color,
+}
+
+impl LightColors {
+    pub fn from_config(config: &Config) -> Self {
+        let w = &config.window;
+        Self {
+            close: w.light_close,
+            minimize: w.light_minimize,
+            zoom: w.light_zoom,
+            unfocused: w.light_unfocused,
+            glyph: w.light_glyph,
+        }
+    }
+}
 
 /// One of the window buttons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -44,11 +63,11 @@ impl Light {
         }
     }
 
-    fn color(self) -> Color {
+    fn color(self, colors: &LightColors) -> Color {
         match self {
-            Light::Close => RED,
-            Light::Minimize => YELLOW,
-            Light::Zoom => GREEN,
+            Light::Close => colors.close,
+            Light::Minimize => colors.minimize,
+            Light::Zoom => colors.zoom,
         }
     }
 }
@@ -56,10 +75,14 @@ impl Light {
 /// What a light looks like right now.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LightLook {
-    /// The tint of its glass disc.
+    /// The flat colour of its disc (never glass).
     pub color: Color,
-    /// The glyph inside (x, -, +), shown while the pointer is over the lights.
+    /// The slightly darker ring around the disc.
+    pub ring: Color,
+    /// The glyph inside (x, -, arrows), shown while the pointer is over the lights.
     pub glyph: Icon,
+    /// Its colour: the same on all three lights.
+    pub glyph_color: Color,
     pub glyph_shown: bool,
 }
 
@@ -117,18 +140,31 @@ impl LightsState {
     }
 
     /// The look of `light`: coloured while the window is in front or the pointer is over the
-    /// lights, grey otherwise (like macOS), darker while held.
-    pub fn look(&self, light: Light) -> LightLook {
+    /// lights, grey otherwise (like macOS); a little darker while the pointer is over the lights
+    /// and darker still while held.
+    pub fn look(&self, light: Light, colors: &LightColors) -> LightLook {
         let coloured = self.focused || self.hovered.is_some();
-        let base = if coloured { light.color() } else { UNFOCUSED };
-        let color = if self.pressed == Some(light) { darken(base, PRESSED_DARKEN) } else { base };
+        let base = if coloured { light.color(colors) } else { colors.unfocused };
+        let color = if self.pressed == Some(light) {
+            darken(base, PRESSED_DARKEN)
+        } else if self.hovered.is_some() {
+            darken(base, HOVER_DARKEN)
+        } else {
+            base
+        };
         let glyph = match light {
             Light::Close => Icon::Close,
             Light::Minimize => Icon::Minus,
-            Light::Zoom if self.maximized => Icon::ExitFullscreen,
-            Light::Zoom => Icon::Plus,
+            Light::Zoom if self.maximized => Icon::RestoreArrows,
+            Light::Zoom => Icon::ZoomArrows,
         };
-        LightLook { color, glyph, glyph_shown: self.glyphs_shown() }
+        LightLook {
+            color,
+            ring: darken(color, RING_DARKEN),
+            glyph,
+            glyph_color: colors.glyph,
+            glyph_shown: self.glyphs_shown(),
+        }
     }
 }
 
@@ -293,8 +329,8 @@ mod tests {
 
     #[test]
     fn the_lights_take_room_from_the_toolbar() {
-        assert_eq!(lights_width(14.0, 8.0), 58.0);
-        assert_eq!(lights_inset(14.0, 8.0, 14.0), 72.0);
+        assert_eq!(lights_width(18.0, 8.0), 70.0);
+        assert_eq!(lights_inset(18.0, 8.0, 14.0), 84.0);
         let c = Config::default();
         assert_eq!(
             lights_inset(
@@ -302,7 +338,7 @@ mod tests {
                 c.layout.traffic_light_gap,
                 c.layout.traffic_light_margin
             ),
-            72.0
+            84.0
         );
     }
 
@@ -329,46 +365,65 @@ mod tests {
 
     #[test]
     fn lights_are_coloured_in_front_grey_behind_and_darker_when_held() {
+        let c = LightColors::from_config(&Config::default());
+        let (red, yellow, green, grey) = (c.close, c.minimize, c.zoom, c.unfocused);
         let mut s = LightsState::default();
-        assert_eq!(s.look(Light::Close).color, RED);
-        assert_eq!(s.look(Light::Minimize).color, YELLOW);
-        assert_eq!(s.look(Light::Zoom).color, GREEN);
-        assert!(!s.look(Light::Close).glyph_shown);
+        assert_eq!(s.look(Light::Close, &c).color, red);
+        assert_eq!(s.look(Light::Minimize, &c).color, yellow);
+        assert_eq!(s.look(Light::Zoom, &c).color, green);
+        assert!(!s.look(Light::Close, &c).glyph_shown);
 
         // Not in front: grey.
         assert!(s.set_focused(false));
         for light in Light::ALL {
-            assert_eq!(s.look(light).color, UNFOCUSED);
+            assert_eq!(s.look(light, &c).color, grey);
         }
         // The pointer over them brings the colours (and glyphs) back, even behind.
         assert!(s.set_hovered(Some(Light::Minimize)));
-        assert_eq!(s.look(Light::Close).color, RED);
-        assert!(s.look(Light::Zoom).glyph_shown);
+        assert_ne!(s.look(Light::Close, &c).color, grey, "coloured again");
+        assert!(s.look(Light::Zoom, &c).glyph_shown);
         assert!(s.set_hovered(None));
-        assert_eq!(s.look(Light::Close).color, UNFOCUSED);
+        assert_eq!(s.look(Light::Close, &c).color, grey);
 
         // Held: darker, and only the held one.
         assert!(s.set_focused(true));
         assert!(s.set_hovered(Some(Light::Close)));
         assert!(s.set_pressed(Some(Light::Close)));
-        assert_ne!(s.look(Light::Close).color, RED);
-        assert_eq!(s.look(Light::Minimize).color, YELLOW);
+        let held = s.look(Light::Close, &c).color;
+        assert!(held.r < red.r, "darker while held");
+        assert_ne!(s.look(Light::Minimize, &c).color, yellow, "the others only darken on hover");
         // The pointer slides off the held light: the press is over.
         assert!(s.set_hovered(Some(Light::Zoom)));
-        assert_eq!(s.look(Light::Close).color, RED);
+        assert!(s.look(Light::Close, &c).color.r > held.r, "released");
         // Nothing changes when nothing changes.
         assert!(!s.set_hovered(Some(Light::Zoom)));
         assert!(!s.set_focused(true));
     }
 
     #[test]
-    fn the_zoom_light_shows_the_restore_arrows_while_maximized() {
+    fn glyphs_share_one_colour_and_the_ring_is_darker() {
+        let c = LightColors::from_config(&Config::default());
         let mut s = LightsState::default();
-        assert_eq!(s.look(Light::Zoom).glyph, Icon::Plus);
+        s.set_hovered(Some(Light::Close));
+        for light in Light::ALL {
+            let look = s.look(light, &c);
+            assert_eq!(look.glyph_color, c.glyph);
+            assert!(
+                look.ring.r <= look.color.r && look.ring.g <= look.color.g && look.ring.b <= look.color.b
+            );
+            assert_ne!(look.ring, look.color);
+        }
+    }
+
+    #[test]
+    fn the_zoom_light_shows_the_restore_arrows_while_maximized() {
+        let c = LightColors::from_config(&Config::default());
+        let mut s = LightsState::default();
+        assert_eq!(s.look(Light::Zoom, &c).glyph, Icon::ZoomArrows);
         assert!(s.set_maximized(true));
-        assert_eq!(s.look(Light::Zoom).glyph, Icon::ExitFullscreen);
-        assert_eq!(s.look(Light::Close).glyph, Icon::Close);
-        assert_eq!(s.look(Light::Minimize).glyph, Icon::Minus);
+        assert_eq!(s.look(Light::Zoom, &c).glyph, Icon::RestoreArrows);
+        assert_eq!(s.look(Light::Close, &c).glyph, Icon::Close);
+        assert_eq!(s.look(Light::Minimize, &c).glyph, Icon::Minus);
         assert!(!s.set_maximized(true));
     }
 }

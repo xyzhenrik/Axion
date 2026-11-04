@@ -143,7 +143,11 @@ ask_where_to_save = false
 | `window.controls_side` | With `custom`: `left` or `right` end of the toolbar for the window buttons. | `left` |
 | `window.resize_border_px` | With `custom`: width of the strip along the window's edges that resizes it (corners count double). | `6` |
 | `layout.window_corner_radius` | With `custom`: corner radius of the window in pixels (0: square). Square while maximized or fullscreen. | `14` |
-| `layout.traffic_light_size` | Diameter of the window buttons in pixels. | `14` |
+| `layout.traffic_light_size` | Diameter of the window buttons in pixels. | `18` |
+| `layout.traffic_light_ring` | Width of the darker ring around each window button in pixels (0: none). | `1` |
+| `window.light_close`, `window.light_minimize`, `window.light_zoom` | The flat colours of the close, minimize and zoom buttons (never glass, also in the flat style). | `#FF5F57`, `#FEBC2E`, `#28C840` |
+| `window.light_unfocused` | The buttons of a window that is not in front. | `#9A9A9F` |
+| `window.light_glyph` | The one colour of the x, minus and arrows shown while the pointer is over the buttons (translucent). | `#2B1200B8` |
 | `layout.traffic_light_gap` | Gap between two window buttons. | `8` |
 | `layout.traffic_light_margin` | Gap between the window buttons and the toolbar group next to them. | `14` |
 | `window.restore_pip_size` | Open Picture in Picture as big as you last made it. | `true` |
