@@ -17,6 +17,7 @@ use zeroize::Zeroizing;
 
 use axion_engine::PermissionKind;
 
+use crate::default_browser::State as DefaultState;
 use crate::home::Image;
 use crate::morph::{Origin, SheetMorph};
 use crate::passwords::MIN_MASTER_LENGTH;
@@ -237,6 +238,8 @@ enum Setting {
     GpuRasterization,
     DesktopIntegration,
     AppMenuEntry,
+    DefaultBrowserHint,
+    SingleInstance,
     AskWhereToSave,
     OpenSafeFiles,
     ClearCookiesOnQuit,
@@ -335,6 +338,8 @@ impl Setting {
             Setting::GpuRasterization => tr_mark("Smooth WebGL, canvas and GPU rasterization"),
             Setting::DesktopIntegration => tr_mark("Desktop media controls and media keys (after restart)"),
             Setting::AppMenuEntry => tr_mark("Add Axion to the application menu"),
+            Setting::DefaultBrowserHint => tr_mark("Suggest making Axion the default browser"),
+            Setting::SingleInstance => tr_mark("Open links from other apps in the running window"),
             Setting::AskWhereToSave => tr_mark("Ask where to save each file"),
             Setting::OpenSafeFiles => tr_mark("Open “safe” files after downloading"),
             Setting::ClearCookiesOnQuit => tr_mark("Clear cookies and site data when Axion quits"),
@@ -416,6 +421,8 @@ impl Setting {
                 | Setting::GpuRasterization
                 | Setting::DesktopIntegration
                 | Setting::AppMenuEntry
+                | Setting::DefaultBrowserHint
+                | Setting::SingleInstance
                 | Setting::AskWhereToSave
                 | Setting::OpenSafeFiles
                 | Setting::ClearCookiesOnQuit
@@ -570,6 +577,8 @@ impl Setting {
             Setting::GpuRasterization => return c.hardware.gpu_rasterization as u8 as f32,
             Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
             Setting::AppMenuEntry => return c.general.desktop_integration as u8 as f32,
+            Setting::DefaultBrowserHint => return c.general.default_browser_hint as u8 as f32,
+            Setting::SingleInstance => return c.general.single_instance as u8 as f32,
             Setting::AskWhereToSave => return c.downloads.ask_where_to_save as u8 as f32,
             Setting::OpenSafeFiles => return c.downloads.open_safe_files as u8 as f32,
             Setting::ClearCookiesOnQuit => return c.data.clear_cookies_on_quit as u8 as f32,
@@ -675,6 +684,8 @@ impl Setting {
             Setting::GpuRasterization => c.hardware.gpu_rasterization = on,
             Setting::DesktopIntegration => c.media.desktop_integration = on,
             Setting::AppMenuEntry => c.general.desktop_integration = on,
+            Setting::DefaultBrowserHint => c.general.default_browser_hint = on,
+            Setting::SingleInstance => c.general.single_instance = on,
             Setting::AskWhereToSave => c.downloads.ask_where_to_save = on,
             Setting::OpenSafeFiles => c.downloads.open_safe_files = on,
             Setting::ClearCookiesOnQuit => c.data.clear_cookies_on_quit = on,
@@ -781,6 +792,8 @@ pub enum SettingsAction {
     Language(UiLanguage),
     /// Runs the first-run introduction again.
     ShowWelcomeTour,
+    /// Makes Axion the system's default browser.
+    MakeDefaultBrowser,
     CloseAfter(u32),
     AddTrustedSite,
     /// Index into `media.trusted_player_sites`.
@@ -997,6 +1010,7 @@ impl SettingsAction {
                     SettingsAction::GlassStyle(GlassStyle::Liquid) => 26,
                     SettingsAction::GlassStyle(GlassStyle::Flat) => 27,
                     SettingsAction::ShowWelcomeTour => 28,
+                    SettingsAction::MakeDefaultBrowser => 29,
                     SettingsAction::SearchEngine(i) => 30 + i as u32,
                     SettingsAction::Accent(i) => 40 + i as u32,
                     SettingsAction::ClearHistory => 50,
@@ -1100,6 +1114,7 @@ impl SettingsAction {
             26 => SettingsAction::GlassStyle(GlassStyle::Liquid),
             27 => SettingsAction::GlassStyle(GlassStyle::Flat),
             28 => SettingsAction::ShowWelcomeTour,
+            29 => SettingsAction::MakeDefaultBrowser,
             30..=39 if ((n - 30) as usize) < SEARCH_ENGINES.len() => {
                 SettingsAction::SearchEngine((n - 30) as usize)
             }
@@ -1197,6 +1212,8 @@ pub enum Outcome {
     Nothing,
     /// Close Settings and run the first-run introduction.
     ShowWelcomeTour,
+    /// Make Axion the system's default browser.
+    MakeDefaultBrowser,
     /// The configuration changed; save and apply it.
     Changed,
     Close,
@@ -1267,6 +1284,43 @@ pub enum Outcome {
     SourceChanged,
 }
 
+/// What the General page says about the default browser.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DefaultBrowserView {
+    pub state: Option<DefaultState>,
+    /// A change is under way.
+    pub busy: bool,
+    /// Why the last change did not work.
+    pub error: Option<String>,
+}
+
+impl DefaultBrowserView {
+    /// The line under the row.
+    fn status(&self) -> String {
+        if self.busy {
+            return tr("Setting Axion as the default browser…").to_owned();
+        }
+        if let Some(error) = &self.error {
+            return tr_fmt!("Axion could not be made the default browser: {reason}", reason = error);
+        }
+        match &self.state {
+            None => tr("Checking which browser is the default…").to_owned(),
+            Some(DefaultState::Axion) => tr("Axion is your default browser.").to_owned(),
+            Some(DefaultState::Other(id)) if id.is_empty() => {
+                tr("No default browser is set. Links open in whatever the system picks.").to_owned()
+            }
+            Some(DefaultState::Other(id)) => tr_fmt!(
+                "Your default browser is {name}. Links from other apps open there.",
+                name = crate::default_browser::display_name(id)
+            ),
+            Some(DefaultState::Unavailable) => {
+                tr("This system cannot say which browser is the default (xdg-settings is missing).")
+                    .to_owned()
+            }
+        }
+    }
+}
+
 pub struct SettingsSheet {
     root: NodeId,
     sheet: NodeId,
@@ -1314,6 +1368,8 @@ pub struct SettingsSheet {
     /// Data page: the cache's size, the sites with cookies (`None` while unknown) and
     /// which destructive button asks for confirmation.
     cache_size: Option<u64>,
+    /// Who the system's default browser is, and whether a change is under way.
+    default_browser: DefaultBrowserView,
     site_data: Option<Vec<(String, usize)>>,
     confirm_clear_data: bool,
     confirm_remove_all: bool,
@@ -1543,6 +1599,7 @@ impl SettingsSheet {
             group: None,
             confirm_clear: false,
             cache_size: None,
+            default_browser: DefaultBrowserView::default(),
             site_data: None,
             confirm_clear_data: false,
             confirm_remove_all: false,
@@ -1698,6 +1755,12 @@ impl SettingsSheet {
         if !self.open && phase == crate::drip::Phase::Closed && ui.is_visible(self.root) {
             ui.set_visible(self.root, false);
         }
+    }
+
+    /// Who the default browser is (`None`: not asked yet), whether a change is under way and
+    /// why the last one failed; the General page shows it.
+    pub fn set_default_browser(&mut self, view: DefaultBrowserView) {
+        self.default_browser = view;
     }
 
     pub fn set_memory_used(&mut self, used: Option<u64>) {
@@ -1894,6 +1957,20 @@ impl SettingsSheet {
                         tr("Gives Axion its icon in the taskbar and the application menu. Applies after restarting Axion."),
                     );
                 }
+                if cfg!(target_os = "linux") {
+                    let row_node = self.row(ui, tr("Default browser"));
+                    let view = self.default_browser.clone();
+                    if view.state.as_ref().is_some_and(DefaultState::can_change) && !view.busy {
+                        glass_pill(ui, row_node, tr("Make Default"), SettingsAction::MakeDefaultBrowser);
+                    }
+                    self.note(ui, &view.status());
+                    self.control(ui, config, Setting::DefaultBrowserHint);
+                }
+                self.control(ui, config, Setting::SingleInstance);
+                self.note(
+                    ui,
+                    tr("A link opened from another app, or axion URL, adds a tab to the open window instead of starting a second browser. Applies after restarting Axion."),
+                );
                 let row_node = self.row(ui, tr("Welcome tour"));
                 glass_pill(ui, row_node, tr("Show Welcome Tour"), SettingsAction::ShowWelcomeTour);
                 self.control(ui, config, Setting::HomeButton);
@@ -3717,6 +3794,7 @@ impl SettingsSheet {
                 Outcome::Changed
             }
             SettingsAction::ShowWelcomeTour => return Outcome::ShowWelcomeTour,
+            SettingsAction::MakeDefaultBrowser => return Outcome::MakeDefaultBrowser,
             SettingsAction::IconWeight(i) => {
                 set_icon_weight(config, i);
                 Outcome::Changed
@@ -4439,6 +4517,17 @@ pub fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_browser_button_has_an_id_of_its_own() {
+        let id = SettingsAction::MakeDefaultBrowser.id();
+        assert_eq!(SettingsAction::from_id(id), Some(SettingsAction::MakeDefaultBrowser));
+        // No other id in the whole range maps to it, and the id maps to nothing else.
+        let hits = (0..20_000)
+            .filter(|&n| SettingsAction::from_id(ActionId(n)) == Some(SettingsAction::MakeDefaultBrowser));
+        assert_eq!(hits.count(), 1);
+        assert_ne!(id, SettingsAction::ShowWelcomeTour.id());
+    }
 
     #[test]
     fn sliders_round_trip_through_config() {

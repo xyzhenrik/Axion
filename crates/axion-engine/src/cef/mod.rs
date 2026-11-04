@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use cef::*;
 
 pub use gpu::render_node_for;
-pub use schedule::Waker;
+pub use schedule::{RelaunchHandler, Waker};
 pub use stats::Counters;
 
 use crate::{
@@ -265,6 +265,9 @@ pub struct CefOptions {
     pub extra_switches: Vec<(String, Option<String>)>,
     /// Wakes the embedder's event loop when Chromium has work (see [`Engine::next_pump`]).
     pub waker: Option<Waker>,
+    /// Takes the URLs of a launch that Chromium's process singleton handed over (instead of
+    /// Chromium opening a window of its own).
+    pub on_relaunch: Option<RelaunchHandler>,
 }
 
 struct ViewState {
@@ -316,6 +319,7 @@ impl CefEngine {
         let args = args::Args::new();
         let schedule = Arc::new(PumpSchedule::default());
         schedule.set_waker(options.waker.clone());
+        schedule.set_relaunch(options.on_relaunch.clone());
         let mut app = AppBuilder::new(ProcessFlags {
             no_sandbox: options.no_sandbox,
             render_node: options.render_node.clone(),

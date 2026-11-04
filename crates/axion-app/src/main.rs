@@ -19,6 +19,7 @@ mod browser;
 mod chrome;
 mod circuit_popover;
 mod context_menu;
+mod default_browser;
 mod desktop;
 mod desktop_integration;
 mod downloads;
@@ -42,6 +43,7 @@ mod history;
 mod home;
 mod import;
 mod input;
+mod instance;
 mod lifecycle;
 mod link_preview;
 mod locale;
@@ -104,7 +106,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
-use browser::{Browser, CaptureDone, Options};
+use browser::{Browser, CaptureDone, Forwarded, Options};
 
 /// How long `--capture` waits for the page to load before saving.
 const CAPTURE_AFTER: Duration = Duration::from_secs(8);
@@ -129,7 +131,7 @@ fn main() -> Result<()> {
         std::process::exit(check_update_cli(&args));
     }
     let mut options = Options {
-        urls: args.iter().filter(|a| !a.starts_with("--")).cloned().collect(),
+        urls: instance::urls_from_args(&args, &std::env::current_dir().unwrap_or_default()),
         overview: args.iter().any(|a| a == "--overview"),
         address: args.iter().find_map(|a| a.strip_prefix("--address=")).map(str::to_owned),
         open: args.iter().find_map(|a| a.strip_prefix("--open=")).map(str::to_owned),
@@ -193,7 +195,9 @@ fn main() -> Result<()> {
         relaunch.spawn()?;
     }
     match app.error {
-        Some(e) if e.downcast_ref::<CaptureDone>().is_none() => Err(e),
+        Some(e) if e.downcast_ref::<CaptureDone>().is_none() && e.downcast_ref::<Forwarded>().is_none() => {
+            Err(e)
+        }
         _ => Ok(()),
     }
 }

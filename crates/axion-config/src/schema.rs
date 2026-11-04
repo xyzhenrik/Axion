@@ -122,6 +122,13 @@ pub struct General {
     /// icon set in `$XDG_DATA_HOME`), which is what gives the window its icon on Wayland.
     /// Off: Axion leaves the desktop entry alone (and removes nothing).
     pub desktop_integration: bool,
+    /// Linux: at start, offer to make Axion the default browser when it is not (a toast with
+    /// "Make default" and "Don't ask again"). "Don't ask again" turns this off.
+    pub default_browser_hint: bool,
+    /// A second `axion` launch (a link opened from another app, `axion URL`) hands its URLs to
+    /// the running window of the same account and exits, instead of starting a second browser
+    /// on the same profile. Off: every launch tries to start its own browser.
+    pub single_instance: bool,
 }
 
 /// Which language the interface is shown in.
@@ -175,6 +182,8 @@ impl Default for General {
             language: UiLanguage::System,
             onboarding_done: false,
             desktop_integration: true,
+            default_browser_hint: true,
+            single_instance: true,
         }
     }
 }
@@ -793,6 +802,14 @@ pub struct Motion {
     /// glass button at least this long (seconds) before it springs back, so a tap that is over
     /// within one frame still animates. 0 turns the minimum off.
     pub tap_hold: f32,
+    /// A popover, menu or sheet that opens advances at most this long (milliseconds) per frame
+    /// for its first `open_guard_frames` frames. Building the new surface (text, glass) takes
+    /// time that would otherwise count as animation time: the first step then leaps ahead and
+    /// the glass seems to appear at its final place before it grows out of its button. 0 turns
+    /// the guard off.
+    pub open_step_max_ms: f32,
+    /// How many frames after opening `open_step_max_ms` applies.
+    pub open_guard_frames: u32,
 }
 
 impl Default for Motion {
@@ -812,6 +829,8 @@ impl Default for Motion {
             switch: SpringSpec { response: 0.18, damping: 0.80 },
             speed: 1.0,
             tap_hold: 0.09,
+            open_step_max_ms: 20.0,
+            open_guard_frames: 4,
         }
     }
 }

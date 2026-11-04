@@ -95,6 +95,7 @@ use crate::zoom::{self, SiteZoom};
 mod capture;
 mod circuit;
 mod context;
+mod default_browser;
 mod ext_popup;
 mod import;
 mod network;
@@ -456,6 +457,12 @@ pub struct Browser {
     paths: ConfigPaths,
     /// The account's profile directory (`window.toml` lives in it).
     profile_dir: PathBuf,
+    /// Launches of Axion on this profile that were handed to this window (`crate::instance`).
+    launches: Option<crate::instance::Inbox>,
+    /// Who the system's default browser is, and the hint to change it.
+    default_browser: default_browser::DefaultBrowser,
+    /// What the toast's buttons do.
+    toast_kind: default_browser::ToastKind,
     /// What `window.toml` holds (or will hold once `window_state_dirty` is due).
     window_state: axion_config::WindowState,
     window_state_dirty: Option<Instant>,
@@ -591,6 +598,25 @@ impl Browser {
             tracing::error!("{e}; using defaults");
             Config::default()
         });
+        // One Axion per account: a launch on an open profile hands its URLs over and ends here,
+        // before it makes a window (and before Chromium could answer with a window of its own).
+        let single = if config.general.single_instance {
+            let request = crate::instance::Request { urls: options.urls.clone(), focus: focus_allowed() };
+            match crate::instance::claim(&account_paths.profile, &request, options.waker.clone()) {
+                Ok(crate::instance::Claim::Primary(inbox)) => Some(inbox),
+                Ok(crate::instance::Claim::Forwarded) => {
+                    tracing::info!("Axion is already open on this profile; the URLs went to its window");
+                    return Err(Forwarded.into());
+                }
+                Err(e) => {
+                    tracing::warn!("single instance unavailable: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let hint_wanted = config.general.default_browser_hint && options.capture.is_none();
         crate::locale::apply(config.general.language);
         let start_language = axion_i18n::language();
         let keymap = load_keymap(&paths);
@@ -753,6 +779,12 @@ impl Browser {
                 load_extensions: extensions.load_dirs(),
                 block_web_store: !config.extensions.web_store,
                 waker: options.waker.clone(),
+                on_relaunch: single.as_ref().map(|inbox| {
+                    let push = inbox.pusher(options.waker.clone());
+                    axion_engine::cef::RelaunchHandler::new(move |urls| {
+                        push(crate::instance::Request { urls, focus: true });
+                    })
+                }),
             },
         )?;
         engine.set_request_policy(Some(shields.policy()));
@@ -1009,6 +1041,9 @@ impl Browser {
             keymap,
             paths,
             profile_dir: profile.clone(),
+            launches: single,
+            default_browser: default_browser::DefaultBrowser::new(hint_wanted),
+            toast_kind: default_browser::ToastKind::default(),
             window_state: saved_window.clone(),
             window_state_dirty: None,
             shutdown_guard: None,
@@ -1091,6 +1126,7 @@ impl Browser {
         browser.sync_frame_rate();
         browser.update_layout();
         browser.start_onboarding(&options, accounts_file, config_file);
+        browser.start_default_browser_check();
         browser.playlist_start();
         browser.engine.set_color_scheme(browser.dark);
         if restore && saved_window.fullscreen {
@@ -1454,6 +1490,8 @@ impl Browser {
                     self.sync_about();
                     self.settings.set_memory_used(self.memory.used());
                     self.settings.set_site_permissions(self.permissions.model.remembered());
+                    self.settings.set_default_browser(self.default_browser_view());
+                    self.start_default_browser_check();
                     let window = self.logical_size();
                     // Out of what it was opened from (the address field by default).
                     let fallback = self.address_origin();
@@ -4063,9 +4101,9 @@ impl Browser {
                     }
                     self.update_alert_action(action);
                 }
-                UiEvent::Clicked { action, .. } if self.toast.owns(action) => {
-                    self.toast.dismiss(&mut self.ui, &self.config);
-                    self.open_about(false);
+                UiEvent::Clicked { action, .. } if self.toast.owns(action) => self.toast_primary(),
+                UiEvent::Clicked { action, .. } if self.toast.owns_secondary(action) => {
+                    self.toast_secondary()
                 }
                 UiEvent::Clicked { action, .. } if self.account_menu.owns(action) => {
                     if let Some(click) = self.account_menu.click(&mut self.ui, &self.config, action) {
@@ -4341,6 +4379,8 @@ impl Browser {
     pub fn pump(&mut self) {
         let _op = crate::stall::op("pump");
         let started = Instant::now();
+        self.open_forwarded_launches();
+        self.poll_default_browser();
         self.pump_engine();
         self.poll_capture();
         let page_frames = self.engine.counters().page_frames;
@@ -4365,6 +4405,28 @@ impl Browser {
         ];
         for recorder in recorders.into_iter().flatten() {
             recorder.wakeup(took);
+        }
+    }
+
+    /// Opens what other launches of Axion on this profile handed over: their URLs in new tabs
+    /// (the first one shown), and the window brought to the front (not in test runs).
+    fn open_forwarded_launches(&mut self) {
+        let Some(inbox) = &self.launches else { return };
+        let requests = inbox.drain();
+        for request in requests {
+            let mut first = true;
+            for url in request.urls.iter().filter(|u| !u.trim().is_empty()) {
+                tracing::info!(%url, "opening a URL handed over by another launch");
+                if let Err(e) = self.open_tab(url, first) {
+                    tracing::warn!(%url, "could not open the URL of another launch: {e:#}");
+                }
+                first = false;
+            }
+            if request.focus && focus_allowed() {
+                self.window.set_minimized(false);
+                self.window.focus_window();
+            }
+            self.request_redraw();
         }
     }
 
@@ -4796,6 +4858,7 @@ impl Browser {
             }
             Outcome::Close => self.close_settings(),
             Outcome::ShowWelcomeTour => self.open_onboarding(0),
+            Outcome::MakeDefaultBrowser => self.make_default_browser(),
             Outcome::CheckForUpdates => {
                 self.updater.check(&self.config, true);
                 self.refresh_about();
@@ -5427,6 +5490,7 @@ impl Browser {
                         self.config_dirty_since.get_or_insert(Instant::now());
                         let text =
                             tr_fmt!("Axion {version} is available", version = release.version.to_string());
+                        self.toast_kind = default_browser::ToastKind::Update;
                         self.show_toast_with_action(Icon::Download, &text, tr("Update"));
                     }
                 }
@@ -7040,6 +7104,8 @@ impl Browser {
                 "share" => self.copy_link(),
                 // Capture aid: a toast without needing the clipboard.
                 "toast" => self.show_toast(Icon::Check, tr("Link copied")),
+                // Capture aid: the startup hint to make Axion the default browser.
+                "default-hint" => self.show_default_browser_hint_now(),
                 query if query.starts_with("panel-search:") => {
                     let field = self.chrome.panel_search_field();
                     self.ui.set_field_text(field, &query["panel-search:".len()..]);
@@ -8566,6 +8632,24 @@ impl Drop for Browser {
 
 #[derive(Debug)]
 pub struct CaptureDone;
+
+/// Whether Axion may take the focus (test runs set `AXION_NO_FOCUS`).
+fn focus_allowed() -> bool {
+    std::env::var_os("AXION_NO_FOCUS").is_none()
+}
+
+/// This launch handed its URLs to the Axion that already has the profile open (see
+/// `crate::instance`) and has nothing left to do.
+#[derive(Debug)]
+pub struct Forwarded;
+
+impl std::fmt::Display for Forwarded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("handed over to the running Axion")
+    }
+}
+
+impl std::error::Error for Forwarded {}
 
 impl std::fmt::Display for CaptureDone {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
