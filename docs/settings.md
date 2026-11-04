@@ -100,6 +100,8 @@ How Axion looks. See [Appearance and Liquid Glass](features/appearance-and-glass
 |---|---|---|---|
 | **Appearance** | **Automatic** follows your desktop's light or dark preference, or force **Light** or **Dark**. | Automatic | `appearance.theme` (`auto`, `light`, `dark`) |
 | **Glass** | **Liquid Glass** is the full glass look. **Flat** uses solid cards without refraction, blur or bounce. It is much lighter on weak graphics hardware. | Liquid Glass | `glass.style` (`liquid`, `flat`) |
+| **Window frame** | **Axion** draws the window itself: no title bar, the red, yellow and green window buttons sit in the toolbar (in the sidebar's header while the sidebar is open) and the window has rounded corners. **System** keeps the desktop's title bar and frame (use it if the window misbehaves on your compositor). | Axion | `window.decorations` (`custom`, `system`) |
+| **Window buttons** | With **Axion** as the window frame: the buttons sit on the **Left** or **Right** end of the toolbar. Never shown in fullscreen. | Left | `window.controls_side` (`left`, `right`) |
 | **Accent colour** | The colour of selections, focus rings and primary buttons. Six swatches. | Blue | `appearance.accent` (a colour such as `"#2E6BFF"`) |
 | **Icon weight** | The line thickness of icons: **Regular**, **Medium** or **Bold**. | Medium | `appearance.icon_stroke_light`, `appearance.icon_stroke_dark` |
 | **Favicon contrast** (config only) | What happens to website icons that would be hard to see on the current bar (for example a black icon on the dark bar): `invert` flips single-colour icons, `backing` puts them on a light or dark tile, `off` leaves them as they are. | `invert` | `appearance.favicon_contrast` |

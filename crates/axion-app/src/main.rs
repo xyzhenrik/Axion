@@ -93,6 +93,7 @@ mod typing_probe;
 mod update;
 mod update_alert;
 mod url;
+mod window_frame;
 mod window_resize;
 mod zoom;
 

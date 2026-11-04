@@ -96,6 +96,7 @@ mod capture;
 mod circuit;
 mod context;
 mod ext_popup;
+mod frame;
 mod import;
 mod network;
 mod network_popup;
@@ -476,6 +477,8 @@ pub struct Browser {
     pointer_captured_by_ui: bool,
     pointer_on_page: bool,
     clicks: ClickCounter,
+    /// The window's own frame: focus, corners, the toolbar as a title bar.
+    frame: frame::FrameState,
     page_cursor: CursorKind,
     clipboard: Option<arboard::Clipboard>,
     tabs_changed: bool,
@@ -617,6 +620,10 @@ impl Browser {
             .with_window_icon(crate::app_icon::window_icon())
             .with_inner_size(winit::dpi::LogicalSize::<f64>::from(size))
             .with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 360.0))
+            // Custom decorations: no title bar from the desktop (Axion draws the window buttons)
+            // and a transparent window, so the corners can be rounded.
+            .with_decorations(config.window.decorations != axion_config::WindowDecorations::Custom)
+            .with_transparent(config.window.decorations == axion_config::WindowDecorations::Custom)
             .with_maximized(options.maximized || (restore && saved_window.maximized))
             // Test runs (`--capture`, `AXION_NO_FOCUS=1`) must not steal the focus from the user.
             .with_active(options.capture.is_none() && std::env::var_os("AXION_NO_FOCUS").is_none());
@@ -649,6 +656,11 @@ impl Browser {
         // Pages arrive as 8-bit sRGB-encoded BGRA and the compositor blends in that space, so
         // the swapchain must not re-encode: prefer a non-sRGB format.
         let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
+        let (alpha_mode, surface_alpha) = frame::pick_alpha_mode(
+            &caps.alpha_modes,
+            config.window.decorations == axion_config::WindowDecorations::Custom,
+        );
+        tracing::info!(modes = ?caps.alpha_modes, chosen = ?alpha_mode, rounded = surface_alpha != axion_compositor::SurfaceAlpha::Opaque, "surface alpha");
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -656,7 +668,7 @@ impl Browser {
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
@@ -1023,6 +1035,7 @@ impl Browser {
             pointer_captured_by_ui: false,
             pointer_on_page: false,
             clicks: ClickCounter::default(),
+            frame: frame::FrameState::new(surface_alpha, options.capture.is_some()),
             page_cursor: CursorKind::Default,
             clipboard: arboard::Clipboard::new().inspect_err(|e| tracing::warn!("no clipboard: {e}")).ok(),
             tabs_changed: true,
@@ -1530,6 +1543,9 @@ impl Browser {
                 }
             }
             Action::Quit => self.quit_at = Some(Instant::now()),
+            Action::CloseWindow | Action::MinimizeWindow | Action::ToggleMaximize => {
+                self.window_action(action)
+            }
             Action::CommandPalette => {
                 if self.palette.is_open() {
                     self.close_palette();
@@ -4166,6 +4182,9 @@ impl Browser {
                     Some(ChromeAction::ToggleSidebar) => self.run(Action::ToggleSidebar),
                     Some(ChromeAction::Back) => self.run(Action::Back),
                     Some(ChromeAction::Forward) => self.run(Action::Forward),
+                    Some(ChromeAction::WindowClose) => self.run(Action::CloseWindow),
+                    Some(ChromeAction::WindowMinimize) => self.run(Action::MinimizeWindow),
+                    Some(ChromeAction::WindowZoom) => self.run(Action::ToggleMaximize),
                     Some(ChromeAction::Home) => {
                         let home = self.config.general.effective_homepage().to_owned();
                         self.navigate_to(home);
@@ -5669,6 +5688,7 @@ impl Browser {
                     self.apply_shields_config();
                     self.apply_network_config();
                     self.apply_theme();
+                    self.apply_frame_config();
                     self.update_layout();
                     self.sync_frame_rate();
                     self.tabs_changed = true;
@@ -6065,6 +6085,7 @@ impl Browser {
                 }
             }
             WindowEvent::Focused(focused) => {
+                self.frame_focus(focused);
                 if !focused {
                     // The button-up may go to another window: nothing stays held.
                     self.release_pointer_holds();
@@ -6150,6 +6171,11 @@ impl Browser {
     }
 
     fn update_cursor(&self) {
+        if let Some(icon) = self.pointer.and_then(|p| self.resize_cursor_at(p)) {
+            self.window.set_cursor_visible(true);
+            self.window.set_cursor(icon);
+            return;
+        }
         let popup_cursor = self.ext_popup_cursor();
         let icon = match self.ui.cursor() {
             _ if popup_cursor.is_some() => popup_cursor.and_then(input::cursor_icon),
@@ -6291,6 +6317,16 @@ impl Browser {
             return;
         };
         let view = self.active_view();
+        // The window's edges (resize) come before everything else; the toolbar's free space is
+        // checked once menus and popovers had their say (below).
+        if pressed
+            && button == winit::event::MouseButton::Left
+            && self.custom_frame()
+            && self.resize_edge_at(p).is_some()
+            && self.frame_press(button, p)
+        {
+            return;
+        }
         match button {
             winit::event::MouseButton::Back if pressed => return self.run(Action::Back),
             winit::event::MouseButton::Forward if pressed => return self.run(Action::Forward),
@@ -6351,6 +6387,14 @@ impl Browser {
         // Right and middle clicks on tabs and bookmarks (never a tab drag: that is the left
         // button's).
         if pressed && button != winit::event::MouseButton::Left && self.secondary_click(button, p) {
+            return;
+        }
+        // Free toolbar space: a drag moves the window, a double click maximizes it, a right
+        // click opens the system window menu (custom decorations).
+        if pressed
+            && matches!(button, winit::event::MouseButton::Left | winit::event::MouseButton::Right)
+            && self.frame_press(button, p)
+        {
             return;
         }
         if pressed
@@ -7374,6 +7418,9 @@ impl Browser {
                 // Capture aid: open the player's speed menu.
                 // Capture aid: scroll the page down by 600 px.
                 "toggle-sidebar" => self.run(Action::ToggleSidebar),
+                // Capture aids: the window buttons' look: "unfocused" / "focused", and the
+                // window counting as "window-maximized" / "window-restored".
+                aid if self.frame_capture_aid(aid) => {}
                 // Capture aid: F11, whole-page fullscreen (again to leave it).
                 // ("hover:X:0" then rests the pointer at the top edge: the bars come back.)
                 "presentation" | "fullscreen" => self.run(Action::ToggleFullscreen),
@@ -7939,6 +7986,7 @@ impl Browser {
         }
         let hovered = if self.tab_drag.is_dragging() { None } else { self.ui.hovered() };
         self.chrome.update_hover(&mut self.ui, hovered);
+        self.update_frame();
         self.update_tab_drag(dt);
         let started = Instant::now();
         self.pace_page_resizes(now);
@@ -8111,6 +8159,7 @@ impl Browser {
             let mut h = std::hash::DefaultHasher::new();
             scene.fingerprint().hash(&mut h);
             size.hash(&mut h);
+            self.frame.shape.to_bits().hash(&mut h);
             self.engine.counters().page_frames.hash(&mut h);
             h.finish()
         };
@@ -8680,6 +8729,9 @@ fn allowed_while_locked(action: Action) -> bool {
             | Action::OpenSettings
             | Action::ToggleFullscreen
             | Action::Quit
+            | Action::CloseWindow
+            | Action::MinimizeWindow
+            | Action::ToggleMaximize
     )
 }
 
@@ -8698,6 +8750,9 @@ fn keeps_playlist(action: Action) -> bool {
                 | Action::Lock
                 | Action::ToggleFullscreen
                 | Action::Quit
+                | Action::CloseWindow
+                | Action::MinimizeWindow
+                | Action::ToggleMaximize
         )
 }
 
