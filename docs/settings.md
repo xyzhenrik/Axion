@@ -532,6 +532,11 @@ appears when needed. See [Hardware acceleration](features/hardware-acceleration.
 The page also lists the graphics cards found (**In use**, **Also available**) and a **GPU status**
 block showing what is really active.
 
+Performance keys without a Settings control (`hardware.partial_page_uploads`,
+`ui.idle_check_interval_ms`, `ui.idle_frames_before_slowing`, `ui.max_site_icons_in_memory`,
+`home.top_sites_refresh_seconds`) are listed under
+[Handy keys that have no Settings page](configuration.md#handy-keys-that-have-no-settings-page).
+
 ## About & Updates
 
 Version information and updates. See [Updates](features/updates.md).

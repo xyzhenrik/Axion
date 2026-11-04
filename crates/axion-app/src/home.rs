@@ -264,8 +264,11 @@ pub struct HomePage {
     /// or the Shields total changing rebuilds the page's state but needn't read the history
     /// again (that scan took ~20 ms with a large history). Read again after
     /// `home.top_sites_refresh_seconds` or when the sites were edited.
-    top_sites: Option<(Instant, (u32, u32), (Vec<Site>, usize))>,
+    top_sites: Option<(Instant, (u32, u32), TopSites)>,
 }
+
+/// The top sites to show, and how many the user removed.
+type TopSites = (Vec<Site>, usize);
 
 impl HomePage {
     pub fn new(profile: &Path, favicons: Option<PathBuf>) -> Self {
@@ -509,7 +512,7 @@ impl HomePage {
 
     /// The top sites, read again only when the last reading is older than
     /// `home.top_sites_refresh_seconds` or was for other limits (see `top_sites` field).
-    fn cached_top_sites(&mut self, store: &Store, config: &Config, now: i64) -> (Vec<Site>, usize) {
+    fn cached_top_sites(&mut self, store: &Store, config: &Config, now: i64) -> TopSites {
         let home = &config.home;
         let key = (home.top_sites_count, home.top_sites_window_days);
         let fresh = Duration::from_secs_f32(home.top_sites_refresh_seconds.max(0.0));
@@ -960,7 +963,7 @@ fn page_translations() -> Value {
 fn state_json(
     icons_version: u64,
     config: &Config,
-    sites: Option<(Vec<Site>, usize)>,
+    sites: Option<TopSites>,
     blocked: u64,
     name: &str,
     private: bool,

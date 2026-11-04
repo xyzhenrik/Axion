@@ -149,6 +149,11 @@ ask_where_to_save = false
 | `permissions.screen_picker_thumbnail_width` | Width of the picker's thumbnails in logical pixels. | `160` |
 | `permissions.stop_reload_after_ms` | After **Stop** in the recording popover, a page that still records this long after is reloaded. | `1500` |
 | `ui.tooltip_delay_ms` | How long before a tooltip appears. | `700` |
+| `ui.idle_frames_before_slowing` | After this many unchanged frames in a row the window checks for changes less often (input, page frames and page events still draw at once). | `30` |
+| `ui.idle_check_interval_ms` | How often an idle window then checks for changes, in milliseconds (0: at every display refresh). | `50` |
+| `ui.max_site_icons_in_memory` | Most site icons kept in memory; the least recently shown ones that are cached on disk are read again when needed (0: no limit). | `512` |
+| `home.top_sites_refresh_seconds` | The start page reads its top sites from the history at most this often (editing them reads them at once). | `30` |
+| `hardware.partial_page_uploads` | Software page frames upload only the parts of the page that changed. Off: the whole frame every time. | `true` |
 | `toast.duration_seconds` | How long short notices stay. | `2.0` |
 | `print.paper` | Paper of **Save as PDF**: `a4`, `a3`, `a5`, `letter`, `legal`. The dialog keeps its last choices in `print.*`. | `a4` |
 | `print.landscape`, `print.backgrounds`, `print.header_footer` | Landscape, background colours and images, title / address / page numbers. | `false` |
