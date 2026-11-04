@@ -16,6 +16,9 @@ pub(super) struct FrameState {
     /// Capture aid: the window counts as unfocused / maximized whatever it really is.
     pub focus_override: Option<bool>,
     pub maximized_override: Option<bool>,
+    /// Capture aid: the pointer counts as over / holding this window button.
+    pub hover_override: Option<window_frame::Light>,
+    pub press_override: Option<window_frame::Light>,
     /// Presses on the toolbar's free space, to tell a double click (maximize) from a drag.
     pub clicks: ClickCounter,
     /// How the surface treats alpha: anything but `Opaque` can show transparent corners.
@@ -32,6 +35,8 @@ impl FrameState {
             // unless an aid (`unfocused`) says otherwise.
             focus_override: capturing.then_some(true),
             maximized_override: None,
+            hover_override: None,
+            press_override: None,
             clicks: ClickCounter::default(),
             alpha,
             shape: 0.0,
@@ -156,6 +161,8 @@ impl Browser {
         let focused = self.frame.focus_override.unwrap_or(self.frame.focused);
         let hovered = if self.tab_drag.is_dragging() { None } else { self.ui.hovered() };
         let pressed = self.ui.pressed_action();
+        let hovered = self.frame.hover_override.and_then(|l| self.chrome.light_node(l)).or(hovered);
+        let pressed = self.frame.press_override.and_then(|l| self.chrome.light_node(l)).or(pressed);
         self.chrome.update_lights(&mut self.ui, hovered, pressed, focused, maximized);
         let radius = window_frame::window_corner_radius(
             &self.config,
@@ -178,13 +185,24 @@ impl Browser {
     }
 
     /// Capture aids: `unfocused` / `focused` and `window-maximized` / `window-restored` set the
-    /// window buttons' look without touching the window.
+    /// window buttons' look without touching the window; `lights-hover` and `lights-press-close|minimize|zoom`
+    /// put the pointer on the buttons.
     pub(super) fn frame_capture_aid(&mut self, what: &str) -> bool {
         match what {
             "unfocused" => self.frame.focus_override = Some(false),
             "focused" => self.frame.focus_override = Some(true),
             "window-maximized" => self.frame.maximized_override = Some(true),
             "window-restored" => self.frame.maximized_override = Some(false),
+            "lights-hover" => self.frame.hover_override = Some(window_frame::Light::Close),
+            "lights-press-close" | "lights-press-minimize" | "lights-press-zoom" => {
+                let light = match what {
+                    "lights-press-close" => window_frame::Light::Close,
+                    "lights-press-minimize" => window_frame::Light::Minimize,
+                    _ => window_frame::Light::Zoom,
+                };
+                self.frame.hover_override = Some(light);
+                self.frame.press_override = Some(light);
+            }
             _ => return false,
         }
         true

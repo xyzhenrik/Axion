@@ -653,6 +653,21 @@ pub enum GlassStyle {
     Flat,
 }
 
+/// What a glass sheet (History, Settings, Passwords…) does while a popup (a context menu, a
+/// dropdown, a confirm dialog) stands over it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SheetUnderPopup {
+    /// The sheet is dimmed a little and stays glass.
+    Dim,
+    /// The sheet turns into a calm solid card (frosted, opaque, no refraction) so the popup is
+    /// the only live glass on screen, and back into glass when the popup closes.
+    #[default]
+    Solid,
+    /// The sheet stays as it is (glass under glass).
+    Keep,
+}
+
 /// The damping ratio flat mode raises every spring to: critically damped, so nothing bounces.
 pub const FLAT_DAMPING: f32 = 1.0;
 
@@ -690,6 +705,15 @@ pub struct Glass {
     /// row of controls, as the Playlist's speed and sleep menus) and that button. Such a menu
     /// is its own card: no bridge, and its glass never flows into the button's.
     pub menu_anchor_gap: f32,
+    /// What a glass sheet does while a popup stands over it (see [`SheetUnderPopup`]). Flat
+    /// mode is solid already and ignores it.
+    pub sheet_under_popup: SheetUnderPopup,
+    /// How long (ms) a sheet takes to turn solid (or dim) under a popup and back. The change
+    /// is a critically damped spring of about this duration; Reduce Motion makes it instant.
+    pub sheet_cover_ms: f32,
+    /// Opacity (0-1) of the black veil over a sheet under a popup when `sheet_under_popup` is
+    /// `dim`.
+    pub sheet_dim_opacity: f32,
     /// Opacity (0–1) of the soft plate under a menu's rows: menus carry text, so their glass is
     /// made denser than thick glass in the middle while the edges still refract.
     pub menu_plate_opacity: f32,
@@ -795,6 +819,9 @@ impl Default for Glass {
             rubber_band_c: 0.55,
             popover_bridge_fillet: 30.0,
             menu_anchor_gap: 10.0,
+            sheet_under_popup: SheetUnderPopup::Solid,
+            sheet_cover_ms: 150.0,
+            sheet_dim_opacity: 0.25,
             menu_plate_opacity: 0.6,
             button_opacity: 0.04,
             button_shadow: 0.0,
@@ -901,6 +928,25 @@ pub struct SpringSpec {
     pub damping: f32,
 }
 
+/// A liquid-glass preset: a spring plus the most its edges may pass their target.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiquidSpec {
+    /// Period of the spring in seconds (about the time the shape takes to arrive).
+    pub response: f32,
+    /// Damping ratio: 1 and above arrive without overshoot, below 1 overshoots once.
+    pub damping: f32,
+    /// Hard cap on the overshoot, as a share of the distance an edge travels (0 = none). The
+    /// damping already stays under it; the cap guards redirected or interrupted motion.
+    pub overshoot: f32,
+}
+
+impl LiquidSpec {
+    pub fn spring(&self) -> SpringSpec {
+        SpringSpec { response: self.response, damping: self.damping }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Motion {
@@ -913,17 +959,41 @@ pub struct Motion {
     /// Apple `interactiveSpring` (response 0.15, dampingFraction 0.86): following the pointer
     /// while dragging.
     pub interactive: SpringSpec,
-    /// Glass merge and split, popover drip.
+    /// The press swell of glass (the damping of a pressed button's spring).
     pub liquid: SpringSpec,
-    /// A closing popover or sheet draining back into the glass it came from: its far edge
-    /// and sides (the body retracting toward its anchor). Underdamped, so the body shoots
-    /// into the glass's rim and recoils out once before it is absorbed.
+    /// A sheet (Settings, History, Passwords) flowing out of the glass it was opened from: one
+    /// gentle approach, overshoot at most 2-3 %.
+    pub liquid_open: LiquidSpec,
+    /// A sheet draining back into its origin: quicker than opening, no overshoot.
+    pub liquid_close: LiquidSpec,
+    /// A popover or menu flowing out of its button (or the pointer).
+    pub liquid_small: LiquidSpec,
+    /// A popover or menu draining back: quicker than opening, no overshoot.
+    pub liquid_small_close: LiquidSpec,
+    /// Closing: the neck (the edge facing the origin) sinks into the origin's glass on a spring
+    /// this much quicker (its response times this, 0-1), so the body never detaches.
+    pub liquid_neck_lead: f32,
+    /// Hard clamp: a flowing surface never passes its target frame by more than this many
+    /// logical px, whatever the preset's overshoot share allows.
+    pub max_overshoot_px: f32,
+    /// Reduce Motion and flat mode: the period of the short fade a surface appears and leaves
+    /// with (seconds, critically damped).
+    pub reduce_response: f32,
+    /// Reduce Motion and flat mode: a surface fades in at this share of its size and grows to
+    /// full size (also the smallest its text is ever drawn at while it appears).
+    pub fade_scale_from: f32,
+    /// Content on a flowing surface shows once the surface has grown to this share of its
+    /// size (see `content_reveal_to`), so text is never drawn much smaller than it is.
+    pub content_reveal_from: f32,
+    /// … and fully from this share on.
+    pub content_reveal_to: f32,
+    /// Deprecated and ignored (kept so old config files still load): see `liquid_close`.
     pub drain: SpringSpec,
-    /// … and its near edge (the neck sinking into the anchor's glass, ahead of the body).
+    /// Deprecated and ignored: see `liquid_neck_lead`.
     pub drain_neck: SpringSpec,
-    /// The last drop, after the recoil, flowing all the way into the anchor's glass.
+    /// Deprecated and ignored.
     pub drain_absorb: SpringSpec,
-    /// Size of the drop left at the anchor's rim when the recoil ends (logical px).
+    /// Deprecated and ignored.
     pub drain_drop: f32,
     /// Overview zoom, scroll hand-off.
     pub fling: SpringSpec,
@@ -957,6 +1027,16 @@ impl Default for Motion {
             bouncy: SpringSpec { response: 0.50, damping: 0.70 },
             interactive: SpringSpec { response: 0.15, damping: 0.86 },
             liquid: SpringSpec { response: 0.50, damping: 0.62 },
+            liquid_open: LiquidSpec { response: 0.30, damping: 0.78, overshoot: 0.03 },
+            liquid_close: LiquidSpec { response: 0.20, damping: 1.0, overshoot: 0.0 },
+            liquid_small: LiquidSpec { response: 0.23, damping: 0.80, overshoot: 0.03 },
+            liquid_small_close: LiquidSpec { response: 0.15, damping: 1.0, overshoot: 0.0 },
+            liquid_neck_lead: 0.7,
+            max_overshoot_px: 8.0,
+            reduce_response: 0.16,
+            fade_scale_from: 0.96,
+            content_reveal_from: 0.8,
+            content_reveal_to: 0.96,
             drain: SpringSpec { response: 0.42, damping: 0.55 },
             drain_neck: SpringSpec { response: 0.34, damping: 1.00 },
             drain_absorb: SpringSpec { response: 0.20, damping: 1.00 },
@@ -1058,6 +1138,10 @@ pub struct Layout {
     pub window_corner_radius: f32,
     /// Diameter of Axion's own window buttons (close, minimize, zoom), logical px.
     pub traffic_light_size: f32,
+    /// A window button's glyph (x, -, zoom) as a share of its diameter.
+    pub traffic_light_glyph: f32,
+    /// Width of the slightly darker ring around each window button, logical px (0: none).
+    pub traffic_light_ring: f32,
     /// Gap between two of the window buttons.
     pub traffic_light_gap: f32,
     /// Gap between the window buttons and the toolbar group next to them.
@@ -1134,7 +1218,9 @@ impl Default for Layout {
             page_corner_radius: 10.0,
             page_margin: 8.0,
             window_corner_radius: 14.0,
-            traffic_light_size: 14.0,
+            traffic_light_size: 16.0,
+            traffic_light_glyph: 0.72,
+            traffic_light_ring: 1.0,
             traffic_light_gap: 8.0,
             traffic_light_margin: 14.0,
             tab_bar: TabBarStyle::Separate,
@@ -1701,6 +1787,15 @@ pub struct WindowBehavior {
     /// With `decorations = "custom"`: width (logical px) of the strip along the window's edges
     /// that resizes it when dragged (the corners count double).
     pub resize_border_px: f32,
+    /// With `decorations = "custom"`: the flat colours of the window buttons (never glass).
+    pub light_close: Color,
+    pub light_minimize: Color,
+    pub light_zoom: Color,
+    /// The buttons of a window that is not in front (until the pointer is over them).
+    pub light_unfocused: Color,
+    /// The glyph (x, -, arrows) on the buttons while the pointer is over them: this shade
+    /// multiplied with each button's colour (a dark version of it); its alpha is kept.
+    pub light_glyph: Color,
 }
 
 /// Who draws the window's frame.
@@ -1736,6 +1831,11 @@ impl Default for WindowBehavior {
             decorations: WindowDecorations::Custom,
             controls_side: ControlsSide::Left,
             resize_border_px: 6.0,
+            light_close: Color::rgb(0xFF5F57),
+            light_minimize: Color::rgb(0xFEBC2E),
+            light_zoom: Color::rgb(0x28C840),
+            light_unfocused: Color::rgb(0x9A9A9F),
+            light_glyph: Color::rgb(0x707070),
         }
     }
 }
@@ -3190,6 +3290,23 @@ mod glass_style_tests {
         let c: Config = toml::from_str("[glass]\nstyle = \"liquid\"").unwrap();
         assert_eq!(c.glass.style, GlassStyle::Liquid);
         assert!(toml::from_str::<Config>("[glass]\nstyle = \"jelly\"").is_err());
+    }
+
+    #[test]
+    fn a_sheet_turns_solid_under_a_popup_by_default_and_the_key_round_trips() {
+        let glass = Glass::default();
+        assert_eq!(glass.sheet_under_popup, SheetUnderPopup::Solid);
+        assert_eq!(glass.sheet_cover_ms, 150.0);
+        for (text, want) in [
+            ("dim", SheetUnderPopup::Dim),
+            ("solid", SheetUnderPopup::Solid),
+            ("keep", SheetUnderPopup::Keep),
+        ] {
+            let c: Config = toml::from_str(&format!("[glass]\nsheet_under_popup = \"{text}\"")).unwrap();
+            assert_eq!(c.glass.sheet_under_popup, want);
+            assert!(toml::to_string(&c).unwrap().contains(&format!("sheet_under_popup = \"{text}\"")));
+        }
+        assert!(toml::from_str::<Config>("[glass]\nsheet_under_popup = \"frosted\"").is_err());
     }
 
     #[test]

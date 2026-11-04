@@ -7575,6 +7575,8 @@ impl Browser {
                     self.handle_ui_events(events);
                 }
                 "close-popups" => self.close_popups(),
+                // Capture aid: closes the context menus only (a sheet under them stays open).
+                "context-close" => self.context_menus.close(&mut self.ui, &self.config),
                 "shields" => self.toggle_shields_popover(),
                 // Test aids: answer the permission prompt, open the recording indicator's
                 // popover and stop everything the tab records.
@@ -8982,6 +8984,7 @@ impl Browser {
         }
         let anchor = self.chrome.address_frame(&self.ui);
         let newest = self.suggest_generation;
+        self.suggestions.flush_pending(&mut self.ui, &self.config, anchor, &self.favicons);
         for answer in answers.unwrap_or_default().into_iter().filter(|a| a.generation == newest) {
             let (ui, config, favicons) = (&mut self.ui, &self.config, &self.favicons);
             self.suggestions.set_items(ui, config, &answer.text, answer.items, anchor, favicons);

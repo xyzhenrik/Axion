@@ -220,8 +220,35 @@ pub struct Widget {
     pub tooltip: Option<Tooltip>,
     /// The pointer passes through this widget and everything inside it (a tab that is closing).
     pub passthrough: bool,
+    /// This widget is a popup layer (a menu, a popover, a dropdown, a dialog): while it is open
+    /// it covers the glass sheets painted before it (see [`Widget::popup_cover`]). Toasts and
+    /// tooltips are not popups.
+    pub popup: Popup,
+    /// A glass sheet (History, Settings…): while a popup is open over it, it turns into a calm
+    /// solid card (or dims, or stays, by `glass.sheet_under_popup`), and so does the glass
+    /// inside it.
+    pub popup_cover: bool,
+    /// Pressing it leaves the keyboard focus where it is (a row of the list under a text field:
+    /// the field keeps its caret and the list, which closes with the focus, stays until the click
+    /// is done).
+    pub keeps_focus: bool,
+    /// Floats above the bars (a popover's card): never part of the window's own chrome, so a press
+    /// on it is never the start of a window move.
+    pub overlay: bool,
     /// Absolute frame in logical pixels, updated by layout.
     pub(crate) frame: Rect,
+}
+
+/// Whether a widget is a popup layer, and if so whether it still counts as open.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Popup {
+    /// Not a popup.
+    #[default]
+    None,
+    /// A popup: it covers the sheets below it while it is shown.
+    Open,
+    /// A popup on its way out: shown still, but the sheets below it already come back.
+    Closing,
 }
 
 impl Widget {
@@ -250,6 +277,10 @@ impl Widget {
             track: None,
             tooltip: None,
             passthrough: false,
+            popup: Popup::None,
+            popup_cover: false,
+            keeps_focus: false,
+            overlay: false,
             frame: Rect::default(),
         }
     }
@@ -337,6 +368,18 @@ impl Widget {
         self
     }
 
+    /// See [`Widget::popup`].
+    pub fn as_popup(mut self) -> Self {
+        self.popup = Popup::Open;
+        self
+    }
+
+    /// See [`Widget::popup_cover`].
+    pub fn with_popup_cover(mut self) -> Self {
+        self.popup_cover = true;
+        self
+    }
+
     /// See [`Widget::button_tint`].
     pub fn with_button_tint(mut self) -> Self {
         self.button_tint = true;
@@ -364,6 +407,18 @@ impl Widget {
     /// See [`Widget::isolated`].
     pub fn with_isolated(mut self) -> Self {
         self.isolated = true;
+        self
+    }
+
+    /// See [`Widget::overlay`].
+    pub fn as_overlay(mut self) -> Self {
+        self.overlay = true;
+        self
+    }
+
+    /// See [`Widget::keeps_focus`].
+    pub fn keeping_focus(mut self) -> Self {
+        self.keeps_focus = true;
         self
     }
 

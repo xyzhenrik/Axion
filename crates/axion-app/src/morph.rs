@@ -27,7 +27,7 @@ use crate::drip::{Drip, Phase};
 /// own: the control that was clicked on it is, as a capsule.
 const ORIGIN_MAX: f32 = 120.0;
 /// Below this growth (0 at the origin, 1 open) the drop is drawn in the origin's plane, merged
-/// with the origin glass. The content shows only well above it (from 0.55 of the sheet's
+/// with the origin glass. The content shows only well above it (from `motion.content_reveal_from` of the sheet's
 /// size, see axion-ui), so the swap only ever trades bare glass for bare glass; it is low so
 /// the drop is small when its glass changes from the bar's level to the sheet's thicker one.
 const HANDOFF: f32 = 0.35;
@@ -83,7 +83,7 @@ impl SheetMorph {
             dim,
             dim_in: true,
             radius,
-            drip: Drip::new(),
+            drip: Drip::sheet(),
             origin: None,
             join: None,
             bridge_depth: 0.0,
@@ -237,7 +237,7 @@ impl SheetMorph {
         let frame = self.drip.frame();
         let growth = self.drip.growth();
         // Flat mode has no drop to hand off: the sheet itself fades in and out.
-        let near = phase != Phase::Open && growth < HANDOFF && current.is_some() && !ui.theme().flat();
+        let near = phase != Phase::Open && growth < HANDOFF && current.is_some() && !self.drip.fades();
         ui.claim_space(self.sheet);
         ui.set_visual_frame(self.sheet, Some(frame));
         ui.set_opacity(self.sheet, if near { 0.0 } else { self.drip.fade() });

@@ -1,37 +1,40 @@
 //! The "drip" from the design ("Drip — button to popover"): a glass shape flows out of the
-//! button that opened it to its final rectangle on the liquid spring, and drains back into it
-//! when it closes. Its content follows the glass (axion-ui maps it onto the glass's visual
-//! frame and fades it with the glass's growth), so there is no separate content animation to
-//! fall out of step.
+//! button that opened it to its final rectangle, and flows back into it when it closes. Its
+//! content follows the glass (axion-ui maps it onto the glass's visual frame and fades it with
+//! the glass's growth), so there is no separate content animation to fall out of step.
 //!
-//! Each edge of the shape is a spring of its own. Opening, all four share the liquid spring
-//! (the shape grows as one). Closing, it drains like liquid flowing back into a basin: the
-//! near edge (the neck, facing the anchor) sinks into the anchor's glass first
-//! (`motion.drain_neck`), while the far edge and the sides retract after it on
-//! `motion.drain`. The neck stays inside the glass it flows into the whole way, so the body
-//! never detaches. The body first shoots back to a small drop at the anchor's rim on an
-//! underdamped spring, so it plunges in and recoils out once (`motion.drain`); once that
-//! settles, the drop flows on into the anchor's centre (`motion.drain_absorb`), the point
-//! deepest inside the glass it drains into (a drop near that glass's rim would still bulge it
-//! through the smooth union), and only then is it removed.
+//! Each edge of the shape is a spring of its own, and the surface behaves like one drop of
+//! liquid: it grows out of its origin in a single gentle approach (`motion.liquid_open` for a
+//! sheet, `motion.liquid_small` for a popover or menu; damping a little under critical, so
+//! the edges pass their target by 2-3 % of their travel once and never ring), and its
+//! near edge, the neck facing the origin, stays attached to the origin's glass through the
+//! popover bridge until the body has left. Closing is quicker and never overshoots
+//! (`motion.liquid_close`, `liquid_small_close`, critically damped): the neck sinks into the
+//! origin's glass first (`motion.liquid_neck_lead`), the body follows, and the shape is gone
+//! as soon as it fits inside the origin.
 //!
-//! Flat mode (`glass.style = "flat"`) has no drops: the shape is simply at its target frame and
-//! appears with a quick fade and a slight scale on a critically damped spring (`fade()`), and
-//! leaves the same way. Callers read the same `frame()`, `growth()` and `phase()`; only
-//! `fade()` is new (the popover and the sheet apply it as their opacity).
+//! Every edge is also clamped: it never passes its target by more than the preset's
+//! `overshoot` share of its travel, nor by more than `motion.max_overshoot_px`, so redirected
+//! or interrupted motion cannot slosh over the window or the neighbouring chrome.
+//!
+//! Flat mode (`glass.style = "flat"`) and Reduce Motion have no drops: the shape is simply at
+//! its target frame and appears with a short fade and a slight scale on a critically damped
+//! spring (`fade()`), and leaves the same way. Callers read the same `frame()`, `growth()` and
+//! `phase()`; `fade()` is the opacity they apply and `fades()` says the drop is off (no
+//! bridges, no proxy).
 
 use axion_compositor::Rect as Frame;
-use axion_config::{Config, SpringSpec};
+use axion_config::{Config, LiquidSpec, SpringSpec};
 use axion_physics::{Animated, Spring};
 use glam::Vec2;
 
 const SETTLED_PX: f32 = 0.4;
-/// Flat mode: a card appears at this share of its size and grows to full size as it fades in.
-const FLAT_SCALE_FROM: f32 = 0.96;
-/// Flat mode: the card counts as gone / shown at this fade.
-const FLAT_FADE_SETTLED: f32 = 0.004;
-/// The recoil counts as over (and the drop flows on in) once every edge is this close.
-const RECOIL_SETTLED_PX: f32 = 1.5;
+/// Fade mode: the card counts as gone / shown at this fade.
+const FADE_SETTLED: f32 = 0.004;
+/// An edge that travels less than this (logical px) is not clamped: there is no direction.
+const MIN_TRAVEL_PX: f32 = 0.5;
+/// A shape this close (logical px) to inside its origin counts as drained into it.
+const INSIDE_TOLERANCE_PX: f32 = 0.5;
 
 /// Edge indices: left, top, right, bottom.
 const LEFT: usize = 0;
@@ -47,6 +50,31 @@ pub enum Phase {
     Closing,
 }
 
+/// Which presets a drip moves on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    /// A popover or menu (`motion.liquid_small`, `liquid_small_close`).
+    Small,
+    /// A modal sheet (`motion.liquid_open`, `liquid_close`).
+    Sheet,
+}
+
+impl Class {
+    fn open(self, config: &Config) -> LiquidSpec {
+        match self {
+            Class::Small => config.motion.liquid_small,
+            Class::Sheet => config.motion.liquid_open,
+        }
+    }
+
+    fn close(self, config: &Config) -> LiquidSpec {
+        match self {
+            Class::Small => config.motion.liquid_small_close,
+            Class::Sheet => config.motion.liquid_close,
+        }
+    }
+}
+
 pub struct Drip {
     /// Left, top, right, bottom (logical px).
     edges: [Animated<f32>; 4],
@@ -54,15 +82,18 @@ pub struct Drip {
     anchor: Frame,
     target: Frame,
     phase: Phase,
-    /// Closing, after the recoil: the drop flows into the anchor's centre.
-    absorbing: bool,
-    absorb_spring: Spring,
-    /// Closing: the edge facing away from the anchor, and whether it is recoiling out yet.
-    far: usize,
-    recoiling: bool,
-    /// Flat mode (see the module docs): no drip, a fade instead.
+    class: Class,
+    /// Per edge: the direction it travels (±1, 0 = none) and how far it may pass its target.
+    dir: [f32; 4],
+    allow: [f32; 4],
+    /// The current preset's overshoot share, and the hard cap in px (`motion.max_overshoot_px`).
+    overshoot: f32,
+    max_px: f32,
+    /// Fade mode (flat or Reduce Motion, see the module docs): no drip, a fade instead.
     flat: bool,
     fade: Animated<f32>,
+    /// Fade mode: the share of its size the card appears at (`motion.fade_scale_from`).
+    fade_scale: f32,
     /// Opening: the first steps are limited to `step_max` seconds each (see `Motion::open_step_max_ms`).
     guard_frames: u32,
     step_max: f32,
@@ -74,6 +105,17 @@ pub fn spring(config: &Config, spec: SpringSpec) -> Spring {
     let motion = &config.motion;
     if config.glass.reduce_motion {
         Spring::new(0.2 * motion.speed, 1.0)
+    } else {
+        Spring::new(spec.response * motion.speed, config.glass.damping(spec.damping))
+    }
+}
+
+/// A liquid preset as a spring: Reduce Motion and flat mode use the short, critically damped
+/// fade (`motion.reduce_response`) instead of the preset.
+pub fn liquid_spring(config: &Config, spec: LiquidSpec) -> Spring {
+    let motion = &config.motion;
+    if config.glass.reduce_motion {
+        Spring::new(motion.reduce_response * motion.speed, 1.0)
     } else {
         Spring::new(spec.response * motion.speed, config.glass.damping(spec.damping))
     }
@@ -108,19 +150,37 @@ fn near_edge(anchor: Frame, glass: Frame) -> usize {
     }
 }
 
+impl Default for Drip {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drip {
+    /// A drip for a popover or menu.
     pub fn new() -> Self {
+        Self::with_class(Class::Small)
+    }
+
+    /// A drip for a modal sheet.
+    pub fn sheet() -> Self {
+        Self::with_class(Class::Sheet)
+    }
+
+    pub fn with_class(class: Class) -> Self {
         Self {
             edges: std::array::from_fn(|_| Animated::new(0.0, Spring::SNAPPY)),
             anchor: Frame::default(),
             target: Frame::default(),
             phase: Phase::Closed,
-            absorbing: false,
-            absorb_spring: Spring::SNAPPY,
-            far: BOTTOM,
-            recoiling: false,
+            class,
+            dir: [0.0; 4],
+            allow: [0.0; 4],
+            overshoot: 0.0,
+            max_px: 0.0,
             flat: false,
             fade: Animated::new(0.0, Spring::CRISP),
+            fade_scale: 1.0,
             guard_frames: 0,
             step_max: f32::INFINITY,
         }
@@ -134,31 +194,49 @@ impl Drip {
         self.step_max = (max / 1000.0).max(0.0);
     }
 
-    /// Flat mode: the card is at its target at once and fades in or out.
-    fn start_fade(&mut self, config: &Config, to: f32) {
-        self.fade.spring = spring(config, config.motion.snappy);
+    /// Fade mode: the card is at its target at once and fades in or out.
+    fn start_fade(&mut self, config: &Config, spec: LiquidSpec, to: f32) {
+        self.fade.spring = liquid_spring(config, spec);
         self.fade.target = to;
     }
 
-    /// 1 in liquid mode; in flat mode how far the card has faded in (0-1): the opacity of the
+    /// Whether the drop is off (flat mode, Reduce Motion): the card only fades, so nothing
+    /// joins it to its origin.
+    pub fn fades(&self) -> bool {
+        self.flat
+    }
+
+    /// 1 in liquid mode; in fade mode how far the card has faded in (0-1): the opacity of the
     /// shape and its content.
     pub fn fade(&self) -> f32 {
         if self.flat { self.fade.value.clamp(0.0, 1.0) } else { 1.0 }
     }
 
+    /// Aims every edge at `frame` and works out how far each may pass it: the preset's share of
+    /// the distance it has left to travel, at most `motion.max_overshoot_px`.
     fn set_targets(&mut self, frame: Frame) {
-        for (edge, value) in self.edges.iter_mut().zip(edges_of(frame)) {
+        for (i, (edge, value)) in self.edges.iter_mut().zip(edges_of(frame)).enumerate() {
             edge.target = value;
+            let travel = value - edge.value;
+            self.dir[i] = if travel.abs() < MIN_TRAVEL_PX { 0.0 } else { travel.signum() };
+            self.allow[i] = (travel.abs() * self.overshoot).min(self.max_px).max(0.0);
         }
     }
 
-    /// Opening: every edge on the liquid spring, so the shape grows as one.
+    fn set_cap(&mut self, config: &Config, spec: LiquidSpec) {
+        self.overshoot = spec.overshoot.max(0.0);
+        self.max_px = config.motion.max_overshoot_px.max(0.0);
+        self.fade_scale = config.motion.fade_scale_from.clamp(0.0, 1.0);
+    }
+
+    /// Opening: every edge on the class's open preset, so the shape grows as one.
     fn open_springs(&mut self, config: &Config) {
-        let liquid = spring(config, config.motion.liquid);
+        let spec = self.class.open(config);
+        let spring = liquid_spring(config, spec);
+        self.set_cap(config, spec);
         self.arm_guard(config);
-        self.absorbing = false;
         for edge in &mut self.edges {
-            edge.spring = liquid;
+            edge.spring = spring;
         }
     }
 
@@ -170,10 +248,10 @@ impl Drip {
     /// Starts flowing from `start` (a shape inside `anchor`) to `target`; it drains back into
     /// `anchor` when it closes.
     pub fn open_from(&mut self, config: &Config, anchor: Frame, start: Frame, target: Frame) {
+        self.flat = config.glass.is_flat() || config.glass.reduce_motion;
         self.open_springs(config);
-        self.flat = config.glass.is_flat();
         if self.phase == Phase::Closed {
-            // Flat: it starts where it ends, and only fades.
+            // Fade mode: it starts where it ends, and only fades.
             let from = if self.flat { target } else { start };
             for (edge, value) in self.edges.iter_mut().zip(edges_of(from)) {
                 edge.snap(value);
@@ -181,7 +259,7 @@ impl Drip {
             self.fade.snap(0.0);
         }
         if self.flat {
-            self.start_fade(config, 1.0);
+            self.start_fade(config, self.class.open(config), 1.0);
         }
         self.anchor = anchor;
         self.target = target;
@@ -204,10 +282,10 @@ impl Drip {
             Phase::Open | Phase::Opening => self.retarget(target),
             // Reopened while draining back: turn around from where it is, no new drip.
             Phase::Closing => {
+                self.flat = config.glass.is_flat() || config.glass.reduce_motion;
                 self.open_springs(config);
-                self.flat = config.glass.is_flat();
                 if self.flat {
-                    self.start_fade(config, 1.0);
+                    self.start_fade(config, self.class.open(config), 1.0);
                 }
                 self.anchor = anchor;
                 self.target = target;
@@ -229,54 +307,37 @@ impl Drip {
         if self.phase == Phase::Closed {
             return;
         }
-        self.flat = config.glass.is_flat();
+        let spec = self.class.close(config);
+        self.set_cap(config, spec);
+        self.flat = config.glass.is_flat() || config.glass.reduce_motion;
         if self.flat {
-            self.start_fade(config, 0.0);
-            self.absorbing = true;
+            self.start_fade(config, spec, 0.0);
             self.phase = Phase::Closing;
             return;
         }
         let near = near_edge(self.anchor, self.frame());
-        let (drain, neck) = (spring(config, config.motion.drain), spring(config, config.motion.drain_neck));
+        let body = liquid_spring(config, spec);
+        let neck =
+            Spring::new(body.response * config.motion.liquid_neck_lead.clamp(0.05, 1.0), body.damping_ratio);
         for (i, edge) in self.edges.iter_mut().enumerate() {
-            edge.spring = if i == near { neck } else { drain };
+            edge.spring = if i == near { neck } else { body };
         }
-        self.absorb_spring = spring(config, config.motion.drain_absorb);
-        self.far = (near + 2) % 4;
-        self.recoiling = false;
-        self.absorbing = config.glass.reduce_motion;
-        if self.absorbing {
-            self.set_targets(Frame { origin: self.anchor.center(), size: Vec2::ZERO });
-        } else {
-            self.set_targets(self.rim_drop(near, config.motion.drain_drop));
-        }
+        self.set_targets(Frame { origin: self.anchor.center(), size: Vec2::ZERO });
         self.phase = Phase::Closing;
-    }
-
-    /// +1 when the far edge moves away from the anchor with growing values, else −1.
-    fn outward(&self) -> f32 {
-        if self.far == RIGHT || self.far == BOTTOM { 1.0 } else { -1.0 }
-    }
-
-    /// The small drop the body recoils into: just inside the anchor's rim facing the glass,
-    /// at most the anchor's size. At rest it is hidden in the anchor's glass; only the
-    /// recoil's overshoot bulges out of the rim.
-    fn rim_drop(&self, near: usize, size: f32) -> Frame {
-        let (a, c) = (self.anchor, self.anchor.center());
-        let rim = match near {
-            // The glass's left edge faces the anchor: the anchor's right rim.
-            LEFT => Vec2::new(a.origin.x + a.size.x, c.y),
-            TOP => Vec2::new(c.x, a.origin.y + a.size.y),
-            RIGHT => Vec2::new(a.origin.x, c.y),
-            _ => Vec2::new(c.x, a.origin.y),
-        };
-        let size = Vec2::splat(size).min(a.size);
-        let inward = (c - rim).normalize_or_zero() * size / 2.0;
-        Frame { origin: rim + inward - size / 2.0, size }
     }
 
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// Whether the shape lies wholly inside the origin's glass (it is drained into it).
+    fn inside_anchor(&self) -> bool {
+        let e = edges_of(self.anchor);
+        let now = edges_of(self.raw_frame());
+        now[LEFT] >= e[LEFT] - INSIDE_TOLERANCE_PX
+            && now[TOP] >= e[TOP] - INSIDE_TOLERANCE_PX
+            && now[RIGHT] <= e[RIGHT] + INSIDE_TOLERANCE_PX
+            && now[BOTTOM] <= e[BOTTOM] + INSIDE_TOLERANCE_PX
     }
 
     pub fn step(&mut self, dt: f32) -> Phase {
@@ -291,57 +352,56 @@ impl Drip {
         } else {
             dt
         };
-        for edge in &mut self.edges {
+        for (i, edge) in self.edges.iter_mut().enumerate() {
             edge.step(dt);
+            // The hard clamp: never further past the target than allowed, and no momentum
+            // left in that direction.
+            let dir = self.dir[i];
+            if dir != 0.0 {
+                let limit = edge.target + dir * self.allow[i];
+                if (edge.value - limit) * dir > 0.0 {
+                    edge.value = limit;
+                    if edge.velocity * dir > 0.0 {
+                        edge.velocity = 0.0;
+                    }
+                }
+            }
         }
         if self.flat {
             self.fade.step(dt);
             let glided = self.edges.iter().all(|e| e.is_settled(SETTLED_PX));
             self.phase = match self.phase {
-                Phase::Opening if glided && self.fade.is_settled(FLAT_FADE_SETTLED) => Phase::Open,
-                Phase::Closing if self.fade.value <= FLAT_FADE_SETTLED => Phase::Closed,
+                Phase::Opening if glided && self.fade.is_settled(FADE_SETTLED) => Phase::Open,
+                Phase::Closing if self.fade.value <= FADE_SETTLED => Phase::Closed,
                 phase => phase,
             };
             return self.phase;
         }
-        if self.phase == Phase::Closing && !self.absorbing {
-            // Away from the anchor is +x/+y for the right/bottom edge, −x/−y for left/top.
-            if self.edges[self.far].velocity * self.outward() > 0.0 {
-                self.recoiling = true;
-            }
-        }
-        let recoil_over = self.recoiling && self.edges[self.far].velocity * self.outward() <= 0.0;
-        if self.phase == Phase::Closing
-            && !self.absorbing
-            && (recoil_over || self.edges.iter().all(|e| e.is_settled(RECOIL_SETTLED_PX)))
-        {
-            // The recoil peaked: the drop flows on into the anchor from there.
-            self.absorbing = true;
-            for edge in &mut self.edges {
-                edge.spring = self.absorb_spring;
-            }
-            self.set_targets(Frame { origin: self.anchor.center(), size: Vec2::ZERO });
-        }
         let settled = self.edges.iter().all(|e| e.is_settled(SETTLED_PX));
         self.phase = match self.phase {
             Phase::Opening if settled => Phase::Open,
-            Phase::Closing if settled && self.absorbing => Phase::Closed,
+            Phase::Closing if settled || self.inside_anchor() => Phase::Closed,
             phase => phase,
         };
         self.phase
     }
 
-    /// The glass's current rectangle (never inside out, should an edge overshoot another).
-    pub fn frame(&self) -> Frame {
+    /// The edges as a rectangle (never inside out, should an edge pass another).
+    fn raw_frame(&self) -> Frame {
         let e = |i: usize| self.edges[i].value;
         let lo = Vec2::new(e(LEFT).min(e(RIGHT)), e(TOP).min(e(BOTTOM)));
         let hi = Vec2::new(e(LEFT).max(e(RIGHT)), e(TOP).max(e(BOTTOM)));
-        let frame = Frame { origin: lo, size: (hi - lo).max(Vec2::ONE) };
+        Frame { origin: lo, size: (hi - lo).max(Vec2::ONE) }
+    }
+
+    /// The glass's current rectangle.
+    pub fn frame(&self) -> Frame {
+        let frame = self.raw_frame();
         if !self.flat {
             return frame;
         }
-        // Flat: a slight scale about the centre as it fades.
-        let k = FLAT_SCALE_FROM + (1.0 - FLAT_SCALE_FROM) * self.fade.value.clamp(0.0, 1.0);
+        // Fade mode: a slight scale about the centre as it fades.
+        let k = self.fade_scale + (1.0 - self.fade_scale) * self.fade.value.clamp(0.0, 1.0);
         Frame { origin: frame.center() - frame.size * k / 2.0, size: frame.size * k }
     }
 
@@ -406,7 +466,7 @@ mod tests {
         let hitch = grown_after(&config, &[0.1]);
         let smooth = grown_after(&config, &[0.02]);
         assert!((hitch - smooth).abs() < 1e-6, "hitch {hitch} vs one short frame {smooth}");
-        assert!(hitch < 0.1, "the first frame shows a drop, not the final glass: {hitch}");
+        assert!(hitch < 0.2, "the first frame shows a drop, not the final glass: {hitch}");
         // Without the guard the same frame leaps far ahead (the bug).
         let mut off = Config::default();
         off.motion.open_step_max_ms = 0.0;
@@ -474,38 +534,11 @@ mod tests {
             frames += 1;
             assert!(frames < 600, "never settles");
         }
-        // Not instant: it drains over a visible stretch of frames.
-        assert!(frames > 24, "{frames}");
+        // Not instant: it drains over a visible stretch of frames, but quickly.
+        assert!(frames > 12 && frames < 120, "{frames}");
         // It ends inside the anchor.
         assert!(last.size.x <= anchor.size.x && last.size.y <= anchor.size.y);
         assert!(anchor.contains(last.center()));
-    }
-
-    #[test]
-    fn body_recoils_out_of_the_rim_before_it_is_absorbed() {
-        let config = Config::default();
-        let mut drip = Drip::new();
-        let anchor = Frame::new(300.0, 10.0, 34.0, 34.0);
-        let target = Frame::new(100.0, 56.0, 280.0, 300.0);
-        drip.open(&config, anchor, target);
-        for _ in 0..360 {
-            drip.step(1.0 / 120.0);
-        }
-        drip.close(&config);
-        let rim = anchor.origin.y + anchor.size.y;
-        // The far (bottom) edge plunges above the rim's drop, then comes back out below it.
-        let (mut deepest, mut rebound) = (f32::MAX, f32::MIN);
-        while drip.step(1.0 / 120.0) != Phase::Closed {
-            let bottom = drip.frame().origin.y + drip.frame().size.y;
-            if bottom < deepest {
-                deepest = bottom;
-            } else if !drip.absorbing {
-                rebound = rebound.max(bottom);
-            }
-        }
-        let rest = rim;
-        assert!(deepest < rest - 1.0, "no plunge: {deepest} vs {rest}");
-        assert!(rebound > deepest + 1.0, "no recoil: {deepest} → {rebound}");
     }
 
     fn flat_config() -> Config {
@@ -558,7 +591,9 @@ mod tests {
     #[test]
     fn flat_springs_are_never_underdamped() {
         let flat = flat_config();
-        for spec in [flat.motion.snappy, flat.motion.liquid, flat.motion.drain, flat.motion.fling] {
+        for spec in
+            [flat.motion.snappy, flat.motion.liquid, flat.motion.liquid_open.spring(), flat.motion.fling]
+        {
             assert!(spring(&flat, spec).damping_ratio >= 1.0);
         }
         let liquid = Config::default();
@@ -575,3 +610,6 @@ mod tests {
         assert_eq!(near_edge(anchor, Frame::new(0.0, 0.0, 280.0, 1000.0)), BOTTOM);
     }
 }
+
+#[cfg(test)]
+mod motion_tests;

@@ -27,6 +27,32 @@ impl IconWeight {
     }
 }
 
+/// How an icon's path is drawn into its mask.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Drawing {
+    /// Stroked at the icon weight and the theme's stroke multiplier (all Lucide icons).
+    Stroked,
+    /// Stroked at a fixed width (24-unit box), whatever the weight or multiplier.
+    Bold(f32),
+    /// Filled, with a stroke of this width around it that rounds the corners.
+    Solid(f32),
+}
+
+/// Stroke width (24-unit box) of the window buttons' x and minus: about a tenth of the button.
+const WINDOW_GLYPH_STROKE: f32 = 4.0;
+/// Corner rounding of the window buttons' filled zoom glyph.
+const WINDOW_GLYPH_ROUNDING: f32 = 1.2;
+
+impl Icon {
+    fn drawing(self) -> Drawing {
+        match self {
+            Icon::WindowClose | Icon::WindowMinimize => Drawing::Bold(WINDOW_GLYPH_STROKE),
+            Icon::ZoomArrows | Icon::RestoreArrows => Drawing::Solid(WINDOW_GLYPH_ROUNDING),
+            _ => Drawing::Stroked,
+        }
+    }
+}
+
 macro_rules! icons {
     ($($name:ident => $path:literal,)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -98,6 +124,13 @@ icons! {
     Pencil => "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497zM15 5l4 4",
     Pin => "M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z",
     Minus => "M5 12h14",
+    // The window zoom button: two triangles in opposite corners, right angles outward (zoom in)
+    // or at the centre (restore). Both fill the 4..20 box, so they sit centred.
+    ZoomArrows => "M3.6 3.6h10.2L3.6 13.8zM20.4 20.4H10.2l10.2-10.2z",
+    RestoreArrows => "M12.6 12.6H4.2l8.4-8.4zM11.4 11.4h8.4l-8.4 8.4z",
+    // The window buttons' glyphs: bold, drawn at a fixed weight (see `Drawing`).
+    WindowClose => "M5.4 5.4 18.6 18.6M18.6 5.4 5.4 18.6",
+    WindowMinimize => "M3.8 12h16.4",
     Globe => "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0zM12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20",
     Person => "M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2M8 7a4 4 0 1 0 8 0a4 4 0 1 0 -8 0z",
     PersonAdd => "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M5 7a4 4 0 1 0 8 0a4 4 0 1 0 -8 0zM19 8L19 14M22 11L16 11",
@@ -247,8 +280,13 @@ pub(crate) fn rasterize(request: RasterizeCustomGlyphRequest) -> Option<Rasteriz
     let mut paint = tiny_skia::Paint::default();
     paint.set_color_rgba8(255, 255, 255, 255);
     paint.anti_alias = true;
+    let drawing = icon.drawing();
+    let units = match drawing {
+        Drawing::Stroked => stroke_width(weight, stroke_key),
+        Drawing::Bold(w) | Drawing::Solid(w) => w,
+    };
     let stroke = tiny_skia::Stroke {
-        width: stroke_width(weight, stroke_key) * scale as f32,
+        width: units * scale as f32,
         line_cap: tiny_skia::LineCap::Round,
         line_join: tiny_skia::LineJoin::Round,
         ..Default::default()
@@ -265,6 +303,9 @@ pub(crate) fn rasterize(request: RasterizeCustomGlyphRequest) -> Option<Rasteriz
     } else {
         tiny_skia::Transform::from_rotate_at(rotation, w as f32 / 2.0, h as f32 / 2.0)
     };
+    if matches!(drawing, Drawing::Solid(_)) {
+        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
+    }
     pixmap.stroke_path(&path, &paint, &stroke, transform, None);
     let data = pixmap.pixels().iter().map(|px| px.alpha()).collect();
     Some(RasterizedCustomGlyph { data, content_type: ContentType::Mask })

@@ -15,7 +15,7 @@
 use axion_compositor::Rect as Frame;
 use axion_config::Config;
 use axion_ui::taffy::prelude::*;
-use axion_ui::{Background, CAPSULE, GlassLevel, Ui, Widget};
+use axion_ui::{Background, CAPSULE, GlassLevel, Popup, Ui, Widget};
 use glam::Vec2;
 
 use crate::drip::{Drip, Phase};
@@ -95,7 +95,9 @@ impl Popover {
             Widget::container()
                 .with_background(Background::Glass(LEVEL))
                 .with_glass_density(DENSITY)
-                .with_radius(radius),
+                .as_popup()
+                .with_radius(radius)
+                .as_overlay(),
             Style { position: Position::Absolute, ..style },
         );
         // After the popover, so its wider smooth union applies where it meets both the
@@ -181,6 +183,7 @@ impl Popover {
         ui.set_claim_target(self.root, Some(target));
         crate::menu::place(ui, self.root, self.parent, target);
         ui.set_visible(self.root, true);
+        ui.set_popup(self.root, Popup::Open);
         self.find_join(ui, anchor);
         self.bridge_depth = config.glass.bezel_width.max(0.0);
         if let Some(w) = ui.widget_mut(self.bridge) {
@@ -205,6 +208,7 @@ impl Popover {
     pub fn close_into(&mut self, ui: &mut Ui, config: &Config, anchor: Frame) {
         if self.drip.phase() != Phase::Closed {
             ui.set_claim_target(self.root, None);
+            ui.set_popup(self.root, Popup::Closing);
             self.drip.close_into(config, anchor);
             self.animate(ui, 0.0);
         }
@@ -218,6 +222,7 @@ impl Popover {
     /// Flows back into the anchor.
     pub fn close(&mut self, ui: &mut Ui, config: &Config) {
         ui.set_claim_target(self.root, None);
+        ui.set_popup(self.root, Popup::Closing);
         self.drip.close(config);
         self.animate(ui, 0.0);
     }
@@ -242,7 +247,7 @@ impl Popover {
         // Flat mode fades the card in and out instead (1 otherwise: nothing changes).
         ui.set_opacity(self.root, self.drip.fade());
         // Flat mode has no bridges: the card is just a card.
-        let mut bridge = self.join.filter(|_| !ui.theme().flat() && !self.unjoined).and_then(|(join, r)| {
+        let mut bridge = self.join.filter(|_| !self.drip.fades() && !self.unjoined).and_then(|(join, r)| {
             bridge_frame_reaching(join, r, frame, self.radius, self.bridge_depth, self.bridge_into_join)
         });
         if self.detach {
