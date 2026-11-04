@@ -1805,7 +1805,8 @@ pub struct Clipboard {
     /// Axion hands the clipboard to pages itself (Wayland).
     pub max_paste_mb: u32,
     /// Whether text a page copies (`navigator.clipboard.writeText()`, `document.execCommand("copy")`,
-    /// "Copy" buttons) is handed to the desktop clipboard by Axion.
+    /// "Copy" buttons) and what the user copies in a page (Ctrl+C, Ctrl+X, context-menu Copy) is
+    /// handed to the desktop clipboard by Axion.
     pub page_copy: PageCopy,
     /// Text a page copies is cut off at this size (KB).
     pub max_page_copy_kb: u32,

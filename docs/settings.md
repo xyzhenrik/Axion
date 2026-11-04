@@ -376,7 +376,7 @@ refuses without asking. A decision you made for a site wins over these. See
 | **Notifications** | Desktop notifications from the site. | Ask | `permissions.notifications` |
 | **Location** | Your position. | Ask | `permissions.location` |
 | **Clipboard** | Reading what you copied (writing to the clipboard needs no permission). | Ask | `permissions.clipboard` |
-| Copy buttons of pages | Who puts text a page copies (`writeText`, `execCommand`, Copy buttons) on the desktop clipboard: Axion where Chromium cannot (Wayland), or always / never. Config file only. | auto | `clipboard.page_copy`, `clipboard.max_page_copy_kb` |
+| Copying in pages | Who puts what you copy in a page (Ctrl+C, Ctrl+X, the context menu's Copy, text in fields and frames) and what a page copies (`writeText`, `execCommand`, Copy buttons) on the desktop clipboard: Axion where Chromium cannot (Wayland), or always / never. Config file only. | auto | `clipboard.page_copy`, `clipboard.max_page_copy_kb` |
 | **Other permissions** | MIDI devices, the local network, window placement on all displays, installed fonts, idle detection, pointer and keyboard lock, motion sensors, several downloads at once. | Ask | `permissions.other` |
 
 ### Remembered for Sites

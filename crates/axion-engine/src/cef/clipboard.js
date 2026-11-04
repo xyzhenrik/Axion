@@ -29,13 +29,20 @@
   }
 
   // The selection as `copy` would take it: text of a field, else the document's selection.
-  function selectedText() {
+  function fieldSelection() {
     var el = document.activeElement;
+    while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
     try {
       if (el && typeof el.selectionStart === 'number' && el.selectionEnd > el.selectionStart) {
         return el.value.slice(el.selectionStart, el.selectionEnd);
       }
     } catch (e) { /* a field type without a selection */ }
+    return '';
+  }
+
+  function selectedText() {
+    var field = fieldSelection();
+    if (field) return field;
     var selection = window.getSelection && window.getSelection();
     return selection ? selection.toString() : '';
   }
@@ -99,15 +106,26 @@
   window.addEventListener('copy', function (event) { collect(event); }, false);
   window.addEventListener('cut', function (event) { collect(event); }, false);
   function collect(event) {
-    if (!inExec) return;
+    // A copy the user asked for (Ctrl+C, Ctrl+X, the context menu): Chromium runs the editing
+    // command, the event fires in the frame that has the focus, and the report goes out here
+    // (the selection of a field or of the document, or what the page put on the event).
+    if (!inExec) {
+      var user = takeEvent(event);
+      if (user.text || user.html) send(user.text, user.html);
+      return;
+    }
+    copied = takeEvent(event);
+  }
+  function takeEvent(event) {
     var data = event.clipboardData;
     var text = data ? data.getData('text/plain') : '';
     var html = data ? data.getData('text/html') : '';
     if (!text && !html && !event.defaultPrevented) {
       text = selectedText();
-      html = selectedHtml();
+      // A field's selection has no markup; the document's selection may.
+      html = fieldSelection() ? '' : selectedHtml();
     }
-    copied = { text: text, html: html };
+    return { text: text, html: html };
   }
   var rawExec = Document.prototype.execCommand;
   Document.prototype.execCommand = function (command) {

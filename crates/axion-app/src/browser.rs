@@ -8687,6 +8687,13 @@ impl Browser {
         }
         let Some(view) = self.active_view() else { return };
         for click in due {
+            if let Some(letter) = click.ctrl {
+                tracing::info!(%letter, "key probe");
+                for key in input::ctrl_keys(letter) {
+                    self.engine.send_input(view, &key);
+                }
+                continue;
+            }
             tracing::info!(x = click.x, y = click.y, "click probe");
             let pos = Vec2::new(click.x, click.y);
             let modifiers = axion_engine::Modifiers::default();
