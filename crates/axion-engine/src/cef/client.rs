@@ -25,6 +25,8 @@ use crate::{
 const PAGE_META_PREFIX: &str = "\u{1}axion-meta:";
 /// `capture.js` reports a `getDisplayMedia()` call to the engine's own screen picker with this.
 const SCREEN_PICK_PREFIX: &str = "\u{1}axion-screen-pick:";
+/// `clipboard.js` reports what a page copied with this, then its secret and a JSON object.
+const CLIPBOARD_PREFIX: &str = "\u{1}axion-clipboard:";
 /// Reports icon links and theme colours of every top-level document.
 const PAGE_META_SCRIPT: &str = include_str!("page_meta.js");
 /// Keeps the page's capture tracks so `Engine::stop_capture` can end them; run in every frame.
@@ -45,6 +47,8 @@ pub(super) struct Shared {
     pub permissions: super::permission::Permissions,
     /// How long after Chromium hands over a GPU frame it is copied (`ViewContext::submit_gpu_frame`).
     pub frame_settle: Duration,
+    /// Software frames upload only the parts Chromium repainted (see `ViewContext::upload`).
+    pub partial_uploads: bool,
     /// DevTools browsers Chromium created for a view (see `Engine::open_devtools`), until the
     /// engine takes them in `pump`.
     pub devtools_created: RefCell<Vec<(ViewId, Browser)>>,
@@ -53,6 +57,47 @@ pub(super) struct Shared {
     /// Shares the browser approved with `Engine::answer_screen_pick` that Chromium has not
     /// asked about yet, per view: the follow-up media request of such a share is granted.
     pub screen_approvals: RefCell<std::collections::HashMap<ViewId, u32>>,
+    /// The next view id (views are made by the engine and, for popups, by Chromium's callbacks).
+    pub next_view: Cell<u32>,
+    /// Views share their frames as GPU textures (`WindowInfo::shared_texture_enabled`).
+    pub accelerated: Cell<bool>,
+    /// Frames per second a new view renders at most.
+    pub max_frame_rate: Cell<u32>,
+    /// `window.open()` windows keep their opener (see `LifeSpanHandler::on_before_popup`).
+    pub real_popups: Cell<bool>,
+    /// Popups Chromium created, until the engine takes them in `pump`.
+    pub popups: RefCell<Vec<CreatedPopup>>,
+    /// Hands what pages copy to the browser, when it is on (see `clipboard.js`).
+    pub clipboard: RefCell<Option<ClipboardForward>>,
+}
+
+impl Shared {
+    pub(super) fn alloc_view(&self) -> ViewId {
+        let id = self.next_view.get().max(1);
+        self.next_view.set(id + 1);
+        ViewId(id)
+    }
+}
+
+/// The page script that reports copies, and the secret that tells its reports from a page
+/// pretending to be it.
+pub(super) struct ClipboardForward {
+    pub script: String,
+    pub nonce: String,
+    pub max_bytes: usize,
+}
+
+/// A popup Chromium made for a page, waiting to become a view of the engine.
+pub(super) struct CreatedPopup {
+    pub ctx: ViewContext,
+    pub browser: Browser,
+}
+
+/// The page a popup view was opened by.
+#[derive(Clone)]
+pub(super) struct PopupOf {
+    pub opener: ViewId,
+    pub url: String,
 }
 
 #[derive(Default)]
@@ -82,6 +127,9 @@ pub(super) struct ViewFrames {
     /// Until when frames are checked for the letterboxed page of a resize (see
     /// `is_letterboxed`); `None` once a frame without bars came.
     pub letterbox_until: Cell<Option<Instant>>,
+    /// The texture that holds exactly the last software frame Chromium painted: only into it
+    /// can the next frame's repainted parts be uploaded alone (see `ViewContext::upload`).
+    uploaded: RefCell<Option<wgpu::Texture>>,
 }
 
 impl ViewFrames {
@@ -92,6 +140,7 @@ impl ViewFrames {
         self.pending.borrow_mut().clear();
         self.spare_textures.borrow_mut().clear();
         self.spare_checks.borrow_mut().clear();
+        self.uploaded.borrow_mut().take();
     }
 
     /// When the frame waiting to be copied is due, if there is one.
@@ -155,6 +204,39 @@ fn has_black_bar(pixels: &[u8], width: usize, height: usize) -> bool {
     edge && !(0..width).step_by(4).all(|x| black(x, height / 2))
 }
 
+/// Most separate rectangles a software frame is uploaded in; more are joined into their bounds.
+const MAX_UPLOAD_RECTS: usize = 8;
+/// Repainted parts covering more than this share of the frame are uploaded as the whole frame
+/// (one copy instead of several that add up to nearly the same).
+const PARTIAL_UPLOAD_MAX_SHARE: f64 = 0.75;
+
+/// The parts of a `width` x `height` software frame to upload, from Chromium's repainted
+/// rectangles (`x, y, width, height`), clipped to the frame. `None`: the whole frame (nothing
+/// usable was reported, or the parts cover most of it).
+fn upload_regions(dirty: &[Rect], width: u32, height: u32) -> Option<Vec<(u32, u32, u32, u32)>> {
+    let clip = |r: &Rect| {
+        let x0 = r.x.clamp(0, width as i32) as u32;
+        let y0 = r.y.clamp(0, height as i32) as u32;
+        let x1 = r.x.saturating_add(r.width).clamp(0, width as i32) as u32;
+        let y1 = r.y.saturating_add(r.height).clamp(0, height as i32) as u32;
+        (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
+    };
+    let mut parts: Vec<(u32, u32, u32, u32)> = dirty.iter().filter_map(clip).collect();
+    if parts.is_empty() {
+        return None;
+    }
+    if parts.len() > MAX_UPLOAD_RECTS {
+        let x0 = parts.iter().map(|p| p.0).min().unwrap_or(0);
+        let y0 = parts.iter().map(|p| p.1).min().unwrap_or(0);
+        let x1 = parts.iter().map(|p| p.0 + p.2).max().unwrap_or(width);
+        let y1 = parts.iter().map(|p| p.1 + p.3).max().unwrap_or(height);
+        parts = vec![(x0, y0, x1 - x0, y1 - y0)];
+    }
+    let area: u64 = parts.iter().map(|p| u64::from(p.2) * u64::from(p.3)).sum();
+    let whole = u64::from(width) * u64::from(height);
+    (area as f64 <= whole as f64 * PARTIAL_UPLOAD_MAX_SHARE).then_some(parts)
+}
+
 const MAP_WAITING: u8 = 0;
 const MAP_DONE: u8 = 1;
 const MAP_FAILED: u8 = 2;
@@ -191,16 +273,28 @@ pub(super) struct ViewContext {
     pub devtools: bool,
     /// The panel the DevTools window should show once it has loaded (`devtools` views).
     pub devtools_panel: Rc<RefCell<Option<&'static str>>>,
+    /// The view is a popup made by `window.open()`: set until the engine has taken it.
+    pub popup: Option<PopupOf>,
 }
 
 impl ViewContext {
+    /// What a copy report of the page script says, if it is one of ours: `<secret>:<json>`.
+    fn clipboard_report(&self, report: &str) -> Option<(Option<String>, Option<String>)> {
+        let forward = self.shared.clipboard.borrow();
+        let forward = forward.as_ref()?;
+        let json = report.strip_prefix(forward.nonce.as_str())?.strip_prefix(':')?;
+        parse_clipboard_report(json, forward.max_bytes)
+    }
+
     fn emit(&self, browser: Option<&mut Browser>, event: EngineEvent) {
         let id = browser.map_or(-1, |b| b.identifier());
         self.shared.events.borrow_mut().push((id, event));
     }
 
     fn store(&self, texture: wgpu::Texture) {
-        if let Some(old) = self.frames.texture.replace(Some(texture)) {
+        if let Some(old) = self.frames.texture.replace(Some(texture.clone()))
+            && old != texture
+        {
             self.recycle_texture(old);
         }
         self.frames.serial.set(self.frames.serial.get() + 1);
@@ -454,7 +548,7 @@ impl ViewContext {
     }
 
     /// Software paint: upload BGRA pixels, reusing the texture while the size is unchanged.
-    fn upload(&self, pixels: &[u8], width: u32, height: u32) {
+    fn upload(&self, pixels: &[u8], width: u32, height: u32, dirty: &[Rect]) {
         // Right after a resize Chromium can hand over the page of the old size scaled into the
         // new buffer with a black bar along one edge (as on the shared-buffer path, see
         // `is_scaled`): skip it, the real frame follows. At most a few in a row, so a page that
@@ -467,6 +561,8 @@ impl ViewContext {
                 self.frames.skipped_bars.set(skipped + 1);
                 self.shared.stats.dropped();
                 self.frames.wants_repaint.set(true);
+                // The next frame's repainted parts are relative to this one, which isn't shown.
+                self.frames.uploaded.borrow_mut().take();
                 return;
             }
         }
@@ -497,16 +593,30 @@ impl ViewContext {
                 view_formats: &[],
             })
         });
-        self.queue.write_texture(
-            texture.as_image_copy(),
-            pixels,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * width),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-        );
+        // Into the texture that holds the frame before this one, only what Chromium repainted is
+        // uploaded (a blinking caret or a small animation instead of the whole page each time).
+        let holds_previous = self.shared.partial_uploads
+            && self.frames.uploaded.borrow().as_ref().is_some_and(|t| *t == texture);
+        let regions = if holds_previous { upload_regions(dirty, width, height) } else { None };
+        let regions = regions.unwrap_or_else(|| vec![(0, 0, width, height)]);
+        for (x, y, w, h) in regions {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x, y, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: (u64::from(y) * u64::from(width) + u64::from(x)) * 4,
+                    bytes_per_row: Some(4 * width),
+                    rows_per_image: Some(h),
+                },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            );
+        }
+        *self.frames.uploaded.borrow_mut() = Some(texture.clone());
         self.store(texture);
     }
 }
@@ -569,7 +679,7 @@ wrap_render_handler! {
             &self,
             _browser: Option<&mut Browser>,
             type_: PaintElementType,
-            _dirty_rects: Option<&[Rect]>,
+            dirty_rects: Option<&[Rect]>,
             buffer: *const u8,
             width: ::std::os::raw::c_int,
             height: ::std::os::raw::c_int,
@@ -582,7 +692,7 @@ wrap_render_handler! {
             // of this callback; we copy out of it before returning.
             let pixels = unsafe { std::slice::from_raw_parts(buffer, len) };
             let started = Instant::now();
-            self.ctx.upload(pixels, width as u32, height as u32);
+            self.ctx.upload(pixels, width as u32, height as u32, dirty_rects.unwrap_or_default());
             self.ctx.shared.stats.paint(started.elapsed());
         }
 
@@ -637,6 +747,12 @@ wrap_display_handler! {
                         browser,
                         EngineEvent::ScreenPickRequested { view: self.ctx.view, token, origin, audio },
                     );
+                }
+                return 1;
+            }
+            if let Some(report) = message.strip_prefix(CLIPBOARD_PREFIX) {
+                if let Some((text, html)) = self.ctx.clipboard_report(report) {
+                    self.ctx.emit(browser, EngineEvent::ClipboardWrite { view: self.ctx.view, text, html });
                 }
                 return 1;
             }
@@ -776,6 +892,10 @@ wrap_load_handler! {
                 CAPTURE_SCRIPT.to_owned()
             };
             frame.execute_java_script(Some(&capture.as_str().into()), Some(&url.as_str().into()), 0);
+            let clipboard = self.ctx.shared.clipboard.borrow().as_ref().map(|c| c.script.clone());
+            if let Some(script) = clipboard {
+                frame.execute_java_script(Some(&script.as_str().into()), Some(&url.as_str().into()), 0);
+            }
             let page_script = self.ctx.shared.page_script.borrow().clone();
             if let Some(script) = page_script {
                 frame.execute_java_script(Some(&script.as_str().into()), Some(&url.as_str().into()), 0);
@@ -819,20 +939,76 @@ wrap_life_span_handler! {
             target_disposition: WindowOpenDisposition,
             user_gesture: ::std::os::raw::c_int,
             _popup_features: Option<&PopupFeatures>,
-            _window_info: Option<&mut WindowInfo>,
-            _client: Option<&mut Option<Client>>,
-            _settings: Option<&mut BrowserSettings>,
+            window_info: Option<&mut WindowInfo>,
+            client: Option<&mut Option<Client>>,
+            settings: Option<&mut BrowserSettings>,
             _extra_info: Option<&mut Option<DictionaryValue>>,
-            _no_javascript_access: Option<&mut ::std::os::raw::c_int>,
+            no_javascript_access: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
-            let kind = match *target_disposition.as_ref() {
+            let disposition = *target_disposition.as_ref();
+            let kind = match disposition {
                 cef_window_open_disposition_t::CEF_WOD_NEW_BACKGROUND_TAB => NewViewKind::BackgroundTab,
                 cef_window_open_disposition_t::CEF_WOD_NEW_FOREGROUND_TAB => NewViewKind::ForegroundTab,
                 _ => NewViewKind::Popup,
             };
             let url = target_url.map(|u| u.to_string()).unwrap_or_default();
+            let opener_page = browser
+                .as_ref()
+                .and_then(|b| b.main_frame())
+                .map(|f| CefString::from(&f.url()).to_string())
+                .unwrap_or_default();
             let opener_frame =
                 frame.filter(|f| f.is_main() == 0).map(|f| CefString::from(&f.url()).to_string());
+            let keeps_opener = no_javascript_access.as_deref().is_some_and(|v| *v == 0);
+            tracing::debug!(%url, ?disposition, user_gesture, keeps_opener, "page asks for a window");
+            // A window the page scripts (a sign-in popup, a payment window) must stay connected
+            // to its opener: it reports back through `window.opener` and closes itself. Chromium
+            // makes it with the opener when we let it; every other new window is the browser's
+            // to open as an ordinary tab.
+            let real_popup = self.ctx.shared.real_popups.get()
+                && keeps_opener
+                && !self.ctx.devtools
+                && kind != NewViewKind::BackgroundTab
+                && !url.starts_with(INTERNAL_SCHEME)
+                && self.ctx.net.media_view(self.ctx.view).is_none()
+                && self
+                    .ctx
+                    .net
+                    .policy()
+                    .is_none_or(|p| p.allow_popup(&opener_page, opener_frame.as_deref(), &url, user_gesture != 0));
+            if real_popup
+                && let (Some(window_info), Some(client), Some(settings)) = (window_info, client, settings)
+            {
+                let shared = &self.ctx.shared;
+                let view = shared.alloc_view();
+                let ctx = ViewContext {
+                    view,
+                    geometry: Rc::new(ViewGeometry {
+                        logical: self.ctx.geometry.logical.get().into(),
+                        scale: self.ctx.geometry.scale.get().into(),
+                    }),
+                    frames: Rc::new(ViewFrames::default()),
+                    drag: Rc::default(),
+                    devtools: false,
+                    devtools_panel: Rc::default(),
+                    popup: Some(PopupOf { opener: self.ctx.view, url: url.clone() }),
+                    ..self.ctx.clone()
+                };
+                *window_info = WindowInfo {
+                    windowless_rendering_enabled: 1,
+                    shared_texture_enabled: shared.accelerated.get() as _,
+                    external_begin_frame_enabled: 0,
+                    ..Default::default()
+                };
+                *client = Some(build_client(&ctx));
+                *settings = BrowserSettings {
+                    windowless_frame_rate: shared.max_frame_rate.get() as _,
+                    background_color: super::PAGE_BACKGROUND,
+                    ..Default::default()
+                };
+                tracing::info!(%url, ?view, opener = ?self.ctx.view, "popup with opener");
+                return 0;
+            }
             self.ctx.emit(browser, EngineEvent::NewViewRequested {
                 opener: self.ctx.view,
                 url,
@@ -851,6 +1027,14 @@ wrap_life_span_handler! {
                 && let Some(browser) = browser
             {
                 self.ctx.shared.devtools_created.borrow_mut().push((self.ctx.view, browser.clone()));
+                return;
+            }
+            // So is a popup: its requests are the popup view's from the first one on.
+            if self.ctx.popup.is_some()
+                && let Some(browser) = browser
+            {
+                self.ctx.net.set_browser(browser.identifier(), Some(self.ctx.view));
+                self.ctx.shared.popups.borrow_mut().push(CreatedPopup { ctx: self.ctx.clone(), browser: browser.clone() });
             }
         }
 
@@ -1341,10 +1525,61 @@ fn parse_screen_pick(report: &str) -> Option<(u64, bool)> {
 }
 
 /// `scheme://host[:port]` of an address.
+/// The text and HTML of a copy report (`{"text": ..., "html": ...}`); `None` unless there is some.
+fn parse_clipboard_report(json: &str, max_bytes: usize) -> Option<(Option<String>, Option<String>)> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let field = |name: &str| {
+        value
+            .get(name)
+            .and_then(|v| v.as_str())
+            .map(|s| cut(s, max_bytes).to_owned())
+            .filter(|s| !s.is_empty())
+    };
+    let (text, html) = (field("text"), field("html"));
+    (text.is_some() || html.is_some()).then_some((text, html))
+}
+
+/// `s` cut to at most `max` bytes on a character boundary.
+fn cut(s: &str, max: usize) -> &str {
+    let mut end = s.len().min(max);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn origin_of(url: &str) -> String {
     match url.split_once("://") {
         Some((scheme, rest)) => format!("{scheme}://{}", rest.split(['/', '?', '#']).next().unwrap_or("")),
         None => url.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod clipboard_report_tests {
+    use super::*;
+
+    #[test]
+    fn reports_carry_text_and_html() {
+        let report = parse_clipboard_report(r#"{"text":"a b","html":"<b>a b</b>"}"#, 100);
+        assert_eq!(report, Some((Some("a b".into()), Some("<b>a b</b>".into()))));
+        assert_eq!(parse_clipboard_report(r#"{"text":"x"}"#, 100), Some((Some("x".into()), None)));
+    }
+
+    #[test]
+    fn empty_or_broken_reports_are_dropped() {
+        assert_eq!(parse_clipboard_report(r#"{"text":""}"#, 100), None);
+        assert_eq!(parse_clipboard_report(r#"{"text":5}"#, 100), None);
+        assert_eq!(parse_clipboard_report("not json", 100), None);
+    }
+
+    #[test]
+    fn long_text_is_cut_on_a_character_boundary() {
+        assert_eq!(cut("abcdef", 3), "abc");
+        assert_eq!(cut("aäb", 2), "a");
+        assert_eq!(cut("ab", 10), "ab");
+        let report = parse_clipboard_report(r#"{"text":"ääää"}"#, 5);
+        assert_eq!(report, Some((Some("ää".into()), None)));
     }
 }
 
@@ -1363,5 +1598,35 @@ mod screen_pick_tests {
     fn origins_drop_the_path() {
         assert_eq!(origin_of("https://meet.example.com/abc?x=1"), "https://meet.example.com");
         assert_eq!(origin_of("file:///tmp/x.html"), "file://");
+    }
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+
+    fn rect(x: i32, y: i32, width: i32, height: i32) -> Rect {
+        Rect { x, y, width, height }
+    }
+
+    #[test]
+    fn small_repaints_upload_only_their_parts() {
+        let parts = upload_regions(&[rect(10, 20, 40, 40), rect(500, 300, 8, 16)], 1000, 800);
+        assert_eq!(parts, Some(vec![(10, 20, 40, 40), (500, 300, 8, 16)]));
+    }
+
+    #[test]
+    fn parts_are_clipped_to_the_frame() {
+        assert_eq!(upload_regions(&[rect(-5, 790, 20, 50)], 1000, 800), Some(vec![(0, 790, 15, 10)]));
+        // Nothing left inside: the whole frame.
+        assert_eq!(upload_regions(&[rect(2000, 0, 10, 10)], 1000, 800), None);
+        assert_eq!(upload_regions(&[], 1000, 800), None);
+    }
+
+    #[test]
+    fn large_or_many_parts_become_one_copy() {
+        assert_eq!(upload_regions(&[rect(0, 0, 1000, 700)], 1000, 800), None, "most of the frame");
+        let many: Vec<Rect> = (0..20).map(|i| rect(i * 10, i * 5, 4, 4)).collect();
+        assert_eq!(upload_regions(&many, 1000, 800), Some(vec![(0, 0, 194, 99)]));
     }
 }

@@ -11,7 +11,8 @@ Upstream proxies, WireGuard and Tor all work.
 
 A fully userspace client: no root, no TUN device, no kernel module, no external program (the way
 `wireproxy` works). Import a `.conf` in **Settings > Network & VPN > Add WireGuard** (file or
-clipboard). The keys go to the password vault (hidden secret), everything else to `config.toml`.
+clipboard). The keys are stored encrypted with the device key (see "Secrets" below), everything
+else goes to `config.toml`.
 
 ```
 Chromium -> HTTP front (login) -> local SOCKS5 (login) -> Dialer -> smoltcp TCP stream
@@ -75,8 +76,7 @@ For the real browser: `cargo run --release -p axion-net --example wg_world -- /t
 prints an endpoint and writes a `.conf`; on a throwaway profile
 `axion --open=wg-test:/tmp/test.conf` imports it and routes the account through it, and
 `http://only-in-tunnel.test/` (a name that exists only inside) loads; stop the example and the
-kill-switch page appears. Note: the first `--open=wg-test` sets up the test vault, which takes
-about 20 s with a TPM.
+kill-switch page appears. No password vault is needed (the keys go to the device-key store).
 
 ## Tor
 
@@ -142,11 +142,9 @@ crates/axion-app   network.rs (state, vault cache, kill-switch page), settings/n
 ```
 
 * `ConnectionKind { Direct, Proxy, WireGuard, Tor }`, saved in `config.toml` **without
-  secrets**. Proxy passwords and WireGuard keys are stored in the password vault as hidden
-  vault secrets (`Vault::set_secret`, name `net:<connection id>`), never listed among the items.
-  If the vault is locked, a connection that needs secrets is *Blocked* ("vault is locked") and
-  its traffic is blocked, never sent directly. Unlocking Passwords starts it. Connections
-  without secrets (SOCKS5 without login, Tor) do not need the vault.
+  secrets**. Proxy passwords and WireGuard keys are **encrypted with the device key** (no master
+  password, see Secrets below), so connecting never depends on the password vault.
+  Connections without secrets (SOCKS5 without login, Tor) need no secret store at all.
 * `trait Tunnel { start() -> LocalEndpoint; status(); stop() }`: a backend runs on its own
   threads and returns a SOCKS5 server on `127.0.0.1:<random>` that demands a random
   per-session login. `LocalServer::socks5(credentials, dialer, options)` builds that server for
@@ -185,6 +183,27 @@ crates/axion-app   network.rs (state, vault cache, kill-switch page), settings/n
   `GetAuthCredentials` (with a retry limit). A SOCKS5 proxy **with** a login goes through
   `ProxyTunnel` (loopback relay, RFC 1928/1929, names sent as domain names).
 
+### Secrets (device key, no master password)
+
+`axion_vault::SealedStore` (`crates/axion-vault/src/sealed.rs`) is a small file,
+`<profile>/network/secrets.sealed.json`, of named secrets (`<connection id>`) encrypted with
+XChaCha20-Poly1305 under a key derived (HKDF-SHA256) from the **device key**: the same key the
+password vault is bound to, sealed by the TPM where there is one (`device.tpm`), else a private
+`device.key`, both outside the profile (`AXION_DEVICE_KEY_DIR` moves them; tests and capture runs
+use a throwaway directory). The entry name is authenticated, so an entry cannot be moved to
+another connection; a copy of the file is useless on another machine. The file is owner-only and
+written atomically. Reading and writing happen on the `net-secrets` thread (the first use of a
+TPM key may take most of a second), never on the UI thread; a failed write is reported in a toast
+and the secrets still work until Axion quits.
+
+* **Migration.** Secrets an older version put in the password vault (`net:<id>`) are read through
+  while the vault is unlocked, and on that unlock they are written to the device-key store (an
+  entry already there wins) and removed from the vault. Until then, a connection with
+  secrets only in a locked vault is *Blocked* ("... still in the locked password vault ...
+  Unlock Passwords once and they move out of it") and never sent directly; Settings shows the
+  same hint. After the move the vault is not needed any more.
+* Editing a connection stores new secrets in the device-key store at once, with the vault locked.
+
 ### Routing
 
 Precedence, strongest first: per-tab override, per-site rule, private default, account default
@@ -195,6 +214,34 @@ tabs share the global context, private tabs the in-memory one. With site rules a
 PAC script (`mode: pac_script`, `pac_mandatory: true`, as a `data:` URL) that only compares
 host names (no `dnsResolve`, never a `DIRECT` fallback behind a proxy answer). Without rules
 it gets `fixed_servers`. The popover's "Direct / Use X for this site" adds a site rule.
+
+### Session route (`network.session_route_persist`, default off)
+
+The address-field chip is shown whenever connections exist (grey "Direct" for a direct page), so its
+popover is always reachable. The popover's primary action is **Use <connection> for this session**:
+every tab, private ones too, goes through that connection until it is switched off, with no trip to
+Settings. Its other rows offer the remaining connections (switching over) and, while a session
+route is on, **Stop using <connection> for this session**.
+
+* It is `network.session_route` (a connection id), applied on top of the settings' routing
+  (`Network::effective_routing`, `RoutingConfig::with_session_route`): default and private default
+  become the session connection and site rules are **set aside** (they stay in the settings, so
+  switching off restores the default, private default and site rules exactly; the popover hides the
+  per-site choices meanwhile). A "Use direct connection" click on the kill-switch page ends the
+  session route first.
+* State is visible: the chip shows the connection's state colour plus an accent **Session** label,
+  and the popover header says so.
+* New tabs follow it (it is part of the routing the engine is told, for the normal and the
+  private request context). Switching on or off starts the connection (on its own thread) and
+  reloads every running tab (kill-switch pages are retried; frozen and discarded tabs load through
+  the new route when they wake). While the connection is not up yet the kill switch blocks and the
+  pages load by themselves once it is.
+* Not persisted: `session_route` is never written to `config.toml` (and is ignored when read)
+  unless `network.session_route_persist = true`, then it survives restarts. The process-wide
+  hardening switches (`disable-quic` and the rest) are decided at start, so with the session route
+  switched on at run time they only apply after a restart (or with the route persisted); the
+  per-context leak protection (WebRTC, DNS prefetch, ...) applies at once.
+* A removed connection ends the session route that used it.
 
 **Limit:** a per-tab override would need a third request context per route (and with it its own
 cookie jar and cache). That is not implemented. TODO: `RequestContext` per connection for
@@ -257,11 +304,11 @@ Axion, not by Chromium, and do not use the route yet).
 check; Axion never calls it on its own, the button opens it in a tab through the tab's route),
 `connect_timeout_secs`, `health_check_secs`, `max_relay_connections`,
 `wireguard_handshake_timeout_secs`, `background_priority`, `tor_worker_threads`, `connect_at_start`,
-`show_chip`, `notify_changes`. The keymap action `toggle_network` (unbound) switches the current
+`show_chip`, `notify_changes`, `session_route_persist` (and the runtime `session_route`). The keymap action `toggle_network` (unbound) switches the current
 site between its route and direct; it also appears in the command palette.
 
 ## Adding a backend
 
 Implement `Tunnel` in `wireguard.rs` (`tor/` is the worked example), return `LocalServer::socks5(..)` from `start()`,
-set `AVAILABLE = true`. The manager restores keys from the vault (`WgConfig::with_secrets`),
+set `AVAILABLE = true`. The manager restores keys from the secret store (`WgConfig::with_secrets`),
 fronts the tunnel with the authenticating HTTP proxy, and shows it in Settings and the chip.

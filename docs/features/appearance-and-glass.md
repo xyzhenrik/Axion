@@ -67,6 +67,33 @@ so it stays readable on any colour. Six colours are offered. You can use any col
   **Ctrl++** and **Ctrl+-** for those.
 - **Page corner radius** - how round the page card's corners are (0 to 24 px).
 
+## Window frame
+
+By default Axion draws its own window frame (**Window frame: Axion**). There is no title bar from
+the desktop: the red (close), yellow (minimize) and green (zoom, maximize or restore) buttons sit
+at the left end of the toolbar, in the same row as the sidebar button, back and forward and the
+address. While the sidebar is open they sit in the sidebar's header instead, like in Safari. They
+grey out when the window is not in front, and show **x**, **-** and **+** while the pointer is over
+them. They never show in fullscreen. **Window buttons** moves them to the right end.
+
+- Drag any free space of the toolbar, the tab row or the bookmarks bar to move the window; double
+  click it to maximize or restore; right click it for the desktop's window menu (move, resize,
+  always on top ... where the desktop offers one).
+- Drag the window's edges and corners to resize it (`window.resize_border_px`, 6 px). This is off
+  while the window is maximized or fullscreen.
+- The window's corners are rounded (`layout.window_corner_radius`) wherever the compositor gives
+  Axion a window with a transparent background (Wayland). On X11 and XWayland the corners stay
+  square; the log says `the surface has no alpha mode`. They are square while maximized and in
+  fullscreen. Axion draws no shadow of its own: KWin and most compositors draw one around windows
+  without a frame.
+- The window's title (`Axion - <page>`) is no longer drawn, but still names the window in the
+  taskbar and Alt+Tab.
+- Close, minimize and maximize also have shortcuts (`close_window`, `minimize_window`,
+  `toggle_maximize`), see [Keyboard shortcuts](../keyboard-shortcuts.md).
+
+**Window frame: System** brings back the desktop's own title bar and frame. Changing it takes effect
+at once for the frame; rounded corners need a restart to appear after switching to **Axion**.
+
 ## Layout
 
 - **Tab bar** (Tabs & Memory): **Separate** puts tabs in their own row below the address bar.

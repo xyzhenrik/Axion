@@ -86,6 +86,23 @@ pub fn suggest(input: &str, store: Option<&Store>, search_url: &str, now: i64) -
     out
 }
 
+/// What can be shown for `input` at once, before the stored matches arrive (see
+/// `suggest_worker`): what the input itself means, then those of `previous` (the list shown for
+/// what was typed before) that still match every word of it. Keeps the card steady while typing
+/// instead of shrinking to one row and growing again at each key.
+pub fn provisional(input: &str, search_url: &str, previous: &[Suggestion]) -> Vec<Suggestion> {
+    let mut out = suggest(input, None, search_url, 0);
+    let words: Vec<String> = input.split_whitespace().map(str::to_lowercase).collect();
+    for old in previous.iter().filter(|s| matches!(s.kind, Kind::Bookmark | Kind::History)) {
+        let (url, title) = (old.url.to_lowercase(), old.title.to_lowercase());
+        let matches = words.iter().all(|w| url.contains(w.as_str()) || title.contains(w.as_str()));
+        if matches && !out.iter().any(|o| o.url == old.url) {
+            out.push(old.clone());
+        }
+    }
+    out
+}
+
 pub struct SuggestionList {
     popover: Popover,
     /// The glass panel the rows sit on.
@@ -94,6 +111,9 @@ pub struct SuggestionList {
     items: Vec<Suggestion>,
     selected: Option<usize>,
     query: String,
+    /// An answer that arrived while a row was held: the rows are replaced once it is let go
+    /// (rebuilding them under the pointer would cancel the click, and the row's meaning).
+    pending: Option<(String, Vec<Suggestion>)>,
 }
 
 impl SuggestionList {
@@ -115,7 +135,15 @@ impl SuggestionList {
             },
         );
         let plate = popover.root();
-        Self { popover, plate, rows: Vec::new(), items: Vec::new(), selected: None, query: String::new() }
+        Self {
+            popover,
+            plate,
+            rows: Vec::new(),
+            items: Vec::new(),
+            selected: None,
+            query: String::new(),
+            pending: None,
+        }
     }
 
     pub fn row_action(id: ActionId) -> Option<usize> {
@@ -124,6 +152,18 @@ impl SuggestionList {
 
     pub fn is_visible(&self) -> bool {
         self.popover.is_open()
+    }
+
+    /// Where row `i` is drawn (test aid for pointer tests).
+    #[cfg(test)]
+    pub(crate) fn row_center(&self, ui: &Ui, i: usize) -> Option<glam::Vec2> {
+        self.rows.get(i).map(|&row| ui.frame(row).center())
+    }
+
+    /// The card's frame (test aid).
+    #[cfg(test)]
+    pub(crate) fn card(&self, ui: &Ui) -> Frame {
+        ui.frame(self.plate)
     }
 
     /// Updates the list for `query`, placed under `anchor` (the address field, logical px).
@@ -146,7 +186,60 @@ impl SuggestionList {
         self.rebuild(ui, config, anchor, favicons);
     }
 
+    /// The query the list was last built for.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// The rows shown now.
+    pub fn items(&self) -> &[Suggestion] {
+        &self.items
+    }
+
+    /// The full list for `query` arrived (from the worker): replaces the rows when the list is
+    /// still for that query. A selected row stays selected while it is still there.
+    pub fn set_items(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        query: &str,
+        items: Vec<Suggestion>,
+        anchor: Frame,
+        favicons: &Favicons,
+    ) {
+        if query != self.query || items == self.items {
+            return;
+        }
+        if self.row_held(ui) {
+            self.pending = Some((query.to_owned(), items));
+            return;
+        }
+        let selected = self.selected.and_then(|i| self.items.get(i)).map(|s| s.url.clone());
+        self.items = if query.trim().is_empty() { Vec::new() } else { items };
+        self.selected = selected.and_then(|url| self.items.iter().position(|s| s.url == url));
+        self.rebuild(ui, config, anchor, favicons);
+    }
+
+    /// Whether the pointer holds one of the rows (pressed, not yet let go).
+    fn row_held(&self, ui: &Ui) -> bool {
+        ui.pressed_action()
+            .and_then(|n| ui.widget(n))
+            .and_then(|w| w.action)
+            .is_some_and(|a| Self::row_action(a).is_some())
+    }
+
+    /// Applies the answer that waited for a held row to be let go. Call every frame.
+    pub fn flush_pending(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, favicons: &Favicons) {
+        if self.pending.is_some()
+            && !self.row_held(ui)
+            && let Some((query, items)) = self.pending.take()
+        {
+            self.set_items(ui, config, &query, items, anchor, favicons);
+        }
+    }
+
     pub fn hide(&mut self, ui: &mut Ui, config: &Config) {
+        self.pending = None;
         self.items.clear();
         self.query.clear();
         self.selected = None;
@@ -181,7 +274,12 @@ impl SuggestionList {
         for (i, item) in self.items.iter().enumerate() {
             let row = ui.add(
                 self.plate,
-                Widget::container().with_action(ActionId(ROW_BASE + i as u32)).with_radius(CAPSULE),
+                Widget::container()
+                    .with_action(ActionId(ROW_BASE + i as u32))
+                    .with_radius(CAPSULE)
+                    // The field stays focused while a row is pressed: blurring would close the
+                    // card (and drop its rows) before the click is done.
+                    .keeping_focus(),
                 Style {
                     size: Size { width: auto(), height: length(ROW_HEIGHT) },
                     flex_direction: FlexDirection::Row,
@@ -300,6 +398,21 @@ impl SuggestionList {
 mod tests {
     fn sug(kind: Kind, url: &str) -> Suggestion {
         Suggestion { kind, title: String::new(), url: url.into() }
+    }
+
+    #[test]
+    fn provisional_rows_keep_what_still_matches() {
+        let mut kept = sug(Kind::History, "https://music.example/");
+        kept.title = "Music".into();
+        let previous = [
+            sug(Kind::Search, "https://s/?q=mu"),
+            kept.clone(),
+            sug(Kind::Bookmark, "https://mail.example/"),
+        ];
+        let rows = provisional("mus", "https://s/?q={}", &previous);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].kind, Kind::Search, "what the input means comes first");
+        assert_eq!(rows[1], kept);
     }
 
     #[test]

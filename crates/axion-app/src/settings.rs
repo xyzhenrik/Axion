@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
-    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, GlassStyle, GpuChoice,
-    Keymap, PageFrames, PermissionDefault, PlaylistSort, ReaderFont, ReaderTheme, RemoveDownloads,
-    ShieldLevel, TabBarStyle, ThemeMode, TintMode, TranslationBackend, UiLanguage,
+    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, ControlsSide, GlassStyle,
+    GpuChoice, Keymap, PageFrames, PermissionDefault, PlaylistSort, ReaderFont, ReaderTheme, RemoveDownloads,
+    ShieldLevel, TabBarStyle, ThemeMode, TintMode, TranslationBackend, UiLanguage, WindowDecorations,
 };
 use axion_i18n::{tr, tr_fmt, tr_mark, tr_n};
 use axion_ui::taffy::prelude::*;
@@ -17,11 +17,13 @@ use zeroize::Zeroizing;
 
 use axion_engine::PermissionKind;
 
+use crate::default_browser::State as DefaultState;
+use crate::dropdown::DropdownItem;
 use crate::home::Image;
 use crate::morph::{Origin, SheetMorph};
 use crate::passwords::MIN_MASTER_LENGTH;
 use crate::permissions::Group;
-use crate::update::{AboutInfo, AboutState, InstallMode};
+use crate::update::{AboutInfo, AboutState, InstallMode, Phase, RunInfo};
 
 mod import;
 mod network;
@@ -177,6 +179,17 @@ impl Category {
     }
 }
 
+/// A handle on one toggle or slider setting, for the context menu's "Reset to Default".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingRef(Setting);
+
+#[cfg(test)]
+impl SettingRef {
+    pub(crate) fn for_test() -> Self {
+        SettingRef(Setting::HomeClock)
+    }
+}
+
 /// A setting edited with a toggle or slider; sliders map 0–1 onto the setting's range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Setting {
@@ -223,6 +236,7 @@ enum Setting {
     MiddleClickClosesTab,
     NewTabJoinsGroup,
     GroupChipsInBar,
+    HideSingleTabBar,
     ShowAudioIndicator,
     RememberSiteMute,
     DragOutLinks,
@@ -237,6 +251,8 @@ enum Setting {
     GpuRasterization,
     DesktopIntegration,
     AppMenuEntry,
+    DefaultBrowserHint,
+    SingleInstance,
     AskWhereToSave,
     OpenSafeFiles,
     ClearCookiesOnQuit,
@@ -260,6 +276,7 @@ enum Setting {
     TranslateChanges,
     AutoCheckUpdates,
     UpdatePrereleases,
+    UpdateNotifications,
     NetKillSwitch,
     NetLeakProtection,
     NetDisableQuic,
@@ -267,6 +284,7 @@ enum Setting {
     NetConnectAtStart,
     NetShowChip,
     NetNotify,
+    NetSessionPersist,
 }
 
 impl Setting {
@@ -321,6 +339,7 @@ impl Setting {
             Setting::MiddleClickClosesTab => tr_mark("Middle click closes tabs"),
             Setting::NewTabJoinsGroup => tr_mark("New tabs join the group they open from"),
             Setting::GroupChipsInBar => tr_mark("Show tab group names in the tab bar"),
+            Setting::HideSingleTabBar => tr_mark("Hide the tab bar with a single tab"),
             Setting::ShowAudioIndicator => tr_mark("Show a speaker on tabs playing sound"),
             Setting::RememberSiteMute => tr_mark("Remember muted sites"),
             Setting::DragOutLinks => tr_mark("Drag tabs out as links"),
@@ -335,6 +354,8 @@ impl Setting {
             Setting::GpuRasterization => tr_mark("Smooth WebGL, canvas and GPU rasterization"),
             Setting::DesktopIntegration => tr_mark("Desktop media controls and media keys (after restart)"),
             Setting::AppMenuEntry => tr_mark("Add Axion to the application menu"),
+            Setting::DefaultBrowserHint => tr_mark("Suggest making Axion the default browser"),
+            Setting::SingleInstance => tr_mark("Open links from other apps in the running window"),
             Setting::AskWhereToSave => tr_mark("Ask where to save each file"),
             Setting::OpenSafeFiles => tr_mark("Open “safe” files after downloading"),
             Setting::ClearCookiesOnQuit => tr_mark("Clear cookies and site data when Axion quits"),
@@ -352,6 +373,7 @@ impl Setting {
             Setting::NetConnectAtStart => tr_mark("Connect when Axion starts"),
             Setting::NetShowChip => tr_mark("Show the connection in the address field"),
             Setting::NetNotify => tr_mark("Tell me when a connection comes up or goes down"),
+            Setting::NetSessionPersist => tr_mark("Keep the session route after a restart"),
             Setting::ExtensionsEnabled => tr_mark("Chrome extensions (after restart)"),
             Setting::ExtensionsWebStore => tr_mark("Install from the Chrome Web Store (after restart)"),
             Setting::ExtensionsAutoUpdate => tr_mark("Update Web Store extensions automatically"),
@@ -367,6 +389,7 @@ impl Setting {
             Setting::TranslateChanges => tr_mark("Translate text that appears later"),
             Setting::AutoCheckUpdates => tr_mark("Check for updates automatically"),
             Setting::UpdatePrereleases => tr_mark("Include pre-releases"),
+            Setting::UpdateNotifications => tr_mark("Notify me about updates"),
         }
     }
 
@@ -404,6 +427,7 @@ impl Setting {
                 | Setting::MiddleClickClosesTab
                 | Setting::NewTabJoinsGroup
                 | Setting::GroupChipsInBar
+                | Setting::HideSingleTabBar
                 | Setting::ShowAudioIndicator
                 | Setting::RememberSiteMute
                 | Setting::DragOutLinks
@@ -416,6 +440,8 @@ impl Setting {
                 | Setting::GpuRasterization
                 | Setting::DesktopIntegration
                 | Setting::AppMenuEntry
+                | Setting::DefaultBrowserHint
+                | Setting::SingleInstance
                 | Setting::AskWhereToSave
                 | Setting::OpenSafeFiles
                 | Setting::ClearCookiesOnQuit
@@ -431,6 +457,7 @@ impl Setting {
                 | Setting::NetConnectAtStart
                 | Setting::NetShowChip
                 | Setting::NetNotify
+                | Setting::NetSessionPersist
                 | Setting::ExtensionsEnabled
                 | Setting::ExtensionsWebStore
                 | Setting::ExtensionsAutoUpdate
@@ -445,6 +472,7 @@ impl Setting {
                 | Setting::TranslateChanges
                 | Setting::AutoCheckUpdates
                 | Setting::UpdatePrereleases
+                | Setting::UpdateNotifications
         )
     }
 
@@ -557,6 +585,7 @@ impl Setting {
             Setting::MiddleClickClosesTab => return c.tabs.middle_click_closes_tab as u8 as f32,
             Setting::NewTabJoinsGroup => return c.tabs.new_tab_joins_group as u8 as f32,
             Setting::GroupChipsInBar => return c.tabs.group_chips_in_bar as u8 as f32,
+            Setting::HideSingleTabBar => return c.layout.hide_single_tab_bar as u8 as f32,
             Setting::ShowAudioIndicator => return c.tabs.show_audio_indicator as u8 as f32,
             Setting::RememberSiteMute => return c.tabs.remember_site_mute as u8 as f32,
             Setting::DragOutLinks => return c.tabs.drag_out_links as u8 as f32,
@@ -570,6 +599,8 @@ impl Setting {
             Setting::GpuRasterization => return c.hardware.gpu_rasterization as u8 as f32,
             Setting::DesktopIntegration => return c.media.desktop_integration as u8 as f32,
             Setting::AppMenuEntry => return c.general.desktop_integration as u8 as f32,
+            Setting::DefaultBrowserHint => return c.general.default_browser_hint as u8 as f32,
+            Setting::SingleInstance => return c.general.single_instance as u8 as f32,
             Setting::AskWhereToSave => return c.downloads.ask_where_to_save as u8 as f32,
             Setting::OpenSafeFiles => return c.downloads.open_safe_files as u8 as f32,
             Setting::ClearCookiesOnQuit => return c.data.clear_cookies_on_quit as u8 as f32,
@@ -585,6 +616,7 @@ impl Setting {
             Setting::NetConnectAtStart => return c.network.connect_at_start as u8 as f32,
             Setting::NetShowChip => return c.network.show_chip as u8 as f32,
             Setting::NetNotify => return c.network.notify_changes as u8 as f32,
+            Setting::NetSessionPersist => return c.network.session_route_persist as u8 as f32,
             Setting::ExtensionsEnabled => return c.extensions.enabled as u8 as f32,
             Setting::ExtensionsWebStore => return c.extensions.web_store as u8 as f32,
             Setting::ExtensionsAutoUpdate => return c.extensions.auto_update as u8 as f32,
@@ -598,6 +630,7 @@ impl Setting {
             Setting::TranslatePrompt => return c.translation.prompt as u8 as f32,
             Setting::TranslateChanges => return c.translation.translate_changes as u8 as f32,
             Setting::AutoCheckUpdates => return c.updates.auto_check_on_start as u8 as f32,
+            Setting::UpdateNotifications => return c.updates.desktop_notification as u8 as f32,
             Setting::UpdatePrereleases => {
                 return (c.updates.channel == axion_config::UpdateChannel::Prerelease) as u8 as f32;
             }
@@ -662,6 +695,7 @@ impl Setting {
             Setting::MiddleClickClosesTab => c.tabs.middle_click_closes_tab = on,
             Setting::NewTabJoinsGroup => c.tabs.new_tab_joins_group = on,
             Setting::GroupChipsInBar => c.tabs.group_chips_in_bar = on,
+            Setting::HideSingleTabBar => c.layout.hide_single_tab_bar = on,
             Setting::ShowAudioIndicator => c.tabs.show_audio_indicator = on,
             Setting::RememberSiteMute => c.tabs.remember_site_mute = on,
             Setting::DragOutLinks => c.tabs.drag_out_links = on,
@@ -675,6 +709,8 @@ impl Setting {
             Setting::GpuRasterization => c.hardware.gpu_rasterization = on,
             Setting::DesktopIntegration => c.media.desktop_integration = on,
             Setting::AppMenuEntry => c.general.desktop_integration = on,
+            Setting::DefaultBrowserHint => c.general.default_browser_hint = on,
+            Setting::SingleInstance => c.general.single_instance = on,
             Setting::AskWhereToSave => c.downloads.ask_where_to_save = on,
             Setting::OpenSafeFiles => c.downloads.open_safe_files = on,
             Setting::ClearCookiesOnQuit => c.data.clear_cookies_on_quit = on,
@@ -690,6 +726,7 @@ impl Setting {
             Setting::NetConnectAtStart => c.network.connect_at_start = on,
             Setting::NetShowChip => c.network.show_chip = on,
             Setting::NetNotify => c.network.notify_changes = on,
+            Setting::NetSessionPersist => c.network.session_route_persist = on,
             Setting::ExtensionsEnabled => c.extensions.enabled = on,
             Setting::ExtensionsWebStore => c.extensions.web_store = on,
             Setting::ExtensionsAutoUpdate => c.extensions.auto_update = on,
@@ -703,6 +740,7 @@ impl Setting {
             Setting::TranslatePrompt => c.translation.prompt = on,
             Setting::TranslateChanges => c.translation.translate_changes = on,
             Setting::AutoCheckUpdates => c.updates.auto_check_on_start = on,
+            Setting::UpdateNotifications => c.updates.desktop_notification = on,
             Setting::UpdatePrereleases => {
                 c.updates.channel = if on {
                     axion_config::UpdateChannel::Prerelease
@@ -752,6 +790,10 @@ pub enum SettingsAction {
     GlassStyle(GlassStyle),
     /// Index into `ICON_WEIGHTS`.
     IconWeight(usize),
+    /// Who draws the window's frame: Axion or the desktop.
+    WindowFrame(WindowDecorations),
+    /// The side of the toolbar Axion's window buttons sit on.
+    ControlsSide(ControlsSide),
     SearchEngine(usize),
     Accent(usize),
     ClearHistory,
@@ -774,13 +816,19 @@ pub enum SettingsAction {
     ReaderFont(ReaderFont),
     ReaderTheme(ReaderTheme),
     TranslationBackend(TranslationBackend),
-    /// Index into [`TRANSLATE_TARGETS`].
+    /// Index into the translate-into choices (see `translate_target`).
     TranslateTarget(usize),
     /// Deletes the downloaded translation models.
     RemoveTranslationModels,
     Language(UiLanguage),
+    /// Opens the interface-language dropdown.
+    LanguagePicker,
+    /// Opens the translate-into dropdown.
+    TranslatePicker,
     /// Runs the first-run introduction again.
     ShowWelcomeTour,
+    /// Makes Axion the system's default browser.
+    MakeDefaultBrowser,
     CloseAfter(u32),
     AddTrustedSite,
     /// Index into `media.trusted_player_sites`.
@@ -815,12 +863,18 @@ pub enum SettingsAction {
     /// Store the repository typed into the field.
     SaveRepository,
     RelaunchNow,
+    /// The running update: stop it, dismiss its result ("Later"), run it again.
+    CancelUpdate,
+    DismissUpdate,
+    RetryUpdate,
     /// Hardware page: how page frames reach Axion, and which graphics card.
     PageFrames(PageFrames),
     GpuCard(GpuChoice),
     CopyDiagnostics,
     /// Relaunch to apply the Hardware settings.
     RestartAxion,
+    /// General: keep the old language for now (hides the restart notice under the picker).
+    LanguageLater,
     /// Privacy › Site Permissions: a group's default (index into `Group::ALL`), Ask or Block.
     PermissionDefault(usize, PermissionDefault),
     /// Forget one remembered site decision (index into the listed ones), or all of them.
@@ -845,7 +899,7 @@ const HARDWARE_BASE: u32 = 880;
 
 /// The About page's actions: the ids after the background picker's.
 const UPDATE_BASE: u32 = 990;
-const UPDATE_ACTIONS: u32 = 7;
+const UPDATE_ACTIONS: u32 = 10;
 
 /// The background picker's actions (after the categories' ids).
 const NO_BACKGROUND: u32 = 920;
@@ -860,6 +914,8 @@ const TRUSTED_SITE_BASE: u32 = 200;
 const CATEGORY_BASE: u32 = 900;
 /// Reader view and translation controls.
 const READING_BASE: u32 = 1100;
+/// The window frame choices (Appearance): 4 ids.
+const WINDOW_BASE: u32 = 1400;
 const READER_FONTS: [(&str, ReaderFont); 3] = [
     (tr_mark("Serif"), ReaderFont::Serif),
     (tr_mark("Sans"), ReaderFont::Sans),
@@ -875,14 +931,54 @@ const TRANSLATION_BACKENDS: [(&str, TranslationBackend); 2] = [
     (tr_mark("On this computer"), TranslationBackend::Local),
     (tr_mark("Your server"), TranslationBackend::Endpoint),
 ];
-/// Languages pages are translated into: the code (empty: the interface language) and its name.
-const TRANSLATE_TARGETS: [(&str, &str); 5] = [
-    ("", tr_mark("Interface")),
-    ("en", tr_mark("English")),
-    ("de", tr_mark("German")),
-    ("fr", tr_mark("French")),
-    ("es", tr_mark("Spanish")),
-];
+/// Translate-into choices: entry 0 is "Interface" (code empty: the interface language), then
+/// every language the local models cover, in `axion_translate::lang::LANGUAGES` order.
+const TRANSLATE_TARGET_BASE: u32 = 1040;
+
+/// A dropdown list of the Settings pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Picker {
+    /// General: the interface language.
+    Language,
+    /// Reading & Translation: the language pages are translated into.
+    TranslateTarget,
+}
+
+impl Picker {
+    fn action(self) -> SettingsAction {
+        match self {
+            Picker::Language => SettingsAction::LanguagePicker,
+            Picker::TranslateTarget => SettingsAction::TranslatePicker,
+        }
+    }
+}
+
+/// A language in its own name ("System default" for the system's).
+fn language_name(language: UiLanguage) -> &'static str {
+    crate::locale::native_name(language).unwrap_or_else(|| tr("System default"))
+}
+
+/// The code and English name of translate-into choice `i` (see [`TRANSLATE_TARGET_BASE`]).
+fn translate_target(i: usize) -> Option<(&'static str, &'static str)> {
+    if i == 0 {
+        return Some(("", tr_mark("Interface")));
+    }
+    axion_translate::lang::targets().nth(i - 1)
+}
+
+/// How many translate-into choices there are.
+fn translate_target_count() -> usize {
+    1 + axion_translate::lang::LANGUAGES.len()
+}
+
+/// The choice that stands for the configured target language (an unknown code is none).
+fn translate_target_index(code: &str) -> Option<usize> {
+    let wanted = axion_translate::lang::normalize(code).unwrap_or_default();
+    (0..translate_target_count()).find(|&i| translate_target(i).is_some_and(|(c, _)| c == wanted))
+}
+
+/// Interface-language choices: "System default", then every catalog language in its own name.
+const LANGUAGE_BASE: u32 = 1131;
 
 /// Remove buttons of the sites with data, and how many sites are listed.
 const SITE_DATA_BASE: u32 = 100;
@@ -937,9 +1033,10 @@ fn set_icon_weight(config: &mut Config, preset: usize) {
     config.appearance.icon_stroke_dark = dark;
 }
 
-/// The language choices, named in their own language (never translated).
-const LANGUAGES: [(&str, UiLanguage); 3] =
-    [("System", UiLanguage::System), ("English", UiLanguage::English), ("Deutsch", UiLanguage::German)];
+/// The index of an interface-language choice in [`UiLanguage::ALL`].
+fn language_index(language: UiLanguage) -> usize {
+    UiLanguage::ALL.iter().position(|&l| l == language).unwrap_or(0)
+}
 
 /// The page rendering choices (labels are translated where drawn).
 const PAGE_FRAMES: [(&str, PageFrames); 3] = [
@@ -991,12 +1088,15 @@ impl SettingsAction {
                     SettingsAction::Theme(ThemeMode::Auto) => 20,
                     SettingsAction::Theme(ThemeMode::Light) => 21,
                     SettingsAction::Theme(ThemeMode::Dark) => 22,
-                    SettingsAction::Language(language) => {
-                        23 + LANGUAGES.iter().position(|&(_, l)| l == language).unwrap_or(0) as u32
+                    SettingsAction::Language(language) => LANGUAGE_BASE + language_index(language) as u32,
+                    SettingsAction::WindowFrame(d) => WINDOW_BASE + (d == WindowDecorations::System) as u32,
+                    SettingsAction::ControlsSide(side) => {
+                        WINDOW_BASE + 2 + (side == ControlsSide::Right) as u32
                     }
                     SettingsAction::GlassStyle(GlassStyle::Liquid) => 26,
                     SettingsAction::GlassStyle(GlassStyle::Flat) => 27,
                     SettingsAction::ShowWelcomeTour => 28,
+                    SettingsAction::MakeDefaultBrowser => 29,
                     SettingsAction::SearchEngine(i) => 30 + i as u32,
                     SettingsAction::Accent(i) => 40 + i as u32,
                     SettingsAction::ClearHistory => 50,
@@ -1037,8 +1137,10 @@ impl SettingsAction {
                     }
                     SettingsAction::TranslationBackend(TranslationBackend::Local) => READING_BASE + 7,
                     SettingsAction::TranslationBackend(TranslationBackend::Endpoint) => READING_BASE + 8,
-                    SettingsAction::TranslateTarget(i) => READING_BASE + 10 + i as u32,
+                    SettingsAction::TranslateTarget(i) => TRANSLATE_TARGET_BASE + i as u32,
                     SettingsAction::RemoveTranslationModels => READING_BASE + 30,
+                    SettingsAction::LanguagePicker => READING_BASE + 20,
+                    SettingsAction::TranslatePicker => READING_BASE + 21,
                     SettingsAction::AddTrustedSite => 80,
                     SettingsAction::OpenPasswords => 85,
                     SettingsAction::ImportPasswords => 86,
@@ -1076,12 +1178,16 @@ impl SettingsAction {
                     SettingsAction::OpenReleasePage => UPDATE_BASE + 4,
                     SettingsAction::SaveRepository => UPDATE_BASE + 5,
                     SettingsAction::RelaunchNow => UPDATE_BASE + 6,
+                    SettingsAction::CancelUpdate => UPDATE_BASE + 7,
+                    SettingsAction::DismissUpdate => UPDATE_BASE + 8,
+                    SettingsAction::RetryUpdate => UPDATE_BASE + 9,
                     SettingsAction::Import(action) => action.id(),
                     SettingsAction::Network(action) => action.id(),
                     SettingsAction::PageFrames(f) => HARDWARE_BASE + page_frames_index(f),
                     SettingsAction::GpuCard(g) => HARDWARE_BASE + 3 + gpu_card_index(g),
                     SettingsAction::CopyDiagnostics => HARDWARE_BASE + 6,
                     SettingsAction::RestartAxion => HARDWARE_BASE + 7,
+                    SettingsAction::LanguageLater => HARDWARE_BASE + 8,
                 },
         )
     }
@@ -1096,10 +1202,13 @@ impl SettingsAction {
             20 => SettingsAction::Theme(ThemeMode::Auto),
             21 => SettingsAction::Theme(ThemeMode::Light),
             22 => SettingsAction::Theme(ThemeMode::Dark),
-            23..=25 => SettingsAction::Language(LANGUAGES[(n - 23) as usize].1),
+            n if (LANGUAGE_BASE..LANGUAGE_BASE + UiLanguage::ALL.len() as u32).contains(&n) => {
+                SettingsAction::Language(UiLanguage::ALL[(n - LANGUAGE_BASE) as usize])
+            }
             26 => SettingsAction::GlassStyle(GlassStyle::Liquid),
             27 => SettingsAction::GlassStyle(GlassStyle::Flat),
             28 => SettingsAction::ShowWelcomeTour,
+            29 => SettingsAction::MakeDefaultBrowser,
             30..=39 if ((n - 30) as usize) < SEARCH_ENGINES.len() => {
                 SettingsAction::SearchEngine((n - 30) as usize)
             }
@@ -1130,10 +1239,14 @@ impl SettingsAction {
             }
             n if n == READING_BASE + 7 => SettingsAction::TranslationBackend(TranslationBackend::Local),
             n if n == READING_BASE + 8 => SettingsAction::TranslationBackend(TranslationBackend::Endpoint),
-            n if (READING_BASE + 10..READING_BASE + 10 + TRANSLATE_TARGETS.len() as u32).contains(&n) => {
-                SettingsAction::TranslateTarget((n - READING_BASE - 10) as usize)
+            n if (TRANSLATE_TARGET_BASE..TRANSLATE_TARGET_BASE + translate_target_count() as u32)
+                .contains(&n) =>
+            {
+                SettingsAction::TranslateTarget((n - TRANSLATE_TARGET_BASE) as usize)
             }
             n if n == READING_BASE + 30 => SettingsAction::RemoveTranslationModels,
+            n if n == READING_BASE + 20 => SettingsAction::LanguagePicker,
+            n if n == READING_BASE + 21 => SettingsAction::TranslatePicker,
             85 => SettingsAction::OpenPasswords,
             86 => SettingsAction::ImportPasswords,
             87 => SettingsAction::ExportPasswords,
@@ -1148,11 +1261,12 @@ impl SettingsAction {
             n if (SITE_DATA_BASE..SITE_DATA_BASE + SITE_DATA_LIMIT as u32).contains(&n) => {
                 SettingsAction::RemoveSiteData((n - SITE_DATA_BASE) as usize)
             }
-            n if (HARDWARE_BASE..HARDWARE_BASE + 8).contains(&n) => match n - HARDWARE_BASE {
+            n if (HARDWARE_BASE..HARDWARE_BASE + 9).contains(&n) => match n - HARDWARE_BASE {
                 i @ 0..=2 => SettingsAction::PageFrames(PAGE_FRAMES[i as usize].1),
                 i @ 3..=5 => SettingsAction::GpuCard(GPU_CARDS[i as usize - 3].1),
                 6 => SettingsAction::CopyDiagnostics,
-                _ => SettingsAction::RestartAxion,
+                7 => SettingsAction::RestartAxion,
+                _ => SettingsAction::LanguageLater,
             },
             n if (PERMISSION_DEFAULT_BASE..PERMISSION_DEFAULT_BASE + 2 * Group::ALL.len() as u32)
                 .contains(&n) =>
@@ -1184,7 +1298,14 @@ impl SettingsAction {
                 SettingsAction::OpenReleasePage,
                 SettingsAction::SaveRepository,
                 SettingsAction::RelaunchNow,
+                SettingsAction::CancelUpdate,
+                SettingsAction::DismissUpdate,
+                SettingsAction::RetryUpdate,
             ][(n - UPDATE_BASE) as usize],
+            WINDOW_BASE => SettingsAction::WindowFrame(WindowDecorations::Custom),
+            n if n == WINDOW_BASE + 1 => SettingsAction::WindowFrame(WindowDecorations::System),
+            n if n == WINDOW_BASE + 2 => SettingsAction::ControlsSide(ControlsSide::Left),
+            n if n == WINDOW_BASE + 3 => SettingsAction::ControlsSide(ControlsSide::Right),
             n if ImportAction::from_id(n).is_some() => SettingsAction::Import(ImportAction::from_id(n)?),
             n if NetAction::from_id(n).is_some() => SettingsAction::Network(NetAction::from_id(n)?),
             _ => return None,
@@ -1195,8 +1316,12 @@ impl SettingsAction {
 /// What the browser should do after a click or edit in the sheet.
 pub enum Outcome {
     Nothing,
+    /// Open a dropdown list (the browser asks for its items and the button's frame).
+    OpenPicker(Picker),
     /// Close Settings and run the first-run introduction.
     ShowWelcomeTour,
+    /// Make Axion the system's default browser.
+    MakeDefaultBrowser,
     /// The configuration changed; save and apply it.
     Changed,
     Close,
@@ -1253,6 +1378,9 @@ pub enum Outcome {
     RemindLater,
     OpenReleasePage,
     RelaunchNow,
+    CancelUpdate,
+    DismissUpdate,
+    RetryUpdate,
     /// Hardware: copy the GPU diagnostics to the clipboard.
     CopyDiagnostics,
     /// Hardware: relaunch Axion to apply the changed settings.
@@ -1265,6 +1393,43 @@ pub enum Outcome {
     ConfirmGpuFrames,
     /// The repository changed (`config.updates.repository`); save it and look for updates.
     SourceChanged,
+}
+
+/// What the General page says about the default browser.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DefaultBrowserView {
+    pub state: Option<DefaultState>,
+    /// A change is under way.
+    pub busy: bool,
+    /// Why the last change did not work.
+    pub error: Option<String>,
+}
+
+impl DefaultBrowserView {
+    /// The line under the row.
+    fn status(&self) -> String {
+        if self.busy {
+            return tr("Setting Axion as the default browser…").to_owned();
+        }
+        if let Some(error) = &self.error {
+            return tr_fmt!("Axion could not be made the default browser: {reason}", reason = error);
+        }
+        match &self.state {
+            None => tr("Checking which browser is the default…").to_owned(),
+            Some(DefaultState::Axion) => tr("Axion is your default browser.").to_owned(),
+            Some(DefaultState::Other(id)) if id.is_empty() => {
+                tr("No default browser is set. Links open in whatever the system picks.").to_owned()
+            }
+            Some(DefaultState::Other(id)) => tr_fmt!(
+                "Your default browser is {name}. Links from other apps open there.",
+                name = crate::default_browser::display_name(id)
+            ),
+            Some(DefaultState::Unavailable) => {
+                tr("This system cannot say which browser is the default (xdg-settings is missing).")
+                    .to_owned()
+            }
+        }
+    }
 }
 
 pub struct SettingsSheet {
@@ -1301,6 +1466,8 @@ pub struct SettingsSheet {
     /// Why the last profile photo was refused (or nothing).
     photo_status: Option<String>,
     confirm_delete: bool,
+    /// The picker buttons of the page shown (dropdowns open from them).
+    pickers: Vec<(Picker, NodeId)>,
     /// The page must be rebuilt after a change (a toggle that shows more rows).
     rebuild: bool,
     /// The import/export file and password fields (Passwords page) and the last
@@ -1314,6 +1481,8 @@ pub struct SettingsSheet {
     /// Data page: the cache's size, the sites with cookies (`None` while unknown) and
     /// which destructive button asks for confirmation.
     cache_size: Option<u64>,
+    /// Who the system's default browser is, and whether a change is under way.
+    default_browser: DefaultBrowserView,
     site_data: Option<Vec<(String, usize)>>,
     confirm_clear_data: bool,
     confirm_remove_all: bool,
@@ -1343,13 +1512,36 @@ pub struct SettingsSheet {
     about: AboutInfo,
     /// What the GPU session uses (Hardware page); `None` before the browser set it.
     hardware: Option<crate::hardware::Status>,
+    /// The language this run started in, and the one the user chose "Later" for (the restart
+    /// notice under the language picker stays hidden while the setting still resolves to it).
+    start_language: axion_i18n::Language,
+    language_later: Option<axion_i18n::Language>,
     repository_field: Option<NodeId>,
     repository_status: Option<String>,
     /// What was typed in the repository field when it was refused (put back after a redraw).
     repository_draft: Option<String>,
     notes: Option<(NodeId, NodeId)>,
+    /// The running update's live lines and bar (changed in place while it runs).
+    run_nodes: Option<RunNodes>,
     notes_scroll: f32,
     about_badge: NodeId,
+}
+
+/// The nodes of a running update that change while it runs.
+#[derive(Clone, Copy)]
+struct RunNodes {
+    status: NodeId,
+    detail: NodeId,
+    fill: NodeId,
+}
+
+const RUN_BAR_HEIGHT: f32 = 6.0;
+/// The indeterminate bar's moving part: its width (share of the bar) and steps per sweep.
+const RUN_SWEEP_WIDTH: f32 = 0.3;
+const RUN_SWEEP_STEPS: u32 = 16;
+
+fn zero_rect() -> Rect<LengthPercentageAuto> {
+    Rect { left: length(0.0), right: length(0.0), top: length(0.0), bottom: length(0.0) }
 }
 
 fn row(gap: f32) -> Style {
@@ -1392,6 +1584,7 @@ impl SettingsSheet {
             root,
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thick))
+                .with_popup_cover()
                 .with_radius(SHEET_RADIUS),
             Style { position: Position::Absolute, flex_direction: FlexDirection::Row, ..Default::default() },
         );
@@ -1535,6 +1728,7 @@ impl SettingsSheet {
             account_status: None,
             photo_status: None,
             confirm_delete: false,
+            pickers: Vec::new(),
             rebuild: false,
             passwords_file: None,
             passwords_secret: None,
@@ -1543,6 +1737,7 @@ impl SettingsSheet {
             group: None,
             confirm_clear: false,
             cache_size: None,
+            default_browser: DefaultBrowserView::default(),
             site_data: None,
             confirm_clear_data: false,
             confirm_remove_all: false,
@@ -1561,16 +1756,34 @@ impl SettingsSheet {
             background_error: None,
             about: AboutInfo::default(),
             hardware: None,
+            start_language: axion_i18n::language(),
+            language_later: None,
             repository_field: None,
             repository_status: None,
             repository_draft: None,
             notes: None,
+            run_nodes: None,
             notes_scroll: 0.0,
             about_badge,
         }
     }
 
     /// What the Hardware page reports.
+    /// The language the setting stands for when it differs from the running one.
+    pub fn pending_language(&self, config: &Config) -> Option<axion_i18n::Language> {
+        crate::locale::pending(self.start_language, config.general.language)
+    }
+
+    /// "Later": the restart notice stays hidden until the language setting changes again.
+    pub fn postpone_language(&mut self, config: &Config) {
+        self.language_later = self.pending_language(config);
+    }
+
+    /// Whether a language change waits for a restart and the user has not postponed it.
+    pub fn language_restart_due(&self, config: &Config) -> bool {
+        self.pending_language(config).is_some_and(|l| self.language_later != Some(l))
+    }
+
     pub fn set_hardware(&mut self, status: crate::hardware::Status) {
         self.hardware = Some(status);
     }
@@ -1620,6 +1833,31 @@ impl SettingsSheet {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// The setting whose row lies under `p` (logical px): a toggle or slider row. For the
+    /// context menu's "Reset to Default".
+    pub fn setting_at(&self, ui: &Ui, p: Vec2) -> Option<SettingRef> {
+        if !self.open || !ui.is_visible(self.sheet) {
+            return None;
+        }
+        self.controls.iter().find_map(|&(node, setting)| {
+            let row = ui.parent(node)?;
+            (ui.is_visible(node) && ui.frame(row).contains(p)).then_some(SettingRef(setting))
+        })
+    }
+
+    /// Whether the setting has its default value in `config`.
+    pub fn is_default(&self, setting: SettingRef, config: &Config) -> bool {
+        (setting.0.get(config) - setting.0.get(&Config::default())).abs() < 1e-4
+    }
+
+    /// Puts the setting back to its default value; the page is rebuilt to show it.
+    pub fn reset(&mut self, setting: SettingRef, config: &mut Config) -> Outcome {
+        let default = setting.0.get(&Config::default());
+        setting.0.set(config, default);
+        self.rebuild = true;
+        Outcome::Changed
     }
 
     /// Whether `p` (logical px) is on the sheet itself (backdrop clicks outside close it).
@@ -1698,6 +1936,12 @@ impl SettingsSheet {
         if !self.open && phase == crate::drip::Phase::Closed && ui.is_visible(self.root) {
             ui.set_visible(self.root, false);
         }
+    }
+
+    /// Who the default browser is (`None`: not asked yet), whether a change is under way and
+    /// why the last one failed; the General page shows it.
+    pub fn set_default_browser(&mut self, view: DefaultBrowserView) {
+        self.default_browser = view;
     }
 
     pub fn set_memory_used(&mut self, used: Option<u64>) {
@@ -1813,6 +2057,7 @@ impl SettingsSheet {
         ui.clear_children(self.content);
         self.controls.clear();
         self.values.clear();
+        self.pickers.clear();
         self.group = None;
         if self.category != self.shown_category {
             self.shown_category = self.category;
@@ -1830,6 +2075,7 @@ impl SettingsSheet {
         self.background_path = None;
         self.repository_field = None;
         self.notes = None;
+        self.run_nodes = None;
         if !self.query.is_empty() {
             self.show_results(ui, config);
             return;
@@ -1878,15 +2124,18 @@ impl SettingsSheet {
                     .map(|(i, (name, _))| (*name, SettingsAction::SearchEngine(i).id()))
                     .collect();
                 segmented(ui, row_node, &options, current);
-                // The language names stay as they are (each in its own language).
-                let row_node = self.row(ui, tr("Language"));
-                let languages: Vec<(&str, ActionId)> = LANGUAGES
-                    .iter()
-                    .map(|&(name, language)| (name, SettingsAction::Language(language).id()))
-                    .collect();
-                let current = LANGUAGES.iter().position(|&(_, l)| l == config.general.language);
-                segmented(ui, row_node, &languages, current);
-                self.note(ui, tr("Applies after restarting Axion."));
+                // Every language is written in its own name, whatever the interface says now.
+                let current = language_name(config.general.language);
+                self.picker_row(ui, tr("Language"), current, Picker::Language);
+                if self.language_restart_due(config) {
+                    let row_node = self.row(ui, tr("Restart to switch language."));
+                    primary_button(ui, row_node, tr("Restart Axion"), SettingsAction::RestartAxion);
+                    glass_pill(ui, row_node, tr("Later"), SettingsAction::LanguageLater);
+                } else if self.pending_language(config).is_some() {
+                    self.note(ui, tr("The new language applies after the next start of Axion."));
+                } else {
+                    self.note(ui, tr("Languages Axion has no translation for yet show English."));
+                }
                 if cfg!(target_os = "linux") {
                     self.control(ui, config, Setting::AppMenuEntry);
                     self.note(
@@ -1894,6 +2143,20 @@ impl SettingsSheet {
                         tr("Gives Axion its icon in the taskbar and the application menu. Applies after restarting Axion."),
                     );
                 }
+                if cfg!(target_os = "linux") {
+                    let row_node = self.row(ui, tr("Default browser"));
+                    let view = self.default_browser.clone();
+                    if view.state.as_ref().is_some_and(DefaultState::can_change) && !view.busy {
+                        glass_pill(ui, row_node, tr("Make Default"), SettingsAction::MakeDefaultBrowser);
+                    }
+                    self.note(ui, &view.status());
+                    self.control(ui, config, Setting::DefaultBrowserHint);
+                }
+                self.control(ui, config, Setting::SingleInstance);
+                self.note(
+                    ui,
+                    tr("A link opened from another app, or axion URL, adds a tab to the open window instead of starting a second browser. Applies after restarting Axion."),
+                );
                 let row_node = self.row(ui, tr("Welcome tour"));
                 glass_pill(ui, row_node, tr("Show Welcome Tour"), SettingsAction::ShowWelcomeTour);
                 self.control(ui, config, Setting::HomeButton);
@@ -1968,6 +2231,30 @@ impl SettingsSheet {
                 self.note(
                     ui,
                     tr("Flat: solid cards, no refraction, blur or bounce. Skips the glass work (fast on weak GPUs)."),
+                );
+                let row_node = self.row(ui, tr("Window frame"));
+                let frames = [
+                    (tr("Axion"), SettingsAction::WindowFrame(WindowDecorations::Custom).id()),
+                    (tr("System"), SettingsAction::WindowFrame(WindowDecorations::System).id()),
+                ];
+                let current = [WindowDecorations::Custom, WindowDecorations::System]
+                    .iter()
+                    .position(|&m| m == config.window.decorations);
+                segmented(ui, row_node, &frames, current);
+                if config.window.decorations == WindowDecorations::Custom {
+                    let row_node = self.row(ui, tr("Window buttons"));
+                    let sides = [
+                        (tr("Left"), SettingsAction::ControlsSide(ControlsSide::Left).id()),
+                        (tr("Right"), SettingsAction::ControlsSide(ControlsSide::Right).id()),
+                    ];
+                    let current = [ControlsSide::Left, ControlsSide::Right]
+                        .iter()
+                        .position(|&m| m == config.window.controls_side);
+                    segmented(ui, row_node, &sides, current);
+                }
+                self.note(
+                    ui,
+                    tr("Axion: the toolbar holds the window buttons and the window has rounded corners. System: the desktop's own title bar and frame."),
                 );
                 let row_node = self.row(ui, tr("Accent colour"));
                 swatches(ui, row_node, config.appearance.accent, SettingsAction::Accent);
@@ -2047,6 +2334,7 @@ impl SettingsSheet {
             }
             Category::Tabs => {
                 self.tab_bar_choice(ui, config);
+                self.control(ui, config, Setting::HideSingleTabBar);
                 self.control(ui, config, Setting::TintFromPage);
                 if config.appearance.tint_from_page {
                     let row_node = self.row(ui, tr("Page colour"));
@@ -2500,10 +2788,19 @@ impl SettingsSheet {
         secondary(ui, text, &version);
         let install = match about.mode {
             InstallMode::AppImage => tr("Installed as an AppImage"),
+            InstallMode::Tarball => tr("Installed from a tarball (portable folder)"),
             InstallMode::Source => tr("Built from a Git checkout"),
             InstallMode::Other => tr("Installed with a package manager or by hand"),
         };
         secondary(ui, text, install);
+        if let Some(version) = &about.pending_restart {
+            // The line above is the build that is running; the files on disk are newer.
+            let line = tr_fmt!(
+                "Axion {version} is installed. Restart Axion to finish the update.",
+                version = version.as_str()
+            );
+            secondary(ui, text, &line);
+        }
 
         self.section(ui, tr("Software update"));
         let source_set = !matches!(about.state, AboutState::NoSource);
@@ -2523,15 +2820,22 @@ impl SettingsSheet {
             }
             AboutState::Error(message) => message.clone(),
         };
-        let row_node = self.row(ui, &status);
-        match &about.state {
-            AboutState::Checking => idle_pill(ui, row_node, tr("Checking…")),
-            AboutState::NoSource => {}
-            AboutState::Installed { .. } => {
-                primary_button(ui, row_node, tr("Relaunch Now"), SettingsAction::RelaunchNow)
+        let live_run = about.run.as_ref().filter(|r| !r.collapsed);
+        if let Some(run) = live_run {
+            self.run_block(ui, run);
+        } else {
+            let row_node = self.row(ui, &status);
+            match &about.state {
+                AboutState::Checking => idle_pill(ui, row_node, tr("Checking…")),
+                AboutState::NoSource => {}
+                AboutState::Installed { .. } => {
+                    primary_button(ui, row_node, tr("Restart Axion"), SettingsAction::RelaunchNow)
+                }
+                _ if about.busy => {}
+                _ => {
+                    pill_button(ui, row_node, tr("Check for Updates"), SettingsAction::CheckForUpdates, false)
+                }
             }
-            _ if about.busy => {}
-            _ => pill_button(ui, row_node, tr("Check for Updates"), SettingsAction::CheckForUpdates, false),
         }
         if source_set {
             let row_node = self.row(ui, tr("Last checked"));
@@ -2545,7 +2849,14 @@ impl SettingsSheet {
                 w.set_paint(Paint::Secondary);
             }
         }
-        if let AboutState::Available { .. } = &about.state {
+        if let Some(path) = &about.read_only {
+            let line = tr_fmt!(
+                "Axion is installed in {path}, which it can't write to. This installation is managed elsewhere or needs permissions: download the new version from the release page.",
+                path = path.as_str()
+            );
+            self.note(ui, &line);
+        }
+        if let (AboutState::Available { .. }, true) = (&about.state, about.run.is_none()) {
             if !about.notes.is_empty() {
                 self.section(ui, tr("Release notes"));
                 self.notes_box(ui, &about.notes);
@@ -2553,7 +2864,9 @@ impl SettingsSheet {
             let row_node = self.button_row(ui);
             if !about.busy {
                 let (text, action) = match about.mode {
-                    InstallMode::AppImage => (tr("Update"), SettingsAction::InstallUpdate),
+                    InstallMode::AppImage | InstallMode::Tarball => {
+                        (tr("Update"), SettingsAction::InstallUpdate)
+                    }
                     InstallMode::Source => (tr("Update from Git"), SettingsAction::InstallUpdate),
                     InstallMode::Other => (tr("Open Release Page"), SettingsAction::OpenReleasePage),
                 };
@@ -2586,6 +2899,7 @@ impl SettingsSheet {
         self.section(ui, tr("Updates"));
         self.control(ui, config, Setting::AutoCheckUpdates);
         self.control(ui, config, Setting::UpdatePrereleases);
+        self.control(ui, config, Setting::UpdateNotifications);
         let row_node = self.row(ui, tr("Repository"));
         // The default repository is the placeholder; the field holds only what the user typed.
         let placeholder = if axion_config::DEFAULT_REPOSITORY.is_empty() {
@@ -2612,6 +2926,143 @@ impl SettingsSheet {
                 tr("updates.manifest_url is set in config.toml and is used instead of the repository."),
             );
         }
+    }
+
+    /// The update that is running or has just ended, in the "Software update" section: a
+    /// progress bar with the step and the newest output line (changed in place by
+    /// [`Self::update_run`]), or the result with its buttons.
+    fn run_block(&mut self, ui: &mut Ui, run: &RunInfo) {
+        let row_node = self.row(ui, &run.title);
+        match run.phase {
+            Phase::Running => {
+                if run.cancellable {
+                    pill_button(ui, row_node, tr("Cancel"), SettingsAction::CancelUpdate, false);
+                }
+                let parent = self.group_for_row(ui);
+                let track = ui.add(
+                    parent,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Label, 0.10))
+                        .with_radius(CAPSULE),
+                    Style {
+                        size: Size { width: percent(1.0), height: length(RUN_BAR_HEIGHT) },
+                        flex_shrink: 0.0,
+                        margin: Rect {
+                            left: length(GROUP_INSET),
+                            right: length(GROUP_INSET),
+                            top: length(8.0),
+                            bottom: length(4.0),
+                        },
+                        ..Default::default()
+                    },
+                );
+                let fill = ui.add(
+                    track,
+                    Widget::container()
+                        .with_background(Background::Fill(Paint::Accent, 1.0))
+                        .with_radius(CAPSULE),
+                    Style::default(),
+                );
+                let status = ui.add_label(
+                    parent,
+                    &run.status,
+                    TextStyle::Callout,
+                    Style { margin: Rect { left: length(GROUP_INSET), ..zero_rect() }, ..Default::default() },
+                );
+                let detail = ui.add_label(
+                    parent,
+                    &run.detail,
+                    TextStyle::Footnote,
+                    Style {
+                        min_size: Size { width: length(0.0), height: auto() },
+                        margin: Rect { left: length(GROUP_INSET), ..zero_rect() },
+                        ..Default::default()
+                    },
+                );
+                ui.set_label_lines(detail, 1);
+                if let Some(w) = ui.widget_mut(detail) {
+                    w.set_paint(Paint::Secondary);
+                }
+                self.run_nodes = Some(RunNodes { status, detail, fill });
+                self.update_run(ui, run, 0);
+            }
+            Phase::Done => {
+                primary_button(ui, row_node, tr("Restart Axion"), SettingsAction::RelaunchNow);
+                pill_button(ui, row_node, tr("Later"), SettingsAction::DismissUpdate, false);
+                self.note(ui, &run.status);
+            }
+            Phase::Failed => {
+                primary_button(ui, row_node, tr("Try again"), SettingsAction::RetryUpdate);
+                pill_button(ui, row_node, tr("Close"), SettingsAction::DismissUpdate, false);
+                if run.release_page {
+                    pill_button(
+                        ui,
+                        row_node,
+                        tr("Open Release Page"),
+                        SettingsAction::OpenReleasePage,
+                        false,
+                    );
+                }
+                for line in &run.lines {
+                    self.note(ui, line);
+                }
+                if !run.log.is_empty() {
+                    self.note(ui, tr("Last output:"));
+                    for line in &run.log {
+                        let label = ui.add_label(
+                            self.content,
+                            line,
+                            TextStyle::Footnote,
+                            Style {
+                                min_size: Size { width: length(0.0), height: auto() },
+                                margin: Rect { left: length(GROUP_INSET + 8.0), ..zero_rect() },
+                                ..Default::default()
+                            },
+                        );
+                        ui.set_label_lines(label, 1);
+                    }
+                }
+            }
+            Phase::Idle | Phase::Confirm => {}
+        }
+    }
+
+    /// Changes the running update's lines and bar without rebuilding the page. `tick` moves
+    /// the indeterminate bar. Does nothing when the page is not showing a running update.
+    pub fn update_run(&mut self, ui: &mut Ui, run: &RunInfo, tick: u32) {
+        let Some(nodes) = self.run_nodes else { return };
+        if run.phase != Phase::Running {
+            return;
+        }
+        ui.set_text(nodes.status, &run.status);
+        ui.set_text(nodes.detail, &run.detail);
+        let style = match run.progress {
+            Some(fraction) => Style {
+                size: Size { width: percent(fraction.clamp(0.0, 1.0)), height: length(RUN_BAR_HEIGHT) },
+                ..Default::default()
+            },
+            None => {
+                // A third of the bar sweeps from end to end.
+                let phase = (tick % RUN_SWEEP_STEPS) as f32 / RUN_SWEEP_STEPS as f32;
+                let left = phase * (1.0 - RUN_SWEEP_WIDTH);
+                Style {
+                    size: Size { width: percent(RUN_SWEEP_WIDTH), height: length(RUN_BAR_HEIGHT) },
+                    margin: Rect {
+                        left: percent(left),
+                        right: length(0.0),
+                        top: length(0.0),
+                        bottom: length(0.0),
+                    },
+                    ..Default::default()
+                }
+            }
+        };
+        ui.set_style(nodes.fill, style);
+    }
+
+    /// Whether the page currently shows a running update that [`Self::update_run`] can change.
+    pub fn shows_run(&self) -> bool {
+        self.run_nodes.is_some()
     }
 
     /// The release notes in a box of their own that scrolls when they are longer.
@@ -3122,15 +3573,10 @@ impl SettingsSheet {
         for setting in [Setting::TranslateOffer, Setting::TranslatePrompt, Setting::TranslateChanges] {
             self.control(ui, config, setting);
         }
-        let row_node = self.row(ui, tr("Translate pages into"));
-        let options: Vec<(&str, ActionId)> = TRANSLATE_TARGETS
-            .iter()
-            .enumerate()
-            .map(|(i, (_, name))| (tr(name), SettingsAction::TranslateTarget(i).id()))
-            .collect();
-        let current =
-            TRANSLATE_TARGETS.iter().position(|(code, _)| *code == config.translation.target_language);
-        segmented(ui, row_node, &options, current);
+        let current = translate_target_index(&config.translation.target_language)
+            .and_then(translate_target)
+            .map_or("", |(_, name)| tr(name));
+        self.picker_row(ui, tr("Translate pages into"), current, Picker::TranslateTarget);
         let row_node = self.row(ui, tr("Translate"));
         let options: Vec<(&str, ActionId)> = TRANSLATION_BACKENDS
             .iter()
@@ -3446,6 +3892,69 @@ impl SettingsSheet {
         }
     }
 
+    /// A row with a glass button showing the current choice and a chevron; it opens a dropdown
+    /// list ([`Settings::picker_items`]).
+    fn picker_row(&mut self, ui: &mut Ui, label: &str, current: &str, picker: Picker) {
+        let row_node = self.row(ui, label);
+        let button = ui.add(
+            row_node,
+            Widget::container()
+                .with_action(picker.action().id())
+                .with_radius(CAPSULE)
+                .with_background(Background::Glass(GlassLevel::Thin)),
+            Style {
+                size: Size { width: auto(), height: length(36.0) },
+                padding: padding(16.0, 0.0),
+                flex_shrink: 0.0,
+                ..row(8.0)
+            },
+        );
+        ui.add_label(button, current, TextStyle::Callout, Style::default());
+        ui.add(
+            button,
+            Widget::icon(Icon::ChevronUpDown, 14.0).with_paint(Paint::Secondary),
+            Style::default(),
+        );
+        self.pickers.push((picker, button));
+    }
+
+    /// Where the dropdown of `picker` drips out of: its button on the page shown.
+    pub fn picker_frame(&self, ui: &Ui, picker: Picker) -> Option<Frame> {
+        self.pickers.iter().find(|(p, _)| *p == picker).map(|(_, node)| ui.frame(*node))
+    }
+
+    /// The rows of the dropdown of `picker`, the current choice marked. Each row carries the
+    /// click id of the choice's own action, so a click runs it like the pills used to.
+    pub fn picker_items(&self, config: &Config, picker: Picker) -> Vec<DropdownItem> {
+        match picker {
+            Picker::Language => UiLanguage::ALL
+                .iter()
+                .map(|&language| DropdownItem {
+                    label: language_name(language).to_owned(),
+                    action: SettingsAction::Language(language).id(),
+                    selected: language == config.general.language,
+                })
+                .collect(),
+            Picker::TranslateTarget => {
+                // "Interface" first, then every language with local models, by name in the
+                // current language.
+                let current = translate_target_index(&config.translation.target_language);
+                let mut items: Vec<DropdownItem> = (0..translate_target_count())
+                    .filter_map(|i| {
+                        let (_, name) = translate_target(i)?;
+                        Some(DropdownItem {
+                            label: tr(name).to_owned(),
+                            action: SettingsAction::TranslateTarget(i).id(),
+                            selected: Some(i) == current,
+                        })
+                    })
+                    .collect();
+                items[1..].sort_by_cached_key(|item| item.label.to_lowercase());
+                items
+            }
+        }
+    }
+
     /// A row of buttons that wraps onto more lines when they don't fit, right-aligned.
     fn button_row(&mut self, ui: &mut Ui) -> NodeId {
         let parent = self.group_for_row(ui);
@@ -3716,7 +4225,16 @@ impl SettingsSheet {
                 config.glass.style = style;
                 Outcome::Changed
             }
+            SettingsAction::WindowFrame(frame) => {
+                config.window.decorations = frame;
+                Outcome::Changed
+            }
+            SettingsAction::ControlsSide(side) => {
+                config.window.controls_side = side;
+                Outcome::Changed
+            }
             SettingsAction::ShowWelcomeTour => return Outcome::ShowWelcomeTour,
+            SettingsAction::MakeDefaultBrowser => return Outcome::MakeDefaultBrowser,
             SettingsAction::IconWeight(i) => {
                 set_icon_weight(config, i);
                 Outcome::Changed
@@ -3789,17 +4307,24 @@ impl SettingsSheet {
                 Outcome::Changed
             }
             SettingsAction::TranslateTarget(i) => {
-                if let Some((code, _)) = TRANSLATE_TARGETS.get(i) {
-                    config.translation.target_language = (*code).to_owned();
+                if let Some((code, _)) = translate_target(i) {
+                    config.translation.target_language = code.to_owned();
                 }
                 Outcome::Changed
             }
             SettingsAction::RemoveTranslationModels => return Outcome::RemoveTranslationModels,
+            SettingsAction::LanguagePicker => return Outcome::OpenPicker(Picker::Language),
+            SettingsAction::TranslatePicker => return Outcome::OpenPicker(Picker::TranslateTarget),
             // Saved at once; the interface is built in one language per run, so it takes
             // effect at the next start (the note under the control says so).
             SettingsAction::Language(language) => {
                 config.general.language = language;
+                self.language_later = None;
                 Outcome::Changed
+            }
+            SettingsAction::LanguageLater => {
+                self.postpone_language(config);
+                Outcome::Nothing
             }
             SettingsAction::AddTrustedSite => {
                 let text = self.trusted_site.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned();
@@ -3868,6 +4393,9 @@ impl SettingsSheet {
             SettingsAction::RemindLater => return Outcome::RemindLater,
             SettingsAction::OpenReleasePage => return Outcome::OpenReleasePage,
             SettingsAction::RelaunchNow => return Outcome::RelaunchNow,
+            SettingsAction::CancelUpdate => return Outcome::CancelUpdate,
+            SettingsAction::DismissUpdate => return Outcome::DismissUpdate,
+            SettingsAction::RetryUpdate => return Outcome::RetryUpdate,
             SettingsAction::PageFrames(frames) => {
                 let amd = self
                     .hardware
@@ -4262,6 +4790,7 @@ fn shortcut_actions() -> Vec<KeyAction> {
         OpenPasswords,
         ToggleSidebar,
         OpenSettings,
+        ContextMenu,
         CommandPalette,
         ToggleFullscreen,
         Quit,
@@ -4297,7 +4826,8 @@ pub(crate) fn shortcut_group(action: KeyAction) -> &'static str {
         | ToggleSidebar => tr("Panels"),
         Lock | ToggleNetwork => tr("Privacy"),
         DevTools | DevToolsConsole | ViewSource => tr("Developer"),
-        OpenSettings | CommandPalette | ToggleFullscreen | Quit => tr("Window"),
+        OpenSettings | ContextMenu | CommandPalette | ToggleFullscreen | Quit | CloseWindow
+        | MinimizeWindow | ToggleMaximize => tr("Window"),
         _ => tr("Media (fullscreen video)"),
     }
 }
@@ -4344,9 +4874,13 @@ fn shortcut_source_name(action: KeyAction) -> &'static str {
         OpenPasswords => tr_mark("Open passwords"),
         ToggleSidebar => tr_mark("Toggle sidebar"),
         OpenSettings => tr_mark("Open settings"),
+        ContextMenu => tr_mark("Context menu"),
         CommandPalette => tr_mark("Command palette"),
         ToggleFullscreen => tr_mark("Toggle fullscreen"),
         Quit => tr_mark("Quit"),
+        CloseWindow => tr_mark("Close window"),
+        MinimizeWindow => tr_mark("Minimize window"),
+        ToggleMaximize => tr_mark("Maximize or restore window"),
         Lock => tr_mark("Lock"),
         ToggleNetwork => tr_mark("Toggle network connection"),
         DevTools => tr_mark("Developer tools"),
@@ -4441,6 +4975,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_default_browser_button_has_an_id_of_its_own() {
+        let id = SettingsAction::MakeDefaultBrowser.id();
+        assert_eq!(SettingsAction::from_id(id), Some(SettingsAction::MakeDefaultBrowser));
+        // No other id in the whole range maps to it, and the id maps to nothing else.
+        let hits = (0..20_000)
+            .filter(|&n| SettingsAction::from_id(ActionId(n)) == Some(SettingsAction::MakeDefaultBrowser));
+        assert_eq!(hits.count(), 1);
+        assert_ne!(id, SettingsAction::ShowWelcomeTour.id());
+    }
+
+    #[test]
     fn sliders_round_trip_through_config() {
         let mut config = Config::default();
         for setting in [
@@ -4486,6 +5031,10 @@ mod tests {
             SettingsAction::Language(UiLanguage::German),
             SettingsAction::GlassStyle(GlassStyle::Liquid),
             SettingsAction::GlassStyle(GlassStyle::Flat),
+            SettingsAction::WindowFrame(WindowDecorations::Custom),
+            SettingsAction::WindowFrame(WindowDecorations::System),
+            SettingsAction::ControlsSide(ControlsSide::Left),
+            SettingsAction::ControlsSide(ControlsSide::Right),
             SettingsAction::IconWeight(2),
             SettingsAction::SearchEngine(4),
             SettingsAction::Accent(5),
@@ -4534,6 +5083,9 @@ mod tests {
             SettingsAction::OpenReleasePage,
             SettingsAction::SaveRepository,
             SettingsAction::RelaunchNow,
+            SettingsAction::CancelUpdate,
+            SettingsAction::DismissUpdate,
+            SettingsAction::RetryUpdate,
             SettingsAction::PageFrames(PageFrames::Auto),
             SettingsAction::PageFrames(PageFrames::Gpu),
             SettingsAction::PageFrames(PageFrames::Software),
@@ -4542,6 +5094,9 @@ mod tests {
             SettingsAction::GpuCard(GpuChoice::High),
             SettingsAction::CopyDiagnostics,
             SettingsAction::RestartAxion,
+            SettingsAction::LanguageLater,
+            SettingsAction::LanguagePicker,
+            SettingsAction::TranslatePicker,
             SettingsAction::Category(Category::Hardware),
             SettingsAction::Category(Category::About),
         ] {
@@ -4569,6 +5124,60 @@ mod tests {
                 assert!(!seen.contains(&group), "{group} split");
                 seen.push(group);
             }
+        }
+    }
+
+    /// The language pickers' ids are unique and map back, and no id of the sheet is claimed by two
+    /// actions: every id that decodes to an action must be that action's own id.
+    #[test]
+    fn language_action_ids_are_unique() {
+        let mut ids = std::collections::BTreeSet::new();
+        for language in UiLanguage::ALL {
+            let action = SettingsAction::Language(language);
+            assert!(ids.insert(action.id().0), "{language:?} shares an id");
+            assert_eq!(SettingsAction::from_id(action.id()), Some(action));
+        }
+        for i in 0..translate_target_count() {
+            let action = SettingsAction::TranslateTarget(i);
+            assert!(ids.insert(action.id().0), "translate target {i} shares an id");
+            assert_eq!(SettingsAction::from_id(action.id()), Some(action));
+        }
+        assert_eq!(
+            SettingsAction::from_id(SettingsAction::TranslateTarget(translate_target_count()).id()),
+            None
+        );
+        for action in [SettingsAction::LanguagePicker, SettingsAction::TranslatePicker] {
+            assert!(ids.insert(action.id().0), "{action:?} shares an id");
+        }
+        assert_eq!(UiLanguage::ALL.len(), 14);
+        // Whole-sheet check: decoding an id and encoding the result gives the id back.
+        for n in 0..4000 {
+            let id = ActionId(ACTION_BASE + n);
+            if let Some(action) = SettingsAction::from_id(id) {
+                assert_eq!(action.id(), id, "{action:?} decodes from {n} but encodes elsewhere");
+            }
+        }
+        // The pickers sit in gaps of the sheet's id space: translate-into choices before the reading
+        // ids, languages after them (the whole-app test `action_ids_are_never_shared` checks them
+        // against everything else).
+        assert!(TRANSLATE_TARGET_BASE + translate_target_count() as u32 <= READING_BASE);
+        const { assert!(READING_BASE + 30 < LANGUAGE_BASE) };
+        assert!(LANGUAGE_BASE + UiLanguage::ALL.len() as u32 <= 1200);
+    }
+
+    #[test]
+    fn translate_targets_cover_the_models() {
+        assert_eq!(translate_target(0), Some(("", "Interface")));
+        assert_eq!(translate_target(1), Some(("en", "English")));
+        assert_eq!(translate_target(translate_target_count()), None);
+        assert_eq!(translate_target_index(""), Some(0));
+        assert!(translate_target_index("ja").is_some());
+        assert!(translate_target_index("pt-BR").is_some());
+        assert!(translate_target_index("zh-TW").is_some());
+        assert_eq!(translate_target_index("xx"), None);
+        // Every interface language of Axion can be a target.
+        for language in axion_i18n::Language::all() {
+            assert!(translate_target_index(language.translation_code()).is_some(), "{}", language.tag());
         }
     }
 }

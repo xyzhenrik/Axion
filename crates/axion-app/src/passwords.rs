@@ -606,6 +606,7 @@ impl Passwords {
             root,
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thick))
+                .with_popup_cover()
                 .with_radius(SHEET_RADIUS),
             Style { position: Position::Absolute, flex_direction: FlexDirection::Row, ..Default::default() },
         );
@@ -707,6 +708,7 @@ impl Passwords {
             alert_layer,
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thick))
+                .as_popup()
                 .with_radius(ALERT_RADIUS),
             Style {
                 size: Size { width: length(ALERT_WIDTH), height: auto() },
@@ -884,14 +886,6 @@ impl Passwords {
                 })
                 .collect(),
         )
-    }
-
-    /// Stores the secrets of a connection (needs the unlocked vault).
-    pub fn set_network_secret(&mut self, id: &str, text: &str) -> Result<(), VaultError> {
-        self.vault
-            .as_mut()
-            .ok_or(VaultError::NotSetUp)?
-            .set_secret(&format!("{NETWORK_SECRET_PREFIX}{id}"), text)
     }
 
     /// Forgets the secrets of a connection (needs the unlocked vault).

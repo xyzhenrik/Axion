@@ -83,9 +83,13 @@ These only work while **Developer tools** is on in **Settings > General**.
 | Action | Keys | Name in `keymap.toml` |
 |---|---|---|
 | Settings | Ctrl+,  and Ctrl+S | `open_settings` |
+| Context menu of what the pointer is over (over the page: the page's own) | Menu key and Shift+F10 | `context_menu` |
 | Command palette (search every action) | Ctrl+K | `command_palette` |
 | Fullscreen window | F11 | `toggle_fullscreen` |
 | Quit | Ctrl+Q | `quit` |
+| Close window | Ctrl+Shift+W | `close_window` |
+| Minimize window | (none) | `minimize_window` |
+| Maximize or restore window | (none) | `toggle_maximize` |
 
 In fullscreen (F11) the toolbar, tab row, bookmarks bar and sidebar make way and the page fills
 the screen edge to edge. Rest the pointer at the top edge of the screen for a moment and the bars

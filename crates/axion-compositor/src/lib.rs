@@ -4,9 +4,9 @@
 //! - [`Layer::Glass`]: Liquid Glass shapes that refract **everything drawn so far**.
 //! - [`Layer::Content`]: rounded rectangles, text and icons on top.
 //!
-//! Layers render into one of two offscreen targets; a glass layer reads the current target
-//! as its backdrop and writes the other, so glass can sit on glass (a card inside the sidebar).
-//! The last target is blitted to the window. All coordinates are physical pixels with the
+//! Layers render into one offscreen target; a glass layer reads it as its backdrop and draws
+//! over it, inside the regions of its shapes only, so glass can sit on glass (a card inside the
+//! sidebar). The target is blitted to the window. All coordinates are physical pixels with the
 //! origin top-left, and colours are sRGB-encoded (CEF frames are too), blended as on the web.
 
 mod icons;
@@ -15,7 +15,7 @@ mod probe;
 /// Cells per side of a page palette measurement ([`Compositor::sample_palette`]).
 pub const PALETTE_CELLS: u32 = 32;
 
-use axion_glass::{GlassFrame, GlassParams, GlassRenderer, GlassShape};
+use axion_glass::{GlassInPlace, GlassParams, GlassRenderer, GlassShape};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 pub use glyphon;
@@ -47,6 +47,18 @@ impl Rect {
     pub fn inset(&self, by: f32) -> Rect {
         Rect { origin: self.origin + by, size: (self.size - 2.0 * by).max(Vec2::ZERO) }
     }
+}
+
+/// How the window's surface treats the alpha channel (see [`Compositor::set_window_shape`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SurfaceAlpha {
+    /// The surface is opaque: no transparent corners.
+    #[default]
+    Opaque,
+    /// Straight alpha (colour is not multiplied by alpha).
+    PostMultiplied,
+    /// Pre-multiplied alpha (colour is already multiplied by alpha).
+    PreMultiplied,
 }
 
 /// A filled rounded rectangle, or a soft shadow when `softness > 0`.
@@ -334,8 +346,8 @@ struct ImageUniform {
 
 struct Targets {
     size: (u32, u32),
-    textures: [wgpu::Texture; 2],
-    views: [wgpu::TextureView; 2],
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
 }
 
 /// Per-content-layer text state (glyphon prepares one renderer per draw batch).
@@ -353,6 +365,12 @@ pub struct Compositor {
     image_layout: wgpu::BindGroupLayout,
     image_pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
+    /// The present blit for a surface with pre-multiplied alpha (colour times coverage).
+    blit_premultiplied_pipeline: wgpu::RenderPipeline,
+    /// The window's corner radius (physical px) and how its surface treats alpha, see
+    /// [`Compositor::set_window_shape`].
+    window_radius: f32,
+    window_alpha: SurfaceAlpha,
     sampler: wgpu::Sampler,
     text_atlas: TextAtlas,
     text_viewport: Viewport,
@@ -363,8 +381,6 @@ pub struct Compositor {
     /// The page palette (see [`Compositor::sample_palette`]).
     palette: probe::LuminanceProbe,
     targets: Option<Targets>,
-    /// Which target holds the finished frame after [`Compositor::render`].
-    last: usize,
 }
 
 impl Compositor {
@@ -444,6 +460,15 @@ impl Compositor {
             Some(wgpu::BlendState::ALPHA_BLENDING),
         );
         let blit_pipeline = pipeline(device, "blit", &image_layout, &image_shader, &[], output_format, None);
+        let blit_premultiplied_pipeline = pipeline(
+            device,
+            "blit (pre-multiplied)",
+            &image_layout,
+            &image_shader,
+            &[],
+            output_format,
+            Some(premultiplying_blend()),
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("compositor"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -469,6 +494,9 @@ impl Compositor {
             image_layout,
             image_pipeline,
             blit_pipeline,
+            blit_premultiplied_pipeline,
+            window_radius: 0.0,
+            window_alpha: SurfaceAlpha::Opaque,
             sampler,
             text_atlas,
             text_viewport,
@@ -478,7 +506,6 @@ impl Compositor {
             probe: probe::LuminanceProbe::new(device, 1),
             palette: probe::LuminanceProbe::new(device, PALETTE_CELLS),
             targets: None,
-            last: 0,
         }
     }
 
@@ -500,10 +527,22 @@ impl Compositor {
                 view_formats: &[],
             })
         };
-        let textures = [make("compositor target a"), make("compositor target b")];
-        let views =
-            [textures[0].create_view(&Default::default()), textures[1].create_view(&Default::default())];
-        self.targets = Some(Targets { size, textures, views });
+        let texture = make("compositor target");
+        let view = texture.create_view(&Default::default());
+        self.targets = Some(Targets { size, texture, view });
+    }
+
+    /// Rounds the window's corners: `radius` physical px, on a surface whose alpha mode is
+    /// `alpha`. The present blit then writes coverage into the surface's alpha channel, so the
+    /// compositor shows the desktop behind the corners. Does nothing on an opaque surface.
+    pub fn set_window_shape(&mut self, radius: f32, alpha: SurfaceAlpha) {
+        self.window_radius = radius.max(0.0);
+        self.window_alpha = alpha;
+    }
+
+    /// Whether the present blit cuts the window's corners.
+    pub fn rounds_window(&self) -> bool {
+        self.window_radius > 0.0 && self.window_alpha != SurfaceAlpha::Opaque
     }
 
     /// Composites `scene` and writes it to `output` (the window's surface view), which must be
@@ -528,59 +567,52 @@ impl Compositor {
 
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("compositor") });
-        let mut current = 0;
-        clear(&mut encoder, &targets.views[current], scene.clear);
+        clear(&mut encoder, &targets.view, scene.clear);
 
         let mut text_batch = 0;
         for layer in &scene.layers {
             match layer {
                 Layer::Image(image) => {
                     let bind_group = self.image_bind_group(image, viewport);
-                    let mut pass = begin_pass(&mut encoder, "image", &targets.views[current]);
+                    let mut pass = begin_pass(&mut encoder, "image", &targets.view);
                     pass.set_pipeline(&self.image_pipeline);
                     pass.set_bind_group(0, &bind_group, &[]);
                     pass.draw(0..4, 0..1);
                 }
                 Layer::Glass { shapes, params } => {
-                    let next = 1 - current;
-                    self.glass.render(
+                    self.glass.render_in_place(
                         &self.device,
                         &mut encoder,
-                        GlassFrame {
-                            backdrop: &targets.views[current],
-                            backdrop_size: size,
-                            target: &targets.views[next],
-                            shapes,
-                            params,
-                        },
+                        GlassInPlace { texture: &targets.texture, view: &targets.view, shapes, params },
                     );
-                    current = next;
                 }
                 Layer::Content(content) => {
-                    self.draw_content(
-                        &mut encoder,
-                        &targets.views[current],
-                        content,
-                        fonts,
-                        text_batch,
-                        viewport,
-                    );
+                    self.draw_content(&mut encoder, &targets.view, content, fonts, text_batch, viewport);
                     text_batch += 1;
                 }
             }
         }
 
-        let full = ImageDraw::new(&targets.views[current], Rect::new(0.0, 0.0, viewport.x, viewport.y));
+        let mut full = ImageDraw::new(&targets.view, Rect::new(0.0, 0.0, viewport.x, viewport.y));
+        if self.rounds_window() {
+            full.radius = self.window_radius;
+        }
         let bind_group = self.image_bind_group(&full, viewport);
         {
             let mut pass = begin_pass(&mut encoder, "present blit", output);
-            pass.set_pipeline(&self.blit_pipeline);
+            pass.set_pipeline(if self.rounds_window() {
+                match self.window_alpha {
+                    SurfaceAlpha::PreMultiplied => &self.blit_premultiplied_pipeline,
+                    _ => &self.blit_pipeline,
+                }
+            } else {
+                &self.blit_pipeline
+            });
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..4, 0..1);
         }
         self.queue.submit([encoder.finish()]);
         self.text_atlas.trim();
-        self.last = current;
         self.targets = Some(targets);
     }
 
@@ -756,7 +788,7 @@ impl Compositor {
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         encoder.copy_texture_to_buffer(
-            targets.textures[self.last].as_image_copy(),
+            targets.texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
                 layout: wgpu::TexelCopyBufferLayout {
@@ -836,6 +868,23 @@ fn pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// Blending that turns the straight colour of the image shader into pre-multiplied colour
+/// (`rgb * a`), and writes `a` itself into the alpha channel; replaces what is there.
+fn premultiplying_blend() -> wgpu::BlendState {
+    wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::SrcAlpha,
+            dst_factor: wgpu::BlendFactor::Zero,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::Zero,
+            operation: wgpu::BlendOperation::Add,
+        },
+    }
 }
 
 fn clear(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, color: [f32; 4]) {

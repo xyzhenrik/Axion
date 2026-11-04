@@ -156,6 +156,8 @@ struct Cached {
     raw: Arc<Raw>,
     /// Where it was downloaded from (unknown for icons cached by older versions).
     source: Option<String>,
+    /// Its PNG is in the cache folder: it may leave memory and be read again when needed.
+    on_disk: bool,
 }
 
 /// What a site's pages said about their icons.
@@ -188,6 +190,15 @@ pub struct Favicons {
     aliases: HashMap<String, String>,
     /// The app icon, the icon of all `axion://` pages.
     app_icon: Option<SiteIcon>,
+    /// Per domain, a cached subdomain's host (`accounts.google.com` for `google.com`) found by
+    /// scanning the cache folder; emptied when icons arrive.
+    subdomains: RefCell<HashMap<String, Option<String>>>,
+    /// When each icon in memory was last asked for (a counter), and the most kept: beyond it the
+    /// least recently used icon that is on disk leaves memory (scrolling through a long history
+    /// loaded every site's icon and kept them all, see `ui.max_site_icons_in_memory`).
+    last_used: RefCell<HashMap<Key, u64>>,
+    uses: std::cell::Cell<u64>,
+    max_in_memory: usize,
 }
 
 impl Favicons {
@@ -210,6 +221,10 @@ impl Favicons {
             shown: RefCell::default(),
             aliases: HashMap::new(),
             app_icon: None,
+            subdomains: RefCell::default(),
+            last_used: RefCell::default(),
+            uses: std::cell::Cell::new(0),
+            max_in_memory: usize::MAX,
         };
         this.app_icon = image::load_from_memory_with_format(APP_ICON_PNG, image::ImageFormat::Png)
             .inspect_err(|e| tracing::warn!("app icon as site icon: {e}"))
@@ -221,10 +236,48 @@ impl Favicons {
         this
     }
 
+    /// Keeps at most `max` icons in memory (0: no limit).
+    pub fn set_max_in_memory(&mut self, max: usize) {
+        self.max_in_memory = if max == 0 { usize::MAX } else { max };
+        self.evict();
+    }
+
+    /// How many icons are held in memory.
+    #[cfg(test)]
+    pub fn in_memory(&self) -> usize {
+        self.by_key.borrow().len()
+    }
+
+    fn touch(&self, key: &Key) {
+        let n = self.uses.get() + 1;
+        self.uses.set(n);
+        self.last_used.borrow_mut().insert(key.clone(), n);
+    }
+
+    /// Lets the least recently used icons that can be read again from disk leave memory while
+    /// more than `max_in_memory` are held.
+    fn evict(&self) {
+        let mut by_key = self.by_key.borrow_mut();
+        while by_key.len() > self.max_in_memory {
+            let last_used = self.last_used.borrow();
+            let oldest = by_key
+                .iter()
+                .filter(|(_, c)| c.on_disk)
+                .min_by_key(|(k, _)| last_used.get(*k).copied().unwrap_or(0))
+                .map(|(k, _)| k.clone());
+            drop(last_used);
+            let Some(key) = oldest else { break };
+            by_key.remove(&key);
+            self.shown.borrow_mut().remove(&key);
+            self.last_used.borrow_mut().remove(&key);
+        }
+    }
+
     /// Icon files were added to the cache folder by someone else (an import): hosts that had
     /// none on disk are looked up again.
     pub fn rescan_disk(&self) {
         self.not_on_disk.borrow_mut().clear();
+        self.subdomains.borrow_mut().clear();
     }
 
     /// Where the icons are cached (`None`: nowhere, they live in memory only).
@@ -287,11 +340,60 @@ impl Favicons {
         if host.is_empty() {
             return None;
         }
+        self.get_host(&host)
+    }
+
+    /// The icon cached under exactly `host` (current scheme, else the other one's).
+    fn get_host(&self, host: &str) -> Option<SiteIcon> {
         let (scheme, cached) = self
-            .cached(&host, self.scheme)
+            .cached(host, self.scheme)
             .map(|c| (self.scheme, c))
-            .or_else(|| self.cached(&host, self.scheme.other()).map(|c| (self.scheme.other(), c)))?;
-        Some(self.shown_icon((host, scheme), &cached))
+            .or_else(|| self.cached(host, self.scheme.other()).map(|c| (self.scheme.other(), c)))?;
+        Some(self.shown_icon((host.to_owned(), scheme), &cached))
+    }
+
+    /// The icon that stands for `url`'s site wherever any cached icon of it exists (the start
+    /// page's tiles): the host's own, then its parent domains (a tile for `www.google.com` or
+    /// `mail.google.com` shows `google.com`'s icon), then a cached subdomain of the host (a
+    /// site only visited as `accounts.google.com` still gets its tile icon).
+    pub fn get_site(&self, url: &str) -> Option<SiteIcon> {
+        if is_internal(url) {
+            return self.app_icon.clone();
+        }
+        let hosts = site_hosts(url);
+        hosts
+            .iter()
+            .find_map(|h| self.get_host(h))
+            .or_else(|| self.subdomain_host(hosts.last()?).and_then(|h| self.get_host(&h)))
+    }
+
+    /// A cached host below `domain`, if any (the cache folder is scanned once per domain).
+    fn subdomain_host(&self, domain: &str) -> Option<String> {
+        if let Some(found) = self.subdomains.borrow().get(domain) {
+            return found.clone();
+        }
+        let in_memory = self
+            .by_key
+            .borrow()
+            .keys()
+            .map(|(h, _)| h.as_str())
+            .filter(|h| h.strip_suffix(domain).is_some_and(|rest| rest.ends_with('.')))
+            .min()
+            .map(str::to_owned);
+        let found = in_memory.or_else(|| {
+            let mut names: Vec<String> = std::fs::read_dir(self.dir.as_ref()?)
+                .ok()?
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter_map(|n| {
+                    let host = n.strip_suffix(".dark.png").or_else(|| n.strip_suffix(".png"))?;
+                    host.strip_suffix(domain)?.ends_with('.').then(|| host.to_owned())
+                })
+                .collect();
+            names.sort();
+            names.into_iter().next()
+        });
+        self.subdomains.borrow_mut().insert(domain.to_owned(), found.clone());
+        found
     }
 
     /// The site's own icon pixels for `page_url` (current scheme, else the other), for drawing
@@ -325,6 +427,7 @@ impl Favicons {
     fn cached(&self, host: &str, scheme: Scheme) -> Option<Cached> {
         let key = (host.to_owned(), scheme);
         if let Some(cached) = self.by_key.borrow().get(&key) {
+            self.touch(&key);
             return Some(cached.clone());
         }
         if self.not_on_disk.borrow().contains(&key) {
@@ -333,7 +436,9 @@ impl Favicons {
         let cached = self.load_from_disk(host, scheme);
         match &cached {
             Some(cached) => {
-                self.by_key.borrow_mut().insert(key, cached.clone());
+                self.by_key.borrow_mut().insert(key.clone(), cached.clone());
+                self.touch(&key);
+                self.evict();
             }
             None => {
                 self.not_on_disk.borrow_mut().insert(key);
@@ -352,7 +457,12 @@ impl Favicons {
         let (w, h) = image.dimensions();
         let source = std::fs::read_to_string(source_file(&path)).ok().map(|s| s.trim().to_owned());
         let icon = self.upload(w, h, image.as_raw());
-        Some(Cached { icon, raw: Arc::new(Raw { width: w, height: h, rgba: image.into_raw() }), source })
+        Some(Cached {
+            icon,
+            raw: Arc::new(Raw { width: w, height: h, rgba: image.into_raw() }),
+            source,
+            on_disk: true,
+        })
     }
 
     /// Chromium reported the page's icon URLs (without media queries): returns the next URL to
@@ -515,14 +625,7 @@ impl Favicons {
         let icon = self.upload(width, height, rgba);
         let key = (host.clone(), scheme);
         let raw = Arc::new(Raw { width, height, rgba: rgba.to_vec() });
-        self.shown.borrow_mut().remove(&key);
-        self.by_key.borrow_mut().insert(key.clone(), Cached { icon, raw, source: Some(url.to_owned()) });
-        self.not_on_disk.borrow_mut().remove(&key);
-        if let Some(search) = self.searches.get_mut(&key) {
-            // Done; what was tried stays tried (no fetching in circles).
-            search.in_flight = None;
-            search.candidates.clear();
-        }
+        let mut on_disk = false;
         if persist
             && let Some(path) = self.cache_path(&host, scheme)
             && let Some(image) = image::RgbaImage::from_raw(width, height, rgba.to_vec())
@@ -531,7 +634,21 @@ impl Favicons {
                 tracing::debug!("caching the icon of {host} failed: {e}");
             } else if let Err(e) = std::fs::write(source_file(&path), url) {
                 tracing::debug!("noting where the icon of {host} came from failed: {e}");
+            } else {
+                on_disk = true;
             }
+        }
+        self.shown.borrow_mut().remove(&key);
+        self.subdomains.borrow_mut().clear();
+        let cached = Cached { icon, raw, source: Some(url.to_owned()), on_disk };
+        self.by_key.borrow_mut().insert(key.clone(), cached);
+        self.touch(&key);
+        self.evict();
+        self.not_on_disk.borrow_mut().remove(&key);
+        if let Some(search) = self.searches.get_mut(&key) {
+            // Done; what was tried stays tried (no fetching in circles).
+            search.in_flight = None;
+            search.candidates.clear();
         }
     }
 
@@ -573,6 +690,23 @@ fn next(search: &mut Search) -> Option<String> {
         }
     }
     None
+}
+
+/// The hosts whose cached icon may stand for `url`'s site, best first: its own, then its parent
+/// domains down to the registrable one (`www.` is already dropped by `display_host`).
+pub fn site_hosts(url: &str) -> Vec<String> {
+    let host = display_host(url);
+    let host = host.split(':').next().unwrap_or_default().to_owned();
+    if host.is_empty() || host.parse::<std::net::IpAddr>().is_ok() {
+        return Vec::new();
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    // `co.uk`, `com.au`, ...: a two-letter country code under a generic second-level label.
+    let compound = labels.len() >= 3
+        && labels[labels.len() - 1].len() == 2
+        && ["co", "com", "org", "net", "gov", "ac", "edu", "or", "ne"].contains(&labels[labels.len() - 2]);
+    let floor = if compound { 3 } else { 2 };
+    (0..labels.len().saturating_sub(floor - 1).max(1)).map(|skip| labels[skip..].join(".")).collect()
 }
 
 /// The cache file of a host's icon (anything but letters, digits, '.' and '-' becomes '_').
@@ -641,6 +775,37 @@ pub fn favicon_or(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icons_beyond_the_limit_leave_memory_least_recently_used_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut icons = Favicons::new(device, queue, Some(dir.path().to_owned()));
+        icons.set_max_in_memory(2);
+        let rgba = [200u8; 4 * 4 * 4];
+        for site in ["a", "b", "c"] {
+            let page = format!("https://{site}.example/");
+            icons.insert(&page, &format!("{page}favicon.ico"), 4, 4, &rgba, true);
+            // "a" stays in use.
+            assert!(icons.get("https://a.example/").is_some());
+        }
+        assert_eq!(icons.in_memory(), 2);
+        assert!(icons.by_key.borrow().contains_key(&("a.example".to_owned(), Scheme::Light)));
+        // The one that left is read again from disk when asked for.
+        assert!(icons.get("https://b.example/").is_some());
+        assert_eq!(icons.in_memory(), 2);
+    }
+
+    #[test]
+    fn icons_only_in_memory_never_leave_it() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut icons = Favicons::new(device, queue, None);
+        icons.set_max_in_memory(1);
+        let rgba = [200u8; 4 * 4 * 4];
+        icons.insert("https://a.example/", "https://a.example/i.png", 4, 4, &rgba, true);
+        icons.insert("https://b.example/", "https://b.example/i.png", 4, 4, &rgba, true);
+        assert_eq!(icons.in_memory(), 2, "nothing on disk to read them back from");
+    }
 
     #[test]
     fn internal_pages_are_recognised() {
@@ -761,5 +926,49 @@ mod tests {
         let dir = Path::new("/c");
         assert_ne!(cache_file(dir, "github.com", false), cache_file(dir, "github.com", true));
         assert_eq!(cache_file(dir, "github.com", true), Path::new("/c/github.com.dark.png"));
+    }
+
+    #[test]
+    fn site_hosts_fall_back_to_parent_domains() {
+        assert_eq!(site_hosts("https://www.google.com/search"), ["google.com"]);
+        assert_eq!(
+            site_hosts("https://accounts.mail.google.com/"),
+            ["accounts.mail.google.com", "mail.google.com", "google.com"]
+        );
+        assert_eq!(site_hosts("https://news.bbc.co.uk/x"), ["news.bbc.co.uk", "bbc.co.uk"]);
+        assert_eq!(site_hosts("http://localhost:8080/"), ["localhost"]);
+        assert!(site_hosts("http://127.0.0.1:8080/").is_empty());
+        assert!(site_hosts("about:blank").is_empty());
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("axion-favicons-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn write_icon(dir: &Path, host: &str) {
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 30, 30, 255]))
+            .save(cache_file(dir, host, false))
+            .expect("write icon");
+    }
+
+    #[test]
+    fn tiles_find_icons_under_related_keys() {
+        let dir = scratch_dir("lookup");
+        write_icon(&dir, "google.com");
+        write_icon(&dir, "accounts.discord.com");
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let favicons = Favicons::new(device, queue, Some(dir.clone()));
+        // Exact host, www-stripped, a parent domain, a cached subdomain.
+        assert!(favicons.get_site("https://google.com/").is_some());
+        assert!(favicons.get_site("https://www.google.com/").is_some());
+        assert!(favicons.get_site("https://mail.google.com/").is_some());
+        assert!(favicons.get_site("https://discord.com/").is_some());
+        // `get` stays exact.
+        assert!(favicons.get("https://discord.com/").is_none());
+        assert!(favicons.get_site("https://github.com/").is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
