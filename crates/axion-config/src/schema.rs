@@ -413,6 +413,23 @@ pub struct Home {
     pub background_blur: f32,
     /// An open start page refreshes its Shields numbers at most this often.
     pub stats_refresh_seconds: f32,
+    /// Draws the start page natively (Liquid Glass tiles and search field that refract the
+    /// wallpaper) instead of the HTML page at `axion://home/`, which stays the fallback (and is
+    /// shown for `axion://home/?html=1`). The tab keeps its web view navigated to the HTML page,
+    /// hidden while the native page is shown.
+    pub native: bool,
+    /// A horizontal touchpad swipe over the top sites flips a page after this much travel (px).
+    pub top_sites_swipe_px: f32,
+    /// After a flip the next swipe is ignored for this long (ms), so one swipe flips one page.
+    pub top_sites_swipe_lock_ms: u32,
+    /// When a tab leaves the native start page for a site, the native page stays up for at most
+    /// this long (ms) until the site's first frame arrives (no flash of the hidden HTML page).
+    pub native_handoff_ms: u32,
+    /// The native start page keeps at most this many MB of decoded frames of an animated
+    /// wallpaper (GIF, WebP, APNG); a longer animation is cut there.
+    pub animated_wallpaper_max_mb: u32,
+    /// Frames of an animated wallpaper are scaled down to this longest side (px).
+    pub animated_wallpaper_max_edge: u32,
     /// Older setting (one background image, shown or not), replaced by `background`; accepted
     /// so old files load, and read once to migrate the old image.
     #[serde(skip_serializing)]
@@ -449,6 +466,12 @@ impl Default for Home {
             background_dim: 0.2,
             background_blur: 0.0,
             stats_refresh_seconds: 2.0,
+            native: false,
+            top_sites_swipe_px: 80.0,
+            top_sites_swipe_lock_ms: 400,
+            native_handoff_ms: 800,
+            animated_wallpaper_max_mb: 128,
+            animated_wallpaper_max_edge: 1280,
             show_background_image: None,
         }
     }
