@@ -3,7 +3,7 @@
 //! does. With `general.list_sheets` off the sidebar lists are used as before.
 
 use super::*;
-use crate::list_sheet::{Click, ListSheet, SheetKind};
+use crate::list_sheet::{Click, DeletePlan, ListSheet, SheetKind};
 
 impl Browser {
     pub(super) fn sheet(&self, kind: SheetKind) -> &ListSheet {
@@ -119,7 +119,7 @@ impl Browser {
     }
 
     /// History rows the worker read: shown if they answer the newest question.
-    fn history_loaded(&mut self, generation: u64, items: Vec<PanelItem>, took: Duration) {
+    fn history_loaded(&mut self, generation: u64, items: Vec<PanelItem>, total: usize, took: Duration) {
         if generation != self.list_generation || !self.history_sheet.is_open() {
             return;
         }
@@ -134,6 +134,7 @@ impl Browser {
         };
         let started = Instant::now();
         let favicons = &self.favicons;
+        self.history_sheet.set_total_matching(total);
         self.history_sheet.set_items(&mut self.ui, items, clear, &empty, favicons, self.list_keep_scroll);
         tracing::debug!(ms = started.elapsed().as_secs_f32() * 1000.0, "history sheet built");
     }
@@ -179,10 +180,84 @@ impl Browser {
         }
     }
 
-    /// The selected rows of a sheet (the bar's Delete button, the Delete key, the context menu).
+    /// The selection of a sheet (the bar's Delete button, the Delete key, the context menu).
+    /// More entries than `lists.confirm_delete_over` ask first.
     pub(super) fn delete_sheet_selection_of(&mut self, kind: SheetKind) {
-        let rows = self.sheet(kind).selected_items();
-        self.delete_sheet_rows(kind, &rows);
+        let count = self.sheet(kind).selected_count();
+        if count == 0 {
+            return;
+        }
+        if count > self.config.lists.confirm_delete_over as usize {
+            self.confirm_sheet_delete(kind, count);
+            return;
+        }
+        self.delete_sheet_plan(kind);
+    }
+
+    /// The small glass confirmation "Delete N entries?" with a red Delete.
+    fn confirm_sheet_delete(&mut self, kind: SheetKind, count: usize) {
+        self.restart.alert_open = false;
+        self.gpu_confirm = false;
+        self.sheet_delete_confirm = Some(kind);
+        let title = match kind {
+            SheetKind::History => tr_fmt!("Delete {count} history entries?", count = count),
+            SheetKind::Downloads => tr_fmt!("Remove {count} downloads from the list?", count = count),
+        };
+        let line = match kind {
+            SheetKind::History => tr("This cannot be undone."),
+            SheetKind::Downloads => tr("The downloaded files stay on your computer."),
+        };
+        self.update_alert.show(
+            &mut self.ui,
+            &self.config,
+            AlertView {
+                icon: Some(Icon::Trash),
+                title,
+                lines: vec![line.to_owned()],
+                primary: Some((tr("Delete").to_owned(), Tone::Destructive)),
+                secondary: Some(tr("Cancel").to_owned()),
+                dismissable: true,
+                error: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    /// The confirmation was answered.
+    pub(super) fn sheet_delete_answered(&mut self, kind: SheetKind, action: AlertAction) {
+        self.update_alert.close();
+        if action == AlertAction::Primary {
+            self.delete_sheet_plan(kind);
+        }
+    }
+
+    /// Deletes what the sheet's selection stands for: its rows, or after Select All every entry
+    /// matching the query (History: through the worker in one transaction, the entries beyond the
+    /// loaded rows included).
+    fn delete_sheet_plan(&mut self, kind: SheetKind) {
+        match self.sheet(kind).delete_plan() {
+            DeletePlan::Rows(rows) => self.delete_sheet_rows(kind, &rows),
+            DeletePlan::Matching { rows, keep } => match kind {
+                SheetKind::History => {
+                    let query = self.history_sheet.query().to_owned();
+                    let keep: Vec<String> = keep
+                        .iter()
+                        .filter_map(|&i| self.history_sheet.item_url(i).map(str::to_owned))
+                        .collect();
+                    if let Some(worker) = &self.list_worker {
+                        worker.send(crate::list_worker::Job::DeleteHistoryMatching { query, keep });
+                    }
+                    let favicons = &self.favicons;
+                    self.history_sheet.remove_items(&mut self.ui, favicons, &rows);
+                    self.history_sheet.end_selection(&mut self.ui);
+                    self.bookmarks_changed = true;
+                    // Entries beyond the loaded rows are gone too: read the list again.
+                    self.refresh_sheet(kind, true);
+                }
+                // Every download is loaded: the rows are all there is.
+                SheetKind::Downloads => self.delete_sheet_rows(kind, &rows),
+            },
+        }
     }
 
     /// The Delete key and test aid: the open sheet's selection.
@@ -252,6 +327,7 @@ impl Browser {
             Click::Close => self.close_list_sheet(kind),
             Click::Select => sheet.toggle_selecting(&mut self.ui),
             Click::CancelSelection => sheet.end_selection(&mut self.ui),
+            Click::SelectAll => sheet.toggle_select_all(&mut self.ui),
             Click::DeleteSelected => self.delete_sheet_selection_of(kind),
             Click::Check(i) => sheet.click_row(&mut self.ui, i, shift),
             Click::Group(g) => sheet.toggle_group(&mut self.ui, favicons, g),
@@ -307,8 +383,8 @@ impl Browser {
         }
         let done = self.list_worker.as_ref().map(crate::list_worker::ListWorker::poll).unwrap_or_default();
         for done in done {
-            let crate::list_worker::Done::Loaded { generation, items, took } = done;
-            self.history_loaded(generation, items, took);
+            let crate::list_worker::Done::Loaded { generation, items, total, took } = done;
+            self.history_loaded(generation, items, total, took);
         }
         if self.config.downloads.show_site_icons || self.history_sheet.is_open() {
             let favicons = &self.favicons;

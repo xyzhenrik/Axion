@@ -21,13 +21,19 @@ pub enum Job {
     Load { generation: u64, query: String, limit: usize, now: i64 },
     /// Deletes the history entries of these addresses.
     DeleteHistory(Vec<String>),
+    /// Deletes every history entry matching `query` (all when empty) except the addresses in
+    /// `keep`, in one transaction ("Select All" in the History sheet: the rows beyond the loaded
+    /// ones are deleted too, without ever being listed).
+    DeleteHistoryMatching { query: String, keep: Vec<String> },
     /// Deletes all of the history.
     ClearHistory,
 }
 
 /// What the worker reports.
 pub enum Done {
-    Loaded { generation: u64, items: Vec<PanelItem>, took: Duration },
+    /// `total` is how many entries match in the database (more than `items` when the list
+    /// is capped by `history.sheet_max_entries`).
+    Loaded { generation: u64, items: Vec<PanelItem>, total: usize, took: Duration },
 }
 
 /// The thread's handle. Dropping it ends the thread once its queue is empty.
@@ -65,6 +71,11 @@ impl ListWorker {
                                 tracing::error!("deleting history entries failed: {e}");
                             }
                         }
+                        Job::DeleteHistoryMatching { query, keep } => {
+                            if let Err(e) = store.delete_history_matching(&query, &keep) {
+                                tracing::error!("deleting the matching history entries failed: {e}");
+                            }
+                        }
                         Job::ClearHistory => {
                             if let Err(e) = store.clear_history_since(0) {
                                 tracing::error!("clearing history failed: {e}");
@@ -76,9 +87,14 @@ impl ListWorker {
                                 .search_history_recent(&query, limit)
                                 .inspect_err(|e| tracing::error!("reading history failed: {e}"))
                                 .unwrap_or_default();
+                            let total = store
+                                .count_history_matching(&query)
+                                .inspect_err(|e| tracing::error!("counting history failed: {e}"))
+                                .unwrap_or(entries.len())
+                                .max(entries.len());
                             let items = crate::history::panel_items(entries, now);
                             let took = started.elapsed();
-                            if report.send(Done::Loaded { generation, items, took }).is_err() {
+                            if report.send(Done::Loaded { generation, items, total, took }).is_err() {
                                 return;
                             }
                             if let Some(waker) = &waker {
@@ -144,6 +160,15 @@ mod tests {
         };
         assert_eq!(generation, 2);
         assert_eq!(items.len(), 3, "the two deleted entries are gone");
+        // Delete everything matching except one address: one job, one transaction.
+        worker.send(Job::DeleteHistoryMatching {
+            query: "site".into(),
+            keep: vec!["https://site4.example/".into(), "https://site0.example/".into()],
+        });
+        worker.send(Job::Load { generation: 3, query: String::new(), limit: 1, now: 2_000 });
+        let Done::Loaded { generation, items, total, .. } = wait_for(&worker);
+        assert_eq!(generation, 3);
+        assert_eq!((items.len(), total), (1, 2), "the total counts what matches, not what was read");
         assert!(items.iter().all(|i| i.url != "https://site1.example/" && i.url != "https://site3.example/"));
     }
 }

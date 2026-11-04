@@ -1470,7 +1470,6 @@
 
 # crates/axion-app/src/browser.rs
 "Restart" = "Yeniden başlat"
-"Restart to apply the new language" = "Yeni dili uygulamak için yeniden başlatın"
 
 # crates/axion-app/src/settings.rs
 "Languages Axion has no translation for yet show English." = "Axion’ın henüz çevirmediği diller İngilizce görünür."
@@ -1492,3 +1491,19 @@
 
 # crates/axion-app/src/settings/search.rs
 "Window frame" = "Pencere çerçevesi"
+
+# crates/axion-app/src/browser/restart.rs
+"Restart Axion to apply this change" = "Bu değişikliği uygulamak için Axion'u yeniden başlatın"
+"Your tabs come back after the restart." = "Sekmeleriniz yeniden başlatmanın ardından geri gelir."
+
+# crates/axion-app/src/browser/sheets.rs
+"Delete {count} history entries?" = "{count} geçmiş girdisi silinsin mi?"
+"Remove {count} downloads from the list?" = "{count} indirme listeden kaldırılsın mı?"
+"The downloaded files stay on your computer." = "İndirilen dosyalar bilgisayarınızda kalır."
+"This cannot be undone." = "Bu işlem geri alınamaz."
+
+# crates/axion-app/src/dropdown.rs
+"No matches" = "Eşleşme yok"
+
+# crates/axion-app/src/list_sheet.rs
+"Deselect All" = "Seçimi Kaldır"

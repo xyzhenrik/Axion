@@ -127,6 +127,10 @@ pub struct General {
     /// Linux: at start, offer to make Axion the default browser when it is not (a toast with
     /// "Make default" and "Don't ask again"). "Don't ask again" turns this off.
     pub default_browser_hint: bool,
+    /// When a setting that needs a restart changed and "Later" was chosen in the restart
+    /// notice, a small "Restart" pill stays in the window until Axion restarts (a click
+    /// reopens the notice). Off: the notice appears once and the settings page keeps its row.
+    pub restart_hint_pill: bool,
     /// A second `axion` launch (a link opened from another app, `axion URL`) hands its URLs to
     /// the running window of the same account and exits, instead of starting a second browser
     /// on the same profile. Off: every launch tries to start its own browser.
@@ -236,6 +240,7 @@ impl Default for General {
             onboarding_done: false,
             desktop_integration: true,
             default_browser_hint: true,
+            restart_hint_pill: true,
             single_instance: true,
             list_sheets: true,
             context_menus: true,
@@ -1785,11 +1790,14 @@ pub struct Lists {
     /// A checkbox replaces a row's icon while the pointer is on it (off: checkboxes only show
     /// in selection mode).
     pub hover_checkboxes: bool,
+    /// Deleting more entries than this at once (selected one by one or with Select All) asks
+    /// first ("Delete 1,200 entries?"). 0 asks every time.
+    pub confirm_delete_over: u32,
 }
 
 impl Default for Lists {
     fn default() -> Self {
-        Self { overscan_rows: 6, hover_checkboxes: true }
+        Self { overscan_rows: 6, hover_checkboxes: true, confirm_delete_over: 50 }
     }
 }
 
@@ -1832,6 +1840,9 @@ pub struct Ui {
     /// the ones cached on disk leave memory beyond it and are read again when needed (0: no
     /// limit).
     pub max_site_icons_in_memory: u32,
+    /// A dropdown list (the language pickers in Settings) shows this many rows at once and
+    /// scrolls beyond them.
+    pub dropdown_visible_rows: u32,
 }
 
 impl Default for Ui {
@@ -1849,6 +1860,7 @@ impl Default for Ui {
             idle_frames_before_slowing: 30,
             idle_check_interval_ms: 50,
             max_site_icons_in_memory: 512,
+            dropdown_visible_rows: 9,
         }
     }
 }

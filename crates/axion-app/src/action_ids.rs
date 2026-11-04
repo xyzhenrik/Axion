@@ -60,6 +60,7 @@ pub const RANGES: &[Block] = &[
     block("overview header", 9200, 9210),
     block("update alert", 9250, 9260),
     block("toast", 9210, 9220),
+    block("restart pill", 9260, 9270),
     block("print dialog", 9300, 9400),
     block("screenshot", 9400, 9500),
     block("player", 9500, 9600),

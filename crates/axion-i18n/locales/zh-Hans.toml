@@ -1470,7 +1470,6 @@
 
 # crates/axion-app/src/browser.rs
 "Restart" = "重新启动"
-"Restart to apply the new language" = "重新启动以应用新语言"
 
 # crates/axion-app/src/settings.rs
 "Languages Axion has no translation for yet show English." = "Axion 尚未翻译的语言将显示英文。"
@@ -1492,3 +1491,19 @@
 
 # crates/axion-app/src/settings/search.rs
 "Window frame" = "窗口边框"
+
+# crates/axion-app/src/browser/restart.rs
+"Restart Axion to apply this change" = "重启 Axion 以应用此更改"
+"Your tabs come back after the restart." = "重启后标签页会恢复。"
+
+# crates/axion-app/src/browser/sheets.rs
+"Delete {count} history entries?" = "要删除 {count} 条历史记录吗？"
+"Remove {count} downloads from the list?" = "要从列表中移除 {count} 个下载吗？"
+"The downloaded files stay on your computer." = "已下载的文件会保留在你的电脑上。"
+"This cannot be undone." = "此操作无法撤销。"
+
+# crates/axion-app/src/dropdown.rs
+"No matches" = "无匹配项"
+
+# crates/axion-app/src/list_sheet.rs
+"Deselect All" = "取消全选"

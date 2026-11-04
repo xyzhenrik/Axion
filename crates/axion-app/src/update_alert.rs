@@ -45,6 +45,8 @@ pub enum AlertAction {
 pub enum Tone {
     Accent,
     Plain,
+    /// Red glass (Delete).
+    Destructive,
 }
 
 /// What the alert shows now.
@@ -86,6 +88,7 @@ fn button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, tone: Tone)
     let background = match tone {
         Tone::Accent => Background::TintedGlass(GlassLevel::Thin, Paint::Accent),
         Tone::Plain => Background::Glass(GlassLevel::Thin),
+        Tone::Destructive => Background::TintedGlass(GlassLevel::Thin, Paint::Fixed(ERROR)),
     };
     let node = ui.add(
         parent,
@@ -106,6 +109,11 @@ fn button(ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, tone: Tone)
         && let Some(w) = ui.widget_mut(label)
     {
         w.set_paint(Paint::OnAccent);
+    }
+    if tone == Tone::Destructive
+        && let Some(w) = ui.widget_mut(label)
+    {
+        w.set_paint(Paint::OnColor(ERROR));
     }
 }
 

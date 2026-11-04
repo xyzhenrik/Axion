@@ -1470,7 +1470,6 @@
 
 # crates/axion-app/src/browser.rs
 "Restart" = "Reiniciar"
-"Restart to apply the new language" = "Reinicia para aplicar el nuevo idioma"
 
 # crates/axion-app/src/settings.rs
 "Languages Axion has no translation for yet show English." = "Los idiomas que Axion aún no traduce se muestran en inglés."
@@ -1492,3 +1491,19 @@
 
 # crates/axion-app/src/settings/search.rs
 "Window frame" = "Marco de la ventana"
+
+# crates/axion-app/src/browser/restart.rs
+"Restart Axion to apply this change" = "Reinicia Axion para aplicar este cambio"
+"Your tabs come back after the restart." = "Tus pestañas volverán tras el reinicio."
+
+# crates/axion-app/src/browser/sheets.rs
+"Delete {count} history entries?" = "¿Eliminar {count} entradas del historial?"
+"Remove {count} downloads from the list?" = "¿Quitar {count} descargas de la lista?"
+"The downloaded files stay on your computer." = "Los archivos descargados se conservan en tu ordenador."
+"This cannot be undone." = "Esta acción no se puede deshacer."
+
+# crates/axion-app/src/dropdown.rs
+"No matches" = "Sin coincidencias"
+
+# crates/axion-app/src/list_sheet.rs
+"Deselect All" = "Deseleccionar todo"

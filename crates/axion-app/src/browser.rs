@@ -36,6 +36,7 @@ use crate::context_menu::ContextMenus;
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
 use crate::downloads_popover::{DownloadsAction, DownloadsPopover};
+use crate::dropdown::Dropdown;
 use crate::extension_popup::ExtensionPopupCard;
 use crate::extensions::Extensions;
 use crate::extensions_popover::{ExtensionsAction, ExtensionsPopover};
@@ -75,8 +76,9 @@ use crate::player::{
 use crate::print_dialog::PrintDialog;
 use crate::private::{PrivateLock, TabDrop};
 use crate::resize_bench::{self, FrameTimes, Recorder, ResizeBench, ResizeCounters};
+use crate::restart_pill::RestartPill;
 use crate::screenshot::{Phase as ShotPhase, ShotTool};
-use crate::settings::{AccountInfo, Category, Outcome, SettingsAction, SettingsSheet};
+use crate::settings::{AccountInfo, Category, Outcome, Picker, SettingsAction, SettingsSheet};
 use crate::shields::ShieldsState;
 use crate::shields_popover::{PopoverAction, ShieldsInfo, ShieldsPopover};
 use crate::suggestions::{SuggestionList, suggest};
@@ -109,6 +111,7 @@ mod permissions;
 mod playlist;
 mod reading;
 mod registry;
+mod restart;
 mod sheets;
 mod start;
 mod tabgroups;
@@ -303,8 +306,11 @@ pub struct Browser {
     /// Site permissions: the prompt, the recording indicator's popover and the decisions.
     permissions: permissions::PermissionsUi,
     toast: Toast,
-    /// The pending language the "Restart to apply" toast was already shown for.
-    language_toast_for: Option<axion_i18n::Language>,
+    /// A setting waits for a restart: the alert, the pill.
+    restart: restart::RestartHint,
+    restart_pill: RestartPill,
+    /// The language dropdowns of Settings.
+    dropdown: Dropdown,
     updater: Updater,
     update_alert: UpdateAlert,
     print_dialog: PrintDialog,
@@ -312,6 +318,8 @@ pub struct Browser {
     snap: capture::CaptureState,
     /// The graphics settings' confirmation (shared GPU memory on AMD) is showing in the alert.
     gpu_confirm: bool,
+    /// The list sheet whose "Delete N entries?" confirmation the alert shows.
+    sheet_delete_confirm: Option<crate::list_sheet::SheetKind>,
     /// What the GPU session actually uses (Settings › Hardware, diagnostics).
     hardware_status: crate::hardware::Status,
     /// When the first automatic update check runs (a moment after start; none when not due).
@@ -974,6 +982,9 @@ impl Browser {
         let group_sheet = GroupSheet::build(&mut ui);
         let tab_search = TabSearch::build(&mut ui);
         let onboarding = Onboarding::build(&mut ui);
+        // Above Settings (and the other sheets), below the alert.
+        let dropdown = Dropdown::build(&mut ui);
+        let restart_pill = RestartPill::build(&mut ui);
         let update_alert = UpdateAlert::build(&mut ui);
         let print_dialog = PrintDialog::build(&mut ui);
         let shot = ShotTool::build(&mut ui);
@@ -1034,13 +1045,16 @@ impl Browser {
             extensions_confirm_remove: false,
             permissions,
             toast,
-            language_toast_for: None,
+            restart: restart::RestartHint::default(),
+            restart_pill,
+            dropdown,
             updater: Updater::new(),
             update_alert,
             print_dialog,
             shot,
             snap: capture::CaptureState::default(),
             gpu_confirm: false,
+            sheet_delete_confirm: None,
             hardware_status,
             update_check_at,
             notifier: crate::platform::notify::Notifier::default(),
@@ -2355,43 +2369,28 @@ impl Browser {
         Origin { plane: self.chrome.bar_node(), point: address.center(), control: address }
     }
 
+    /// A language dropdown of Settings opens below its button.
+    fn open_picker(&mut self, picker: Picker) {
+        let Some(anchor) = self.settings.picker_frame(&self.ui, picker) else { return };
+        let items = self.settings.picker_items(&self.config, picker);
+        let window = self.logical_size();
+        let events = self.dropdown.open(&mut self.ui, &self.config, anchor, window, items);
+        self.handle_ui_events(events);
+    }
+
+    /// Enter in a dropdown: the highlighted choice, as if its row was clicked.
+    fn dropdown_choose(&mut self, id: axion_ui::ActionId) {
+        self.dropdown.close(&mut self.ui, &self.config);
+        let Some(action) = SettingsAction::from_id(id) else { return };
+        let outcome = self.settings.action(&mut self.ui, action, &mut self.config, &self.keymap);
+        self.settings_outcome(outcome);
+    }
+
     /// Closes Settings: it drains back into where it came from.
     fn close_settings(&mut self) {
         let fallback = self.address_origin();
+        self.dropdown.close(&mut self.ui, &self.config);
         self.settings.close(&mut self.ui, &self.config, fallback);
-        self.remind_language_restart();
-    }
-
-    /// Closing Settings with a language change still waiting for a restart says so once (a
-    /// toast with a Restart button), unless the user chose "Later" or the tour is up.
-    fn remind_language_restart(&mut self) {
-        let Some(language) = self.settings.pending_language(&self.config) else {
-            self.language_toast_for = None;
-            return;
-        };
-        if !self.settings.language_restart_due(&self.config)
-            || self.language_toast_for == Some(language)
-            || self.onboarding.is_open()
-        {
-            return;
-        }
-        self.language_toast_for = Some(language);
-        let mut anchor = self.chrome.share_frame(&self.ui);
-        if anchor.size.x <= 0.0 {
-            anchor = self.chrome.address_frame(&self.ui);
-        }
-        let window = self.logical_size();
-        self.toast_kind = default_browser::ToastKind::LanguageRestart;
-        self.toast.show_with_actions(
-            &mut self.ui,
-            &self.config,
-            anchor,
-            window,
-            Icon::Globe,
-            tr("Restart to apply the new language"),
-            Some(tr("Restart")),
-            Some(tr("Later")),
-        );
     }
 
     /// Closes Passwords: it drains back into where it came from.
@@ -4236,7 +4235,14 @@ impl Browser {
                         self.overview_action(action);
                     }
                 }
+                UiEvent::Clicked { action, .. } if self.restart_pill.owns(action) => {
+                    self.reopen_restart_alert()
+                }
                 UiEvent::Clicked { action, .. } if SettingsAction::from_id(action).is_some() => {
+                    if self.dropdown.owns(action) {
+                        // A row of a language dropdown: the list closes, the choice runs as the pill's did.
+                        self.dropdown.close(&mut self.ui, &self.config);
+                    }
                     let Some(action) = SettingsAction::from_id(action) else { continue };
                     // The backdrop's "close" also fires for clicks on the sheet's background.
                     let on_sheet = self.pointer.is_some_and(|p| self.settings.contains(&self.ui, p));
@@ -5104,9 +5110,11 @@ impl Browser {
         let _op = crate::stall::op("settings apply");
         match outcome {
             Outcome::Nothing => {}
+            Outcome::OpenPicker(picker) => self.open_picker(picker),
             Outcome::Changed => {
                 // Apply at once; write to disk a moment later (sliders send many changes).
                 self.config_dirty_since.get_or_insert(Instant::now());
+                self.restart_check();
                 if self.settings.take_rebuild() {
                     self.refresh_settings();
                 }
@@ -5388,6 +5396,7 @@ impl Browser {
         self.tab_drag.is_dragging()
             || self.menu.is_open()
             || self.account_menu.is_open()
+            || self.dropdown.is_open()
             || self.context_menus.is_open()
             || self.shields_popover.is_open()
             || self.circuit_popover.is_open()
@@ -5853,7 +5862,12 @@ impl Browser {
     /// Shows the alert for the install's current state (or closes it).
     fn sync_update_alert(&mut self) {
         match self.updater.current_alert() {
-            Some(view) => self.update_alert.show(&mut self.ui, &self.config, view),
+            Some(view) => {
+                self.restart.alert_open = false;
+                self.update_alert.show(&mut self.ui, &self.config, view);
+            }
+            // The restart notice and the confirmations are not the updater's to close.
+            None if self.restart.alert_open || self.gpu_confirm || self.sheet_delete_confirm.is_some() => {}
             None => self.update_alert.close(),
         }
     }
@@ -5865,6 +5879,7 @@ impl Browser {
             return;
         }
         if let Some(view) = self.updater.prepare_install() {
+            self.restart.alert_open = false;
             self.update_alert.show(&mut self.ui, &self.config, view);
         }
     }
@@ -5905,6 +5920,7 @@ impl Browser {
 
     /// "Shared GPU memory" on AMD graphics asks first: it has crashed the driver there.
     fn confirm_gpu_frames(&mut self) {
+        self.restart.alert_open = false;
         self.gpu_confirm = true;
         self.update_alert.show(
             &mut self.ui,
@@ -5929,6 +5945,14 @@ impl Browser {
     }
 
     fn update_alert_action(&mut self, action: AlertAction) {
+        if self.restart.alert_open {
+            self.restart_alert_answered(action);
+            return;
+        }
+        if let Some(kind) = self.sheet_delete_confirm.take() {
+            self.sheet_delete_answered(kind, action);
+            return;
+        }
         if self.gpu_confirm {
             self.gpu_confirm = false;
             self.update_alert.close();
@@ -6070,6 +6094,7 @@ impl Browser {
                 Ok(config) => {
                     tracing::info!("settings reloaded");
                     self.config = config;
+                    self.restart_check();
                     self.engine.set_download_options(Downloads::options(&self.config));
                     self.apply_shields_config();
                     self.apply_network_config();
@@ -6441,7 +6466,12 @@ impl Browser {
                     MouseScrollDelta::LineDelta(x, y) => Vec2::new(x, y) * LINE_SCROLL,
                     MouseScrollDelta::PixelDelta(p) => Vec2::new(p.x as f32, p.y as f32) / self.scale(),
                 };
-                if self.pointer.is_some_and(|p| self.ext_popup_wheel(p, delta)) {
+                if self.dropdown.is_open() {
+                    // The language list scrolls; the sheet under it rests.
+                    if self.pointer.is_some_and(|p| self.dropdown.contains(&self.ui, p)) {
+                        self.dropdown.scroll_by(&mut self.ui, delta.y);
+                    }
+                } else if self.pointer.is_some_and(|p| self.ext_popup_wheel(p, delta)) {
                     // The extension popup scrolled.
                 } else if self.pointer.is_some_and(|p| self.start_wheel(p, delta)) {
                     // The start page's top sites flipped a page.
@@ -6767,6 +6797,11 @@ impl Browser {
             self.pending_move = None;
             return;
         }
+        if pressed && self.dropdown.is_open() && !self.dropdown.contains(&self.ui, p) {
+            // A click outside only dismisses the dropdown list.
+            self.dropdown.close(&mut self.ui, &self.config);
+            return;
+        }
         if pressed && self.menu.is_open() && !self.menu.contains(&self.ui, p) {
             // A click outside only dismisses the menu.
             self.menu.close(&mut self.ui, &self.config);
@@ -6955,6 +6990,34 @@ impl Browser {
         }
         if self.onboarding.is_open() {
             return self.onboarding_key(event);
+        }
+        // The alert (restart notice, delete confirmation) lies above everything: Escape is its.
+        if pressed
+            && self.update_alert.is_dismissable()
+            && (self.restart.alert_open || self.sheet_delete_confirm.is_some())
+            && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            self.update_alert_action(AlertAction::Backdrop);
+            return false;
+        }
+        if pressed && self.dropdown.is_open() {
+            match input::key(event) {
+                Some(Key::Named(name)) if name == "Escape" => {
+                    self.dropdown.close(&mut self.ui, &self.config);
+                    return false;
+                }
+                Some(Key::Named(name)) if name == "Up" || name == "Down" => {
+                    self.dropdown.move_highlight(&mut self.ui, if name == "Up" { -1 } else { 1 });
+                    return false;
+                }
+                Some(Key::Named(name)) if name == "Enter" => {
+                    if let Some(id) = self.dropdown.chosen() {
+                        self.dropdown_choose(id);
+                    }
+                    return false;
+                }
+                _ => {}
+            }
         }
         // Escape closes what is on top first: the extensions list lies above the popup.
         if pressed
@@ -7499,6 +7562,8 @@ impl Browser {
                 // Capture aids: the page menu with its zoom submenu open, a zoom step in it,
                 // and closing every popup at once (mid-animation with --lead / frame sequences).
                 "zoom-menu" => self.menu.open_first_submenu(&mut self.ui, &self.config),
+                // Capture aid: pretends a setting waits for a restart (raises the restart notice).
+                "restart-pending" => self.restart_pending_for_test(),
                 "zoom-in" => self.menu_action(MenuAction::ZoomIn),
                 // Capture aids: a zoom step as the shortcut does it, and the command palette
                 // (with "palette:TEXT": TEXT typed into it).
@@ -8502,6 +8567,8 @@ impl Browser {
         self.poll_panel_search();
         self.toast.animate(&mut self.ui, &self.config, dt);
         self.update_alert.animate(&mut self.ui, dt);
+        self.dropdown.animate(&mut self.ui, dt);
+        self.animate_restart_hint(dt);
         self.print_dialog.animate(&mut self.ui, &self.config, dt);
         let page = self.page_rect();
         self.shot.animate(&mut self.ui, &self.config, page, dt);

@@ -18,6 +18,7 @@ use zeroize::Zeroizing;
 use axion_engine::PermissionKind;
 
 use crate::default_browser::State as DefaultState;
+use crate::dropdown::DropdownItem;
 use crate::home::Image;
 use crate::morph::{Origin, SheetMorph};
 use crate::passwords::MIN_MASTER_LENGTH;
@@ -820,6 +821,10 @@ pub enum SettingsAction {
     /// Deletes the downloaded translation models.
     RemoveTranslationModels,
     Language(UiLanguage),
+    /// Opens the interface-language dropdown.
+    LanguagePicker,
+    /// Opens the translate-into dropdown.
+    TranslatePicker,
     /// Runs the first-run introduction again.
     ShowWelcomeTour,
     /// Makes Axion the system's default browser.
@@ -929,6 +934,29 @@ const TRANSLATION_BACKENDS: [(&str, TranslationBackend); 2] = [
 /// Translate-into choices: entry 0 is "Interface" (code empty: the interface language), then
 /// every language the local models cover, in `axion_translate::lang::LANGUAGES` order.
 const TRANSLATE_TARGET_BASE: u32 = 1040;
+
+/// A dropdown list of the Settings pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Picker {
+    /// General: the interface language.
+    Language,
+    /// Reading & Translation: the language pages are translated into.
+    TranslateTarget,
+}
+
+impl Picker {
+    fn action(self) -> SettingsAction {
+        match self {
+            Picker::Language => SettingsAction::LanguagePicker,
+            Picker::TranslateTarget => SettingsAction::TranslatePicker,
+        }
+    }
+}
+
+/// A language in its own name ("System default" for the system's).
+fn language_name(language: UiLanguage) -> &'static str {
+    crate::locale::native_name(language).unwrap_or_else(|| tr("System default"))
+}
 
 /// The code and English name of translate-into choice `i` (see [`TRANSLATE_TARGET_BASE`]).
 fn translate_target(i: usize) -> Option<(&'static str, &'static str)> {
@@ -1111,6 +1139,8 @@ impl SettingsAction {
                     SettingsAction::TranslationBackend(TranslationBackend::Endpoint) => READING_BASE + 8,
                     SettingsAction::TranslateTarget(i) => TRANSLATE_TARGET_BASE + i as u32,
                     SettingsAction::RemoveTranslationModels => READING_BASE + 30,
+                    SettingsAction::LanguagePicker => READING_BASE + 20,
+                    SettingsAction::TranslatePicker => READING_BASE + 21,
                     SettingsAction::AddTrustedSite => 80,
                     SettingsAction::OpenPasswords => 85,
                     SettingsAction::ImportPasswords => 86,
@@ -1215,6 +1245,8 @@ impl SettingsAction {
                 SettingsAction::TranslateTarget((n - TRANSLATE_TARGET_BASE) as usize)
             }
             n if n == READING_BASE + 30 => SettingsAction::RemoveTranslationModels,
+            n if n == READING_BASE + 20 => SettingsAction::LanguagePicker,
+            n if n == READING_BASE + 21 => SettingsAction::TranslatePicker,
             85 => SettingsAction::OpenPasswords,
             86 => SettingsAction::ImportPasswords,
             87 => SettingsAction::ExportPasswords,
@@ -1284,6 +1316,8 @@ impl SettingsAction {
 /// What the browser should do after a click or edit in the sheet.
 pub enum Outcome {
     Nothing,
+    /// Open a dropdown list (the browser asks for its items and the button's frame).
+    OpenPicker(Picker),
     /// Close Settings and run the first-run introduction.
     ShowWelcomeTour,
     /// Make Axion the system's default browser.
@@ -1432,6 +1466,8 @@ pub struct SettingsSheet {
     /// Why the last profile photo was refused (or nothing).
     photo_status: Option<String>,
     confirm_delete: bool,
+    /// The picker buttons of the page shown (dropdowns open from them).
+    pickers: Vec<(Picker, NodeId)>,
     /// The page must be rebuilt after a change (a toggle that shows more rows).
     rebuild: bool,
     /// The import/export file and password fields (Passwords page) and the last
@@ -1691,6 +1727,7 @@ impl SettingsSheet {
             account_status: None,
             photo_status: None,
             confirm_delete: false,
+            pickers: Vec::new(),
             rebuild: false,
             passwords_file: None,
             passwords_secret: None,
@@ -2019,6 +2056,7 @@ impl SettingsSheet {
         ui.clear_children(self.content);
         self.controls.clear();
         self.values.clear();
+        self.pickers.clear();
         self.group = None;
         if self.category != self.shown_category {
             self.shown_category = self.category;
@@ -2086,20 +2124,8 @@ impl SettingsSheet {
                     .collect();
                 segmented(ui, row_node, &options, current);
                 // Every language is written in its own name, whatever the interface says now.
-                let languages: Vec<(&str, ActionId)> = UiLanguage::ALL
-                    .iter()
-                    .map(|&language| {
-                        let name =
-                            crate::locale::native_name(language).unwrap_or_else(|| tr("System default"));
-                        (name, SettingsAction::Language(language).id())
-                    })
-                    .collect();
-                self.choice_grid(
-                    ui,
-                    tr("Language"),
-                    &languages,
-                    Some(language_index(config.general.language)),
-                );
+                let current = language_name(config.general.language);
+                self.picker_row(ui, tr("Language"), current, Picker::Language);
                 if self.language_restart_due(config) {
                     let row_node = self.row(ui, tr("Restart to switch language."));
                     primary_button(ui, row_node, tr("Restart Axion"), SettingsAction::RestartAxion);
@@ -3546,19 +3572,10 @@ impl SettingsSheet {
         for setting in [Setting::TranslateOffer, Setting::TranslatePrompt, Setting::TranslateChanges] {
             self.control(ui, config, setting);
         }
-        // "Interface" first, then every language with local models, by name in the current language.
-        let mut options: Vec<(&str, ActionId)> = (0..translate_target_count())
-            .filter_map(|i| {
-                let (_, name) = translate_target(i)?;
-                Some((tr(name), SettingsAction::TranslateTarget(i).id()))
-            })
-            .collect();
-        options[1..].sort_by_cached_key(|(name, _)| name.to_lowercase());
-        let current = translate_target_index(&config.translation.target_language).and_then(|i| {
-            let id = SettingsAction::TranslateTarget(i).id();
-            options.iter().position(|(_, a)| *a == id)
-        });
-        self.choice_grid(ui, tr("Translate pages into"), &options, current);
+        let current = translate_target_index(&config.translation.target_language)
+            .and_then(translate_target)
+            .map_or("", |(_, name)| tr(name));
+        self.picker_row(ui, tr("Translate pages into"), current, Picker::TranslateTarget);
         let row_node = self.row(ui, tr("Translate"));
         let options: Vec<(&str, ActionId)> = TRANSLATION_BACKENDS
             .iter()
@@ -3874,65 +3891,65 @@ impl SettingsSheet {
         }
     }
 
-    /// A row with its label above a wrapping set of choice pills (for more choices than a
-    /// segmented control holds). The current one is an accent-tinted glass pill, the others plain
-    /// glass: no fills, so it works the same in flat mode (where glass is a solid surface).
-    fn choice_grid(
-        &mut self,
-        ui: &mut Ui,
-        label: &str,
-        options: &[(&str, ActionId)],
-        current: Option<usize>,
-    ) {
-        let parent = self.group_for_row(ui);
-        let column = ui.add(
-            parent,
-            Widget::container(),
+    /// A row with a glass button showing the current choice and a chevron; it opens a dropdown
+    /// list ([`Settings::picker_items`]).
+    fn picker_row(&mut self, ui: &mut Ui, label: &str, current: &str, picker: Picker) {
+        let row_node = self.row(ui, label);
+        let button = ui.add(
+            row_node,
+            Widget::container()
+                .with_action(picker.action().id())
+                .with_radius(CAPSULE)
+                .with_background(Background::Glass(GlassLevel::Thin)),
             Style {
-                flex_direction: FlexDirection::Column,
+                size: Size { width: auto(), height: length(36.0) },
+                padding: padding(16.0, 0.0),
                 flex_shrink: 0.0,
-                padding: padding(0.0, 10.0),
-                gap: Size { width: length(0.0), height: length(10.0) },
-                ..Default::default()
+                ..row(8.0)
             },
         );
-        let title = ui.add_label(column, label, TextStyle::Body, grow_label());
-        ui.set_label_lines(title, LABEL_LINES);
-        let grid = ui.add(
-            column,
-            Widget::container(),
-            Style {
-                flex_wrap: FlexWrap::Wrap,
-                flex_shrink: 0.0,
-                gap: Size { width: length(CHOICE_GAP), height: length(CHOICE_GAP) },
-                ..row(CHOICE_GAP)
-            },
+        ui.add_label(button, current, TextStyle::Callout, Style::default());
+        ui.add(
+            button,
+            Widget::icon(Icon::ChevronUpDown, 14.0).with_paint(Paint::Secondary),
+            Style::default(),
         );
-        for (i, (name, action)) in options.iter().enumerate() {
-            let selected = Some(i) == current;
-            let background = if selected {
-                Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
-            } else {
-                Background::Glass(GlassLevel::Thin)
-            };
-            let pill = ui.add(
-                grid,
-                Widget::container().with_action(*action).with_radius(CAPSULE).with_background(background),
-                Style {
-                    size: Size { width: auto(), height: length(CHOICE_HEIGHT) },
-                    padding: padding(16.0, 0.0),
-                    flex_shrink: 0.0,
-                    ..row(0.0)
-                },
-            );
-            let text = ui.add_label(
-                pill,
-                name,
-                if selected { TextStyle::BodyEmphasis } else { TextStyle::Callout },
-                Style::default(),
-            );
-            if selected && let Some(w) = ui.widget_mut(text) {
-                w.set_paint(Paint::OnAccent);
+        self.pickers.push((picker, button));
+    }
+
+    /// Where the dropdown of `picker` drips out of: its button on the page shown.
+    pub fn picker_frame(&self, ui: &Ui, picker: Picker) -> Option<Frame> {
+        self.pickers.iter().find(|(p, _)| *p == picker).map(|(_, node)| ui.frame(*node))
+    }
+
+    /// The rows of the dropdown of `picker`, the current choice marked. Each row carries the
+    /// click id of the choice's own action, so a click runs it like the pills used to.
+    pub fn picker_items(&self, config: &Config, picker: Picker) -> Vec<DropdownItem> {
+        match picker {
+            Picker::Language => UiLanguage::ALL
+                .iter()
+                .map(|&language| DropdownItem {
+                    label: language_name(language).to_owned(),
+                    action: SettingsAction::Language(language).id(),
+                    selected: language == config.general.language,
+                })
+                .collect(),
+            Picker::TranslateTarget => {
+                // "Interface" first, then every language with local models, by name in the
+                // current language.
+                let current = translate_target_index(&config.translation.target_language);
+                let mut items: Vec<DropdownItem> = (0..translate_target_count())
+                    .filter_map(|i| {
+                        let (_, name) = translate_target(i)?;
+                        Some(DropdownItem {
+                            label: tr(name).to_owned(),
+                            action: SettingsAction::TranslateTarget(i).id(),
+                            selected: Some(i) == current,
+                        })
+                    })
+                    .collect();
+                items[1..].sort_by_cached_key(|item| item.label.to_lowercase());
+                items
             }
         }
     }
@@ -4295,6 +4312,8 @@ impl SettingsSheet {
                 Outcome::Changed
             }
             SettingsAction::RemoveTranslationModels => return Outcome::RemoveTranslationModels,
+            SettingsAction::LanguagePicker => return Outcome::OpenPicker(Picker::Language),
+            SettingsAction::TranslatePicker => return Outcome::OpenPicker(Picker::TranslateTarget),
             // Saved at once; the interface is built in one language per run, so it takes
             // effect at the next start (the note under the control says so).
             SettingsAction::Language(language) => {
@@ -4734,11 +4753,6 @@ pub fn segmented(ui: &mut Ui, parent: NodeId, options: &[(&str, ActionId)], curr
     }
 }
 
-/// Choice pills (language pickers): height, and the gap between them (wide enough that
-/// neighbouring glass pills don't merge).
-const CHOICE_HEIGHT: f32 = 34.0;
-const CHOICE_GAP: f32 = 12.0;
-
 /// Height of a settings segmented control and the gap between its edge and the pill.
 const SEGMENTED_HEIGHT: f32 = 36.0;
 const SEGMENTED_INSET: f32 = 3.0;
@@ -5080,6 +5094,8 @@ mod tests {
             SettingsAction::CopyDiagnostics,
             SettingsAction::RestartAxion,
             SettingsAction::LanguageLater,
+            SettingsAction::LanguagePicker,
+            SettingsAction::TranslatePicker,
             SettingsAction::Category(Category::Hardware),
             SettingsAction::Category(Category::About),
         ] {
@@ -5129,6 +5145,9 @@ mod tests {
             SettingsAction::from_id(SettingsAction::TranslateTarget(translate_target_count()).id()),
             None
         );
+        for action in [SettingsAction::LanguagePicker, SettingsAction::TranslatePicker] {
+            assert!(ids.insert(action.id().0), "{action:?} shares an id");
+        }
         assert_eq!(UiLanguage::ALL.len(), 14);
         // Whole-sheet check: decoding an id and encoding the result gives the id back.
         for n in 0..4000 {

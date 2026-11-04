@@ -590,6 +590,50 @@ impl Store {
         Ok(deleted)
     }
 
+    /// The WHERE clause (and its `?2…` arguments) of a history search: every word of `query`
+    /// in the address or the title.
+    fn history_filter(query: &str) -> (String, Vec<String>) {
+        let words: Vec<String> = query.split_whitespace().map(|w| format!("%{}%", like_escape(w))).collect();
+        let mut sql = String::from("1");
+        for i in 0..words.len() {
+            let n = i + 1;
+            sql.push_str(&format!(" AND (url LIKE ?{n} ESCAPE '\\' OR title LIKE ?{n} ESCAPE '\\')"));
+        }
+        (sql, words)
+    }
+
+    /// How many history entries match `query` (all when it is empty).
+    pub fn count_history_matching(&self, query: &str) -> Result<usize> {
+        let (filter, words) = Self::history_filter(query);
+        let mut stmt = self.conn.prepare(&format!("SELECT COUNT(*) FROM urls WHERE {filter}"))?;
+        let args: Vec<&dyn rusqlite::ToSql> = words.iter().map(|w| w as &dyn rusqlite::ToSql).collect();
+        let n: i64 = stmt.query_row(args.as_slice(), |r| r.get(0))?;
+        Ok(n.max(0) as usize)
+    }
+
+    /// Deletes every history entry matching `query` (all when empty) except the addresses in
+    /// `keep`, in one transaction (their visits go with them). Returns how many were deleted.
+    pub fn delete_history_matching(&self, query: &str, keep: &[String]) -> Result<usize> {
+        let (filter, words) = Self::history_filter(query);
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("CREATE TEMP TABLE IF NOT EXISTS keep_urls (url TEXT PRIMARY KEY)", [])?;
+        tx.execute("DELETE FROM keep_urls", [])?;
+        {
+            let mut stmt = tx.prepare("INSERT OR IGNORE INTO keep_urls (url) VALUES (?1)")?;
+            for url in keep {
+                stmt.execute([url])?;
+            }
+        }
+        let args: Vec<&dyn rusqlite::ToSql> = words.iter().map(|w| w as &dyn rusqlite::ToSql).collect();
+        let deleted = tx.execute(
+            &format!("DELETE FROM urls WHERE {filter} AND url NOT IN (SELECT url FROM keep_urls)"),
+            args.as_slice(),
+        )?;
+        tx.execute("DELETE FROM keep_urls", [])?;
+        tx.commit()?;
+        Ok(deleted)
+    }
+
     /// Removes these entries from the downloads list in one transaction (not their files).
     pub fn remove_downloads(&self, ids: &[i64]) -> Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
@@ -1374,6 +1418,28 @@ mod tests {
         assert_eq!(recent[0].visit_count, 2);
         assert_eq!(recent[0].title, "Example", "an empty title must not overwrite a known one");
         assert_eq!(recent[0].last_visit, NOW);
+    }
+
+    #[test]
+    fn counts_and_deletes_all_history_matching_a_query_except_some() {
+        let s = store();
+        for i in 0..10 {
+            s.record_visit(&format!("https://rust.example/{i}"), "Rust", NOW + i).unwrap();
+        }
+        for i in 0..4 {
+            s.record_visit(&format!("https://other.example/{i}"), "Other", NOW + i).unwrap();
+        }
+        assert_eq!(s.count_history_matching("").unwrap(), 14);
+        assert_eq!(s.count_history_matching("rust").unwrap(), 10);
+        assert_eq!(s.count_history_matching("rust 3").unwrap(), 1);
+        let keep = vec!["https://rust.example/1".to_owned(), "https://other.example/0".to_owned()];
+        // Matching "rust" except one kept address: the other site is untouched.
+        assert_eq!(s.delete_history_matching("rust", &keep).unwrap(), 9);
+        assert_eq!(s.count_history_matching("").unwrap(), 5);
+        assert_eq!(s.delete_history_matching("", &keep).unwrap(), 3);
+        let left: Vec<String> = s.recent_history(10).unwrap().into_iter().map(|e| e.url).collect();
+        assert_eq!(left.len(), 2);
+        assert!(keep.iter().all(|k| left.contains(k)));
     }
 
     #[test]

@@ -52,6 +52,7 @@ const CLEAR: u32 = 2;
 const SELECT: u32 = 3;
 const DELETE_SELECTED: u32 = 4;
 const CANCEL_SELECTION: u32 = 5;
+const SELECT_ALL: u32 = 6;
 
 const SHEET_MAX: Vec2 = Vec2::new(760.0, 640.0);
 const ROW_HEIGHT: f32 = 54.0;
@@ -102,6 +103,8 @@ pub enum Click {
     Select,
     DeleteSelected,
     CancelSelection,
+    /// The selection bar's Select All / Deselect All.
+    SelectAll,
     Open(usize),
     Delete(usize),
     /// The `k`th trailing button of a row.
@@ -139,28 +142,42 @@ pub enum Tri {
 // ---- pure logic (tested below) ----
 
 /// The selected rows, by their index in the item list.
+///
+/// Two modes. Normally `set` holds the selected rows. After Select All (`all`) every matching
+/// entry is selected, however many the list holds or the database has beyond it, and `set`
+/// holds the rows that were taken out again: a selection of 100 000 entries is a flag and a
+/// handful of exclusions, never 100 000 rows.
 #[derive(Default, Debug)]
 pub struct Selection {
     set: HashSet<usize>,
+    /// Everything matching is selected except the rows in `set`.
+    all: bool,
     /// Where a Shift+click range starts: the last row clicked.
     anchor: Option<usize>,
 }
 
 impl Selection {
-    pub fn len(&self) -> usize {
-        self.set.len()
+    /// How many entries are selected, given `total` entries match.
+    pub fn count(&self, total: usize) -> usize {
+        if self.all { total.saturating_sub(self.set.len()) } else { self.set.len() }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.set.is_empty()
+    pub fn is_empty(&self, total: usize) -> bool {
+        self.count(total) == 0
+    }
+
+    /// Whether "all matching" is the mode (the entries beyond the loaded rows are selected too).
+    pub fn is_all(&self) -> bool {
+        self.all
     }
 
     pub fn contains(&self, i: usize) -> bool {
-        self.set.contains(&i)
+        self.all != self.set.contains(&i)
     }
 
     pub fn clear(&mut self) {
         self.set.clear();
+        self.all = false;
         self.anchor = None;
     }
 
@@ -179,18 +196,11 @@ impl Selection {
             self.toggle(i);
             return;
         }
-        self.set.extend(between);
+        self.add(between);
     }
 
-    /// Ctrl+A: these rows, and nothing else.
-    pub fn select_all(&mut self, rows: impl IntoIterator<Item = usize>) {
-        self.set = rows.into_iter().collect();
-    }
-
-    /// A day's checkbox: when every one of `rows` is selected, unselects them, else selects
-    /// them all.
-    pub fn toggle_day(&mut self, rows: impl Iterator<Item = usize> + Clone) {
-        if rows.clone().all(|i| self.set.contains(&i)) {
+    fn add(&mut self, rows: impl IntoIterator<Item = usize>) {
+        if self.all {
             for i in rows {
                 self.set.remove(&i);
             }
@@ -199,8 +209,42 @@ impl Selection {
         }
     }
 
+    fn remove(&mut self, rows: impl IntoIterator<Item = usize>) {
+        if self.all {
+            self.set.extend(rows);
+        } else {
+            for i in rows {
+                self.set.remove(&i);
+            }
+        }
+    }
+
+    /// These rows, and nothing else.
+    pub fn select_rows(&mut self, rows: impl IntoIterator<Item = usize>) {
+        self.all = false;
+        self.set = rows.into_iter().collect();
+    }
+
+    /// Select All / Ctrl+A: everything that matches, except the rows in `excluded` (those that
+    /// cannot be deleted).
+    pub fn select_everything(&mut self, excluded: impl IntoIterator<Item = usize>) {
+        self.all = true;
+        self.set = excluded.into_iter().collect();
+        self.anchor = None;
+    }
+
+    /// A day's checkbox: when every one of `rows` is selected, unselects them, else selects
+    /// them all.
+    pub fn toggle_day(&mut self, rows: impl Iterator<Item = usize> + Clone) {
+        if rows.clone().all(|i| self.contains(i)) {
+            self.remove(rows);
+        } else {
+            self.add(rows);
+        }
+    }
+
     pub fn day_state(&self, rows: Range<usize>) -> Tri {
-        let selected = rows.clone().filter(|i| self.set.contains(i)).count();
+        let selected = rows.clone().filter(|&i| self.contains(i)).count();
         match selected {
             0 => Tri::None,
             n if n == rows.len() => Tri::All,
@@ -208,8 +252,21 @@ impl Selection {
         }
     }
 
-    /// The selected rows, ascending.
-    pub fn sorted(&self) -> Vec<usize> {
+    /// The selected rows among the first `loaded`, ascending.
+    pub fn sorted(&self, loaded: usize) -> Vec<usize> {
+        if self.all {
+            return (0..loaded).filter(|i| !self.set.contains(i)).collect();
+        }
+        let mut rows: Vec<usize> = self.set.iter().copied().collect();
+        rows.sort_unstable();
+        rows
+    }
+
+    /// The rows taken out of an "all" selection, ascending (empty otherwise).
+    pub fn excluded(&self) -> Vec<usize> {
+        if !self.all {
+            return Vec::new();
+        }
         let mut rows: Vec<usize> = self.set.iter().copied().collect();
         rows.sort_unstable();
         rows
@@ -222,6 +279,16 @@ impl Selection {
         self.set = self.set.iter().filter(|i| removed.binary_search(i).is_err()).map(|&i| shift(i)).collect();
         self.anchor = self.anchor.filter(|a| removed.binary_search(a).is_err()).map(shift);
     }
+}
+
+/// What deleting the selection means.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeletePlan {
+    /// These rows of the loaded list.
+    Rows(Vec<usize>),
+    /// Every entry matching the sheet's query except the `keep` rows of the loaded list: this
+    /// includes entries beyond the loaded ones. `rows` are the loaded rows that go.
+    Matching { rows: Vec<usize>, keep: Vec<usize> },
 }
 
 /// The lines to build for a list scrolled to `scroll` showing `height` px: `offsets[i]` is the
@@ -305,6 +372,7 @@ pub struct ListSheet {
     message: NodeId,
     bar: NodeId,
     bar_label: NodeId,
+    bar_select_all_label: NodeId,
     bar_delete: NodeId,
     bar_delete_label: NodeId,
     scroll: f32,
@@ -327,6 +395,13 @@ pub struct ListSheet {
     /// The lines that exist as widgets, ascending.
     built: Vec<Built>,
     selection: Selection,
+    /// How many entries match the query in the database (History: more than `items` when the
+    /// list is capped); 0 while unknown.
+    matching_total: usize,
+    /// How many of `items` cannot be deleted (a running download).
+    undeletable: usize,
+    /// The query Select All was made under: another query ends an "all matching" selection.
+    selection_query: String,
     /// Selection mode: checkboxes show on every row.
     selecting: bool,
     /// The line under the pointer.
@@ -512,6 +587,8 @@ impl ListSheet {
         if let Some(w) = ui.widget_mut(bar_label) {
             w.set_paint(Paint::Secondary);
         }
+        let (_, bar_select_all_label) =
+            capsule_button(ui, bar, ActionId(base + SELECT_ALL), tr("Select All"), None);
         capsule_button(ui, bar, ActionId(base + CANCEL_SELECTION), tr("Cancel"), None);
         let (bar_delete, bar_delete_label) =
             capsule_button(ui, bar, ActionId(base + DELETE_SELECTED), tr("Delete"), Some(destructive));
@@ -537,6 +614,7 @@ impl ListSheet {
             message,
             bar,
             bar_label,
+            bar_select_all_label,
             bar_delete,
             bar_delete_label,
             scroll: 0.0,
@@ -554,6 +632,9 @@ impl ListSheet {
             offsets: vec![0.0],
             built: Vec::new(),
             selection: Selection::default(),
+            matching_total: 0,
+            undeletable: 0,
+            selection_query: String::new(),
             selecting: false,
             hover_line: None,
             empty_text: String::new(),
@@ -593,6 +674,7 @@ impl ListSheet {
             SELECT => Some(Click::Select),
             DELETE_SELECTED => Some(Click::DeleteSelected),
             CANCEL_SELECTION => Some(Click::CancelSelection),
+            SELECT_ALL => Some(Click::SelectAll),
             n if (ROWS_AT..SPAN).contains(&n) => {
                 let n = n - ROWS_AT;
                 let (slot, k) = ((n / ROW_KINDS) as usize, n % ROW_KINDS);
@@ -860,6 +942,7 @@ impl ListSheet {
         self.empty_text = empty_text.to_owned();
         self.loading = false;
         self.carry_selection(&items);
+        self.undeletable = items.iter().filter(|i| !i.deletable).count();
         self.items = items;
         self.groups = day_groups(&self.items);
         self.relayout();
@@ -874,7 +957,12 @@ impl ListSheet {
 
     /// History rows are told apart by address, downloads by position.
     fn carry_selection(&mut self, new_items: &[PanelItem]) {
-        if self.selection.is_empty() {
+        if !self.selection.is_all() && self.selection.is_empty(0) {
+            return;
+        }
+        // "All matching" was made for one query: another one starts over.
+        if self.selection.is_all() && self.selection_query != self.query {
+            self.selection.clear();
             return;
         }
         if self.kind == SheetKind::History {
@@ -892,10 +980,22 @@ impl ListSheet {
                 .map(|(i, _)| i)
                 .collect();
             self.selection.anchor = None;
-            self.selection.set = kept.into_iter().collect();
+            if self.selection.is_all() {
+                // The rows taken out stay out (by address); everything else matching is in.
+                self.selection.select_everything(kept);
+            } else {
+                self.selection.select_rows(kept);
+            }
         } else {
             let len = new_items.len();
-            self.selection.set.retain(|&i| i < len && new_items[i].deletable);
+            if self.selection.is_all() {
+                let mut out: Vec<usize> =
+                    self.selection.excluded().into_iter().filter(|&i| i < len).collect();
+                out.extend((0..len).filter(|&i| !new_items[i].deletable));
+                self.selection.select_everything(out);
+            } else {
+                self.selection.set.retain(|&i| i < len && new_items[i].deletable);
+            }
         }
     }
 
@@ -1164,9 +1264,10 @@ impl ListSheet {
     fn style_line(&self, ui: &mut Ui, k: usize) {
         let built = &self.built[k];
         let (state, selectable) = match self.lines.get(built.line) {
-            Some(Line::Row(i)) => {
-                (if self.selection.contains(*i) { Tri::All } else { Tri::None }, self.items[*i].deletable)
-            }
+            Some(Line::Row(i)) => (
+                if self.selection.contains(*i) && self.items[*i].deletable { Tri::All } else { Tri::None },
+                self.items[*i].deletable,
+            ),
             Some(Line::Header(g)) => {
                 let group = &self.groups[*g];
                 let selectable = self.items[group.start..group.start + group.len].iter().any(|i| i.deletable);
@@ -1219,8 +1320,26 @@ impl ListSheet {
         self.selecting
     }
 
+    /// How many entries match the sheet's query: the loaded rows, or more when the database has
+    /// more than the list holds (History).
+    pub fn total_matching(&self) -> usize {
+        self.matching_total.max(self.items.len())
+    }
+
+    /// The database's count of matches (History); the loaded rows are fewer when it is capped.
+    pub fn set_total_matching(&mut self, total: usize) {
+        self.matching_total = total;
+    }
+
+    /// How many entries are selected (all matching ones after Select All, loaded or not).
     pub fn selected_count(&self) -> usize {
-        self.selection.len()
+        self.selection.count(self.total_matching())
+    }
+
+    /// Every entry that can be deleted is selected (the button then reads Deselect All).
+    pub fn all_selected(&self) -> bool {
+        let deletable = self.total_matching().saturating_sub(self.undeletable);
+        deletable > 0 && self.selected_count() >= deletable
     }
 
     pub fn is_selected(&self, i: usize) -> bool {
@@ -1229,7 +1348,18 @@ impl ListSheet {
 
     /// The selected rows, ascending.
     pub fn selected_items(&self) -> Vec<usize> {
-        self.selection.sorted()
+        self.selection.sorted(self.items.len())
+    }
+
+    /// What deleting the selection deletes: the selected rows, or (after Select All) every
+    /// matching entry but the ones taken out again.
+    pub fn delete_plan(&self) -> DeletePlan {
+        let rows = self.selected_items();
+        if self.selection.is_all() {
+            DeletePlan::Matching { rows, keep: self.selection.excluded() }
+        } else {
+            DeletePlan::Rows(rows)
+        }
     }
 
     /// The selection bar and the Select button follow the state.
@@ -1238,7 +1368,11 @@ impl ListSheet {
         if let Some(w) = ui.widget_mut(self.select) {
             w.selected = self.selecting;
         }
-        let n = self.selection.len();
+        let n = self.selected_count();
+        ui.set_text(
+            self.bar_select_all_label,
+            if self.all_selected() { tr("Deselect All") } else { tr("Select All") },
+        );
         ui.set_text(
             self.bar_label,
             &if n == 0 { tr("Select items").to_owned() } else { tr_fmt!("{count} selected", count = n) },
@@ -1336,12 +1470,27 @@ impl ListSheet {
         let _ = ui.blur();
     }
 
-    /// Ctrl+A: every row of the list (the filtered one while searching).
+    /// Ctrl+A and the bar's Select All: every entry matching the filter, the rows that are not
+    /// built, the rows of folded days and (History) the entries beyond the loaded ones included.
+    /// It is a flag, not a set of rows.
     pub fn select_all(&mut self, ui: &mut Ui) {
-        self.selection.select_all((0..self.items.len()).filter(|&i| self.items[i].deletable));
+        let excluded = (0..self.items.len()).filter(|&i| !self.items[i].deletable);
+        self.selection.select_everything(excluded);
+        self.selection_query = self.query.clone();
         self.selecting = true;
         self.selection_changed(ui);
         let _ = ui.blur();
+    }
+
+    /// The bar's button: Select All, or (when everything is selected) Deselect All.
+    pub fn toggle_select_all(&mut self, ui: &mut Ui) {
+        if self.all_selected() {
+            self.selection.clear();
+            self.selecting = true;
+            self.selection_changed(ui);
+        } else {
+            self.select_all(ui);
+        }
     }
 
     /// The rows left the list (deleted): the list closes the gaps without a reload, what was
@@ -1372,7 +1521,9 @@ impl ListSheet {
         });
         self.selection.after_removal(&removed);
         self.groups = day_groups(&self.items);
-        self.selecting = self.selecting && !self.selection.is_empty();
+        self.matching_total = self.matching_total.saturating_sub(removed.len());
+        self.undeletable = self.items.iter().filter(|i| !i.deletable).count();
+        self.selecting = self.selecting && !self.selection.is_empty(self.total_matching());
         self.relayout();
         self.scroll = self.scroll.clamp(0.0, self.max_scroll(ui));
         self.rebuild_window(ui, favicons);
@@ -1513,6 +1664,7 @@ mod tests {
         assert_eq!(sheet.click(&ui, at(SELECT), None), Some(Click::Select));
         assert_eq!(sheet.click(&ui, at(DELETE_SELECTED), None), Some(Click::DeleteSelected));
         assert_eq!(sheet.click(&ui, at(CANCEL_SELECTION), None), Some(Click::CancelSelection));
+        assert_eq!(sheet.click(&ui, at(SELECT_ALL), None), Some(Click::SelectAll));
         let slot = |line: u32, kind: u32| at(ROWS_AT + line * ROW_KINDS + kind);
         assert_eq!(sheet.click(&ui, slot(0, KIND_ROW), None), Some(Click::Group(0)));
         assert_eq!(sheet.click(&ui, slot(0, KIND_CHECK), None), Some(Click::GroupCheck(0)));
@@ -1533,16 +1685,16 @@ mod tests {
         s.toggle(3);
         s.toggle(5);
         s.toggle(3);
-        assert_eq!(s.sorted(), [5]);
+        assert_eq!(s.sorted(100), [5]);
         // Shift+click from the last click (5) to 8, then back up to 2: both ends included.
         s.extend(8, 5..=8);
-        assert_eq!(s.sorted(), [5, 6, 7, 8]);
+        assert_eq!(s.sorted(100), [5, 6, 7, 8]);
         s.extend(2, 2..=5);
-        assert_eq!(s.sorted(), [2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(s.sorted(100), [2, 3, 4, 5, 6, 7, 8]);
         // Without an anchor Shift+click is a plain toggle.
         let mut s = Selection::default();
         s.extend(4, 0..=4);
-        assert_eq!(s.sorted(), [4]);
+        assert_eq!(s.sorted(100), [4]);
     }
 
     #[test]
@@ -1552,19 +1704,59 @@ mod tests {
         assert_eq!(s.day_state(10..14), Tri::Some);
         s.toggle_day(10..14);
         assert_eq!(s.day_state(10..14), Tri::All);
-        assert_eq!(s.len(), 4);
+        assert_eq!(s.count(100), 4);
         s.toggle_day(10..14);
         assert_eq!(s.day_state(10..14), Tri::None);
-        assert!(s.is_empty());
+        assert!(s.is_empty(100));
+    }
+
+    /// Select All is a flag with exclusions: it counts and lists without a set of 100 000 rows.
+    #[test]
+    fn select_everything_is_a_flag_with_exclusions() {
+        let mut s = Selection::default();
+        s.toggle(2);
+        s.select_everything([5]);
+        assert!(s.is_all() && s.contains(0) && s.contains(2) && !s.contains(5));
+        // 1 000 000 entries match (far more than any list holds): only the exclusion is stored.
+        assert_eq!(s.count(1_000_000), 999_999);
+        assert_eq!(s.set.len(), 1);
+        assert_eq!(s.sorted(8), [0, 1, 2, 3, 4, 6, 7]);
+        // Unchecking a row excludes it, checking it again includes it.
+        s.toggle(3);
+        assert_eq!(s.count(10), 8);
+        s.toggle(3);
+        assert_eq!(s.count(10), 9);
+        // A day's checkbox in this mode excludes or includes its rows.
+        s.toggle_day(10..14);
+        assert_eq!(s.day_state(10..14), Tri::None);
+        s.toggle_day(10..14);
+        assert_eq!(s.day_state(10..14), Tri::All);
+        // Shift+click selects the rows between again.
+        s.toggle(7);
+        s.extend(9, 7..=9);
+        assert!(s.contains(8) && s.contains(9) && s.contains(7));
+        assert_eq!(s.excluded(), [5]);
+        // Deselecting everything leaves the mode.
+        s.clear();
+        assert!(!s.is_all() && s.is_empty(100));
+    }
+
+    #[test]
+    fn the_exclusions_are_renumbered_when_rows_leave() {
+        let mut s = Selection::default();
+        s.select_everything([1, 6]);
+        s.after_removal(&[0, 2, 3]);
+        assert_eq!(s.excluded(), [0, 3]);
+        assert_eq!(s.count(10), 8);
     }
 
     #[test]
     fn the_selection_is_renumbered_when_rows_leave() {
         let mut s = Selection::default();
-        s.select_all([1, 4, 6, 9]);
+        s.select_rows([1, 4, 6, 9]);
         s.anchor = Some(6);
         s.after_removal(&[2, 4, 5]);
-        assert_eq!(s.sorted(), [1, 3, 6]);
+        assert_eq!(s.sorted(100), [1, 3, 6]);
         assert_eq!(s.anchor, Some(3));
     }
 
@@ -1685,7 +1877,7 @@ mod tests {
         sheet.select_all(&mut ui);
         assert_eq!(sheet.selected_count(), 12);
         // Delete the middle day: its heading goes, the others stay, the mode ends.
-        sheet.selection.select_all(4..8);
+        sheet.selection.select_rows(4..8);
         let gone = sheet.selected_items();
         sheet.remove_items(&mut ui, &favicons, &gone);
         assert_eq!(sheet.item_count(), 8);
@@ -1695,6 +1887,64 @@ mod tests {
         sheet.remove_items(&mut ui, &favicons, &[4]);
         assert_eq!(sheet.groups.len(), 2);
         assert_eq!(sheet.items[4].section.as_deref(), Some("Day 2"));
+    }
+
+    /// Select All takes the folded days, the rows that are not built and the entries beyond the
+    /// loaded ones; deselecting one row leaves it out; the plan says what to delete.
+    #[test]
+    fn select_all_reaches_everything_matching() {
+        let (mut ui, mut sheet, favicons) = opened(SheetKind::History, history(30, 100), &Config::default());
+        // 3 000 rows loaded, most of them in folded days and not built; the database has more.
+        assert!(sheet.built_count() < 70);
+        sheet.set_total_matching(50_000);
+        assert_eq!(sheet.total_matching(), 50_000);
+        sheet.select_all(&mut ui);
+        assert_eq!(sheet.selected_count(), 50_000);
+        assert!(sheet.all_selected());
+        // One row taken out: 49 999 selected, no longer "all".
+        sheet.click_row(&mut ui, 7, false);
+        assert_eq!(sheet.selected_count(), 49_999);
+        assert!(!sheet.all_selected());
+        match sheet.delete_plan() {
+            DeletePlan::Matching { rows, keep } => {
+                assert_eq!(keep, [7]);
+                assert_eq!(rows.len(), 2_999);
+            }
+            other => panic!("{other:?}"),
+        }
+        // The button toggles: Select All again, then Deselect All.
+        sheet.toggle_select_all(&mut ui);
+        assert!(sheet.all_selected());
+        sheet.toggle_select_all(&mut ui);
+        assert_eq!(sheet.selected_count(), 0);
+        assert!(sheet.is_selecting(), "the mode stays on");
+        assert_eq!(sheet.delete_plan(), DeletePlan::Rows(Vec::new()));
+        // Deleting a few rows one by one keeps the counter honest.
+        sheet.select_all(&mut ui);
+        sheet.remove_items(&mut ui, &favicons, &[0, 1, 2]);
+        assert_eq!(sheet.selected_count(), 49_997);
+    }
+
+    /// Another search ends an "all matching" selection (it was made for the other query).
+    #[test]
+    fn a_new_query_ends_select_all() {
+        let (mut ui, mut sheet, favicons) = opened(SheetKind::History, history(2, 5), &Config::default());
+        sheet.select_all(&mut ui);
+        sheet.query = "x".into();
+        sheet.set_items(&mut ui, history(1, 3), Some("Clear"), "", &favicons, false);
+        assert_eq!(sheet.selected_count(), 0);
+    }
+
+    /// Rows that cannot be deleted (a running download) are never selected by Select All.
+    #[test]
+    fn select_all_skips_rows_that_cannot_be_deleted() {
+        let (mut ui, mut sheet, _) = opened(SheetKind::Downloads, history(1, 5), &Config::default());
+        sheet.items[1].deletable = false;
+        sheet.undeletable = 1;
+        sheet.select_all(&mut ui);
+        assert_eq!(sheet.selected_count(), 4);
+        assert!(sheet.all_selected());
+        assert_eq!(sheet.selected_items(), [0, 2, 3, 4]);
     }
 
     #[test]
