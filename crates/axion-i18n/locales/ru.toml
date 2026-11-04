@@ -923,7 +923,6 @@
 "Keep tabs playing audio awake" = "Не давать вкладкам со звуком засыпать"
 "Keyboard" = "Клавиатура"
 "Kill switch: block instead of going direct" = "Аварийный выключатель: блокировать вместо прямого подключения"
-"Languages Axion has no translation for yet show English. Applies after restarting Axion." = "Языки, для которых пока нет перевода, показываются на английском. Применится после перезапуска Axion."
 "Last 7 Days" = "Последние 7 дней"
 "Last Hour" = "Последний час"
 "Last checked" = "Последняя проверка"
@@ -1468,3 +1467,12 @@
 # crates/axion-app/src/list_sheet.rs
 "Select items" = "Выберите элементы"
 "{count} selected" = "Выбрано: {count}"
+
+# crates/axion-app/src/browser.rs
+"Restart" = "Перезапустить"
+"Restart to apply the new language" = "Перезапустите, чтобы применить новый язык"
+
+# crates/axion-app/src/settings.rs
+"Languages Axion has no translation for yet show English." = "Языки, на которые Axion ещё не переведён, показываются на английском."
+"Restart to switch language." = "Перезапустите, чтобы сменить язык."
+"The new language applies after the next start of Axion." = "Новый язык применится при следующем запуске Axion."

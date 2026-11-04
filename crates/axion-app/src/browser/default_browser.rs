@@ -17,6 +17,8 @@ pub(super) enum ToastKind {
     Update,
     /// "Make Default" / "Don't ask again".
     DefaultBrowser,
+    /// "Restart" / "Later": a language change waits for a restart.
+    LanguageRestart,
 }
 
 pub(super) struct DefaultBrowser {
@@ -146,12 +148,16 @@ impl Browser {
         match self.toast_kind {
             ToastKind::Update => self.open_about(false),
             ToastKind::DefaultBrowser => self.make_default_browser(),
+            ToastKind::LanguageRestart => self.restart_to_apply_settings(),
         }
     }
 
     /// The toast's second button ("Don't ask again"): the hint is switched off for good.
     pub(super) fn toast_secondary(&mut self) {
         self.toast.dismiss(&mut self.ui, &self.config);
+        if self.toast_kind == ToastKind::LanguageRestart {
+            self.settings.postpone_language(&self.config);
+        }
         if self.toast_kind == ToastKind::DefaultBrowser {
             self.config.general.default_browser_hint = false;
             self.config_dirty_since.get_or_insert_with(Instant::now);

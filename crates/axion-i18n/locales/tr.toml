@@ -923,7 +923,6 @@
 "Keep tabs playing audio awake" = "Ses çalan sekmeleri uyanık tut"
 "Keyboard" = "Klavye"
 "Kill switch: block instead of going direct" = "Kill switch: doğrudan gitmek yerine engelle"
-"Languages Axion has no translation for yet show English. Applies after restarting Axion." = "Axion'un henüz çevirisi olmayan diller İngilizce gösterilir. Axion yeniden başlatıldıktan sonra uygulanır."
 "Last 7 Days" = "Son 7 Gün"
 "Last Hour" = "Son Bir Saat"
 "Last checked" = "Son denetleme"
@@ -1468,3 +1467,12 @@
 # crates/axion-app/src/list_sheet.rs
 "Select items" = "Öğe seçin"
 "{count} selected" = "{count} seçili"
+
+# crates/axion-app/src/browser.rs
+"Restart" = "Yeniden başlat"
+"Restart to apply the new language" = "Yeni dili uygulamak için yeniden başlatın"
+
+# crates/axion-app/src/settings.rs
+"Languages Axion has no translation for yet show English." = "Axion’ın henüz çevirmediği diller İngilizce görünür."
+"Restart to switch language." = "Dili değiştirmek için yeniden başlatın."
+"The new language applies after the next start of Axion." = "Yeni dil Axion’ın bir sonraki başlatılışında uygulanır."

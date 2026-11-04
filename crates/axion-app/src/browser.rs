@@ -302,6 +302,8 @@ pub struct Browser {
     /// Site permissions: the prompt, the recording indicator's popover and the decisions.
     permissions: permissions::PermissionsUi,
     toast: Toast,
+    /// The pending language the "Restart to apply" toast was already shown for.
+    language_toast_for: Option<axion_i18n::Language>,
     updater: Updater,
     update_alert: UpdateAlert,
     print_dialog: PrintDialog,
@@ -978,6 +980,7 @@ impl Browser {
             extensions_confirm_remove: false,
             permissions,
             toast,
+            language_toast_for: None,
             updater: Updater::new(),
             update_alert,
             print_dialog,
@@ -2292,6 +2295,39 @@ impl Browser {
     fn close_settings(&mut self) {
         let fallback = self.address_origin();
         self.settings.close(&mut self.ui, &self.config, fallback);
+        self.remind_language_restart();
+    }
+
+    /// Closing Settings with a language change still waiting for a restart says so once (a
+    /// toast with a Restart button), unless the user chose "Later" or the tour is up.
+    fn remind_language_restart(&mut self) {
+        let Some(language) = self.settings.pending_language(&self.config) else {
+            self.language_toast_for = None;
+            return;
+        };
+        if !self.settings.language_restart_due(&self.config)
+            || self.language_toast_for == Some(language)
+            || self.onboarding.is_open()
+        {
+            return;
+        }
+        self.language_toast_for = Some(language);
+        let mut anchor = self.chrome.share_frame(&self.ui);
+        if anchor.size.x <= 0.0 {
+            anchor = self.chrome.address_frame(&self.ui);
+        }
+        let window = self.logical_size();
+        self.toast_kind = default_browser::ToastKind::LanguageRestart;
+        self.toast.show_with_actions(
+            &mut self.ui,
+            &self.config,
+            anchor,
+            window,
+            Icon::Globe,
+            tr("Restart to apply the new language"),
+            Some(tr("Restart")),
+            Some(tr("Later")),
+        );
     }
 
     /// Closes Passwords: it drains back into where it came from.
@@ -7959,6 +7995,17 @@ impl Browser {
                     self.settings_outcome(Outcome::Changed);
                     self.refresh_settings();
                 }
+                // Capture aids for the language restart prompt: "language-change:de|en" picks a
+                // language as the picker does, "settings-close" closes the sheet.
+                lang if lang.starts_with("language-change:") => {
+                    self.config.general.language = match &lang["language-change:".len()..] {
+                        "de" => UiLanguage::German,
+                        _ => UiLanguage::English,
+                    };
+                    self.settings_outcome(Outcome::Changed);
+                    self.refresh_settings();
+                }
+                "settings-close" => self.close_settings(),
                 "hardware-confirm" => self.confirm_gpu_frames(),
                 "player-speed" => {
                     let _ = self.player.click(&mut self.ui, PlayerControl::Speed, &self.config);

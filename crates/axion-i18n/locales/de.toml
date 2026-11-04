@@ -1374,7 +1374,6 @@
 "System default" = "Systemstandard"
 
 # crates/axion-app/src/settings.rs
-"Languages Axion has no translation for yet show English. Applies after restarting Axion." = "Sprachen, in die Axion noch nicht übersetzt ist, zeigen Englisch. Gilt nach einem Neustart von Axion."
 
 # crates/axion-translate/src/lang.rs
 "Afrikaans" = "Afrikaans"
@@ -1504,3 +1503,12 @@
 # crates/axion-app/src/list_sheet.rs
 "Select items" = "Elemente auswählen"
 "{count} selected" = "{count} ausgewählt"
+
+# crates/axion-app/src/browser.rs
+"Restart" = "Neu starten"
+"Restart to apply the new language" = "Neu starten, um die neue Sprache zu übernehmen"
+
+# crates/axion-app/src/settings.rs
+"Languages Axion has no translation for yet show English." = "Sprachen, in die Axion noch nicht übersetzt ist, zeigen Englisch."
+"Restart to switch language." = "Neustart für den Sprachwechsel."
+"The new language applies after the next start of Axion." = "Die neue Sprache gilt ab dem nächsten Start von Axion."

@@ -923,7 +923,6 @@
 "Keep tabs playing audio awake" = "Nie usypiaj kart odtwarzających dźwięk"
 "Keyboard" = "Klawiatura"
 "Kill switch: block instead of going direct" = "Wyłącznik awaryjny: blokuj zamiast łączyć bezpośrednio"
-"Languages Axion has no translation for yet show English. Applies after restarting Axion." = "Języki bez tłumaczenia w Axion pokazują angielski. Zmiana obowiązuje po ponownym uruchomieniu Axion."
 "Last 7 Days" = "Ostatnie 7 dni"
 "Last Hour" = "Ostatnia godzina"
 "Last checked" = "Ostatnio sprawdzono"
@@ -1468,3 +1467,12 @@
 # crates/axion-app/src/list_sheet.rs
 "Select items" = "Zaznacz elementy"
 "{count} selected" = "Zaznaczono: {count}"
+
+# crates/axion-app/src/browser.rs
+"Restart" = "Uruchom ponownie"
+"Restart to apply the new language" = "Uruchom ponownie, aby zastosować nowy język"
+
+# crates/axion-app/src/settings.rs
+"Languages Axion has no translation for yet show English." = "Języki, na które Axion nie jest jeszcze przetłumaczony, są wyświetlane po angielsku."
+"Restart to switch language." = "Uruchom ponownie, aby zmienić język."
+"The new language applies after the next start of Axion." = "Nowy język zostanie zastosowany przy następnym uruchomieniu Axion."

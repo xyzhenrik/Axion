@@ -923,7 +923,6 @@
 "Keep tabs playing audio awake" = "Tabbladen met audio wakker houden"
 "Keyboard" = "Toetsenbord"
 "Kill switch: block instead of going direct" = "Noodstop: blokkeren in plaats van rechtstreeks gaan"
-"Languages Axion has no translation for yet show English. Applies after restarting Axion." = "Talen waarvoor Axion nog geen vertaling heeft, tonen Engels. Geldt na het opnieuw starten van Axion."
 "Last 7 Days" = "Afgelopen 7 dagen"
 "Last Hour" = "Afgelopen uur"
 "Last checked" = "Laatst gecontroleerd"
@@ -1468,3 +1467,12 @@
 # crates/axion-app/src/list_sheet.rs
 "Select items" = "Selecteer items"
 "{count} selected" = "{count} geselecteerd"
+
+# crates/axion-app/src/browser.rs
+"Restart" = "Herstarten"
+"Restart to apply the new language" = "Herstart om de nieuwe taal toe te passen"
+
+# crates/axion-app/src/settings.rs
+"Languages Axion has no translation for yet show English." = "Talen die Axion nog niet vertaalt, worden in het Engels getoond."
+"Restart to switch language." = "Herstart om van taal te wisselen."
+"The new language applies after the next start of Axion." = "De nieuwe taal wordt toegepast bij de volgende start van Axion."

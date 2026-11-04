@@ -923,7 +923,6 @@
 "Keep tabs playing audio awake" = "오디오 재생 중인 탭을 깨어 있게 유지"
 "Keyboard" = "키보드"
 "Kill switch: block instead of going direct" = "킬 스위치: 직접 연결 대신 차단"
-"Languages Axion has no translation for yet show English. Applies after restarting Axion." = "Axion이 아직 번역하지 않은 언어는 영어로 표시됩니다. Axion을 다시 시작한 후 적용됩니다."
 "Last 7 Days" = "최근 7일"
 "Last Hour" = "지난 1시간"
 "Last checked" = "마지막 확인"
@@ -1468,3 +1467,12 @@
 # crates/axion-app/src/list_sheet.rs
 "Select items" = "항목 선택"
 "{count} selected" = "{count}개 선택됨"
+
+# crates/axion-app/src/browser.rs
+"Restart" = "다시 시작"
+"Restart to apply the new language" = "새 언어를 적용하려면 다시 시작하세요"
+
+# crates/axion-app/src/settings.rs
+"Languages Axion has no translation for yet show English." = "Axion이 아직 번역하지 않은 언어는 영어로 표시됩니다."
+"Restart to switch language." = "언어를 바꾸려면 다시 시작하세요."
+"The new language applies after the next start of Axion." = "새 언어는 Axion을 다음에 시작할 때 적용됩니다."

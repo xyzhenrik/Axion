@@ -923,7 +923,6 @@
 "Keep tabs playing audio awake" = "保持播放音频的标签页活跃"
 "Keyboard" = "键盘"
 "Kill switch: block instead of going direct" = "终止开关：阻止而不是直接连接"
-"Languages Axion has no translation for yet show English. Applies after restarting Axion." = "Axion 尚无翻译的语言将显示英文。重启 Axion 后生效。"
 "Last 7 Days" = "最近 7 天"
 "Last Hour" = "最近一小时"
 "Last checked" = "上次检查"
@@ -1468,3 +1467,12 @@
 # crates/axion-app/src/list_sheet.rs
 "Select items" = "选择项目"
 "{count} selected" = "已选择 {count} 项"
+
+# crates/axion-app/src/browser.rs
+"Restart" = "重新启动"
+"Restart to apply the new language" = "重新启动以应用新语言"
+
+# crates/axion-app/src/settings.rs
+"Languages Axion has no translation for yet show English." = "Axion 尚未翻译的语言将显示英文。"
+"Restart to switch language." = "重新启动以切换语言。"
+"The new language applies after the next start of Axion." = "新语言将在 Axion 下次启动时生效。"
