@@ -1548,6 +1548,7 @@ impl SettingsSheet {
             root,
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thick))
+                .with_popup_cover()
                 .with_radius(SHEET_RADIUS),
             Style { position: Position::Absolute, flex_direction: FlexDirection::Row, ..Default::default() },
         );

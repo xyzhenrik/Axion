@@ -350,6 +350,7 @@ impl StartPage {
             // wallpaper layer lies under this plane) but keeps it solid for hit-testing.
             UiWidget::container()
                 .with_background(Background::Fill(Paint::Ground, 1.0))
+                .with_popup_cover()
                 .with_radius(config.effective_layout().page_corner_radius)
                 .with_clip(),
             Style {
