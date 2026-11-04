@@ -269,7 +269,9 @@
   var PREVIEW_PLACES = 'ytd-video-preview,#inline-preview-player,ytd-thumbnail,ytd-rich-item-renderer,' +
     'ytd-grid-video-renderer,ytd-compact-video-renderer,ytd-playlist-thumbnail,ytd-moving-thumbnail-renderer,' +
     'ytd-playlist-video-renderer,ytd-video-renderer,[data-preview],.ytp-preview,' +
-    '[data-a-target="video-preview"],[data-test-selector="video-preview"],[data-a-target="preview-card-image-link"]';
+    '[data-a-target="video-preview"],[data-test-selector="video-preview"],[data-a-target="preview-card-image-link"],' +
+    '[data-a-target="preview-card"],[class*="video-preview" i],[class*="videopreview" i],[class*="preview-card" i],' +
+    '[class*="hover-preview" i],[class*="autoplay-tile" i]';
   var REAL_PLAYERS = 'ytd-reel-video-renderer,ytd-shorts,ytd-miniplayer,ytd-watch-flexy,ytd-watch-grid,[data-axion-takeover]';
   // `closest` across shadow roots.
   function closestDeep(el, selector) {
@@ -295,6 +297,8 @@
     if (el.controls) return false;
     // A muted, looping or autoplaying inline tile inside a link (a card).
     if (el.muted && (el.loop || el.autoplay) && el.hasAttribute('playsinline') && el.closest('a[href]')) return true;
+    // Any muted controls-less video inside a link is a card's moving thumbnail, not a player.
+    if (el.muted && !el.controls && closestDeep(el, 'a[href]')) return true;
     // A small controls-less video that loops or autoplays, whatever the page's media session.
     if (PREVIEW_MAX_WIDTH > 0 && el.tagName === 'VIDEO' && !meta && (el.loop || el.autoplay) && !document.fullscreenElement) {
       var r = el.getBoundingClientRect();

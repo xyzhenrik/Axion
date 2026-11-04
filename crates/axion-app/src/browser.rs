@@ -1976,10 +1976,7 @@ impl Browser {
         let Some(player) = self
             .media_of(view)
             .and_then(|(m, _)| {
-                m.players
-                    .iter()
-                    .filter(|p| !p.preview && p.is_playing())
-                    .max_by(|a, b| a.area().total_cmp(&b.area()))
+                m.real_players().filter(|p| p.is_playing()).max_by(|a, b| a.area().total_cmp(&b.area()))
             })
             .cloned()
         else {

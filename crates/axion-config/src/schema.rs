@@ -2470,6 +2470,11 @@ pub struct Translation {
     /// The offer opens by itself once such a page has loaded (otherwise only the Translate
     /// button appears in the address field).
     pub prompt: bool,
+    /// The offer opens by itself at most once per page load (per tab and navigation), and
+    /// closing it is final for that page: a repeated language report (dynamic page changes)
+    /// or other popovers closing never bring it back. Off: it may open again whenever the
+    /// page reports its language anew.
+    pub offer_once_per_page: bool,
     /// ISO 639-1 code pages are translated into; empty: the interface language.
     pub target_language: String,
     pub backend: TranslationBackend,
@@ -2522,6 +2527,7 @@ impl Default for Translation {
         Self {
             offer: true,
             prompt: true,
+            offer_once_per_page: true,
             target_language: String::new(),
             backend: TranslationBackend::Local,
             endpoint_url: String::new(),
