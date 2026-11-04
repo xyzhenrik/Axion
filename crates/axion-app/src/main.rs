@@ -89,6 +89,7 @@ mod spinner;
 mod stall;
 mod start_page;
 mod start_wallpaper;
+mod suggest_worker;
 mod suggestions;
 mod svg_icons;
 mod tab_search;

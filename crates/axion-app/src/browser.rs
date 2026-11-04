@@ -389,6 +389,13 @@ pub struct Browser {
     history_sheet: crate::list_sheet::ListSheet,
     /// Reads, searches and deletes History for its sheet off the UI thread (`list_worker`).
     list_worker: Option<crate::list_worker::ListWorker>,
+    /// Looks up the address bar's suggestions and inline completion off the UI thread
+    /// (`suggest_worker`).
+    suggest_worker: Option<crate::suggest_worker::SuggestWorker>,
+    /// The newest suggestion lookup asked for: older answers are dropped.
+    suggest_generation: u64,
+    /// The text typed at the end of the address field whose inline completion is on its way.
+    completion_wanted: Option<String>,
     /// The newest History load asked for: older answers are dropped.
     list_generation: u64,
     /// Whether the answer to the newest load keeps the scroll position.
@@ -776,6 +783,13 @@ impl Browser {
                 options.waker.clone(),
             )
         });
+        let suggest_worker = store_path.clone().map(|path| {
+            crate::suggest_worker::SuggestWorker::spawn(
+                path,
+                Duration::from_millis(u64::from(config.data.db_busy_timeout_ms)),
+                options.waker.clone(),
+            )
+        });
         PrivateLock::drop_old_password(store.as_ref());
         let muted_sites = tabgroups::load_muted_sites(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
@@ -1044,6 +1058,9 @@ impl Browser {
             passwords,
             history_sheet,
             list_worker,
+            suggest_worker,
+            suggest_generation: 0,
+            completion_wanted: None,
             list_generation: 0,
             list_keep_scroll: false,
             downloads_sheet,
@@ -4503,6 +4520,7 @@ impl Browser {
                     None => {}
                 },
                 UiEvent::Submitted { node, text } if node == self.chrome.address_field => {
+                    let text = self.finish_completion(text);
                     match self.suggestions.selected() {
                         Some(s) => self.navigate_to(s.url.clone()),
                         None => self.navigate_from_address(&text),
@@ -8713,11 +8731,38 @@ impl Browser {
         if self.ui.field_caret(field) != Some((typed.len(), None)) {
             return;
         }
-        let Some(completion) = self.store.as_ref().and_then(|s| s.autocomplete(&typed).ok().flatten()) else {
+        if self.suggest_worker.is_some() {
+            // Looked up with the suggestions (`update_suggestions`), applied when it arrives.
+            self.completion_wanted = Some(typed);
             return;
-        };
-        if completion.len() > typed.len() && completion.starts_with(&typed) {
-            self.ui.set_field_text_selecting(field, &completion, typed.len()..completion.len());
+        }
+        if let Some(completion) = self.store.as_ref().and_then(|s| s.autocomplete(&typed).ok().flatten()) {
+            self.apply_completion(&typed, &completion);
+        }
+    }
+
+    /// Puts the inline `completion` of `typed` into the address field, its added part selected,
+    /// if the field still holds exactly `typed` with the caret at its end.
+    fn apply_completion(&mut self, typed: &str, completion: &str) {
+        let field = self.chrome.address_field;
+        if self.ui.field_text(field) != Some(typed) || self.ui.field_caret(field) != Some((typed.len(), None))
+        {
+            return;
+        }
+        if completion.len() > typed.len() && completion.starts_with(typed) {
+            self.ui.set_field_text_selecting(field, completion, typed.len()..completion.len());
+        }
+    }
+
+    /// Enter in the address field before the inline completion of `text` arrived: looked up at
+    /// once, so what is opened doesn't depend on how fast the lookup was.
+    fn finish_completion(&mut self, text: String) -> String {
+        if self.completion_wanted.take().is_none_or(|wanted| wanted != text) {
+            return text;
+        }
+        match self.store.as_ref().and_then(|s| s.autocomplete(&text).ok().flatten()) {
+            Some(completion) if completion.len() > text.len() && completion.starts_with(&text) => completion,
+            _ => text,
         }
     }
 
@@ -8735,7 +8780,9 @@ impl Browser {
         let editing = self.ui.focused() == Some(self.chrome.address_field) && !self.overview.is_open();
         let text = self.typed_address();
         let typed = editing && self.tabs.active().is_none_or(|t| t.url != text);
+        let answers = self.suggest_worker.as_ref().map(crate::suggest_worker::SuggestWorker::poll);
         if !typed {
+            self.completion_wanted = None;
             if self.suggestions.is_visible() {
                 self.suggestions.hide(&mut self.ui, &self.config);
             }
@@ -8744,9 +8791,43 @@ impl Browser {
             return;
         }
         let anchor = self.chrome.address_frame(&self.ui);
-        let (store, search_url) = (self.store.as_ref(), self.config.general.search_url.clone());
+        let newest = self.suggest_generation;
+        for answer in answers.unwrap_or_default().into_iter().filter(|a| a.generation == newest) {
+            let (ui, config, favicons) = (&mut self.ui, &self.config, &self.favicons);
+            self.suggestions.set_items(ui, config, &answer.text, answer.items, anchor, favicons);
+            if let Some(completion) = answer.completion
+                && self.completion_wanted.as_deref() == Some(answer.text.as_str())
+            {
+                self.completion_wanted = None;
+                self.apply_completion(&answer.text, &completion);
+            }
+        }
+        let search_url = self.config.general.search_url.clone();
+        let mut asked = false;
+        if text != self.suggestions.query()
+            && let Some(worker) = &self.suggest_worker
+        {
+            self.suggest_generation += 1;
+            asked = worker.send(crate::suggest_worker::Request {
+                generation: self.suggest_generation,
+                text: text.clone(),
+                search_url: search_url.clone(),
+                now: unix_now(),
+                complete: self.completion_wanted.as_deref() == Some(text.as_str()),
+            });
+            if !asked {
+                // The worker is gone (it could not open the database): looked up here from now on.
+                self.suggest_worker = None;
+            }
+        }
+        let store = self.store.as_ref();
+        let previous = if asked { self.suggestions.items().to_vec() } else { Vec::new() };
         self.suggestions.update(&mut self.ui, &self.config, &text, anchor, &self.favicons, || {
-            suggest(&text, store, &search_url, unix_now())
+            if asked {
+                crate::suggestions::provisional(&text, &search_url, &previous)
+            } else {
+                suggest(&text, store, &search_url, unix_now())
+            }
         });
         self.suggestions.reposition(&mut self.ui, anchor);
         let current = self.tabs.active().map(|t| t.url.clone());
