@@ -547,6 +547,11 @@ pub struct Browser {
     shown_textures: Vec<wgpu::TextureView>,
     /// The shown page frame's texture and a view of it, kept while the texture is the same.
     page_view: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Views of the tab overview's thumbnails, kept while their textures are the same (see
+    /// `texture_views`).
+    overview_views: crate::texture_views::ViewCache<ViewId>,
+    /// The same for the Playlist player's picture.
+    playlist_views: crate::texture_views::ViewCache<ViewId>,
     /// The shown scene's layer fingerprints (trace logging only).
     shown_layers: Vec<u64>,
     idle_redraw_at: Option<Instant>,
@@ -1045,6 +1050,8 @@ impl Browser {
             shown_textures: Vec::new(),
             shown_layers: Vec::new(),
             page_view: None,
+            overview_views: Default::default(),
+            playlist_views: Default::default(),
             idle_redraw_at: None,
             player_pointer_hidden: false,
             frame_interval: frame_rate::display_interval(None),
@@ -7902,12 +7909,14 @@ impl Browser {
                 self.overview_query = query;
                 self.rebuild_overview();
             }
-            let engine = &self.engine;
+            let (engine, views) = (&self.engine, &mut self.overview_views);
             self.overview.update(&mut self.ui, dt, |view| {
                 let frame = engine.frame(view)?;
                 let size = (frame.texture.width(), frame.texture.height());
-                Some((frame.texture.create_view(&Default::default()), size))
+                Some((views.view(view, &frame.texture), size))
             });
+        } else {
+            self.overview_views.clear();
         }
         self.settings.poll_search(&mut self.ui, &self.config, &self.keymap);
         self.poll_panel_search();

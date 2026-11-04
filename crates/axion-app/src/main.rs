@@ -86,6 +86,7 @@ mod tab_search;
 mod tabclose;
 mod tabdrag;
 mod tabs;
+mod texture_views;
 mod toast;
 mod tooltip;
 mod translate_popover;
