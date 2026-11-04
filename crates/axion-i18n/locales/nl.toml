@@ -1476,3 +1476,19 @@
 "Languages Axion has no translation for yet show English." = "Talen die Axion nog niet vertaalt, worden in het Engels getoond."
 "Restart to switch language." = "Herstart om van taal te wisselen."
 "The new language applies after the next start of Axion." = "De nieuwe taal wordt toegepast bij de volgende start van Axion."
+# crates/axion-app/src/chrome.rs
+"Minimize" = "Minimaliseren"
+
+# crates/axion-app/src/settings.rs
+"Axion" = "Axion"
+"Axion: the toolbar holds the window buttons and the window has rounded corners. System: the desktop's own title bar and frame." = "Axion: de werkbalk bevat de vensterknoppen en het venster heeft afgeronde hoeken. Systeem: de eigen titelbalk en rand van het bureaublad."
+"Close window" = "Venster sluiten"
+"Left" = "Links"
+"Maximize or restore window" = "Venster maximaliseren of herstellen"
+"Minimize window" = "Venster minimaliseren"
+"Right" = "Rechts"
+"System" = "Systeem"
+"Window buttons" = "Vensterknoppen"
+
+# crates/axion-app/src/settings/search.rs
+"Window frame" = "Vensterrand"

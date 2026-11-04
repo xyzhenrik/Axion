@@ -139,6 +139,13 @@ ask_where_to_save = false
 | `media.pip_max_width` | Widest it can be made, in pixels. | `1280` |
 | `media.pip_max_screen_fraction` | It never grows beyond this share of its monitor, either way (0.1 to 1). | `0.9` |
 | `media.pip_default_width` | Size of a first Picture in Picture window: the video fits a square of this side. | `480` |
+| `window.decorations` | `custom` (Axion draws the window buttons and rounded corners; no desktop title bar) or `system` (the desktop's frame). | `custom` |
+| `window.controls_side` | With `custom`: `left` or `right` end of the toolbar for the window buttons. | `left` |
+| `window.resize_border_px` | With `custom`: width of the strip along the window's edges that resizes it (corners count double). | `6` |
+| `layout.window_corner_radius` | With `custom`: corner radius of the window in pixels (0: square). Square while maximized or fullscreen. | `14` |
+| `layout.traffic_light_size` | Diameter of the window buttons in pixels. | `14` |
+| `layout.traffic_light_gap` | Gap between two window buttons. | `8` |
+| `layout.traffic_light_margin` | Gap between the window buttons and the toolbar group next to them. | `14` |
 | `window.restore_pip_size` | Open Picture in Picture as big as you last made it. | `true` |
 | `passwords.generator_length` | Length of generated passwords. | `20` |
 | `passwords.generator_symbols` | Generated passwords include symbols. | `true` |

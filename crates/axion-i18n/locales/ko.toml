@@ -1476,3 +1476,19 @@
 "Languages Axion has no translation for yet show English." = "Axion이 아직 번역하지 않은 언어는 영어로 표시됩니다."
 "Restart to switch language." = "언어를 바꾸려면 다시 시작하세요."
 "The new language applies after the next start of Axion." = "새 언어는 Axion을 다음에 시작할 때 적용됩니다."
+# crates/axion-app/src/chrome.rs
+"Minimize" = "최소화"
+
+# crates/axion-app/src/settings.rs
+"Axion" = "Axion"
+"Axion: the toolbar holds the window buttons and the window has rounded corners. System: the desktop's own title bar and frame." = "Axion: 도구 막대에 창 버튼이 있고 창 모서리가 둥글어집니다. 시스템: 데스크톱의 기본 제목 표시줄과 프레임."
+"Close window" = "창 닫기"
+"Left" = "왼쪽"
+"Maximize or restore window" = "창 최대화 또는 복원"
+"Minimize window" = "창 최소화"
+"Right" = "오른쪽"
+"System" = "시스템"
+"Window buttons" = "창 버튼"
+
+# crates/axion-app/src/settings/search.rs
+"Window frame" = "창 프레임"

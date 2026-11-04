@@ -1476,3 +1476,19 @@
 "Languages Axion has no translation for yet show English." = "Les langues que Axion ne traduit pas encore s’affichent en anglais."
 "Restart to switch language." = "Redémarrez pour changer de langue."
 "The new language applies after the next start of Axion." = "La nouvelle langue s’appliquera au prochain démarrage d’Axion."
+# crates/axion-app/src/chrome.rs
+"Minimize" = "Réduire"
+
+# crates/axion-app/src/settings.rs
+"Axion" = "Axion"
+"Axion: the toolbar holds the window buttons and the window has rounded corners. System: the desktop's own title bar and frame." = "Axion : la barre d'outils contient les boutons de la fenêtre et la fenêtre a des coins arrondis. Système : la barre de titre et le cadre du bureau."
+"Close window" = "Fermer la fenêtre"
+"Left" = "Gauche"
+"Maximize or restore window" = "Agrandir ou restaurer la fenêtre"
+"Minimize window" = "Réduire la fenêtre"
+"Right" = "Droite"
+"System" = "Système"
+"Window buttons" = "Boutons de fenêtre"
+
+# crates/axion-app/src/settings/search.rs
+"Window frame" = "Cadre de la fenêtre"

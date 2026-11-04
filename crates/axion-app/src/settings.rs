@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{
-    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, GlassStyle, GpuChoice,
-    Keymap, PageFrames, PermissionDefault, PlaylistSort, ReaderFont, ReaderTheme, RemoveDownloads,
-    ShieldLevel, TabBarStyle, ThemeMode, TintMode, TranslationBackend, UiLanguage,
+    ACCENT_SWATCHES, Action as KeyAction, BookmarksBar, ClearRange, Color, Config, ControlsSide, GlassStyle,
+    GpuChoice, Keymap, PageFrames, PermissionDefault, PlaylistSort, ReaderFont, ReaderTheme, RemoveDownloads,
+    ShieldLevel, TabBarStyle, ThemeMode, TintMode, TranslationBackend, UiLanguage, WindowDecorations,
 };
 use axion_i18n::{tr, tr_fmt, tr_mark, tr_n};
 use axion_ui::taffy::prelude::*;
@@ -789,6 +789,10 @@ pub enum SettingsAction {
     GlassStyle(GlassStyle),
     /// Index into `ICON_WEIGHTS`.
     IconWeight(usize),
+    /// Who draws the window's frame: Axion or the desktop.
+    WindowFrame(WindowDecorations),
+    /// The side of the toolbar Axion's window buttons sit on.
+    ControlsSide(ControlsSide),
     SearchEngine(usize),
     Accent(usize),
     ClearHistory,
@@ -905,6 +909,8 @@ const TRUSTED_SITE_BASE: u32 = 200;
 const CATEGORY_BASE: u32 = 900;
 /// Reader view and translation controls.
 const READING_BASE: u32 = 1100;
+/// The window frame choices (Appearance): 4 ids.
+const WINDOW_BASE: u32 = 1400;
 const READER_FONTS: [(&str, ReaderFont); 3] = [
     (tr_mark("Serif"), ReaderFont::Serif),
     (tr_mark("Sans"), ReaderFont::Sans),
@@ -1055,6 +1061,10 @@ impl SettingsAction {
                     SettingsAction::Theme(ThemeMode::Light) => 21,
                     SettingsAction::Theme(ThemeMode::Dark) => 22,
                     SettingsAction::Language(language) => LANGUAGE_BASE + language_index(language) as u32,
+                    SettingsAction::WindowFrame(d) => WINDOW_BASE + (d == WindowDecorations::System) as u32,
+                    SettingsAction::ControlsSide(side) => {
+                        WINDOW_BASE + 2 + (side == ControlsSide::Right) as u32
+                    }
                     SettingsAction::GlassStyle(GlassStyle::Liquid) => 26,
                     SettingsAction::GlassStyle(GlassStyle::Flat) => 27,
                     SettingsAction::ShowWelcomeTour => 28,
@@ -1260,6 +1270,10 @@ impl SettingsAction {
                 SettingsAction::DismissUpdate,
                 SettingsAction::RetryUpdate,
             ][(n - UPDATE_BASE) as usize],
+            WINDOW_BASE => SettingsAction::WindowFrame(WindowDecorations::Custom),
+            n if n == WINDOW_BASE + 1 => SettingsAction::WindowFrame(WindowDecorations::System),
+            n if n == WINDOW_BASE + 2 => SettingsAction::ControlsSide(ControlsSide::Left),
+            n if n == WINDOW_BASE + 3 => SettingsAction::ControlsSide(ControlsSide::Right),
             n if ImportAction::from_id(n).is_some() => SettingsAction::Import(ImportAction::from_id(n)?),
             n if NetAction::from_id(n).is_some() => SettingsAction::Network(NetAction::from_id(n)?),
             _ => return None,
@@ -2190,6 +2204,30 @@ impl SettingsSheet {
                 self.note(
                     ui,
                     tr("Flat: solid cards, no refraction, blur or bounce. Skips the glass work (fast on weak GPUs)."),
+                );
+                let row_node = self.row(ui, tr("Window frame"));
+                let frames = [
+                    (tr("Axion"), SettingsAction::WindowFrame(WindowDecorations::Custom).id()),
+                    (tr("System"), SettingsAction::WindowFrame(WindowDecorations::System).id()),
+                ];
+                let current = [WindowDecorations::Custom, WindowDecorations::System]
+                    .iter()
+                    .position(|&m| m == config.window.decorations);
+                segmented(ui, row_node, &frames, current);
+                if config.window.decorations == WindowDecorations::Custom {
+                    let row_node = self.row(ui, tr("Window buttons"));
+                    let sides = [
+                        (tr("Left"), SettingsAction::ControlsSide(ControlsSide::Left).id()),
+                        (tr("Right"), SettingsAction::ControlsSide(ControlsSide::Right).id()),
+                    ];
+                    let current = [ControlsSide::Left, ControlsSide::Right]
+                        .iter()
+                        .position(|&m| m == config.window.controls_side);
+                    segmented(ui, row_node, &sides, current);
+                }
+                self.note(
+                    ui,
+                    tr("Axion: the toolbar holds the window buttons and the window has rounded corners. System: the desktop's own title bar and frame."),
                 );
                 let row_node = self.row(ui, tr("Accent colour"));
                 swatches(ui, row_node, config.appearance.accent, SettingsAction::Accent);
@@ -4169,6 +4207,14 @@ impl SettingsSheet {
                 config.glass.style = style;
                 Outcome::Changed
             }
+            SettingsAction::WindowFrame(frame) => {
+                config.window.decorations = frame;
+                Outcome::Changed
+            }
+            SettingsAction::ControlsSide(side) => {
+                config.window.controls_side = side;
+                Outcome::Changed
+            }
             SettingsAction::ShowWelcomeTour => return Outcome::ShowWelcomeTour,
             SettingsAction::MakeDefaultBrowser => return Outcome::MakeDefaultBrowser,
             SettingsAction::IconWeight(i) => {
@@ -4765,7 +4811,8 @@ pub(crate) fn shortcut_group(action: KeyAction) -> &'static str {
         | ToggleSidebar => tr("Panels"),
         Lock | ToggleNetwork => tr("Privacy"),
         DevTools | DevToolsConsole | ViewSource => tr("Developer"),
-        OpenSettings | ContextMenu | CommandPalette | ToggleFullscreen | Quit => tr("Window"),
+        OpenSettings | ContextMenu | CommandPalette | ToggleFullscreen | Quit | CloseWindow
+        | MinimizeWindow | ToggleMaximize => tr("Window"),
         _ => tr("Media (fullscreen video)"),
     }
 }
@@ -4816,6 +4863,9 @@ fn shortcut_source_name(action: KeyAction) -> &'static str {
         CommandPalette => tr_mark("Command palette"),
         ToggleFullscreen => tr_mark("Toggle fullscreen"),
         Quit => tr_mark("Quit"),
+        CloseWindow => tr_mark("Close window"),
+        MinimizeWindow => tr_mark("Minimize window"),
+        ToggleMaximize => tr_mark("Maximize or restore window"),
         Lock => tr_mark("Lock"),
         ToggleNetwork => tr_mark("Toggle network connection"),
         DevTools => tr_mark("Developer tools"),
@@ -4966,6 +5016,10 @@ mod tests {
             SettingsAction::Language(UiLanguage::German),
             SettingsAction::GlassStyle(GlassStyle::Liquid),
             SettingsAction::GlassStyle(GlassStyle::Flat),
+            SettingsAction::WindowFrame(WindowDecorations::Custom),
+            SettingsAction::WindowFrame(WindowDecorations::System),
+            SettingsAction::ControlsSide(ControlsSide::Left),
+            SettingsAction::ControlsSide(ControlsSide::Right),
             SettingsAction::IconWeight(2),
             SettingsAction::SearchEngine(4),
             SettingsAction::Accent(5),

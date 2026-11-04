@@ -1476,3 +1476,19 @@
 "Languages Axion has no translation for yet show English." = "Axion 尚未翻译的语言将显示英文。"
 "Restart to switch language." = "重新启动以切换语言。"
 "The new language applies after the next start of Axion." = "新语言将在 Axion 下次启动时生效。"
+# crates/axion-app/src/chrome.rs
+"Minimize" = "最小化"
+
+# crates/axion-app/src/settings.rs
+"Axion" = "Axion"
+"Axion: the toolbar holds the window buttons and the window has rounded corners. System: the desktop's own title bar and frame." = "Axion：窗口按钮位于工具栏中，窗口带圆角。系统：使用桌面自带的标题栏和边框。"
+"Close window" = "关闭窗口"
+"Left" = "左侧"
+"Maximize or restore window" = "最大化或还原窗口"
+"Minimize window" = "最小化窗口"
+"Right" = "右侧"
+"System" = "系统"
+"Window buttons" = "窗口按钮"
+
+# crates/axion-app/src/settings/search.rs
+"Window frame" = "窗口边框"

@@ -309,6 +309,23 @@ pub const INDEX: &[Entry] = &[
     ),
     page(
         C::Appearance,
+        tr_mark("Window frame"),
+        &[
+            "title bar",
+            "titlebar",
+            "decorations",
+            "traffic lights",
+            "window buttons",
+            "close",
+            "minimize",
+            "maximize",
+            "fenster",
+            "titelleiste",
+            "rahmen",
+        ],
+    ),
+    page(
+        C::Appearance,
         tr_mark("Icon weight"),
         &["icons", "stroke", "bold", "thick", "thin", "line", "symbole", "strichstärke", "dicke", "fett"],
     ),

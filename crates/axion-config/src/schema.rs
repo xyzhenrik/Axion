@@ -1046,6 +1046,16 @@ pub struct Layout {
     pub page_corner_radius: f32,
     /// Gap between the page and the window's edges (and a floating sidebar's side).
     pub page_margin: f32,
+    /// Corner radius of the window itself (logical px) with `window.decorations = "custom"`;
+    /// square while maximized or fullscreen, and where the compositor cannot show a transparent
+    /// window. 0 keeps the corners square.
+    pub window_corner_radius: f32,
+    /// Diameter of Axion's own window buttons (close, minimize, zoom), logical px.
+    pub traffic_light_size: f32,
+    /// Gap between two of the window buttons.
+    pub traffic_light_gap: f32,
+    /// Gap between the window buttons and the toolbar group next to them.
+    pub traffic_light_margin: f32,
     /// Tabs in their own row under the address bar, or in one compact row with it.
     pub tab_bar: TabBarStyle,
     /// Separate tab bar: the row of tabs slides away while exactly one tab is open and there are
@@ -1117,6 +1127,10 @@ impl Default for Layout {
             bookmarks_bar: BookmarksBar::Always,
             page_corner_radius: 10.0,
             page_margin: 8.0,
+            window_corner_radius: 14.0,
+            traffic_light_size: 14.0,
+            traffic_light_gap: 8.0,
+            traffic_light_margin: 14.0,
             tab_bar: TabBarStyle::Separate,
             hide_single_tab_bar: true,
             home_button: true,
@@ -1672,6 +1686,35 @@ pub struct WindowBehavior {
     /// How long (milliseconds) quitting waits for the pages to close before it stops
     /// waiting for them.
     pub close_pages_timeout_ms: u32,
+    /// Who draws the window's frame: Axion itself (`custom`: no title bar, the window buttons
+    /// sit in the toolbar, the window gets rounded corners) or the desktop (`system`: the usual
+    /// title bar and frame; the escape hatch for compositors where `custom` misbehaves).
+    pub decorations: WindowDecorations,
+    /// With `decorations = "custom"`: the side of the toolbar the window buttons sit on.
+    pub controls_side: ControlsSide,
+    /// With `decorations = "custom"`: width (logical px) of the strip along the window's edges
+    /// that resizes it when dragged (the corners count double).
+    pub resize_border_px: f32,
+}
+
+/// Who draws the window's frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowDecorations {
+    /// Axion draws the window buttons and the corners (client-side decorations).
+    #[default]
+    Custom,
+    /// The desktop's own title bar and frame.
+    System,
+}
+
+/// The side of the toolbar the window buttons sit on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ControlsSide {
+    #[default]
+    Left,
+    Right,
 }
 
 impl Default for WindowBehavior {
@@ -1684,6 +1727,9 @@ impl Default for WindowBehavior {
             min_visible_px: 120,
             shutdown_timeout_ms: 6000,
             close_pages_timeout_ms: 2500,
+            decorations: WindowDecorations::Custom,
+            controls_side: ControlsSide::Left,
+            resize_border_px: 6.0,
         }
     }
 }
@@ -2969,6 +3015,20 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_window_is_drawn_by_axion_by_default() {
+        let c = Config::default();
+        assert_eq!(c.window.decorations, WindowDecorations::Custom);
+        assert_eq!(c.window.controls_side, ControlsSide::Left);
+        assert!(c.window.resize_border_px >= 1.0);
+        assert!(c.layout.window_corner_radius > 0.0);
+        assert!(c.layout.traffic_light_size > 0.0 && c.layout.traffic_light_gap > 0.0);
+        let c: Config =
+            toml::from_str("[window]\ndecorations = \"system\"\ncontrols_side = \"right\"").unwrap();
+        assert_eq!(c.window.decorations, WindowDecorations::System);
+        assert_eq!(c.window.controls_side, ControlsSide::Right);
+    }
 
     #[test]
     fn empty_file_is_default() {
