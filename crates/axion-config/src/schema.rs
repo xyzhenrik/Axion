@@ -648,6 +648,21 @@ pub enum GlassStyle {
     Flat,
 }
 
+/// What a glass sheet (History, Settings, Passwords…) does while a popup (a context menu, a
+/// dropdown, a confirm dialog) stands over it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SheetUnderPopup {
+    /// The sheet is dimmed a little and stays glass.
+    Dim,
+    /// The sheet turns into a calm solid card (frosted, opaque, no refraction) so the popup is
+    /// the only live glass on screen, and back into glass when the popup closes.
+    #[default]
+    Solid,
+    /// The sheet stays as it is (glass under glass).
+    Keep,
+}
+
 /// The damping ratio flat mode raises every spring to: critically damped, so nothing bounces.
 pub const FLAT_DAMPING: f32 = 1.0;
 
@@ -685,6 +700,15 @@ pub struct Glass {
     /// row of controls, as the Playlist's speed and sleep menus) and that button. Such a menu
     /// is its own card: no bridge, and its glass never flows into the button's.
     pub menu_anchor_gap: f32,
+    /// What a glass sheet does while a popup stands over it (see [`SheetUnderPopup`]). Flat
+    /// mode is solid already and ignores it.
+    pub sheet_under_popup: SheetUnderPopup,
+    /// How long (ms) a sheet takes to turn solid (or dim) under a popup and back. The change
+    /// is a critically damped spring of about this duration; Reduce Motion makes it instant.
+    pub sheet_cover_ms: f32,
+    /// Opacity (0-1) of the black veil over a sheet under a popup when `sheet_under_popup` is
+    /// `dim`.
+    pub sheet_dim_opacity: f32,
     /// Opacity (0–1) of the soft plate under a menu's rows: menus carry text, so their glass is
     /// made denser than thick glass in the middle while the edges still refract.
     pub menu_plate_opacity: f32,
@@ -790,6 +814,9 @@ impl Default for Glass {
             rubber_band_c: 0.55,
             popover_bridge_fillet: 30.0,
             menu_anchor_gap: 10.0,
+            sheet_under_popup: SheetUnderPopup::Solid,
+            sheet_cover_ms: 150.0,
+            sheet_dim_opacity: 0.25,
             menu_plate_opacity: 0.6,
             button_opacity: 0.04,
             button_shadow: 0.0,
@@ -3178,6 +3205,23 @@ mod glass_style_tests {
         let c: Config = toml::from_str("[glass]\nstyle = \"liquid\"").unwrap();
         assert_eq!(c.glass.style, GlassStyle::Liquid);
         assert!(toml::from_str::<Config>("[glass]\nstyle = \"jelly\"").is_err());
+    }
+
+    #[test]
+    fn a_sheet_turns_solid_under_a_popup_by_default_and_the_key_round_trips() {
+        let glass = Glass::default();
+        assert_eq!(glass.sheet_under_popup, SheetUnderPopup::Solid);
+        assert_eq!(glass.sheet_cover_ms, 150.0);
+        for (text, want) in [
+            ("dim", SheetUnderPopup::Dim),
+            ("solid", SheetUnderPopup::Solid),
+            ("keep", SheetUnderPopup::Keep),
+        ] {
+            let c: Config = toml::from_str(&format!("[glass]\nsheet_under_popup = \"{text}\"")).unwrap();
+            assert_eq!(c.glass.sheet_under_popup, want);
+            assert!(toml::to_string(&c).unwrap().contains(&format!("sheet_under_popup = \"{text}\"")));
+        }
+        assert!(toml::from_str::<Config>("[glass]\nsheet_under_popup = \"frosted\"").is_err());
     }
 
     #[test]

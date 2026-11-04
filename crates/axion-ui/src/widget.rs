@@ -220,8 +220,28 @@ pub struct Widget {
     pub tooltip: Option<Tooltip>,
     /// The pointer passes through this widget and everything inside it (a tab that is closing).
     pub passthrough: bool,
+    /// This widget is a popup layer (a menu, a popover, a dropdown, a dialog): while it is open
+    /// it covers the glass sheets painted before it (see [`Widget::popup_cover`]). Toasts and
+    /// tooltips are not popups.
+    pub popup: Popup,
+    /// A glass sheet (History, Settings…): while a popup is open over it, it turns into a calm
+    /// solid card (or dims, or stays, by `glass.sheet_under_popup`), and so does the glass
+    /// inside it.
+    pub popup_cover: bool,
     /// Absolute frame in logical pixels, updated by layout.
     pub(crate) frame: Rect,
+}
+
+/// Whether a widget is a popup layer, and if so whether it still counts as open.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Popup {
+    /// Not a popup.
+    #[default]
+    None,
+    /// A popup: it covers the sheets below it while it is shown.
+    Open,
+    /// A popup on its way out: shown still, but the sheets below it already come back.
+    Closing,
 }
 
 impl Widget {
@@ -250,6 +270,8 @@ impl Widget {
             track: None,
             tooltip: None,
             passthrough: false,
+            popup: Popup::None,
+            popup_cover: false,
             frame: Rect::default(),
         }
     }
@@ -334,6 +356,18 @@ impl Widget {
 
     pub fn with_background(mut self, background: Background) -> Self {
         self.background = background;
+        self
+    }
+
+    /// See [`Widget::popup`].
+    pub fn as_popup(mut self) -> Self {
+        self.popup = Popup::Open;
+        self
+    }
+
+    /// See [`Widget::popup_cover`].
+    pub fn with_popup_cover(mut self) -> Self {
+        self.popup_cover = true;
         self
     }
 

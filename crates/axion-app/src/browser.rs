@@ -7510,6 +7510,8 @@ impl Browser {
                     self.handle_ui_events(events);
                 }
                 "close-popups" => self.close_popups(),
+                // Capture aid: closes the context menus only (a sheet under them stays open).
+                "context-close" => self.context_menus.close(&mut self.ui, &self.config),
                 "shields" => self.toggle_shields_popover(),
                 // Test aids: answer the permission prompt, open the recording indicator's
                 // popover and stop everything the tab records.

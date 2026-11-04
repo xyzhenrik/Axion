@@ -15,7 +15,7 @@
 use axion_compositor::Rect as Frame;
 use axion_config::Config;
 use axion_ui::taffy::prelude::*;
-use axion_ui::{Background, CAPSULE, GlassLevel, Ui, Widget};
+use axion_ui::{Background, CAPSULE, GlassLevel, Popup, Ui, Widget};
 use glam::Vec2;
 
 use crate::drip::{Drip, Phase};
@@ -95,6 +95,7 @@ impl Popover {
             Widget::container()
                 .with_background(Background::Glass(LEVEL))
                 .with_glass_density(DENSITY)
+                .as_popup()
                 .with_radius(radius),
             Style { position: Position::Absolute, ..style },
         );
@@ -181,6 +182,7 @@ impl Popover {
         ui.set_claim_target(self.root, Some(target));
         crate::menu::place(ui, self.root, self.parent, target);
         ui.set_visible(self.root, true);
+        ui.set_popup(self.root, Popup::Open);
         self.find_join(ui, anchor);
         self.bridge_depth = config.glass.bezel_width.max(0.0);
         if let Some(w) = ui.widget_mut(self.bridge) {
@@ -205,6 +207,7 @@ impl Popover {
     pub fn close_into(&mut self, ui: &mut Ui, config: &Config, anchor: Frame) {
         if self.drip.phase() != Phase::Closed {
             ui.set_claim_target(self.root, None);
+            ui.set_popup(self.root, Popup::Closing);
             self.drip.close_into(config, anchor);
             self.animate(ui, 0.0);
         }
@@ -218,6 +221,7 @@ impl Popover {
     /// Flows back into the anchor.
     pub fn close(&mut self, ui: &mut Ui, config: &Config) {
         ui.set_claim_target(self.root, None);
+        ui.set_popup(self.root, Popup::Closing);
         self.drip.close(config);
         self.animate(ui, 0.0);
     }
