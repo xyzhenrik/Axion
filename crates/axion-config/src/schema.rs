@@ -819,7 +819,7 @@ impl Default for Glass {
             rubber_band_c: 0.55,
             popover_bridge_fillet: 30.0,
             menu_anchor_gap: 10.0,
-            sheet_under_popup: SheetUnderPopup::Solid,
+            sheet_under_popup: SheetUnderPopup::Keep,
             sheet_cover_ms: 150.0,
             sheet_dim_opacity: 0.25,
             menu_plate_opacity: 0.6,
@@ -3295,7 +3295,7 @@ mod glass_style_tests {
     #[test]
     fn a_sheet_turns_solid_under_a_popup_by_default_and_the_key_round_trips() {
         let glass = Glass::default();
-        assert_eq!(glass.sheet_under_popup, SheetUnderPopup::Solid);
+        assert_eq!(glass.sheet_under_popup, SheetUnderPopup::Keep);
         assert_eq!(glass.sheet_cover_ms, 150.0);
         for (text, want) in [
             ("dim", SheetUnderPopup::Dim),

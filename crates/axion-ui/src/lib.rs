@@ -4754,6 +4754,12 @@ mod tests {
         SheetScene { ui, sheet, menu }
     }
 
+    fn solid_config() -> axion_config::Config {
+        let mut config = axion_config::Config::default();
+        config.glass.sheet_under_popup = axion_config::SheetUnderPopup::Solid;
+        config
+    }
+
     fn settle_covers(ui: &mut Ui) {
         for _ in 0..120 {
             ui.animate(1.0 / 60.0);
@@ -4768,7 +4774,7 @@ mod tests {
 
     #[test]
     fn an_open_popup_turns_the_sheet_under_it_solid_and_closing_it_brings_the_glass_back() {
-        let mut scene = sheet_scene(&axion_config::Config::default());
+        let mut scene = sheet_scene(&solid_config());
         // Sheet, its button, and the toast: three live glass shapes.
         settle_covers(&mut scene.ui);
         assert_eq!(scene.ui.sheet_cover(scene.sheet), 0.0, "a toast is no popup");
@@ -4795,7 +4801,7 @@ mod tests {
 
     #[test]
     fn halfway_the_sheet_is_glass_and_card_at_once_without_a_jump() {
-        let mut scene = sheet_scene(&axion_config::Config::default());
+        let mut scene = sheet_scene(&solid_config());
         scene.ui.set_visible(scene.menu, true);
         scene.ui.layout();
         let cards = |ui: &Ui| {
@@ -4830,7 +4836,7 @@ mod tests {
         assert_eq!(scene.ui.sheet_cover(scene.sheet), 0.0);
         assert_eq!(glass_count(&scene.ui), 4);
 
-        let mut scene = sheet_scene(&axion_config::Config::default());
+        let mut scene = sheet_scene(&solid_config());
         scene.ui.set_visible(scene.menu, true);
         // A menu far from the sheet (and not over it).
         scene.ui.set_style(
@@ -4874,7 +4880,7 @@ mod tests {
 
     #[test]
     fn reduce_motion_turns_the_sheet_at_once_and_a_hidden_sheet_forgets_it() {
-        let mut config = axion_config::Config::default();
+        let mut config = solid_config();
         config.glass.reduce_motion = true;
         let mut scene = sheet_scene(&config);
         scene.ui.set_visible(scene.menu, true);
