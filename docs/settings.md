@@ -146,6 +146,7 @@ How tabs look and how Axion saves memory. See [Tabs and memory](features/tabs-an
 | **Colour in tab bar** | Tints the window around the page with a colour taken from the page, like Safari. | Off | `appearance.tint_from_page` |
 | **Page colour** (**Extreme** / **Dominant**) | Shown when **Colour in tab bar** is on. **Extreme** takes the darkest or lightest prominent colour. **Dominant** takes the main colour, evened out. Turning the colour on switches from neutral to **Extreme**. | Neutral (page colour off) | `appearance.tint_mode` (`neutral`, `extreme`, `dominant`) |
 | **Open new tabs in background** | Tabs opened from links do not take over the screen. | On | `tabs.open_links_in_background` |
+| Windows keep their opener | A page that opens a window (`window.open()`, as "Sign in with Google" does) gets a tab that stays connected to it, so the sign-in can report back and close itself. Config file only; applies after a restart. | On | `tabs.popups_keep_opener` |
 | **Animate closing tabs** | A closed tab shrinks and fades away (tab bar, sidebar and tab overview) while the tabs beside it slide into the gap. With **Reduce motion** or the flat glass style only a short fade stays. The spring is `motion.tab_close`. | On | `tabs.close_animation` |
 | **Keep tab widths while closing** | After closing a tab with the pointer in the tab bar, the other tabs keep their widths until the pointer leaves the bar, so the next close button stays under it. | On | `tabs.keep_widths_while_closing` |
 | **Tab menu on the address field** (config only) | A right click on the address field of the separate tab bar opens the menu of the current tab: reload, duplicate, mute, bookmark, groups, pin, move to private, close (in red) and close other tabs. With the compact tab bar the address is the tab itself, so this always works there. Not while you are typing in the field. | On | `tabs.address_context_menu` |
@@ -305,6 +306,7 @@ Blocking of ads, trackers, popups and redirects. See [Shields](features/shields.
 | **Block redirects to ad and tracker sites** | Blocks pages that send you elsewhere without a click, to sites on the block lists. | On | `shields.block_redirects` |
 | **Remove tracking parameters from links** | Cuts click-tracking parts such as `fbclid` and `gclid` out of addresses. | On | `shields.strip_tracking_parameters` |
 | **Block third-party cookies** | Stops sites from setting cookies for other sites. | On | `shields.block_third_party_cookies` |
+| Sign-in providers | Hosts that may always get cookies as a third party (embedded sign-in frames of Google, Apple, Microsoft, Facebook). Config file only. | 6 hosts | `shields.sign_in_hosts` |
 | **Filter lists** (**Update Now**) | The block lists in use and how often they refresh. **Update Now** refreshes them at once. | 5 lists, every 96 hours | `shields.lists`, `shields.update_interval_hours` |
 
 ## Network & VPN
@@ -370,6 +372,7 @@ refuses without asking. A decision you made for a site wins over these. See
 | **Notifications** | Desktop notifications from the site. | Ask | `permissions.notifications` |
 | **Location** | Your position. | Ask | `permissions.location` |
 | **Clipboard** | Reading what you copied (writing to the clipboard needs no permission). | Ask | `permissions.clipboard` |
+| Copy buttons of pages | Who puts text a page copies (`writeText`, `execCommand`, Copy buttons) on the desktop clipboard: Axion where Chromium cannot (Wayland), or always / never. Config file only. | auto | `clipboard.page_copy`, `clipboard.max_page_copy_kb` |
 | **Other permissions** | MIDI devices, the local network, window placement on all displays, installed fonts, idle detection, pointer and keyboard lock, motion sensors, several downloads at once. | Ask | `permissions.other` |
 
 ### Remembered for Sites

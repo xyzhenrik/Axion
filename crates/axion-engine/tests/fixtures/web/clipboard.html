@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Copy buttons</title>
+<!--
+  Copy buttons as websites have them. Run serve.py and open http://localhost:8101/clipboard.html;
+  click button N (AXION_CLICK_PROBE) at x=120, y=45+70*N; every click reports its outcome to
+  /report ("copy <kind> ok" or "copy <kind> failed: <error>"). What reached the desktop clipboard
+  is the text of the kind: axion-<kind>.
+    0  navigator.clipboard.writeText
+    1  document.execCommand('copy') with a selected hidden textarea
+    2  navigator.clipboard.write([new ClipboardItem(...)]) text/plain + text/html
+    3  a copy event handler that fills clipboardData, then execCommand('copy')
+    4  writeText inside a cross-origin iframe (allow="clipboard-write"), at y=380
+    5  writeText from a timer with no user gesture (must NOT reach the clipboard), at y=330 area
+-->
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  button { position: absolute; left: 20px; width: 200px; height: 50px; }
+  #spin { position: absolute; right: 20px; top: 20px; width: 30px; height: 30px; background: #36c;
+          animation: turn 1s linear infinite; }
+  @keyframes turn { to { transform: rotate(360deg); } }
+  #hidden { position: absolute; left: -999px; }
+  iframe { position: absolute; left: 20px; top: 380px; width: 300px; height: 80px; border: 1px solid #888; }
+</style>
+<div id="spin"></div>
+<button id="b0" style="top:20px">writeText</button>
+<button id="b1" style="top:90px">execCommand copy</button>
+<button id="b2" style="top:160px">ClipboardItem</button>
+<button id="b3" style="top:230px">copy event</button>
+<button id="b5" style="top:300px">writeText, no gesture</button>
+<textarea id="hidden">axion-execCommand</textarea>
+<iframe allow="clipboard-write" src="http://127.0.0.1:8102/clipboard-frame.html"></iframe>
+<script>
+  const report = (kind, outcome) => fetch('/report?' + new URLSearchParams({ step: 'copy ' + kind, outcome }), { keepalive: true });
+  const run = (kind, f) => async () => {
+    try { await f(); report(kind, 'ok'); } catch (e) { report(kind, 'failed: ' + e.name + ' ' + e.message); }
+  };
+  b0.onclick = run('writeText', () => navigator.clipboard.writeText('axion-writeText'));
+  b1.onclick = run('execCommand', () => {
+    hidden.select();
+    if (!document.execCommand('copy')) throw new Error('execCommand returned false');
+  });
+  b2.onclick = run('clipboardItem', () => navigator.clipboard.write([new ClipboardItem({
+    'text/plain': new Blob(['axion-clipboardItem'], { type: 'text/plain' }),
+    'text/html': new Blob(['<b>axion-clipboardItem</b>'], { type: 'text/html' }),
+  })]));
+  b3.onclick = run('copyEvent', () => {
+    const on = (e) => { e.clipboardData.setData('text/plain', 'axion-copyEvent'); e.preventDefault(); };
+    document.addEventListener('copy', on, { once: true });
+    if (!document.execCommand('copy')) throw new Error('execCommand returned false');
+  });
+  b5.onclick = () => setTimeout(run('noGesture', () => navigator.clipboard.writeText('axion-noGesture')), 6000);
+  report('page', 'loaded; secure=' + isSecureContext + ' focus=' + document.hasFocus());
+</script>

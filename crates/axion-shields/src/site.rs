@@ -9,6 +9,20 @@ pub fn host(url: &str) -> Option<String> {
     Some(host.strip_prefix("www.").map(str::to_owned).unwrap_or(host))
 }
 
+/// The URL's host, lower case, with a leading `www.` kept.
+pub fn raw_host(url: &str) -> Option<String> {
+    Some(Url::parse(url).ok()?.host_str()?.to_ascii_lowercase())
+}
+
+/// Whether `host` is one of `list` or a subdomain of one (entries are lower case host names).
+pub fn host_in(host: &str, list: &[String]) -> bool {
+    list.iter().any(|entry| {
+        let entry = entry.trim().trim_start_matches('.').to_ascii_lowercase();
+        !entry.is_empty()
+            && (host == entry || host.strip_suffix(&entry).is_some_and(|rest| rest.ends_with('.')))
+    })
+}
+
 /// The registrable domain of the URL's host (the host itself for IPs and unknown suffixes).
 pub fn site(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
@@ -32,6 +46,18 @@ pub fn is_cross_site(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_lists_cover_subdomains_only() {
+        let list = vec!["accounts.google.com".to_owned(), "Login.Live.com".to_owned()];
+        assert!(host_in("accounts.google.com", &list));
+        assert!(host_in("x.accounts.google.com", &list));
+        assert!(host_in("login.live.com", &list));
+        assert!(!host_in("evilaccounts.google.com", &list));
+        assert!(!host_in("google.com", &list));
+        assert!(!host_in("accounts.google.com.evil.net", &list));
+        assert!(!host_in("anything.net", &[String::new()]));
+    }
 
     #[test]
     fn hosts_and_sites() {

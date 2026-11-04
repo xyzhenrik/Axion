@@ -18,6 +18,7 @@ mod avatars;
 mod browser;
 mod chrome;
 mod circuit_popover;
+mod click_probe;
 mod context_menu;
 mod desktop;
 mod desktop_integration;

@@ -46,6 +46,7 @@ fn settings(config: &Config) -> axion_shields::Settings {
         block_redirects: s.block_redirects,
         strip_tracking_parameters: s.strip_tracking_parameters,
         block_third_party_cookies: s.block_third_party_cookies,
+        sign_in_hosts: s.sign_in_hosts.clone(),
         lists: s.lists.clone(),
         update_interval: Duration::from_secs_f32(s.update_interval_hours.max(1.0) * 3600.0),
     }
@@ -96,6 +97,16 @@ impl RequestPolicy for Policy {
 
     fn page_script(&self, url: &str) -> Option<String> {
         self.0.page_script(url)
+    }
+
+    fn allow_popup(
+        &self,
+        opener_url: &str,
+        opener_frame: Option<&str>,
+        url: &str,
+        user_gesture: bool,
+    ) -> bool {
+        self.0.allow_popup(opener_url, opener_frame, url, user_gesture)
     }
 }
 
