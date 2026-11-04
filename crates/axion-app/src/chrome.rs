@@ -23,7 +23,7 @@ use axion_engine::ViewId;
 use crate::favicons::{Favicons, favicon_node, favicon_or};
 use crate::tabs::{Tab, Tabs};
 use crate::url::display_host;
-use crate::window_frame::{Light, LightsState};
+use crate::window_frame::{Light, LightColors, LightsState};
 
 pub use crate::now_playing::NowPlaying;
 use crate::now_playing::{Art, NowPlayingCard};
@@ -72,8 +72,10 @@ const BOOKMARK_GAP: f32 = 2.0;
 const BOOKMARKS_BAR_PADDING: f32 = 5.0;
 const BOOKMARK_FAVICON: f32 = 16.0;
 
-/// A window button's glyph (x, -, +) as a share of the button's diameter.
-const LIGHT_GLYPH: f32 = 0.64;
+/// A window button's glyph (x, -, arrows) as a share of the button's diameter. All glyphs are
+/// drawn in a 24-unit box with their ink centred on (12, 12) (see `axion-compositor` icons), and
+/// the icon widget is centred in the disc on both axes, so they need no per-icon offset.
+const LIGHT_GLYPH: f32 = 0.62;
 
 /// The recording dot of a tab row (logical px).
 const CAPTURE_DOT: f32 = 8.0;
@@ -500,6 +502,8 @@ const CHEVRON_BUTTON: f32 = 28.0;
 struct LightSet {
     group: NodeId,
     discs: [NodeId; 3],
+    /// The flat disc inside each ring (the `discs` node itself is the ring).
+    inners: [NodeId; 3],
     glyphs: [NodeId; 3],
 }
 
@@ -509,6 +513,8 @@ pub struct Chrome {
     /// The window buttons: left end of the toolbar, right end of the toolbar, sidebar header.
     lights: [LightSet; 3],
     lights_state: LightsState,
+    /// Their colours and ring width as last drawn (`window.light_*`, `layout.traffic_light_ring`).
+    lights_look: (LightColors, f32),
     /// The look of the lights is drawn again (a set was shown, or the layout changed).
     lights_dirty: bool,
     /// How much of the toolbar's left end the lights take (0 while elsewhere).
@@ -1018,16 +1024,23 @@ fn shrinking_label() -> Style {
     }
 }
 
-/// Builds one row of the window buttons in `parent`: three glass discs tinted red, yellow and
-/// green (their tint comes from the glass parameters, there is no plate behind them), each with
-/// a glyph that shows while the pointer is over the row. Sizes and spacing follow the config
-/// (`Chrome::apply_layout`).
-fn build_lights(ui: &mut Ui, parent: NodeId, layout: &axion_config::Layout) -> LightSet {
+/// Builds one row of the window buttons in `parent`: three flat round discs (red, yellow, green;
+/// an explicit exception to the all-glass rule, so no glass, also in the liquid style), each a
+/// ring-coloured disc with a slightly smaller disc inside it and a glyph that shows while the
+/// pointer is over the row. Sizes and spacing follow the config (`Chrome::apply_layout`).
+fn build_lights(
+    ui: &mut Ui,
+    parent: NodeId,
+    layout: &axion_config::Layout,
+    colors: &LightColors,
+) -> LightSet {
     let size = layout.traffic_light_size;
+    let inner_size = (size - 2.0 * layout.traffic_light_ring).max(0.0);
     let group =
         ui.add(parent, Widget::container(), Style { flex_shrink: 0.0, ..row(layout.traffic_light_gap) });
     let look = LightsState::default();
     let mut discs = [group; 3];
+    let mut inners = [group; 3];
     let mut glyphs = [group; 3];
     for light in Light::ALL {
         let (action, label, key) = match light {
@@ -1035,11 +1048,11 @@ fn build_lights(ui: &mut Ui, parent: NodeId, layout: &axion_config::Layout) -> L
             Light::Minimize => (ChromeAction::WindowMinimize, tr("Minimize"), Action::MinimizeWindow),
             Light::Zoom => (ChromeAction::WindowZoom, tr("Zoom"), Action::ToggleMaximize),
         };
-        let appearance = look.look(light);
+        let appearance = look.look(light, colors);
         let disc = ui.add(
             group,
             Widget::container()
-                .with_background(Background::TintedGlass(GlassLevel::Thin, Paint::Fixed(appearance.color)))
+                .with_background(Background::Fill(Paint::Fixed(appearance.ring), 1.0))
                 .with_radius(CAPSULE)
                 .with_action(action.id())
                 .with_tooltip(label, Some(key)),
@@ -1047,22 +1060,37 @@ fn build_lights(ui: &mut Ui, parent: NodeId, layout: &axion_config::Layout) -> L
                 size: square(size),
                 flex_shrink: 0.0,
                 justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..row(0.0)
+            },
+        );
+        let inner = ui.add(
+            disc,
+            Widget::container()
+                .with_background(Background::Fill(Paint::Fixed(appearance.color), 1.0))
+                .with_radius(CAPSULE),
+            Style {
+                size: square(inner_size),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
                 ..row(0.0)
             },
         );
         let glyph = ui.add(
-            disc,
+            inner,
             Widget::icon(appearance.glyph, size * LIGHT_GLYPH)
                 .with_icon_weight(IconWeight::Heavy)
-                .with_paint(Paint::OnColor(appearance.color)),
+                .with_paint(Paint::Fixed(appearance.glyph_color)),
             Style::default(),
         );
         ui.set_visible(glyph, false);
         discs[light.index()] = disc;
+        inners[light.index()] = inner;
         glyphs[light.index()] = glyph;
     }
     ui.set_visible(group, false);
-    LightSet { group, discs, glyphs }
+    LightSet { group, discs, inners, glyphs }
 }
 
 /// A round icon button. Returns the button and its glyph.
@@ -1197,6 +1225,7 @@ impl Chrome {
     pub fn build(ui: &mut Ui, config: &Config) -> Self {
         let root = ui.root();
         let layout = &config.layout;
+        let light_colors = LightColors::from_config(config);
 
         // ---- flat mode's toolbar surface (first, so everything lies above it) ----
         let toolbar_band = ui.add(
@@ -1243,7 +1272,7 @@ impl Chrome {
                 ..row(GROUP_GAP)
             },
         );
-        let sidebar_lights = build_lights(ui, header, layout);
+        let sidebar_lights = build_lights(ui, header, layout, &light_colors);
         let header_toggle = ui.add(
             header,
             Widget::container()
@@ -1522,7 +1551,7 @@ impl Chrome {
                 ..row(GROUP_GAP)
             },
         );
-        let bar_lights = build_lights(ui, bar, layout);
+        let bar_lights = build_lights(ui, bar, layout, &light_colors);
         let nav = glass_group(ui, bar);
         let (bar_sidebar_button, _) =
             icon_button(ui, nav, ChromeAction::ToggleSidebar, Widget::icon(Icon::Sidebar, 21.0), BUTTON);
@@ -1696,7 +1725,7 @@ impl Chrome {
         );
 
         let actions = glass_group(ui, bar);
-        let bar_lights_right = build_lights(ui, bar, layout);
+        let bar_lights_right = build_lights(ui, bar, layout, &light_colors);
         // Compact tab bar: the page menu moves out of the (narrow) open segment to here.
         let (page_menu_bar, _) =
             icon_button(ui, actions, ChromeAction::PageMenu, Widget::icon(Icon::Menu, 20.0), BUTTON);
@@ -1801,6 +1830,7 @@ impl Chrome {
             sidebar_header: header,
             lights: [bar_lights, bar_lights_right, sidebar_lights],
             lights_state: LightsState::default(),
+            lights_look: (light_colors, layout.traffic_light_ring),
             lights_dirty: true,
             bar_lights_inset: 0.0,
             toolbar_band,
@@ -2884,6 +2914,12 @@ impl Chrome {
         let left = config.window.controls_side == ControlsSide::Left;
         let shown = [wanted && left && !show_sidebar, wanted && !left, wanted && left && show_sidebar];
         let beside = (layout.traffic_light_margin - GROUP_GAP).max(0.0);
+        let look = (LightColors::from_config(config), layout.traffic_light_ring);
+        if look != self.lights_look {
+            self.lights_look = look;
+            self.lights_dirty = true;
+        }
+        let inner_size = (layout.traffic_light_size - 2.0 * layout.traffic_light_ring).max(0.0);
         for (i, (set, shown)) in self.lights.iter().zip(shown).enumerate() {
             if ui.is_visible(set.group) != shown {
                 self.lights_dirty = true;
@@ -2900,11 +2936,13 @@ impl Chrome {
             if style != ui.style(set.group) {
                 ui.set_style(set.group, style);
             }
-            for (&disc, &glyph) in set.discs.iter().zip(&set.glyphs) {
-                let mut style = ui.style(disc);
-                style.size = square(layout.traffic_light_size);
-                if style != ui.style(disc) {
-                    ui.set_style(disc, style);
+            for ((&disc, &inner), &glyph) in set.discs.iter().zip(&set.inners).zip(&set.glyphs) {
+                for (node, side) in [(disc, layout.traffic_light_size), (inner, inner_size)] {
+                    let mut style = ui.style(node);
+                    style.size = square(side);
+                    if style != ui.style(node) {
+                        ui.set_style(node, style);
+                    }
                 }
                 ui.set_icon_size(glyph, layout.traffic_light_size * LIGHT_GLYPH);
             }
@@ -2964,7 +3002,10 @@ impl Chrome {
     /// The light a node belongs to (the disc or its glyph), if any.
     fn light_at(&self, node: NodeId) -> Option<Light> {
         self.lights.iter().find_map(|set| {
-            Light::ALL.into_iter().find(|l| set.discs[l.index()] == node || set.glyphs[l.index()] == node)
+            Light::ALL.into_iter().find(|l| {
+                let i = l.index();
+                set.discs[i] == node || set.inners[i] == node || set.glyphs[i] == node
+            })
         })
     }
 
@@ -2990,10 +3031,14 @@ impl Chrome {
         self.lights_dirty = false;
         for set in &self.lights {
             for light in Light::ALL {
-                let look = state.look(light);
-                let (disc, glyph) = (set.discs[light.index()], set.glyphs[light.index()]);
+                let look = state.look(light, &self.lights_look.0);
+                let i = light.index();
+                let (disc, inner, glyph) = (set.discs[i], set.inners[i], set.glyphs[i]);
+                if let Some(w) = ui.widget_mut(inner) {
+                    w.background = Background::Fill(Paint::Fixed(look.color), 1.0);
+                }
                 if let Some(w) = ui.widget_mut(disc) {
-                    w.background = Background::TintedGlass(GlassLevel::Thin, Paint::Fixed(look.color));
+                    w.background = Background::Fill(Paint::Fixed(look.ring), 1.0);
                     if light == Light::Zoom
                         && let Some(tooltip) = &mut w.tooltip
                     {
@@ -3001,7 +3046,7 @@ impl Chrome {
                     }
                 }
                 if let Some(w) = ui.widget_mut(glyph) {
-                    w.set_paint(Paint::OnColor(look.color));
+                    w.set_paint(Paint::Fixed(look.glyph_color));
                 }
                 ui.set_icon(glyph, look.glyph);
                 ui.set_visible(glyph, look.glyph_shown);
@@ -5314,38 +5359,60 @@ mod tests {
     }
 
     /// The window buttons follow the pointer (glyphs), the window's focus (grey) and its
-    /// maximized state (the zoom button's glyph), and every button is a plain glass control.
+    /// maximized state (the zoom button's glyph), and every button is a flat disc, never glass.
     #[test]
     fn window_buttons_look_follows_the_state() {
         let config = Config::default();
         let (mut ui, mut chrome) = settled_chrome(&config, true, false);
         let (close, zoom) = (chrome.lights[2].discs[0], chrome.lights[2].discs[2]);
         let tint = |ui: &Ui, node: NodeId| match ui.widget(node).map(|w| w.background) {
-            Some(Background::TintedGlass(_, Paint::Fixed(c))) => c,
-            other => panic!("not tinted glass: {other:?}"),
+            Some(Background::Fill(Paint::Fixed(c), _)) => c,
+            other => panic!("not a flat fill: {other:?}"),
         };
-        // No plate or fill behind a button: tinted glass only.
-        for &disc in &chrome.lights[2].discs {
-            assert!(matches!(ui.widget(disc).map(|w| w.background), Some(Background::TintedGlass(..))));
+        let disc_colour = |ui: &Ui, chrome: &Chrome, i: usize| tint(ui, chrome.lights[2].inners[i]);
+        // Flat discs with a ring, no glass anywhere in a button.
+        for i in 0..3 {
+            let (ring, inner) = (chrome.lights[2].discs[i], chrome.lights[2].inners[i]);
+            assert!(matches!(ui.widget(ring).map(|w| w.background), Some(Background::Fill(..))));
+            assert!(matches!(ui.widget(inner).map(|w| w.background), Some(Background::Fill(..))));
+            assert_eq!(ui.frame(ring).size.x, config.layout.traffic_light_size);
         }
-        let red = tint(&ui, close);
+        let red = config.window.light_close;
+        assert_eq!(disc_colour(&ui, &chrome, 0), red);
+        assert_eq!(
+            tint(&ui, close),
+            crate::window_frame::LightsState::default()
+                .look(Light::Close, &LightColors::from_config(&config))
+                .ring
+        );
         chrome.update_lights(&mut ui, None, None, true, false);
         assert!(!ui.is_visible(chrome.lights[2].glyphs[0]));
         chrome.update_lights(&mut ui, Some(zoom), None, true, false);
         assert!((0..3).all(|i| ui.is_visible(chrome.lights[2].glyphs[i])), "glyphs show on all three");
+        ui.layout();
+        // The glyph box sits exactly in the middle of its disc, on both axes.
+        for i in 0..3 {
+            let disc = ui.frame(chrome.lights[2].discs[i]).center();
+            let glyph = ui.frame(chrome.lights[2].glyphs[i]).center();
+            assert!((disc - glyph).abs().max_element() < 0.01, "glyph {i} off centre: {disc:?} vs {glyph:?}");
+        }
         chrome.update_lights(&mut ui, None, None, false, false);
         assert!(!ui.is_visible(chrome.lights[2].glyphs[0]));
-        assert_ne!(tint(&ui, close), red, "grey while the window is behind");
+        assert_eq!(
+            disc_colour(&ui, &chrome, 0),
+            config.window.light_unfocused,
+            "grey while the window is behind"
+        );
         chrome.update_lights(&mut ui, None, Some(close), true, false);
-        assert_ne!(tint(&ui, close), red, "darker while held");
+        assert!(disc_colour(&ui, &chrome, 0).r < red.r, "darker while held");
         chrome.update_lights(&mut ui, None, None, true, false);
-        assert_eq!(tint(&ui, close), red);
+        assert_eq!(disc_colour(&ui, &chrome, 0), red);
         chrome.update_lights(&mut ui, Some(zoom), None, true, true);
         let icon = match ui.widget(chrome.lights[2].glyphs[2]).map(|w| &w.kind) {
             Some(axion_ui::WidgetKind::Icon { icon, .. }) => *icon,
             _ => panic!("not an icon"),
         };
-        assert_eq!(icon, Icon::ExitFullscreen);
+        assert_eq!(icon, Icon::RestoreArrows);
         let label = ui.widget(zoom).and_then(|w| w.tooltip.as_ref()).map(|t| t.label.clone());
         assert_eq!(label.as_deref(), Some("Restore"));
     }
