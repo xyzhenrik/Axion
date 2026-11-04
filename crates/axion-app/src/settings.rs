@@ -821,6 +821,8 @@ pub enum SettingsAction {
     CopyDiagnostics,
     /// Relaunch to apply the Hardware settings.
     RestartAxion,
+    /// General: keep the old language for now (hides the restart notice under the picker).
+    LanguageLater,
     /// Privacy › Site Permissions: a group's default (index into `Group::ALL`), Ask or Block.
     PermissionDefault(usize, PermissionDefault),
     /// Forget one remembered site decision (index into the listed ones), or all of them.
@@ -1082,6 +1084,7 @@ impl SettingsAction {
                     SettingsAction::GpuCard(g) => HARDWARE_BASE + 3 + gpu_card_index(g),
                     SettingsAction::CopyDiagnostics => HARDWARE_BASE + 6,
                     SettingsAction::RestartAxion => HARDWARE_BASE + 7,
+                    SettingsAction::LanguageLater => HARDWARE_BASE + 8,
                 },
         )
     }
@@ -1148,11 +1151,12 @@ impl SettingsAction {
             n if (SITE_DATA_BASE..SITE_DATA_BASE + SITE_DATA_LIMIT as u32).contains(&n) => {
                 SettingsAction::RemoveSiteData((n - SITE_DATA_BASE) as usize)
             }
-            n if (HARDWARE_BASE..HARDWARE_BASE + 8).contains(&n) => match n - HARDWARE_BASE {
+            n if (HARDWARE_BASE..HARDWARE_BASE + 9).contains(&n) => match n - HARDWARE_BASE {
                 i @ 0..=2 => SettingsAction::PageFrames(PAGE_FRAMES[i as usize].1),
                 i @ 3..=5 => SettingsAction::GpuCard(GPU_CARDS[i as usize - 3].1),
                 6 => SettingsAction::CopyDiagnostics,
-                _ => SettingsAction::RestartAxion,
+                7 => SettingsAction::RestartAxion,
+                _ => SettingsAction::LanguageLater,
             },
             n if (PERMISSION_DEFAULT_BASE..PERMISSION_DEFAULT_BASE + 2 * Group::ALL.len() as u32)
                 .contains(&n) =>
@@ -1343,6 +1347,10 @@ pub struct SettingsSheet {
     about: AboutInfo,
     /// What the GPU session uses (Hardware page); `None` before the browser set it.
     hardware: Option<crate::hardware::Status>,
+    /// The language this run started in, and the one the user chose "Later" for (the restart
+    /// notice under the language picker stays hidden while the setting still resolves to it).
+    start_language: axion_i18n::Language,
+    language_later: Option<axion_i18n::Language>,
     repository_field: Option<NodeId>,
     repository_status: Option<String>,
     /// What was typed in the repository field when it was refused (put back after a redraw).
@@ -1561,6 +1569,8 @@ impl SettingsSheet {
             background_error: None,
             about: AboutInfo::default(),
             hardware: None,
+            start_language: axion_i18n::language(),
+            language_later: None,
             repository_field: None,
             repository_status: None,
             repository_draft: None,
@@ -1571,6 +1581,16 @@ impl SettingsSheet {
     }
 
     /// What the Hardware page reports.
+    /// The language the setting stands for when it differs from the running one.
+    pub fn pending_language(&self, config: &Config) -> Option<axion_i18n::Language> {
+        crate::locale::pending(self.start_language, config.general.language)
+    }
+
+    /// Whether a language change waits for a restart and the user has not postponed it.
+    pub fn language_restart_due(&self, config: &Config) -> bool {
+        self.pending_language(config).is_some_and(|l| self.language_later != Some(l))
+    }
+
     pub fn set_hardware(&mut self, status: crate::hardware::Status) {
         self.hardware = Some(status);
     }
@@ -1886,7 +1906,13 @@ impl SettingsSheet {
                     .collect();
                 let current = LANGUAGES.iter().position(|&(_, l)| l == config.general.language);
                 segmented(ui, row_node, &languages, current);
-                self.note(ui, tr("Applies after restarting Axion."));
+                if self.language_restart_due(config) {
+                    let row_node = self.row(ui, tr("Restart to switch language."));
+                    primary_button(ui, row_node, tr("Restart Axion"), SettingsAction::RestartAxion);
+                    glass_pill(ui, row_node, tr("Later"), SettingsAction::LanguageLater);
+                } else if self.pending_language(config).is_some() {
+                    self.note(ui, tr("The new language applies after the next start of Axion."));
+                }
                 if cfg!(target_os = "linux") {
                     self.control(ui, config, Setting::AppMenuEntry);
                     self.note(
@@ -3799,7 +3825,12 @@ impl SettingsSheet {
             // effect at the next start (the note under the control says so).
             SettingsAction::Language(language) => {
                 config.general.language = language;
+                self.language_later = None;
                 Outcome::Changed
+            }
+            SettingsAction::LanguageLater => {
+                self.language_later = self.pending_language(config);
+                Outcome::Nothing
             }
             SettingsAction::AddTrustedSite => {
                 let text = self.trusted_site.and_then(|f| ui.field_text(f)).unwrap_or_default().to_owned();
@@ -4542,6 +4573,7 @@ mod tests {
             SettingsAction::GpuCard(GpuChoice::High),
             SettingsAction::CopyDiagnostics,
             SettingsAction::RestartAxion,
+            SettingsAction::LanguageLater,
             SettingsAction::Category(Category::Hardware),
             SettingsAction::Category(Category::About),
         ] {

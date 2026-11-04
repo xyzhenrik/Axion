@@ -260,6 +260,15 @@ pub struct Options {
     pub quit_after: Option<Duration>,
 }
 
+/// What the toast's button does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ToastAction {
+    /// Open About & Updates (an update is available).
+    OpenAbout,
+    /// Save the settings and relaunch (a changed language applies at the start).
+    RestartAxion,
+}
+
 pub struct Browser {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -299,6 +308,10 @@ pub struct Browser {
     /// Site permissions: the prompt, the recording indicator's popover and the decisions.
     permissions: permissions::PermissionsUi,
     toast: Toast,
+    /// What the toast's button does while it is up.
+    toast_action: ToastAction,
+    /// The pending language the "Restart to apply" toast was already shown for.
+    language_toast_for: Option<axion_i18n::Language>,
     updater: Updater,
     update_alert: UpdateAlert,
     print_dialog: PrintDialog,
@@ -902,6 +915,8 @@ impl Browser {
             extensions_confirm_remove: false,
             permissions,
             toast,
+            toast_action: ToastAction::OpenAbout,
+            language_toast_for: None,
             updater: Updater::new(),
             update_alert,
             print_dialog,
@@ -2122,6 +2137,29 @@ impl Browser {
     fn close_settings(&mut self) {
         let fallback = self.address_origin();
         self.settings.close(&mut self.ui, &self.config, fallback);
+        self.remind_language_restart();
+    }
+
+    /// Closing Settings with a language change still waiting for a restart says so once (a
+    /// toast with a Restart button), unless the user chose "Later" or the tour is up.
+    fn remind_language_restart(&mut self) {
+        let Some(language) = self.settings.pending_language(&self.config) else {
+            self.language_toast_for = None;
+            return;
+        };
+        if !self.settings.language_restart_due(&self.config)
+            || self.language_toast_for == Some(language)
+            || self.onboarding.is_open()
+        {
+            return;
+        }
+        self.language_toast_for = Some(language);
+        self.show_toast_with_action(
+            Icon::Globe,
+            tr("Restart to apply the new language"),
+            tr("Restart"),
+            ToastAction::RestartAxion,
+        );
     }
 
     /// Closes Passwords: it drains back into where it came from.
@@ -4065,7 +4103,10 @@ impl Browser {
                 }
                 UiEvent::Clicked { action, .. } if self.toast.owns(action) => {
                     self.toast.dismiss(&mut self.ui, &self.config);
-                    self.open_about(false);
+                    match self.toast_action {
+                        ToastAction::OpenAbout => self.open_about(false),
+                        ToastAction::RestartAxion => self.restart_to_apply_settings(),
+                    }
                 }
                 UiEvent::Clicked { action, .. } if self.account_menu.owns(action) => {
                     if let Some(click) = self.account_menu.click(&mut self.ui, &self.config, action) {
@@ -5029,7 +5070,8 @@ impl Browser {
     }
 
     /// A toast with a button, like [`Self::show_toast`].
-    fn show_toast_with_action(&mut self, icon: Icon, text: &str, action: &str) {
+    fn show_toast_with_action(&mut self, icon: Icon, text: &str, action: &str, on_click: ToastAction) {
+        self.toast_action = on_click;
         let mut anchor = self.chrome.share_frame(&self.ui);
         if anchor.size.x <= 0.0 {
             anchor = self.chrome.address_frame(&self.ui);
@@ -5427,7 +5469,12 @@ impl Browser {
                         self.config_dirty_since.get_or_insert(Instant::now());
                         let text =
                             tr_fmt!("Axion {version} is available", version = release.version.to_string());
-                        self.show_toast_with_action(Icon::Download, &text, tr("Update"));
+                        self.show_toast_with_action(
+                            Icon::Download,
+                            &text,
+                            tr("Update"),
+                            ToastAction::OpenAbout,
+                        );
                     }
                 }
                 Notice::Changed => self.sync_update_alert(),
@@ -7544,6 +7591,17 @@ impl Browser {
                     self.settings_outcome(Outcome::Changed);
                     self.refresh_settings();
                 }
+                // Capture aids for the language restart prompt: "language-change:de|en" picks a
+                // language as the picker does, "settings-close" closes the sheet.
+                lang if lang.starts_with("language-change:") => {
+                    self.config.general.language = match &lang["language-change:".len()..] {
+                        "de" => UiLanguage::German,
+                        _ => UiLanguage::English,
+                    };
+                    self.settings_outcome(Outcome::Changed);
+                    self.refresh_settings();
+                }
+                "settings-close" => self.close_settings(),
                 "hardware-confirm" => self.confirm_gpu_frames(),
                 "player-speed" => {
                     let _ = self.player.click(&mut self.ui, PlayerControl::Speed, &self.config);

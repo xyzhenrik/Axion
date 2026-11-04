@@ -1370,3 +1370,12 @@
 "fetching the list of relays" = "lade die Knotenliste"
 "loading relays" = "lade Knoten"
 "{country} ({role})" = "{country} ({role})"
+
+# crates/axion-app/src/browser.rs
+"Restart" = "Neu starten"
+"Restart to apply the new language" = "Neu starten, um die neue Sprache zu übernehmen"
+
+# crates/axion-app/src/settings.rs
+"Restart Axion" = "Axion neu starten"
+"Restart to switch language." = "Neustart für den Sprachwechsel."
+"The new language applies after the next start of Axion." = "Die neue Sprache gilt ab dem nächsten Start von Axion."
