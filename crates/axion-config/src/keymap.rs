@@ -87,6 +87,12 @@ pub enum Action {
     /// The screenshot tool.
     Screenshot,
     Quit,
+    /// Closes the window (what its close button does).
+    CloseWindow,
+    /// Minimizes the window.
+    MinimizeWindow,
+    /// Maximizes the window, or restores it.
+    ToggleMaximize,
     // Media keys: only while a video plays fullscreen with Axion's controls, so plain keys
     // like Space keep reaching the page otherwise.
     MediaPlayPause,
@@ -169,6 +175,9 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::Print, "print"),
     (Action::Screenshot, "screenshot"),
     (Action::Quit, "quit"),
+    (Action::CloseWindow, "close_window"),
+    (Action::MinimizeWindow, "minimize_window"),
+    (Action::ToggleMaximize, "toggle_maximize"),
     (Action::MediaPlayPause, "media_play_pause"),
     (Action::MediaSeekBack, "media_seek_back"),
     (Action::MediaSeekForward, "media_seek_forward"),
@@ -450,6 +459,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::Print, &["Ctrl+P"]);
     bind(Action::Screenshot, &["Ctrl+Shift+S"]);
     bind(Action::Quit, &["Ctrl+Q"]);
+    bind(Action::CloseWindow, &["Ctrl+Shift+W"]);
     bind(Action::MediaPlayPause, &["Space", "K"]);
     bind(Action::MediaSeekBack, &["Left", "J"]);
     bind(Action::MediaSeekForward, &["Right", "L"]);

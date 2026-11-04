@@ -49,6 +49,18 @@ impl Rect {
     }
 }
 
+/// How the window's surface treats the alpha channel (see [`Compositor::set_window_shape`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SurfaceAlpha {
+    /// The surface is opaque: no transparent corners.
+    #[default]
+    Opaque,
+    /// Straight alpha (colour is not multiplied by alpha).
+    PostMultiplied,
+    /// Pre-multiplied alpha (colour is already multiplied by alpha).
+    PreMultiplied,
+}
+
 /// A filled rounded rectangle, or a soft shadow when `softness > 0`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Quad {
@@ -353,6 +365,12 @@ pub struct Compositor {
     image_layout: wgpu::BindGroupLayout,
     image_pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
+    /// The present blit for a surface with pre-multiplied alpha (colour times coverage).
+    blit_premultiplied_pipeline: wgpu::RenderPipeline,
+    /// The window's corner radius (physical px) and how its surface treats alpha, see
+    /// [`Compositor::set_window_shape`].
+    window_radius: f32,
+    window_alpha: SurfaceAlpha,
     sampler: wgpu::Sampler,
     text_atlas: TextAtlas,
     text_viewport: Viewport,
@@ -444,6 +462,15 @@ impl Compositor {
             Some(wgpu::BlendState::ALPHA_BLENDING),
         );
         let blit_pipeline = pipeline(device, "blit", &image_layout, &image_shader, &[], output_format, None);
+        let blit_premultiplied_pipeline = pipeline(
+            device,
+            "blit (pre-multiplied)",
+            &image_layout,
+            &image_shader,
+            &[],
+            output_format,
+            Some(premultiplying_blend()),
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("compositor"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -469,6 +496,9 @@ impl Compositor {
             image_layout,
             image_pipeline,
             blit_pipeline,
+            blit_premultiplied_pipeline,
+            window_radius: 0.0,
+            window_alpha: SurfaceAlpha::Opaque,
             sampler,
             text_atlas,
             text_viewport,
@@ -504,6 +534,19 @@ impl Compositor {
         let views =
             [textures[0].create_view(&Default::default()), textures[1].create_view(&Default::default())];
         self.targets = Some(Targets { size, textures, views });
+    }
+
+    /// Rounds the window's corners: `radius` physical px, on a surface whose alpha mode is
+    /// `alpha`. The present blit then writes coverage into the surface's alpha channel, so the
+    /// compositor shows the desktop behind the corners. Does nothing on an opaque surface.
+    pub fn set_window_shape(&mut self, radius: f32, alpha: SurfaceAlpha) {
+        self.window_radius = radius.max(0.0);
+        self.window_alpha = alpha;
+    }
+
+    /// Whether the present blit cuts the window's corners.
+    pub fn rounds_window(&self) -> bool {
+        self.window_radius > 0.0 && self.window_alpha != SurfaceAlpha::Opaque
     }
 
     /// Composites `scene` and writes it to `output` (the window's surface view), which must be
@@ -570,11 +613,21 @@ impl Compositor {
             }
         }
 
-        let full = ImageDraw::new(&targets.views[current], Rect::new(0.0, 0.0, viewport.x, viewport.y));
+        let mut full = ImageDraw::new(&targets.views[current], Rect::new(0.0, 0.0, viewport.x, viewport.y));
+        if self.rounds_window() {
+            full.radius = self.window_radius;
+        }
         let bind_group = self.image_bind_group(&full, viewport);
         {
             let mut pass = begin_pass(&mut encoder, "present blit", output);
-            pass.set_pipeline(&self.blit_pipeline);
+            pass.set_pipeline(if self.rounds_window() {
+                match self.window_alpha {
+                    SurfaceAlpha::PreMultiplied => &self.blit_premultiplied_pipeline,
+                    _ => &self.blit_pipeline,
+                }
+            } else {
+                &self.blit_pipeline
+            });
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..4, 0..1);
         }
@@ -836,6 +889,23 @@ fn pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// Blending that turns the straight colour of the image shader into pre-multiplied colour
+/// (`rgb * a`), and writes `a` itself into the alpha channel; replaces what is there.
+fn premultiplying_blend() -> wgpu::BlendState {
+    wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::SrcAlpha,
+            dst_factor: wgpu::BlendFactor::Zero,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::Zero,
+            operation: wgpu::BlendOperation::Add,
+        },
+    }
 }
 
 fn clear(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, color: [f32; 4]) {
