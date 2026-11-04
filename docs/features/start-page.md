@@ -78,7 +78,7 @@ The start page follows the glass style: with **Flat** it uses solid neutral surf
 
 ## The native start page (`home.native`)
 
-With `home.native = true` in `config.toml` the start page is drawn by Axion itself instead of as a
+With `home.native = true` (the default) the start page is drawn by Axion itself instead of as a
 web page. It has the same parts, switches and data, but its search field, tiles, gear panel and
 dialog are real Liquid Glass that refracts the wallpaper behind them. The HTML page stays as the
 fallback: with `home.native = false`, or by opening `axion://home/?html=1`.

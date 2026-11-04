@@ -41,7 +41,7 @@
   Chinese, Korean, Dutch, Polish (machine-translated, review welcome), a picker in Settings, and all
   58 Mozilla page-translation languages as translation targets.
 - **New app icon** (glass globe with orbit ring).
-- **Native start page** (experimental, `home.native = true`): the start page rendered by Axion with
+- **Native start page** (`home.native`, on by default; set it to false for the HTML page): the start page rendered by Axion with
   real glass. Not yet on par with the HTML page (no video wallpaper, no IME, no zoom/find).
 - **Updater**: the sheet closes at once when you confirm; progress (step, newest output line, bar,
   **Cancel**), the result ("Updated to X", **Restart Axion** / **Later**) and failures (reason, last

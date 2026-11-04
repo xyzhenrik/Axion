@@ -466,7 +466,7 @@ impl Default for Home {
             background_dim: 0.2,
             background_blur: 0.0,
             stats_refresh_seconds: 2.0,
-            native: false,
+            native: true,
             top_sites_swipe_px: 80.0,
             top_sites_swipe_lock_ms: 400,
             native_handoff_ms: 800,
