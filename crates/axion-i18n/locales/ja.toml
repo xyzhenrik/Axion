@@ -1507,3 +1507,7 @@
 
 # crates/axion-app/src/list_sheet.rs
 "Deselect All" = "すべての選択を解除"
+
+# crates/axion-app/src/chrome.rs
+"Maximize" = "最大化"
+"Reduce Size" = "縮小"

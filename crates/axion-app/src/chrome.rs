@@ -1041,7 +1041,7 @@ fn build_lights(
         let (action, label, key) = match light {
             Light::Close => (ChromeAction::WindowClose, tr("Close"), Action::CloseWindow),
             Light::Minimize => (ChromeAction::WindowMinimize, tr("Minimize"), Action::MinimizeWindow),
-            Light::Zoom => (ChromeAction::WindowZoom, tr("Zoom"), Action::ToggleMaximize),
+            Light::Zoom => (ChromeAction::WindowZoom, tr("Maximize"), Action::ToggleMaximize),
         };
         let appearance = look.look(light, colors);
         let disc = ui.add(
@@ -3041,7 +3041,7 @@ impl Chrome {
                     if light == Light::Zoom
                         && let Some(tooltip) = &mut w.tooltip
                     {
-                        tooltip.label = if maximized { tr("Restore") } else { tr("Zoom") }.to_owned();
+                        tooltip.label = if maximized { tr("Reduce Size") } else { tr("Maximize") }.to_owned();
                     }
                 }
                 if let Some(w) = ui.widget_mut(glyph) {
@@ -5413,7 +5413,7 @@ mod tests {
         };
         assert_eq!(icon, Icon::RestoreArrows);
         let label = ui.widget(zoom).and_then(|w| w.tooltip.as_ref()).map(|t| t.label.clone());
-        assert_eq!(label.as_deref(), Some("Restore"));
+        assert_eq!(label.as_deref(), Some("Reduce Size"));
     }
 
     /// Free toolbar space moves the window; buttons, tabs and the address do not.
