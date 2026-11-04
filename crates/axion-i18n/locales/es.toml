@@ -1403,3 +1403,58 @@
 "Cards" = ""
 "Login" = ""
 "Secure Notes" = ""
+
+# crates/axion-app/src/browser/network.rs
+"The connection's secrets couldn't be stored. They work until Axion quits." = ""
+
+# crates/axion-app/src/browser/network_popup.rs
+"Session route off" = ""
+"Using {name} for this session" = ""
+
+# crates/axion-app/src/chrome.rs
+"Session" = ""
+
+# crates/axion-app/src/context_registry.rs
+"Add Page to Playlist" = ""
+"Cancel Download" = ""
+"Captions" = ""
+"Copy Download Link" = ""
+"Customize Toolbar…" = ""
+"Delete from History" = ""
+"Details…" = ""
+"Exit Fullscreen" = ""
+"Hide Button" = ""
+"Hide Network Chip" = ""
+"Lock Passwords" = ""
+"Manage Extensions…" = ""
+"Network Settings…" = ""
+"Open" = ""
+"Open Bookmarks" = ""
+"Open Downloads" = ""
+"Open Downloads Folder" = ""
+"Open History" = ""
+"Open Reading List" = ""
+"Remove Extension…" = ""
+"Remove from List" = ""
+"Remove from Start Page" = ""
+"Reset to Default" = ""
+"Resume" = ""
+"Show Hidden Buttons" = ""
+"Turn Off" = ""
+"Turn On" = ""
+"Turn On or Off for This Site" = ""
+
+# crates/axion-app/src/network_popover.rs
+"Session route: every tab goes through {name} until you switch it off. Site routes are set aside meanwhile." = ""
+"Stop using {name} for this session" = ""
+"Use {name} for this session" = ""
+
+# crates/axion-app/src/settings.rs
+"Context menu" = ""
+"Keep the session route after a restart" = ""
+
+# crates/axion-app/src/settings/network.rs
+"Config read. Keys will be stored encrypted with this device's key." = ""
+"The password is stored encrypted with this device's key, not in the settings file. Names are always resolved by the proxy, never on this computer." = ""
+"The private key and any preshared keys are stored encrypted with this device's key. Scripts in the config (PostUp and the like) are never run." = ""
+"These connections still keep a password or key in your password vault from an older version. Unlock Passwords (Settings › Passwords) once and they connect; the secrets then move out of the vault." = ""
