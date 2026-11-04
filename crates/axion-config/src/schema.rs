@@ -415,6 +415,10 @@ pub struct Home {
     pub background_blur: f32,
     /// An open start page refreshes its Shields numbers at most this often.
     pub stats_refresh_seconds: f32,
+    /// The start page reads its top sites from the history at most this often (a site icon
+    /// arriving or the Shields numbers changing reuse the last reading; editing the sites reads
+    /// them at once).
+    pub top_sites_refresh_seconds: f32,
     /// Draws the start page natively (Liquid Glass tiles and search field that refract the
     /// wallpaper) instead of the HTML page at `axion://home/`, which stays the fallback (and is
     /// shown for `axion://home/?html=1`). The tab keeps its web view navigated to the HTML page,
@@ -468,6 +472,7 @@ impl Default for Home {
             background_dim: 0.2,
             background_blur: 0.0,
             stats_refresh_seconds: 2.0,
+            top_sites_refresh_seconds: 30.0,
             native: true,
             top_sites_swipe_px: 80.0,
             top_sites_swipe_lock_ms: 400,
