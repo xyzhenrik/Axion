@@ -42,8 +42,6 @@ const TAB_CAPSULE_TINT: f32 = 0.06;
 const TAB_STRIP_GAP: f32 = 8.0;
 /// Below this the F11 fullscreen transition counts as settled.
 const PRESENTATION_SETTLED: f32 = 0.001;
-/// The address field's widest size with the separate tab bar.
-const SEPARATE_ADDRESS_MAX: f32 = 680.0;
 /// The loading line's distance from the address field's ends.
 const PROGRESS_INSET: f32 = 16.0;
 const ADDRESS_FAVICON: f32 = 18.0;
@@ -544,6 +542,8 @@ pub struct Chrome {
     presentation_k: Animated<f32>,
     /// The bar's resting top inset (logical px), for the fullscreen transition.
     bar_top: f32,
+    /// `layout.address_max_width`: the widest the separate bar's address field gets.
+    address_max: f32,
     /// The separate tab row's and the bookmarks bar's resting top insets (logical px).
     strip_top: f32,
     bookmarks_top: f32,
@@ -720,6 +720,18 @@ pub struct TabSizes {
     pub flexible: f32,
     /// The one width every pinned tab gets.
     pub pinned: f32,
+}
+
+/// Margins `(left, right)` that make an item in the span `[left, right]` (the room between the
+/// toolbar's button groups) centred on `centre`: its width is `min(max, 2 x the shorter distance
+/// from the centre to the span's edges)`, so it shrinks symmetrically and never overlaps a
+/// group. With no room it collapses at the span's nearer edge.
+fn centred_margins(left: f32, right: f32, centre: f32, max: f32) -> (f32, f32) {
+    let room = (2.0 * (centre - left).min(right - centre)).max(0.0);
+    let width = room.min(max.max(0.0));
+    let ml = (centre - width / 2.0 - left).max(0.0);
+    let mr = (right - centre - width / 2.0).max(0.0);
+    (ml, mr)
 }
 
 /// Distributes `span` px (a row's inner width, minus the compact bar's address segment) over
@@ -1399,7 +1411,14 @@ impl Chrome {
         let address_slot = ui.add(
             bar,
             Widget::container(),
-            Style { flex_grow: 1.0, flex_shrink: 1.0, justify_content: JustifyContent::CENTER, ..row(0.0) },
+            Style {
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                flex_basis: length(0.0),
+                min_size: Size { width: length(0.0), height: auto() },
+                justify_content: JustifyContent::CENTER,
+                ..row(0.0)
+            },
         );
         ui.set_visible(address_slot, false);
         // The other tabs sit on a plain tinted capsule; only the open tab (the address) is glass,
@@ -1719,6 +1738,7 @@ impl Chrome {
             presentation: false,
             presentation_k: Animated::new(0.0, Spring::SMOOTH),
             bar_top: 0.0,
+            address_max: layout.address_max_width,
             strip_top: 0.0,
             bookmarks_top: 0.0,
             revealed: false,
@@ -2419,6 +2439,42 @@ impl Chrome {
         self.animate(ui, dt);
     }
 
+    /// Centres the address field (separate bar) or the tab capsule holding it (compact bar) on
+    /// the toolbar's centre line, whatever the two button groups' widths: the item gets margins that leave
+    /// exactly the symmetrical room (see `centred_margins`). Reads the groups' frames of the last
+    /// layout, which do not depend on the item's own size, so it settles in one pass.
+    ///
+    /// The centre line is the toolbar's: the window's centre, or with a docked sidebar the centre
+    /// of the area beside it (the page card's centre line, as in Safari). It follows the
+    /// sidebar's slide, so there is no jump. Compact bar: the capsule of tabs (the address is
+    /// the open tab) is the symmetric item, so the tabs fill the room both groups leave.
+    fn centre_address(&self, ui: &mut Ui) {
+        let bar = ui.frame(self.bar);
+        if bar.size.x <= 0.0 {
+            return;
+        }
+        let mut left = bar.origin.x;
+        let mut right = bar.origin.x + bar.size.x;
+        if ui.is_visible(self.nav) {
+            let f = ui.frame(self.nav);
+            left = f.origin.x + f.size.x + GROUP_GAP;
+        }
+        if ui.is_visible(self.actions) {
+            right = ui.frame(self.actions).origin.x - GROUP_GAP;
+        }
+        let separate = self.tab_bar == TabBarStyle::Separate;
+        let max = if separate { self.address_max } else { f32::INFINITY };
+        let (ml, mr) = centred_margins(left, right, bar.origin.x + bar.size.x / 2.0, max);
+        let node = if separate { self.address } else { self.tab_capsule };
+        let mut style = ui.style(node);
+        let (wl, wr) = (length(ml), length(mr));
+        if style.margin.left != wl || style.margin.right != wr {
+            style.margin.left = wl;
+            style.margin.right = wr;
+            ui.set_style(node, style);
+        }
+    }
+
     /// Keeps the loading line inside the address field. Its insets alone resolved against the
     /// field's unclamped width (the separate tab bar caps the field), so it ran past the end.
     fn fit_progress(&self, ui: &mut Ui) {
@@ -2457,6 +2513,7 @@ impl Chrome {
         self.now_playing.animate(ui, dt);
         self.animate_tab_widths(ui, dt);
         self.fit_bookmarks(ui);
+        self.centre_address(ui);
         self.fit_progress(ui);
         self.fit_group_markers(ui);
         if self.slide.is_settled(SLIDE_SETTLED) {
@@ -2483,6 +2540,7 @@ impl Chrome {
         } else {
             Mode::Narrow
         };
+        self.address_max = l.address_max_width;
         self.docked = self.sidebar_docked(config);
         self.stack_sidebar(ui);
         let show_sidebar = self.sidebar_open() && !self.is_fullscreen();
@@ -2545,7 +2603,7 @@ impl Chrome {
             address.flex_grow = 1.0;
             address.flex_basis = length(0.0);
             address.size.width = auto();
-            address.max_size = Size { width: length(SEPARATE_ADDRESS_MAX), height: auto() };
+            address.max_size = Size { width: auto(), height: auto() };
             address.min_size = Size { width: length(0.0), height: auto() };
             // On its own between the groups it is as tall as the buttons' capsules.
             address.size.height = length(BAR_CAPSULE);
@@ -4287,6 +4345,37 @@ impl Chrome {
 mod tests {
     use super::*;
     use axion_ui::{UiEvent, UiInput};
+
+    #[test]
+    fn address_centres_on_the_window_with_uneven_groups() {
+        let width = |(l, r): (f32, f32), left: f32, right: f32| right - left - l - r;
+        let centre = |(l, _): (f32, f32), left: f32, w: f32| left + l + w / 2.0;
+        // Left-heavy and right-heavy groups (spans of different edges).
+        for (left, right) in [(200.0, 1200.0), (100.0, 1250.0), (300.0, 900.0)] {
+            let m = centred_margins(left, right, 700.0, 680.0);
+            let w = width(m, left, right);
+            assert!((centre(m, left, w) - 700.0).abs() < 1e-3, "{left} {right}");
+            assert!(w <= 680.0 + 1e-3);
+            assert!(w <= 2.0 * (700.0 - left).min(right - 700.0) + 1e-3);
+        }
+        // Narrow window: shrinks symmetrically, still centred.
+        let m = centred_margins(220.0, 560.0, 400.0, 680.0);
+        let w = width(m, 220.0, 560.0);
+        assert!((w - 320.0).abs() < 1e-3 && (centre(m, 220.0, w) - 400.0).abs() < 1e-3);
+        // Docked sidebar open: the centre stays on the window, the field shrinks.
+        let m = centred_margins(380.0, 1300.0, 700.0, 680.0);
+        let w = width(m, 380.0, 1300.0);
+        assert!((w - 640.0).abs() < 1e-3 && (centre(m, 380.0, w) - 700.0).abs() < 1e-3);
+        // Hidden buttons: the full maximum, centred.
+        let m = centred_margins(0.0, 1400.0, 700.0, 680.0);
+        assert!((width(m, 0.0, 1400.0) - 680.0).abs() < 1e-3);
+        // A wide group on the right (controls on the right) limits the width.
+        let m = centred_margins(150.0, 900.0, 700.0, 680.0);
+        assert!((width(m, 150.0, 900.0) - 400.0).abs() < 1e-3);
+        // No room at all: collapses, never negative.
+        let m = centred_margins(800.0, 900.0, 700.0, 680.0);
+        assert!(m.0 >= 0.0 && m.1 >= 0.0);
+    }
 
     #[test]
     fn tabs_share_the_width_equally() {
