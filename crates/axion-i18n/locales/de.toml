@@ -1494,3 +1494,13 @@
 
 # crates/axion-app/src/settings.rs
 "Context menu" = "Kontextmenü"
+
+# crates/axion-app/src/context_registry.rs
+"Delete 1 Selected" = "1 ausgewähltes Element löschen"
+"Delete {count} Selected" = "{count} ausgewählte Elemente löschen"
+"Deselect" = "Auswahl aufheben"
+"Select" = "Auswählen"
+
+# crates/axion-app/src/list_sheet.rs
+"Select items" = "Elemente auswählen"
+"{count} selected" = "{count} ausgewählt"

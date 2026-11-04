@@ -1458,3 +1458,13 @@
 "The password is stored encrypted with this device's key, not in the settings file. Names are always resolved by the proxy, never on this computer." = "パスワードは設定ファイルではなく、このデバイスの鍵で暗号化して保存されます。名前は常にプロキシ側で解決され、このコンピュータで解決されることはありません。"
 "The private key and any preshared keys are stored encrypted with this device's key. Scripts in the config (PostUp and the like) are never run." = "秘密鍵と事前共有鍵は、このデバイスの鍵で暗号化して保存されます。設定内のスクリプト（PostUp など）は実行されません。"
 "These connections still keep a password or key in your password vault from an older version. Unlock Passwords (Settings › Passwords) once and they connect; the secrets then move out of the vault." = "これらの接続は、古いバージョンのパスワード保管庫にパスワードまたは鍵をまだ保持しています。一度パスワードのロックを解除（設定 › パスワード）すると接続されます。その後、機密情報は保管庫から移動されます。"
+
+# crates/axion-app/src/context_registry.rs
+"Delete 1 Selected" = "選択した1件を削除"
+"Delete {count} Selected" = "選択した{count}件を削除"
+"Deselect" = "選択解除"
+"Select" = "選択"
+
+# crates/axion-app/src/list_sheet.rs
+"Select items" = "項目を選択"
+"{count} selected" = "{count}件選択中"

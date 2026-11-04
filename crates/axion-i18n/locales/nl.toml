@@ -1458,3 +1458,13 @@
 "The password is stored encrypted with this device's key, not in the settings file. Names are always resolved by the proxy, never on this computer." = "Het wachtwoord wordt versleuteld opgeslagen met de sleutel van dit apparaat, niet in het instellingenbestand. Namen worden altijd door de proxy opgezocht, nooit op deze computer."
 "The private key and any preshared keys are stored encrypted with this device's key. Scripts in the config (PostUp and the like) are never run." = "De privésleutel en eventuele vooraf gedeelde sleutels worden versleuteld opgeslagen met de sleutel van dit apparaat. Scripts in de configuratie (PostUp en dergelijke) worden nooit uitgevoerd."
 "These connections still keep a password or key in your password vault from an older version. Unlock Passwords (Settings › Passwords) once and they connect; the secrets then move out of the vault." = "Deze verbindingen bewaren nog een wachtwoord of sleutel in je wachtwoordkluis van een oudere versie. Ontgrendel Wachtwoorden (Instellingen › Wachtwoorden) één keer en ze verbinden; de geheimen verhuizen dan uit de kluis."
+
+# crates/axion-app/src/context_registry.rs
+"Delete 1 Selected" = "1 geselecteerd item verwijderen"
+"Delete {count} Selected" = "{count} geselecteerde items verwijderen"
+"Deselect" = "Selectie opheffen"
+"Select" = "Selecteren"
+
+# crates/axion-app/src/list_sheet.rs
+"Select items" = "Selecteer items"
+"{count} selected" = "{count} geselecteerd"

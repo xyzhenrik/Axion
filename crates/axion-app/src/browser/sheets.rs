@@ -82,46 +82,60 @@ impl Browser {
         self.context_menus.close(&mut self.ui, &self.config);
     }
 
-    /// Rebuilds the rows of the open sheet from the store (and the running downloads).
+    /// Fills the open sheet: History asks the worker thread (the answer arrives in
+    /// `animate_list_sheets`), Downloads is read from the store and the running downloads.
     pub(super) fn refresh_sheet(&mut self, kind: SheetKind, keep_scroll: bool) {
         if !self.sheet(kind).is_open() {
             return;
         }
         let Some(store) = &self.store else { return };
         let now = unix_now();
-        let (items, clear, empty) = match kind {
+        match kind {
             SheetKind::History => {
-                let query = self.history_sheet.query().to_owned();
-                let mut entries = if query.is_empty() {
-                    store.recent_history(PANEL_HISTORY_LIMIT)
-                } else {
-                    store.search_history(&query, PANEL_HISTORY_LIMIT, now)
-                }
-                .unwrap_or_default();
-                entries.sort_by_key(|e| std::cmp::Reverse(e.last_visit));
-                let items = crate::history::panel_items(entries, now);
-                let clear = (!items.is_empty() && query.is_empty()).then(|| {
-                    if self.history_confirm { tr(CLEAR_HISTORY_CONFIRM) } else { tr(CLEAR_HISTORY) }
+                let Some(worker) = &self.list_worker else { return };
+                self.list_generation += 1;
+                self.list_keep_scroll = keep_scroll;
+                worker.send(crate::list_worker::Job::Load {
+                    generation: self.list_generation,
+                    query: self.history_sheet.query().to_owned(),
+                    limit: self.config.history.sheet_max_entries as usize,
+                    now,
                 });
-                let empty = if query.is_empty() {
-                    tr("Nothing here yet").to_owned()
-                } else {
-                    tr_fmt!("No results for “{query}”", query = query)
-                };
-                (items, clear, empty)
             }
             SheetKind::Downloads => {
                 let items = self.downloads.items(List::Panel, Some(store), &self.config, now, usize::MAX);
                 let clear = self.downloads.has_finished().then(|| tr("Clear List"));
-                (items, clear, tr("Nothing downloaded yet").to_owned())
+                let favicons = &self.favicons;
+                self.downloads_sheet.set_items(
+                    &mut self.ui,
+                    items,
+                    clear,
+                    tr("Nothing downloaded yet"),
+                    favicons,
+                    keep_scroll,
+                );
             }
+        }
+    }
+
+    /// History rows the worker read: shown if they answer the newest question.
+    fn history_loaded(&mut self, generation: u64, items: Vec<PanelItem>, took: Duration) {
+        if generation != self.list_generation || !self.history_sheet.is_open() {
+            return;
+        }
+        tracing::debug!(rows = items.len(), ms = took.as_millis(), "history loaded");
+        let query = self.history_sheet.query().to_owned();
+        let clear = (!items.is_empty() && query.is_empty())
+            .then(|| if self.history_confirm { tr(CLEAR_HISTORY_CONFIRM) } else { tr(CLEAR_HISTORY) });
+        let empty = if query.is_empty() {
+            tr("Nothing here yet").to_owned()
+        } else {
+            tr_fmt!("No results for “{query}”", query = query)
         };
+        let started = Instant::now();
         let favicons = &self.favicons;
-        let sheet = match kind {
-            SheetKind::History => &mut self.history_sheet,
-            SheetKind::Downloads => &mut self.downloads_sheet,
-        };
-        sheet.set_items(&mut self.ui, items, clear, &empty, favicons, keep_scroll);
+        self.history_sheet.set_items(&mut self.ui, items, clear, &empty, favicons, self.list_keep_scroll);
+        tracing::debug!(ms = started.elapsed().as_secs_f32() * 1000.0, "history sheet built");
     }
 
     /// Refreshes whatever list shows history or downloads (the sheets, the sidebar panel).
@@ -133,10 +147,119 @@ impl Browser {
         }
     }
 
+    /// Deletes rows of a sheet: History's entries go to the worker thread and leave the list at
+    /// once (no reload); Downloads leave the list (their files stay).
+    pub(super) fn delete_sheet_rows(&mut self, kind: SheetKind, rows: &[usize]) {
+        if rows.is_empty() {
+            return;
+        }
+        match kind {
+            SheetKind::History => {
+                let urls: Vec<String> =
+                    rows.iter().filter_map(|&i| self.history_sheet.item_url(i).map(str::to_owned)).collect();
+                if let Some(worker) = &self.list_worker {
+                    worker.send(crate::list_worker::Job::DeleteHistory(urls));
+                }
+                let favicons = &self.favicons;
+                self.history_sheet.remove_items(&mut self.ui, favicons, rows);
+                // A reload that was already on its way would bring the rows back.
+                self.list_generation += 1;
+                self.bookmarks_changed = true;
+            }
+            SheetKind::Downloads => {
+                let ids: Vec<i64> = rows.iter().filter_map(|&i| self.downloads.stored_id(i)).collect();
+                if let Some(store) = &self.store
+                    && let Err(e) = store.remove_downloads(&ids)
+                {
+                    tracing::error!("removing downloads from the list failed: {e}");
+                }
+                self.downloads_sheet.end_selection(&mut self.ui);
+                self.refresh_sheet(kind, true);
+            }
+        }
+    }
+
+    /// The selected rows of a sheet (the bar's Delete button, the Delete key, the context menu).
+    pub(super) fn delete_sheet_selection_of(&mut self, kind: SheetKind) {
+        let rows = self.sheet(kind).selected_items();
+        self.delete_sheet_rows(kind, &rows);
+    }
+
+    /// The Delete key and test aid: the open sheet's selection.
+    pub(super) fn delete_sheet_selection(&mut self) {
+        for kind in [SheetKind::History, SheetKind::Downloads] {
+            if self.sheet(kind).is_open() {
+                self.delete_sheet_selection_of(kind);
+            }
+        }
+    }
+
+    pub(super) fn end_sheet_selection(&mut self, kind: SheetKind) {
+        match kind {
+            SheetKind::History => self.history_sheet.end_selection(&mut self.ui),
+            SheetKind::Downloads => self.downloads_sheet.end_selection(&mut self.ui),
+        }
+    }
+
+    /// Ctrl+A in the open sheet (test aid `sheet-select-all`).
+    pub(super) fn sheet_select_all(&mut self) {
+        for kind in [SheetKind::History, SheetKind::Downloads] {
+            if self.sheet(kind).is_open() {
+                match kind {
+                    SheetKind::History => self.history_sheet.select_all(&mut self.ui),
+                    SheetKind::Downloads => self.downloads_sheet.select_all(&mut self.ui),
+                }
+            }
+        }
+    }
+
+    /// Keys of the open sheet: Ctrl+A selects every row, Delete deletes the selection. While the
+    /// search field holds text they belong to it. Returns whether the key was used.
+    pub(super) fn list_sheet_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        let field = self.history_sheet.search_field();
+        let typing =
+            self.ui.focused() == Some(field) && self.ui.field_text(field).is_some_and(|t| !t.is_empty());
+        if typing {
+            return false;
+        }
+        match crate::input::key(event) {
+            Some(Key::Char('a')) if self.modifiers.ctrl && !self.modifiers.shift && !self.modifiers.alt => {
+                self.sheet_select_all();
+                true
+            }
+            Some(Key::Named(name)) if name == "Delete" => {
+                let any = [SheetKind::History, SheetKind::Downloads]
+                    .into_iter()
+                    .any(|k| self.sheet(k).is_open() && self.sheet(k).selected_count() > 0);
+                if any {
+                    self.delete_sheet_selection();
+                }
+                any
+            }
+            _ => false,
+        }
+    }
+
     /// A click in a list sheet.
     pub(super) fn list_sheet_click(&mut self, kind: SheetKind, click: Click) {
+        let (shift, ctrl) = (self.modifiers.shift, self.modifiers.ctrl);
+        let favicons = &self.favicons;
+        let sheet = match kind {
+            SheetKind::History => &mut self.history_sheet,
+            SheetKind::Downloads => &mut self.downloads_sheet,
+        };
         match click {
             Click::Close => self.close_list_sheet(kind),
+            Click::Select => sheet.toggle_selecting(&mut self.ui),
+            Click::CancelSelection => sheet.end_selection(&mut self.ui),
+            Click::DeleteSelected => self.delete_sheet_selection_of(kind),
+            Click::Check(i) => sheet.click_row(&mut self.ui, i, shift),
+            Click::Group(g) => sheet.toggle_group(&mut self.ui, favicons, g),
+            Click::GroupCheck(g) => sheet.click_group_check(&mut self.ui, g),
+            // In selection mode (or with Ctrl or Shift held) a click on a row selects it.
+            Click::Open(i) if sheet.is_selecting() || ctrl || shift => {
+                sheet.click_row(&mut self.ui, i, shift)
+            }
             Click::Clear => match kind {
                 SheetKind::Downloads => {
                     Downloads::clear_list(self.store.as_ref());
@@ -149,10 +272,8 @@ impl Browser {
                 }
                 SheetKind::History => {
                     self.history_confirm = false;
-                    if let Some(store) = &self.store
-                        && let Err(e) = store.clear_history_since(0)
-                    {
-                        tracing::error!("clearing history failed: {e}");
+                    if let Some(worker) = &self.list_worker {
+                        worker.send(crate::list_worker::Job::ClearHistory);
                     }
                     self.refresh_sheet(kind, false);
                 }
@@ -166,21 +287,7 @@ impl Browser {
                 }
                 SheetKind::Downloads => self.downloads.open_row(List::Panel, i),
             },
-            Click::Delete(i) => match kind {
-                SheetKind::History => {
-                    let url = self.history_sheet.item_url(i).map(str::to_owned);
-                    if let (Some(store), Some(url)) = (&self.store, url)
-                        && let Err(e) = store.delete_history_url(&url)
-                    {
-                        tracing::error!("deleting a history entry failed: {e}");
-                    }
-                    self.refresh_sheet(kind, true);
-                }
-                SheetKind::Downloads => {
-                    self.downloads.remove_row(i, self.store.as_ref());
-                    self.refresh_sheet(kind, true);
-                }
-            },
+            Click::Delete(i) => self.delete_sheet_rows(kind, &[i]),
             Click::Button(i, k) => {
                 self.downloads.row_button(List::Panel, i, k, &mut self.engine);
                 self.refresh_sheet(kind, true);
@@ -188,13 +295,21 @@ impl Browser {
         }
     }
 
-    /// Every frame: the sheets' flow, the history search, icons that arrived.
+    /// Every frame: the sheets' flow, the history search, what the worker read, icons that arrived.
     pub(super) fn animate_list_sheets(&mut self, dt: f32) {
-        if let Some(_query) = self.history_sheet.animate(&mut self.ui, dt) {
+        let pointer = self.pointer;
+        let favicons = &self.favicons;
+        let query = self.history_sheet.animate(&mut self.ui, dt, pointer, favicons);
+        self.downloads_sheet.animate(&mut self.ui, dt, pointer, favicons);
+        if query.is_some() {
             self.history_confirm = false;
             self.refresh_sheet(SheetKind::History, false);
         }
-        self.downloads_sheet.animate(&mut self.ui, dt);
+        let done = self.list_worker.as_ref().map(crate::list_worker::ListWorker::poll).unwrap_or_default();
+        for done in done {
+            let crate::list_worker::Done::Loaded { generation, items, took } = done;
+            self.history_loaded(generation, items, took);
+        }
         if self.config.downloads.show_site_icons || self.history_sheet.is_open() {
             let favicons = &self.favicons;
             for sheet in [&mut self.history_sheet, &mut self.downloads_sheet] {
@@ -282,6 +397,76 @@ impl Browser {
         self.update_home();
     }
 
+    /// Test aid (`seed-history:N`): N history rows spread over the last 90 days.
+    pub(super) fn seed_history_for_test(&mut self, count: &str) {
+        let (Some(store), Ok(count)) = (&self.store, count.trim().parse::<i64>()) else { return };
+        let now = unix_now();
+        let span = 90 * 86_400;
+        let items: Vec<axion_store::NewHistory> = (0..count)
+            .map(|i| axion_store::NewHistory {
+                url: format!("https://site{}.example.com/page/{i}", i % 3000),
+                title: format!("Page {i}: an article about topic {}", i % 977),
+                visit_count: 1 + (i % 5) as u32,
+                last_visit: now - i * span / count.max(1) - 30,
+            })
+            .collect();
+        let started = Instant::now();
+        match store.import_history(&items) {
+            Ok(counts) => {
+                tracing::info!(added = counts.added, ms = started.elapsed().as_millis(), "seeded history")
+            }
+            Err(e) => tracing::warn!("seeding history failed: {e}"),
+        }
+        self.refresh_lists();
+    }
+
+    /// Test aid (`sheet-scroll:PX`): scrolls the open list sheet down by PX.
+    pub(super) fn sheet_scroll_for_test(&mut self, px: &str) {
+        let Ok(px) = px.trim().parse::<f32>() else { return };
+        for kind in [SheetKind::History, SheetKind::Downloads] {
+            if self.sheet(kind).is_open() {
+                let sheet = match kind {
+                    SheetKind::History => &mut self.history_sheet,
+                    SheetKind::Downloads => &mut self.downloads_sheet,
+                };
+                sheet.scroll_by(&mut self.ui, &self.favicons, -px);
+            }
+        }
+    }
+
+    /// Test aid (`sheet-stats`): the open sheet's widget count and what a layout costs.
+    pub(super) fn sheet_stats_for_test(&mut self) {
+        fn count(ui: &Ui, node: axion_ui::taffy::NodeId) -> usize {
+            1 + ui.children(node).into_iter().map(|c| count(ui, c)).sum::<usize>()
+        }
+        let total = count(&self.ui, self.ui.root());
+        // The cost of scrolling through the list: a wheel step, then the layout it makes.
+        let steps = 200;
+        let (mut sync, mut layout) = (Duration::ZERO, Duration::ZERO);
+        for _ in 0..steps {
+            let started = Instant::now();
+            self.history_sheet.scroll_by(&mut self.ui, &self.favicons, -37.0);
+            sync += started.elapsed();
+            let started = Instant::now();
+            self.ui.layout();
+            layout += started.elapsed();
+        }
+        let scroll_ms = (sync + layout).as_secs_f32() * 1000.0 / steps as f32;
+        let layout_ms = layout.as_secs_f32() * 1000.0 / steps as f32;
+        let (rows, built, scroll) =
+            (self.history_sheet.item_count(), self.history_sheet.built_count(), self.history_sheet.scroll());
+        self.history_sheet.scroll_to(&mut self.ui, &self.favicons, 0.0);
+        tracing::info!(
+            widgets = total,
+            rows,
+            built,
+            scroll,
+            scroll_step_ms = scroll_ms,
+            layout_step_ms = layout_ms,
+            "sheet stats"
+        );
+    }
+
     /// The node that carries `action` (a test aid's way to find a button without coordinates).
     fn node_with_action(&self, action: axion_ui::ActionId) -> Option<axion_ui::taffy::NodeId> {
         fn find(
@@ -311,6 +496,10 @@ impl Browser {
         tracing::info!(action = n, ?p, right, "test click");
         let button = if right { winit::event::MouseButton::Right } else { winit::event::MouseButton::Left };
         self.pointer_moved(p);
+        // A real pointer rests a frame or more before it clicks: the sheet reveals the checkbox
+        // under it in that time.
+        self.animate_list_sheets(0.0);
+        self.ui.layout();
         self.mouse_button(ElementState::Pressed, button);
         self.mouse_button(ElementState::Released, button);
     }

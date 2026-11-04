@@ -212,8 +212,6 @@ const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 /// A page whose renderer ends is reloaded at most this often.
 const RENDERER_RELOAD_GAP: Duration = Duration::from_secs(10);
 const SESSION_PINNED_KEY: &str = "session_pinned_tabs";
-/// History rows shown in the sidebar panel.
-const PANEL_HISTORY_LIMIT: usize = 300;
 /// Most bookmarks a sidebar search lists.
 const PANEL_SEARCH_LIMIT: usize = 1000;
 /// The History panel's clear button, and what it says while asking to confirm.
@@ -389,6 +387,12 @@ pub struct Browser {
     passwords: Passwords,
     /// History and Downloads as glass sheets (`general.list_sheets`).
     history_sheet: crate::list_sheet::ListSheet,
+    /// Reads, searches and deletes History for its sheet off the UI thread (`list_worker`).
+    list_worker: Option<crate::list_worker::ListWorker>,
+    /// The newest History load asked for: older answers are dropped.
+    list_generation: u64,
+    /// Whether the answer to the newest load keeps the scroll position.
+    list_keep_scroll: bool,
     downloads_sheet: crate::list_sheet::ListSheet,
     /// The History sheet's clear button was clicked once (the second click clears).
     history_confirm: bool,
@@ -760,6 +764,13 @@ impl Browser {
             tracing::warn!("setting the database timeout failed: {e}");
         }
         let store_path = store.as_ref().map(|_| profile.join("axion.sqlite"));
+        let list_worker = store_path.clone().map(|path| {
+            crate::list_worker::ListWorker::spawn(
+                path,
+                Duration::from_millis(u64::from(config.data.db_busy_timeout_ms)),
+                options.waker.clone(),
+            )
+        });
         PrivateLock::drop_old_password(store.as_ref());
         let muted_sites = tabgroups::load_muted_sites(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
@@ -1026,6 +1037,9 @@ impl Browser {
             settings,
             passwords,
             history_sheet,
+            list_worker,
+            list_generation: 0,
+            list_keep_scroll: false,
             downloads_sheet,
             history_confirm: false,
             menu_target: None,
@@ -3266,9 +3280,9 @@ impl Browser {
             Panel::History => {
                 let now = unix_now();
                 let mut entries = if query.is_empty() {
-                    store.recent_history(PANEL_HISTORY_LIMIT)
+                    store.recent_history(self.config.sidebar.history_rows as usize)
                 } else {
-                    store.search_history(&query, PANEL_HISTORY_LIMIT, now)
+                    store.search_history(&query, self.config.sidebar.history_rows as usize, now)
                 }
                 .unwrap_or_default();
                 // The list is grouped by day, newest first (search ranks by relevance).
@@ -6328,9 +6342,9 @@ impl Browser {
                 } else if self.overview.is_open() {
                     self.overview.scroll_by(&mut self.ui, delta.y);
                 } else if self.history_sheet.is_open() {
-                    self.history_sheet.scroll_by(&mut self.ui, delta.y);
+                    self.history_sheet.scroll_by(&mut self.ui, &self.favicons, delta.y);
                 } else if self.downloads_sheet.is_open() {
-                    self.downloads_sheet.scroll_by(&mut self.ui, delta.y);
+                    self.downloads_sheet.scroll_by(&mut self.ui, &self.favicons, delta.y);
                 } else if self.passwords.is_open() {
                     self.passwords.scroll_by(&mut self.ui, delta.y);
                 } else if self.settings.is_open() {
@@ -6828,9 +6842,21 @@ impl Browser {
         {
             for kind in [crate::list_sheet::SheetKind::History, crate::list_sheet::SheetKind::Downloads] {
                 if self.sheet(kind).is_open() {
-                    self.close_list_sheet(kind);
+                    // Escape leaves selection mode first, then closes the sheet.
+                    if self.sheet(kind).is_selecting() {
+                        self.end_sheet_selection(kind);
+                    } else {
+                        self.close_list_sheet(kind);
+                    }
                 }
             }
+            return false;
+        }
+        if pressed
+            && self.any_list_sheet_open()
+            && !self.context_menus.is_open()
+            && self.list_sheet_key(event)
+        {
             return false;
         }
         if pressed && self.passwords.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
@@ -7367,6 +7393,30 @@ impl Browser {
                 "history-panel" => self.show_panel(Panel::History),
                 "downloads-panel" => self.show_panel(Panel::Downloads),
                 "seed-lists" if std::env::var_os("AXION_PROFILE_DIR").is_some() => self.seed_lists_for_test(),
+                // Test aids for the list sheets: "seed-history:N" adds N history rows over 90 days
+                // (needs AXION_PROFILE_DIR), "sheet-scroll:PX" scrolls the open sheet, "sheet-stats"
+                // logs its widget count and the time a layout and a rebuild take.
+                n if n.starts_with("seed-history:") && std::env::var_os("AXION_PROFILE_DIR").is_some() => {
+                    self.seed_history_for_test(&n["seed-history:".len()..]);
+                }
+                px if px.starts_with("sheet-scroll:") => {
+                    self.sheet_scroll_for_test(&px["sheet-scroll:".len()..])
+                }
+                "sheet-stats" => self.sheet_stats_for_test(),
+                // Real pointer clicks with Shift or Ctrl held ("shift-click-action:N"), Ctrl+A
+                // and the Delete key in the open list sheet.
+                id if id.starts_with("shift-click-action:") => {
+                    self.modifiers.shift = true;
+                    self.click_action_for_test(&id["shift-click-action:".len()..], false);
+                    self.modifiers.shift = false;
+                }
+                id if id.starts_with("ctrl-click-action:") => {
+                    self.modifiers.ctrl = true;
+                    self.click_action_for_test(&id["ctrl-click-action:".len()..], false);
+                    self.modifiers.ctrl = false;
+                }
+                "sheet-select-all" => self.sheet_select_all(),
+                "sheet-delete-key" => self.delete_sheet_selection(),
                 // Capture aid: right click at X,Y as a real pointer event ("context:XxY").
                 at if at.starts_with("context:") => self.context_click_for_test(&at["context:".len()..]),
                 // Capture aids: a real left or right click on the button with this action id.

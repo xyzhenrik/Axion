@@ -1458,3 +1458,13 @@
 "The password is stored encrypted with this device's key, not in the settings file. Names are always resolved by the proxy, never on this computer." = "Parola, ayarlar dosyasında değil, bu cihazın anahtarıyla şifreli saklanır. Adlar her zaman proxy tarafından çözülür, bu bilgisayarda asla."
 "The private key and any preshared keys are stored encrypted with this device's key. Scripts in the config (PostUp and the like) are never run." = "Özel anahtar ve varsa önceden paylaşılan anahtarlar bu cihazın anahtarıyla şifreli saklanır. Yapılandırmadaki komut dosyaları (PostUp ve benzeri) hiçbir zaman çalıştırılmaz."
 "These connections still keep a password or key in your password vault from an older version. Unlock Passwords (Settings › Passwords) once and they connect; the secrets then move out of the vault." = "Bu bağlantılar, eski bir sürümden kalan parolayı veya anahtarı hâlâ parola kasanızda tutuyor. Parolaların kilidini bir kez açın (Ayarlar › Parolalar); bağlanırlar ve gizli bilgiler kasadan çıkar."
+
+# crates/axion-app/src/context_registry.rs
+"Delete 1 Selected" = "1 seçiliyi sil"
+"Delete {count} Selected" = "{count} seçiliyi sil"
+"Deselect" = "Seçimi kaldır"
+"Select" = "Seç"
+
+# crates/axion-app/src/list_sheet.rs
+"Select items" = "Öğe seçin"
+"{count} selected" = "{count} seçili"

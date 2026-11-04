@@ -1458,3 +1458,13 @@
 "The password is stored encrypted with this device's key, not in the settings file. Names are always resolved by the proxy, never on this computer." = "密码使用此设备的密钥加密存储，而非存放在设置文件中。域名始终由代理解析，绝不在此电脑上解析。"
 "The private key and any preshared keys are stored encrypted with this device's key. Scripts in the config (PostUp and the like) are never run." = "私钥及任何预共享密钥均使用此设备的密钥加密存储。配置中的脚本（PostUp 等）绝不会运行。"
 "These connections still keep a password or key in your password vault from an older version. Unlock Passwords (Settings › Passwords) once and they connect; the secrets then move out of the vault." = "这些连接仍在密码保险库中保存着旧版本的密码或密钥。请解锁一次密码（设置 › 密码）即可连接；之后这些机密信息将移出保险库。"
+
+# crates/axion-app/src/context_registry.rs
+"Delete 1 Selected" = "删除 1 个所选项"
+"Delete {count} Selected" = "删除 {count} 个所选项"
+"Deselect" = "取消选择"
+"Select" = "选择"
+
+# crates/axion-app/src/list_sheet.rs
+"Select items" = "选择项目"
+"{count} selected" = "已选择 {count} 项"

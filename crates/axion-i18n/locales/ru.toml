@@ -1458,3 +1458,13 @@
 "The password is stored encrypted with this device's key, not in the settings file. Names are always resolved by the proxy, never on this computer." = "Пароль хранится в зашифрованном виде ключом этого устройства, а не в файле настроек. Имена всегда определяет прокси, никогда этот компьютер."
 "The private key and any preshared keys are stored encrypted with this device's key. Scripts in the config (PostUp and the like) are never run." = "Закрытый ключ и все предварительные ключи хранятся в зашифрованном виде ключом этого устройства. Скрипты в конфигурации (PostUp и подобные) никогда не выполняются."
 "These connections still keep a password or key in your password vault from an older version. Unlock Passwords (Settings › Passwords) once and they connect; the secrets then move out of the vault." = "Эти подключения всё ещё хранят пароль или ключ в хранилище паролей из старой версии. Разблокируйте пароли (Настройки › Пароли) один раз, и подключения заработают; секретные данные затем переместятся из хранилища."
+
+# crates/axion-app/src/context_registry.rs
+"Delete 1 Selected" = "Удалить 1 выбранный"
+"Delete {count} Selected" = "Удалить выбранные: {count}"
+"Deselect" = "Снять выбор"
+"Select" = "Выбрать"
+
+# crates/axion-app/src/list_sheet.rs
+"Select items" = "Выберите элементы"
+"{count} selected" = "Выбрано: {count}"

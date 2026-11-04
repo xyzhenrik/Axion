@@ -103,8 +103,20 @@ impl Browser {
             ..Facts::default()
         };
         match target {
-            MenuTarget::Row { list: ListKind::Downloads, index, .. } => {
-                facts.download = self.downloads.row_facts(List::Panel, *index);
+            MenuTarget::Row { list, index, .. } => {
+                let kind = match list {
+                    ListKind::Downloads => Some(SheetKind::Downloads),
+                    ListKind::History => Some(SheetKind::History),
+                    ListKind::Bookmarks => None,
+                };
+                if let Some(sheet) = kind.map(|k| self.sheet(k)).filter(|s| s.is_open()) {
+                    facts.in_sheet = true;
+                    facts.row_selected = sheet.is_selected(*index);
+                    facts.selected_count = sheet.selected_count();
+                }
+                if *list == ListKind::Downloads {
+                    facts.download = self.downloads.row_facts(List::Panel, *index);
+                }
             }
             MenuTarget::Setting(setting) => {
                 facts.setting_is_default = self.settings.is_default(*setting, &self.config);
@@ -300,6 +312,35 @@ impl Browser {
     }
 
     fn row_command(&mut self, list: ListKind, index: usize, url: &str, verb: Verb) {
+        // Selecting rows is the sheets' own business.
+        let sheet_kind = match list {
+            ListKind::History => Some(SheetKind::History),
+            ListKind::Downloads => Some(SheetKind::Downloads),
+            ListKind::Bookmarks => None,
+        }
+        .filter(|&k| self.sheet(k).is_open());
+        if let Some(kind) = sheet_kind {
+            match verb {
+                Verb::Select => {
+                    let sheet = match kind {
+                        SheetKind::History => &mut self.history_sheet,
+                        SheetKind::Downloads => &mut self.downloads_sheet,
+                    };
+                    // A toggle of this one row.
+                    sheet.click_row(&mut self.ui, index, false);
+                    return;
+                }
+                Verb::DeleteSelected => {
+                    self.delete_sheet_selection_of(kind);
+                    return;
+                }
+                Verb::Delete if kind == SheetKind::History => {
+                    self.delete_sheet_rows(kind, &[index]);
+                    return;
+                }
+                _ => {}
+            }
+        }
         if list == ListKind::Downloads {
             let command = match verb {
                 Verb::OpenFile => Some(RowCommand::Open),

@@ -41,6 +41,8 @@ pub struct Config {
     pub toast: Toast,
     pub link_preview: LinkPreview,
     pub sidebar: Sidebar,
+    pub history: History,
+    pub lists: Lists,
     pub window: WindowBehavior,
     pub ui: Ui,
     pub updates: Updates,
@@ -1675,11 +1677,54 @@ pub struct Sidebar {
     /// The History panel opens with every day but today folded away (a search shows matches
     /// unfolded either way).
     pub history_collapse_older: bool,
+    /// How many history entries the sidebar's History panel lists (the History sheet reads
+    /// more, see `history.sheet_max_entries`). Every row is a set of widgets, so a long list
+    /// makes the panel slow to open.
+    pub history_rows: u32,
 }
 
 impl Default for Sidebar {
     fn default() -> Self {
-        Self { history_collapse_older: true }
+        Self { history_collapse_older: true, history_rows: 300 }
+    }
+}
+
+/// The History sheet.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct History {
+    /// The History sheet opens with every day but today folded away (a search shows its matches
+    /// unfolded either way; days the user opened or folded keep their state while the sheet
+    /// stays open).
+    pub collapse_older_days: bool,
+    /// The sheet lists at most this many entries (the most recently visited first); they are
+    /// read from the database on a background thread.
+    pub sheet_max_entries: u32,
+    /// How long typing in the search field rests before the database is asked (milliseconds).
+    pub search_debounce_ms: u32,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self { collapse_older_days: true, sheet_max_entries: 100_000, search_debounce_ms: 150 }
+    }
+}
+
+/// The big list sheets (History, Downloads).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Lists {
+    /// Rows built above and below the visible ones, so scrolling shows rows at once. Only the
+    /// visible rows and this margin exist as widgets, however long the list is.
+    pub overscan_rows: u32,
+    /// A checkbox replaces a row's icon while the pointer is on it (off: checkboxes only show
+    /// in selection mode).
+    pub hover_checkboxes: bool,
+}
+
+impl Default for Lists {
+    fn default() -> Self {
+        Self { overscan_rows: 6, hover_checkboxes: true }
     }
 }
 

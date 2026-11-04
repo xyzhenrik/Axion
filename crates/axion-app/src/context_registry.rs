@@ -13,7 +13,7 @@
 
 use axion_compositor::Icon;
 use axion_config::{Action, Keymap};
-use axion_i18n::tr;
+use axion_i18n::{tr, tr_fmt};
 
 use crate::downloads::{RowFacts, RowState};
 use crate::menu::{MenuAction, MenuItem};
@@ -105,6 +105,10 @@ pub enum Verb {
     CopyLink,
     /// Deletes a history entry, removes a bookmark.
     Delete,
+    /// Selects (or unselects) the row in its sheet.
+    Select,
+    /// Deletes the rows selected in the sheet.
+    DeleteSelected,
     /// A download's file.
     OpenFile,
     ShowInFolder,
@@ -158,6 +162,11 @@ pub struct Facts {
     pub has_store: bool,
     /// A download row's state.
     pub download: Option<RowFacts>,
+    /// The row is in a sheet (the sheets select rows; the sidebar lists do not).
+    pub in_sheet: bool,
+    /// The row is selected, and how many rows are selected in its sheet.
+    pub row_selected: bool,
+    pub selected_count: usize,
     /// The Downloads list has finished entries.
     pub downloads_finished: bool,
     /// The account has a password (so there is something to lock).
@@ -192,7 +201,11 @@ pub struct PlayerFacts {
 pub fn items(target: &Target, facts: &Facts, keymap: &Keymap) -> Vec<MenuItem> {
     match target {
         Target::Sidebar(entry) => sidebar_items(*entry, facts, keymap),
-        Target::Row { list, .. } => row_items(*list, facts),
+        Target::Row { list, .. } => {
+            let mut items = row_items(*list, facts);
+            items.extend(selection_items(*list, facts));
+            items
+        }
         Target::Toolbar(button) => toolbar_items(*button, facts),
         Target::ToolbarBar => toolbar_bar_items(facts),
         Target::Setting(_) => vec![
@@ -294,6 +307,25 @@ fn row_items(list: ListKind, facts: &Facts) -> Vec<MenuItem> {
         }
         ListKind::Downloads => download_items(facts.download.as_ref()),
     }
+}
+
+/// "Select" and "Delete N Selected" of a row in a sheet.
+fn selection_items(list: ListKind, facts: &Facts) -> Vec<MenuItem> {
+    if !facts.in_sheet || list == ListKind::Bookmarks {
+        return Vec::new();
+    }
+    let select = if facts.row_selected { tr("Deselect") } else { tr("Select") };
+    let mut items = vec![row(Icon::Check, select, Verb::Select).separated()];
+    if facts.selected_count > 0 {
+        let n = facts.selected_count;
+        let label = if n == 1 {
+            tr("Delete 1 Selected").to_owned()
+        } else {
+            tr_fmt!("Delete {count} Selected", count = n)
+        };
+        items.push(row(Icon::Trash, &label, Verb::DeleteSelected).destructive());
+    }
+    items
 }
 
 fn download_items(download: Option<&RowFacts>) -> Vec<MenuItem> {
@@ -499,6 +531,31 @@ mod tests {
             ..Facts::default()
         };
         assert_eq!(labels(&download_row(), &paused)[0], "Resume");
+    }
+
+    /// Rows of a sheet offer to select them; the delete entry names the count and is red.
+    #[test]
+    fn sheet_rows_offer_selection() {
+        let target = Target::Row { list: ListKind::History, index: 3, url: "https://a/".into() };
+        let sidebar = Facts::default();
+        assert!(
+            !labels(&target, &sidebar).contains(&"Select".to_owned()),
+            "the sidebar list has no selection"
+        );
+        let mut facts = Facts { in_sheet: true, ..Facts::default() };
+        let all = labels(&target, &facts);
+        assert_eq!(all.last().map(String::as_str), Some("Select"));
+        facts.selected_count = 3;
+        facts.row_selected = true;
+        let menu = items(&target, &facts, &Keymap::default());
+        let labels: Vec<&str> = menu.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(&labels[labels.len() - 2..], ["Deselect", "Delete 3 Selected"]);
+        assert!(menu.last().is_some_and(|i| i.destructive));
+        // A download row gets them too; a bookmark never.
+        let download = Target::Row { list: ListKind::Downloads, index: 0, url: String::new() };
+        assert!(!selection_items(ListKind::Downloads, &facts).is_empty());
+        assert!(selection_items(ListKind::Bookmarks, &facts).is_empty());
+        let _ = download;
     }
 
     #[test]

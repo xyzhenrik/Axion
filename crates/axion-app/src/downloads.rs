@@ -454,6 +454,15 @@ impl Downloads {
         }
     }
 
+    /// The database id of row `index` of the panel list when it is a finished download that can
+    /// leave the list (a running one cannot).
+    pub fn stored_id(&self, index: usize) -> Option<i64> {
+        match self.rows[List::Panel as usize].get(index) {
+            Some((Row::Stored(id), _)) => Some(*id),
+            _ => None,
+        }
+    }
+
     /// "Clear List": every finished download (running ones stay).
     pub fn clear_list(store: Option<&Store>) {
         if let Some(store) = store

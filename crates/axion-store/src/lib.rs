@@ -551,6 +551,59 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// History matching every word of `query` (in the address or the title), the most recently
+    /// visited first, at most `limit` entries. Unlike [`Self::search_history`] this is ordered
+    /// by time, which is how the History sheet lists it; the index on `last_visit` lets it stop
+    /// after `limit` matches.
+    pub fn search_history_recent(&self, query: &str, limit: usize) -> Result<Vec<HistoryEntry>> {
+        let words: Vec<String> = query.split_whitespace().map(|w| format!("%{}%", like_escape(w))).collect();
+        if words.is_empty() {
+            return self.recent_history(limit);
+        }
+        let mut sql = String::from("SELECT url, title, visit_count, last_visit FROM urls WHERE 1");
+        for i in 0..words.len() {
+            let n = i + 2;
+            sql.push_str(&format!(" AND (url LIKE ?{n} ESCAPE '\\' OR title LIKE ?{n} ESCAPE '\\')"));
+        }
+        sql.push_str(" ORDER BY last_visit DESC LIMIT ?1");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let limit = limit as i64;
+        let mut args: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(words.len() + 1);
+        args.push(&limit);
+        args.extend(words.iter().map(|w| w as &dyn rusqlite::ToSql));
+        let rows = stmt.query_map(args.as_slice(), entry)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Deletes the history entries of these addresses in one transaction (their visits go
+    /// with them). Returns how many entries existed.
+    pub fn delete_history_urls(&self, urls: &[String]) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut deleted = 0;
+        {
+            let mut stmt = tx.prepare("DELETE FROM urls WHERE url = ?1")?;
+            for url in urls {
+                deleted += stmt.execute([url])?;
+            }
+        }
+        tx.commit()?;
+        Ok(deleted)
+    }
+
+    /// Removes these entries from the downloads list in one transaction (not their files).
+    pub fn remove_downloads(&self, ids: &[i64]) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut removed = 0;
+        {
+            let mut stmt = tx.prepare("DELETE FROM downloads WHERE id = ?1")?;
+            for id in ids {
+                removed += stmt.execute([id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
     pub fn delete_history_url(&self, url: &str) -> Result<()> {
         self.conn.execute("DELETE FROM urls WHERE url = ?1", [url])?;
         Ok(())
@@ -1466,6 +1519,58 @@ mod tests {
         assert_eq!(s.downloads(10).unwrap().len(), 1);
         s.clear_downloads_before(i64::MAX).unwrap();
         assert!(s.downloads(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn selected_history_is_deleted_in_one_go() {
+        let s = store();
+        for i in 0..6 {
+            s.record_visit(&format!("https://site{i}.example/"), "T", NOW - i).unwrap();
+        }
+        let gone = ["https://site1.example/".to_owned(), "https://site4.example/".to_owned()];
+        assert_eq!(s.delete_history_urls(&gone).unwrap(), 2);
+        // An unknown address is no error; the visits left with their entries.
+        assert_eq!(s.delete_history_urls(&["https://nope.example/".to_owned()]).unwrap(), 0);
+        let left: Vec<String> = s.recent_history(10).unwrap().into_iter().map(|e| e.url).collect();
+        assert_eq!(left.len(), 4);
+        assert!(!left.iter().any(|u| gone.contains(u)));
+        let visits: i64 = s.conn.query_row("SELECT COUNT(*) FROM visits", [], |r| r.get(0)).unwrap();
+        assert_eq!(visits, 4);
+    }
+
+    #[test]
+    fn history_search_lists_matches_newest_first_up_to_the_limit() {
+        let s = store();
+        for i in 0..10 {
+            s.record_visit(&format!("https://rust{i}.example/"), "Rust page", NOW - i * 10).unwrap();
+            s.record_visit(&format!("https://other{i}.example/"), "Else", NOW - i * 10 - 1).unwrap();
+        }
+        let found = s.search_history_recent("rust page", 4).unwrap();
+        assert_eq!(found.len(), 4);
+        assert!(found.windows(2).all(|w| w[0].last_visit > w[1].last_visit));
+        assert!(found.iter().all(|e| e.url.contains("rust")));
+        // Every word has to match, `%` is no wildcard, and an empty query is the recent list.
+        assert!(s.search_history_recent("rust else", 10).unwrap().is_empty());
+        assert!(s.search_history_recent("%", 10).unwrap().is_empty());
+        assert_eq!(s.search_history_recent("  ", 5).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn selected_downloads_leave_the_list() {
+        let s = store();
+        let d = |name: &str| StoredDownload {
+            id: 0,
+            url: format!("https://a.example/{name}"),
+            path: format!("/tmp/{name}"),
+            file_name: name.into(),
+            mime_type: String::new(),
+            size: 1,
+            state: "complete".into(),
+            finished: 100,
+        };
+        let ids: Vec<i64> = ["a", "b", "c"].iter().map(|n| s.add_download(&d(n)).unwrap()).collect();
+        assert_eq!(s.remove_downloads(&[ids[0], ids[2], 9_999]).unwrap(), 2);
+        assert_eq!(s.downloads(10).unwrap().len(), 1);
     }
 
     #[test]

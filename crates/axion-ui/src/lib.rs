@@ -932,6 +932,10 @@ impl Ui {
         if let Some(widget) = self.tree.get_node_context_mut(node) {
             widget.frame = frame;
             match &mut widget.kind {
+                // A label that has no room (hidden: taffy gives it no box) has nothing to shape;
+                // shaping a wrapped one at a width of one pixel costs about a millisecond each,
+                // on every layout. It is measured and sized again when it is shown.
+                WidgetKind::Label(_) if frame.size.x <= 0.0 && frame.size.y <= 0.0 => {}
                 WidgetKind::Label(label) => {
                     // A little slack so rounding never ellipsizes a label that fits.
                     if label.max_lines > 1 {

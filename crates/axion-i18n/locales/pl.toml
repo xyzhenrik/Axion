@@ -1458,3 +1458,13 @@
 "The password is stored encrypted with this device's key, not in the settings file. Names are always resolved by the proxy, never on this computer." = "Hasło jest zapisane zaszyfrowane kluczem tego urządzenia, a nie w pliku ustawień. Nazwy są zawsze rozpoznawane przez proxy, nigdy na tym komputerze."
 "The private key and any preshared keys are stored encrypted with this device's key. Scripts in the config (PostUp and the like) are never run." = "Klucz prywatny i wszelkie klucze współdzielone są zapisane zaszyfrowane kluczem tego urządzenia. Skrypty w konfiguracji (PostUp i podobne) nigdy nie są uruchamiane."
 "These connections still keep a password or key in your password vault from an older version. Unlock Passwords (Settings › Passwords) once and they connect; the secrets then move out of the vault." = "Te połączenia nadal mają hasło lub klucz w skarbcu haseł ze starszej wersji. Odblokuj hasła (Ustawienia › Hasła) raz, a połączą się; dane uwierzytelniające zostaną wtedy przeniesione poza skarbiec."
+
+# crates/axion-app/src/context_registry.rs
+"Delete 1 Selected" = "Usuń 1 zaznaczony"
+"Delete {count} Selected" = "Usuń zaznaczone: {count}"
+"Deselect" = "Odznacz"
+"Select" = "Zaznacz"
+
+# crates/axion-app/src/list_sheet.rs
+"Select items" = "Zaznacz elementy"
+"{count} selected" = "Zaznaczono: {count}"
