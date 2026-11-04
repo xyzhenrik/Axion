@@ -432,6 +432,7 @@ impl ListSheet {
             root,
             Widget::container()
                 .with_background(Background::Glass(GlassLevel::Thick))
+                .with_popup_cover()
                 .with_radius(SHEET_RADIUS),
             Style { position: Position::Absolute, padding: padding(22.0, 18.0), ..column(10.0) },
         );

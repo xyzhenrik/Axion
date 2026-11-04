@@ -206,7 +206,10 @@ impl PrintDialog {
         );
         let card = ui.add(
             root,
-            Widget::container().with_background(Background::Glass(GlassLevel::Thick)).with_radius(RADIUS),
+            Widget::container()
+                .with_background(Background::Glass(GlassLevel::Thick))
+                .as_popup()
+                .with_radius(RADIUS),
             Style {
                 size: Size { width: length(WIDTH), height: auto() },
                 max_size: Size { width: percent(0.94), height: auto() },
