@@ -32,6 +32,12 @@ const ORIGIN_MAX: f32 = 120.0;
 /// the drop is small when its glass changes from the bar's level to the sheet's thicker one.
 const HANDOFF: f32 = 0.35;
 
+/// The look every sheet shares (Settings, Passwords, History, Downloads): corner radius, the gap to
+/// the window's edge and the dim of the backdrop.
+pub const SHEET_RADIUS: f32 = 30.0;
+pub const SHEET_MARGIN: f32 = 32.0;
+pub const SHEET_BACKDROP_DIM: f32 = 0.28;
+
 /// Where a sheet comes from (logical px): a point in a plane (a child of the root). The glass
 /// there is found again when the sheet closes, so it drains into it wherever it is by then.
 #[derive(Clone, Copy, Debug)]

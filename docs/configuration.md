@@ -48,7 +48,7 @@ The [Settings reference](settings.md) lists the key of every setting. A worked e
 # ~/.config/axion/accounts/<id>/config.toml
 
 [general]
-language = "en"                      # "system", "en" or "de"
+language = "en"                      # "system", "en", "de", "es", "fr", "tr", "ja", "pt-BR", "it", "ru", "zh-Hans", "ko", "nl", "pl"
 search_url = "https://search.brave.com/search?q={}"   # {} becomes the search words
 
 [appearance]
@@ -139,6 +139,17 @@ ask_where_to_save = false
 | `media.pip_max_width` | Widest it can be made, in pixels. | `1280` |
 | `media.pip_max_screen_fraction` | It never grows beyond this share of its monitor, either way (0.1 to 1). | `0.9` |
 | `media.pip_default_width` | Size of a first Picture in Picture window: the video fits a square of this side. | `480` |
+| `window.decorations` | `custom` (Axion draws the window buttons and rounded corners; no desktop title bar) or `system` (the desktop's frame). | `custom` |
+| `window.controls_side` | With `custom`: `left` or `right` end of the toolbar for the window buttons. | `left` |
+| `window.resize_border_px` | With `custom`: width of the strip along the window's edges that resizes it (corners count double). | `6` |
+| `layout.window_corner_radius` | With `custom`: corner radius of the window in pixels (0: square). Square while maximized or fullscreen. | `14` |
+| `layout.traffic_light_size` | Diameter of the window buttons in pixels. | `18` |
+| `layout.traffic_light_ring` | Width of the darker ring around each window button in pixels (0: none). | `1` |
+| `window.light_close`, `window.light_minimize`, `window.light_zoom` | The flat colours of the close, minimize and zoom buttons (never glass, also in the flat style). | `#FF5F57`, `#FEBC2E`, `#28C840` |
+| `window.light_unfocused` | The buttons of a window that is not in front. | `#9A9A9F` |
+| `window.light_glyph` | The one colour of the x, minus and arrows shown while the pointer is over the buttons (translucent). | `#2B1200B8` |
+| `layout.traffic_light_gap` | Gap between two window buttons. | `8` |
+| `layout.traffic_light_margin` | Gap between the window buttons and the toolbar group next to them. | `14` |
 | `window.restore_pip_size` | Open Picture in Picture as big as you last made it. | `true` |
 | `passwords.generator_length` | Length of generated passwords. | `20` |
 | `passwords.generator_symbols` | Generated passwords include symbols. | `true` |
@@ -149,6 +160,11 @@ ask_where_to_save = false
 | `permissions.screen_picker_thumbnail_width` | Width of the picker's thumbnails in logical pixels. | `160` |
 | `permissions.stop_reload_after_ms` | After **Stop** in the recording popover, a page that still records this long after is reloaded. | `1500` |
 | `ui.tooltip_delay_ms` | How long before a tooltip appears. | `700` |
+| `ui.idle_frames_before_slowing` | After this many unchanged frames in a row the window checks for changes less often (input, page frames and page events still draw at once). | `30` |
+| `ui.idle_check_interval_ms` | How often an idle window then checks for changes, in milliseconds (0: at every display refresh). | `50` |
+| `ui.max_site_icons_in_memory` | Most site icons kept in memory; the least recently shown ones that are cached on disk are read again when needed (0: no limit). | `512` |
+| `home.top_sites_refresh_seconds` | The start page reads its top sites from the history at most this often (editing them reads them at once). | `30` |
+| `hardware.partial_page_uploads` | Software page frames upload only the parts of the page that changed. Off: the whole frame every time. | `true` |
 | `toast.duration_seconds` | How long short notices stay. | `2.0` |
 | `print.paper` | Paper of **Save as PDF**: `a4`, `a3`, `a5`, `letter`, `legal`. The dialog keeps its last choices in `print.*`. | `a4` |
 | `print.landscape`, `print.backgrounds`, `print.header_footer` | Landscape, background colours and images, title / address / page numbers. | `false` |
@@ -194,6 +210,7 @@ and tests.
 | `AXION_PROFILE_DIR` | Use this folder instead of `~/.local/share/axion/profile` for browsing data. |
 | `AXION_DEVICE_KEY_DIR` | Use this folder instead of `~/.local/share/axion` for the vault's device secret. |
 | `AXION_GPU` | `low`, `high` or part of a card's name. Overrides **Graphics card**. |
+| `AXION_OPENER_LOG` | A file: instead of opening files and folders in the desktop (Downloads: Open, Show in Folder), Axion appends a line per request (`open PATH`, `show PATH`, `uri URL`) to it. For tests. |
 | `AXION_OSR` | `software` or `gpu`. Overrides **Page frames**. Never use `gpu` on AMD graphics. |
 | `AXION_MONITOR` | Open the window on this monitor, for example `HDMI-A-1`. Works on X11 and XWayland (start with `env -u WAYLAND_DISPLAY`). |
 | `AXION_CHROMIUM_SWITCHES` | Extra Chromium command-line switches, separated by commas, for example `AXION_CHROMIUM_SWITCHES=autoplay-policy=no-user-gesture-required`. |

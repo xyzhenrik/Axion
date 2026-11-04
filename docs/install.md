@@ -5,8 +5,8 @@ Axion comes in three forms. Pick the one that fits you.
 | Form | Good for | Updates itself |
 |---|---|---|
 | **AppImage** (`Axion-X.Y.Z-x86_64.AppImage`) | One file you can put anywhere and start. | Yes, in place. |
-| **Tarball** (`Axion-X.Y.Z-linux-x86_64.tar.gz`) | A folder you unpack and install for your user with one command. | No: install the next tarball over it. |
-| **From source** | Developers; the newest code. | Yes (`git pull` and rebuild). |
+| **Tarball** (`Axion-X.Y.Z-linux-x86_64.tar.gz`) | A folder you unpack and install for your user with one command. | Yes, in place (unpacked next to the folder, swapped in at the restart); or run the next tarball's `install.sh`. |
+| **From source** | Developers; the newest code. | Yes (**Update from Git**: `git pull --ff-only` and rebuild). |
 
 All downloads are on the project's releases page, together with a `SHA256SUMS` file. Check what you
 downloaded:
@@ -147,7 +147,10 @@ your system); Chromium still needs a working sandbox.
 
 - **AppImage**: Axion updates the file itself: **Settings > About & Updates**, see
   [Updates](features/updates.md).
-- **Tarball**: download the new tarball and run its `install.sh`.
+- **Tarball**: **Update** on the same page downloads and checks the new tarball, unpacks it next to your
+  folder and swaps it in when you restart Axion (the old folder stays as `<folder>.old-<version>`).
+  Without write access to the folder (installed by root) download the new tarball and run its
+  `install.sh`.
 - **From source**: **Update from Git** in the same place, or `git pull` and rebuild.
 
 ## Uninstall

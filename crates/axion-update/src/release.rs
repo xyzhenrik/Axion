@@ -36,6 +36,33 @@ impl Release {
         })
     }
 
+    /// The Linux tarball (`Axion-<v>-linux-<arch>.tar.gz`) for `arch`: the one named for it,
+    /// or the only one.
+    pub fn tarball_asset(&self, arch: &str) -> Option<&Asset> {
+        let tarballs: Vec<&Asset> = self
+            .assets
+            .iter()
+            .filter(|a| {
+                let name = a.name.to_ascii_lowercase();
+                name.ends_with(".tar.gz") && !name.contains("source")
+            })
+            .collect();
+        let arch = arch.to_ascii_lowercase();
+        let alias = match arch.as_str() {
+            "x86_64" => "amd64",
+            "aarch64" => "arm64",
+            other => other,
+        };
+        tarballs
+            .iter()
+            .find(|a| {
+                let name = a.name.to_ascii_lowercase();
+                name.contains(&arch) || name.contains(alias)
+            })
+            .copied()
+            .or_else(|| (tarballs.len() == 1).then(|| tarballs[0]))
+    }
+
     /// The AppImage for `arch` (`std::env::consts::ARCH`): the one named for it, or the only one.
     pub fn appimage_asset(&self, arch: &str) -> Option<&Asset> {
         let images: Vec<&Asset> =
@@ -191,6 +218,13 @@ mod tests {
         assert!(release(&["Axion.AppImage"]).appimage_asset("x86_64").is_some());
         assert!(release(&["a.AppImage", "b.AppImage"]).appimage_asset("x86_64").is_none());
         assert!(release(&["axion.tar.gz"]).appimage_asset("x86_64").is_none());
+    }
+
+    #[test]
+    fn picks_the_tarball_for_the_architecture() {
+        let r = release(&["Axion-1.0-linux-aarch64.tar.gz", "Axion-1.0-linux-x86_64.tar.gz", "a.AppImage"]);
+        assert_eq!(r.tarball_asset("x86_64").map(|a| a.name.as_str()), Some("Axion-1.0-linux-x86_64.tar.gz"));
+        assert!(release(&["a.AppImage"]).tarball_asset("x86_64").is_none());
     }
 
     #[test]

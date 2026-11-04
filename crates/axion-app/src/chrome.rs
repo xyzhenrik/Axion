@@ -9,7 +9,7 @@
 //!   bottom. Docked in wide windows, floating otherwise.
 
 use axion_compositor::{Icon, IconWeight, Rect as Frame};
-use axion_config::{Action, Color, Config, SidebarMode, TabBarStyle};
+use axion_config::{Action, Color, Config, ControlsSide, SidebarMode, TabBarStyle};
 use axion_i18n::{tr, tr_n};
 use axion_physics::{Animated, Spring};
 use axion_ui::taffy::prelude::*;
@@ -20,9 +20,10 @@ use glam::Vec2;
 
 use axion_engine::ViewId;
 
-use crate::favicons::{Favicons, favicon_node};
+use crate::favicons::{Favicons, favicon_node, favicon_or};
 use crate::tabs::{Tab, Tabs};
 use crate::url::display_host;
+use crate::window_frame::{Light, LightColors, LightsState};
 
 pub use crate::now_playing::NowPlaying;
 use crate::now_playing::{Art, NowPlayingCard};
@@ -42,6 +43,10 @@ const TAB_CAPSULE_TINT: f32 = 0.06;
 const TAB_STRIP_GAP: f32 = 8.0;
 /// Below this the F11 fullscreen transition counts as settled.
 const PRESENTATION_SETTLED: f32 = 0.001;
+/// The tab row counts as slid away (and is not drawn) below this share.
+const STRIP_GONE: f32 = 0.01;
+/// The tab close button's dot at rest: the label colour at this opacity.
+const CLOSE_DOT_OPACITY: f32 = 0.85;
 /// The address field's widest size with the separate tab bar.
 const SEPARATE_ADDRESS_MAX: f32 = 680.0;
 /// The loading line's distance from the address field's ends.
@@ -66,6 +71,11 @@ const BOOKMARK_MAX_WIDTH: f32 = 180.0;
 const BOOKMARK_GAP: f32 = 2.0;
 const BOOKMARKS_BAR_PADDING: f32 = 5.0;
 const BOOKMARK_FAVICON: f32 = 16.0;
+
+/// A window button's glyph (x, -, arrows) as a share of the button's diameter. All glyphs are
+/// drawn in a 24-unit box with their ink centred on (12, 12) (see `axion-compositor` icons), and
+/// the icon widget is centred in the disc on both axes, so they need no per-icon offset.
+const LIGHT_GLYPH: f32 = 0.62;
 
 /// The recording dot of a tab row (logical px).
 const CAPTURE_DOT: f32 = 8.0;
@@ -164,6 +174,10 @@ pub enum ChromeAction {
     MuteOtherTabAt(usize),
     /// A tab group's header or chip (by group id): folds or unfolds its tabs.
     ToggleTabGroup(u32),
+    /// The window buttons (custom decorations): the red, yellow and green lights.
+    WindowClose,
+    WindowMinimize,
+    WindowZoom,
 }
 
 /// The sidebar's sections that fold away.
@@ -274,7 +288,7 @@ const TAB_GROUP_BASE: u32 = 100_000;
 pub const PANEL_BUTTONS: usize = 4;
 
 impl ChromeAction {
-    const SIMPLE: [ChromeAction; 39] = [
+    const SIMPLE: [ChromeAction; 42] = [
         ChromeAction::ToggleSidebar,
         ChromeAction::Back,
         ChromeAction::Forward,
@@ -314,6 +328,9 @@ impl ChromeAction {
         ChromeAction::ZoomIndicator,
         ChromeAction::Network,
         ChromeAction::Circuit,
+        ChromeAction::WindowClose,
+        ChromeAction::WindowMinimize,
+        ChromeAction::WindowZoom,
     ];
 
     pub fn id(self) -> ActionId {
@@ -386,10 +403,45 @@ pub struct PanelItem {
     pub deletable: bool,
     /// Shown instead of the URL's favicon (a download's file).
     pub icon: Option<Icon>,
+    /// With `icon`: the URL's site icon comes first, `icon` is only the fallback for a site that
+    /// has none (a download's source site).
+    pub site_icon: bool,
     /// A progress bar under the detail (0–1; a download's).
     pub progress: Option<f32>,
     /// Trailing buttons, sending [`ChromeAction::PanelButton`] (at most [`PANEL_BUTTONS`]).
     pub buttons: Vec<Icon>,
+}
+
+impl PanelItem {
+    /// The fields that decide a row's icon, for a copy with another `icon`.
+    pub fn clone_shallow(&self) -> PanelItem {
+        PanelItem {
+            url: self.url.clone(),
+            site_icon: self.site_icon,
+            icon: self.icon,
+            ..PanelItem::default()
+        }
+    }
+}
+
+/// The icon at the start of a panel row (sidebar list or sheet): the file's glyph, the site's
+/// favicon, or a favicon that falls back to the glyph. Returns whether it is the site's icon.
+pub fn panel_row_icon(ui: &mut Ui, parent: NodeId, item: &PanelItem, side: f32, favicons: &Favicons) -> bool {
+    match item.icon {
+        Some(icon) if item.site_icon => {
+            let found = favicons.get(&item.url).is_some();
+            favicon_or(ui, parent, &item.url, side, favicons, icon);
+            found
+        }
+        Some(icon) => {
+            ui.add(parent, Widget::icon(icon, side + 2.0).with_paint(Paint::Accent), Style::default());
+            false
+        }
+        None => {
+            favicon_node(ui, parent, &item.url, side, favicons);
+            favicons.get(&item.url).is_some()
+        }
+    }
 }
 
 /// A folding group of panel rows (a history day): its heading's chevron, and the clipped
@@ -445,7 +497,28 @@ const ROW_FAVICON: f32 = 20.0;
 /// The chevron buttons of "N Tabs" and "Private".
 const CHEVRON_BUTTON: f32 = 28.0;
 
+/// One row of the three window buttons (lights): in the toolbar's left end, its right end, or
+/// the sidebar's header. Only one of them is shown at a time (see `Chrome::apply_layout`).
+struct LightSet {
+    group: NodeId,
+    discs: [NodeId; 3],
+    /// The flat disc inside each ring (the `discs` node itself is the ring).
+    inners: [NodeId; 3],
+    glyphs: [NodeId; 3],
+}
+
 pub struct Chrome {
+    /// The sidebar's top row (window buttons, sidebar toggle).
+    sidebar_header: NodeId,
+    /// The window buttons: left end of the toolbar, right end of the toolbar, sidebar header.
+    lights: [LightSet; 3],
+    lights_state: LightsState,
+    /// Their colours and ring width as last drawn (`window.light_*`, `layout.traffic_light_ring`).
+    lights_look: (LightColors, f32),
+    /// The look of the lights is drawn again (a set was shown, or the layout changed).
+    lights_dirty: bool,
+    /// How much of the toolbar's left end the lights take (0 while elsewhere).
+    bar_lights_inset: f32,
     /// Flat mode: the one surface the toolbar rows lie on (and its bottom rule).
     toolbar_band: NodeId,
     account: NodeId,
@@ -486,6 +559,10 @@ pub struct Chrome {
     group_markers: Vec<(NodeId, NodeId)>,
     /// The row under the pointer, lit with a glass highlight (`update_hover`).
     hovered_row: Option<NodeId>,
+    /// The tab close button the pointer is on (its dot is lit red), see `update_hover`.
+    hovered_close: Option<NodeId>,
+    /// `appearance.destructive`.
+    destructive: Color,
     /// Private tabs are the current group (listed under "Private" instead of "N Tabs").
     private_mode: bool,
     /// How many normal tabs there are while private tabs are shown.
@@ -538,6 +615,15 @@ pub struct Chrome {
     /// The separate tab bar's row of tabs.
     tab_strip: NodeId,
     tab_bar: TabBarStyle,
+    /// The separate tab row is shown (1) or slid away (0), animated: it is away while one
+    /// lone tab is open (`layout.hide_single_tab_bar`).
+    strip_k: Animated<f32>,
+    /// `strip_k` has been given its first target (the first one is taken at once).
+    strip_placed: bool,
+    /// Exactly one tab is open and it is neither pinned nor in a group (see `sync_tabs`).
+    lone_tab: bool,
+    /// `layout.hide_single_tab_bar`.
+    hide_lone_tab: bool,
     /// Whole-page fullscreen (F11): all of the chrome gives way to the page …
     presentation: bool,
     /// … animated 0 (chrome shown) → 1 (only the page).
@@ -568,6 +654,8 @@ pub struct Chrome {
     /// (`extensions.enabled`).
     extensions: NodeId,
     extensions_shown: bool,
+    /// `layout.hidden_toolbar_buttons` as of the last layout.
+    hidden_buttons: Vec<String>,
     shield_glyph: NodeId,
     address_favicon: NodeId,
     /// While typing a new address: `Some(url)` whose icon to show (`None` inside = globe).
@@ -591,6 +679,8 @@ pub struct Chrome {
     circuit_button: NodeId,
     circuit_wanted: bool,
     network_icon: NodeId,
+    /// "Session" next to the glyph while a session route is on (hidden otherwise).
+    network_label: NodeId,
     /// The zoom indicator: its button and label, and the text it wants (`None`: hidden).
     zoom_button: NodeId,
     zoom_label: NodeId,
@@ -840,6 +930,12 @@ pub fn bookmarks_that_fit(widths: &[f32], gap: f32, available: f32, more: f32) -
     widths.len()
 }
 
+/// One tab open, neither pinned nor in a tab group: the separate tab row has nothing to show
+/// that the address field doesn't (`layout.hide_single_tab_bar`).
+fn lone_tab(tabs: &Tabs) -> bool {
+    matches!(tabs.all(), [tab] if !tab.pinned && tab.group.is_none())
+}
+
 /// What decides whether the toolbar area's rows are drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BarsState {
@@ -928,6 +1024,75 @@ fn shrinking_label() -> Style {
     }
 }
 
+/// Builds one row of the window buttons in `parent`: three flat round discs (red, yellow, green;
+/// an explicit exception to the all-glass rule, so no glass, also in the liquid style), each a
+/// ring-coloured disc with a slightly smaller disc inside it and a glyph that shows while the
+/// pointer is over the row. Sizes and spacing follow the config (`Chrome::apply_layout`).
+fn build_lights(
+    ui: &mut Ui,
+    parent: NodeId,
+    layout: &axion_config::Layout,
+    colors: &LightColors,
+) -> LightSet {
+    let size = layout.traffic_light_size;
+    let inner_size = (size - 2.0 * layout.traffic_light_ring).max(0.0);
+    let group =
+        ui.add(parent, Widget::container(), Style { flex_shrink: 0.0, ..row(layout.traffic_light_gap) });
+    let look = LightsState::default();
+    let mut discs = [group; 3];
+    let mut inners = [group; 3];
+    let mut glyphs = [group; 3];
+    for light in Light::ALL {
+        let (action, label, key) = match light {
+            Light::Close => (ChromeAction::WindowClose, tr("Close"), Action::CloseWindow),
+            Light::Minimize => (ChromeAction::WindowMinimize, tr("Minimize"), Action::MinimizeWindow),
+            Light::Zoom => (ChromeAction::WindowZoom, tr("Zoom"), Action::ToggleMaximize),
+        };
+        let appearance = look.look(light, colors);
+        let disc = ui.add(
+            group,
+            Widget::container()
+                .with_background(Background::Fill(Paint::Fixed(appearance.ring), 1.0))
+                .with_radius(CAPSULE)
+                .with_action(action.id())
+                .with_tooltip(label, Some(key)),
+            Style {
+                size: square(size),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..row(0.0)
+            },
+        );
+        let inner = ui.add(
+            disc,
+            Widget::container()
+                .with_background(Background::Fill(Paint::Fixed(appearance.color), 1.0))
+                .with_radius(CAPSULE),
+            Style {
+                size: square(inner_size),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                align_items: AlignItems::CENTER,
+                ..row(0.0)
+            },
+        );
+        let glyph = ui.add(
+            inner,
+            Widget::icon(appearance.glyph, size * LIGHT_GLYPH)
+                .with_icon_weight(IconWeight::Heavy)
+                .with_paint(Paint::Fixed(appearance.glyph_color)),
+            Style::default(),
+        );
+        ui.set_visible(glyph, false);
+        discs[light.index()] = disc;
+        inners[light.index()] = inner;
+        glyphs[light.index()] = glyph;
+    }
+    ui.set_visible(group, false);
+    LightSet { group, discs, inners, glyphs }
+}
+
 /// A round icon button. Returns the button and its glyph.
 /// Gives a button a tooltip (see `crate::tooltip`); `action` adds its keyboard shortcut.
 fn tip(ui: &mut Ui, button: NodeId, label: &str, action: Option<Action>) {
@@ -965,7 +1130,9 @@ fn close_dot_sized(ui: &mut Ui, parent: NodeId, action: ChromeAction, hit: f32, 
     );
     let dot_node = ui.add(
         button,
-        Widget::container().with_background(Background::Fill(Paint::Label, 0.85)).with_radius(CAPSULE),
+        Widget::container()
+            .with_background(Background::Fill(Paint::Label, CLOSE_DOT_OPACITY))
+            .with_radius(CAPSULE),
         Style { size: square(dot), justify_content: JustifyContent::CENTER, ..row(0.0) },
     );
     let cross =
@@ -1058,6 +1225,7 @@ impl Chrome {
     pub fn build(ui: &mut Ui, config: &Config) -> Self {
         let root = ui.root();
         let layout = &config.layout;
+        let light_colors = LightColors::from_config(config);
 
         // ---- flat mode's toolbar surface (first, so everything lies above it) ----
         let toolbar_band = ui.add(
@@ -1104,6 +1272,7 @@ impl Chrome {
                 ..row(GROUP_GAP)
             },
         );
+        let sidebar_lights = build_lights(ui, header, layout, &light_colors);
         let header_toggle = ui.add(
             header,
             Widget::container()
@@ -1382,6 +1551,7 @@ impl Chrome {
                 ..row(GROUP_GAP)
             },
         );
+        let bar_lights = build_lights(ui, bar, layout, &light_colors);
         let nav = glass_group(ui, bar);
         let (bar_sidebar_button, _) =
             icon_button(ui, nav, ChromeAction::ToggleSidebar, Widget::icon(Icon::Sidebar, 21.0), BUTTON);
@@ -1484,8 +1654,25 @@ impl Chrome {
         tip(ui, circuit_button, tr("Tor circuit for this site"), None);
         ui.set_visible(circuit_button, false);
         // The network connection (proxy, VPN, Tor) the page goes through; hidden for direct.
-        let (network_button, network_icon) =
-            icon_button(ui, address, ChromeAction::Network, Widget::icon(Icon::Network, 18.0), 30.0);
+        let network_button = ui.add(
+            address,
+            Widget::container().with_action(ChromeAction::Network.id()).with_radius(CAPSULE),
+            Style {
+                size: Size { width: auto(), height: length(30.0) },
+                padding: padding(6.0, 6.0, 0.0, 0.0),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                ..row(4.0)
+            },
+        );
+        let network_icon = ui.add(network_button, Widget::icon(Icon::Network, 18.0), Style::default());
+        // The session route is visible right in the address field, next to the glyph.
+        let network_label =
+            ui.add_label(network_button, tr("Session"), TextStyle::Footnote, Style::default());
+        if let Some(w) = ui.widget_mut(network_label) {
+            w.set_paint(Paint::Accent);
+        }
+        ui.set_visible(network_label, false);
         tip(ui, network_button, tr("Network connection"), Some(Action::ToggleNetwork));
         ui.set_visible(network_button, false);
         // A page that is not at its default zoom: the zoom, and a click resets it.
@@ -1538,6 +1725,7 @@ impl Chrome {
         );
 
         let actions = glass_group(ui, bar);
+        let bar_lights_right = build_lights(ui, bar, layout, &light_colors);
         // Compact tab bar: the page menu moves out of the (narrow) open segment to here.
         let (page_menu_bar, _) =
             icon_button(ui, actions, ChromeAction::PageMenu, Widget::icon(Icon::Menu, 20.0), BUTTON);
@@ -1639,6 +1827,12 @@ impl Chrome {
             ui.set_children(root, &planes);
         }
         let mut chrome = Self {
+            sidebar_header: header,
+            lights: [bar_lights, bar_lights_right, sidebar_lights],
+            lights_state: LightsState::default(),
+            lights_look: (light_colors, layout.traffic_light_ring),
+            lights_dirty: true,
+            bar_lights_inset: 0.0,
             toolbar_band,
             account,
             account_avatar,
@@ -1679,6 +1873,8 @@ impl Chrome {
             group_nodes: Vec::new(),
             group_markers: Vec::new(),
             hovered_row: None,
+            hovered_close: None,
+            destructive: config.appearance.destructive,
             private_mode: false,
             normal_count: 0,
             locked: false,
@@ -1716,6 +1912,10 @@ impl Chrome {
             address_slot,
             tab_strip,
             tab_bar: TabBarStyle::Compact,
+            strip_k: Animated::new(1.0, Spring::SMOOTH),
+            strip_placed: false,
+            lone_tab: false,
+            hide_lone_tab: layout.hide_single_tab_bar,
             presentation: false,
             presentation_k: Animated::new(0.0, Spring::SMOOTH),
             bar_top: 0.0,
@@ -1734,6 +1934,7 @@ impl Chrome {
             share: share_button,
             extensions: extensions_button,
             extensions_shown: true,
+            hidden_buttons: Vec::new(),
             shield_glyph,
             address_favicon,
             address_icon_override: None,
@@ -1750,6 +1951,7 @@ impl Chrome {
             circuit_button,
             circuit_wanted: false,
             network_icon,
+            network_label,
             zoom_button,
             zoom_label,
             zoom_wanted: None,
@@ -2035,14 +2237,7 @@ impl Chrome {
                     ..row(12.0)
                 },
             );
-            match item.icon {
-                Some(icon) => {
-                    ui.add(row_node, Widget::icon(icon, 22.0).with_paint(Paint::Accent), Style::default());
-                }
-                None => {
-                    favicon_node(ui, row_node, &item.url, 20.0, favicons);
-                }
-            }
+            panel_row_icon(ui, row_node, item, 20.0, favicons);
             let text = ui.add(
                 row_node,
                 Widget::container(),
@@ -2172,7 +2367,7 @@ impl Chrome {
             return;
         }
         self.download_state = Some(state);
-        ui.set_visible(self.downloads, shown && !self.locked);
+        ui.set_visible(self.downloads, shown && !self.locked && !self.is_hidden("downloads"));
         ui.set_visible(self.download_track, progress.is_some());
         let mut style = ui.style(self.download_fill);
         style.size.width = percent(progress.unwrap_or(0.0).clamp(0.0, 1.0));
@@ -2362,6 +2557,42 @@ impl Chrome {
         settled_value(&self.presentation_k) * (1.0 - settled_value(&self.reveal_k))
     }
 
+    /// The separate tab row should be slid away (a lone tab, `layout.hide_single_tab_bar`).
+    fn strip_wanted_away(&self) -> bool {
+        self.hide_lone_tab && self.lone_tab
+    }
+
+    /// Points `strip_k` at the row's shown/away state; the first target is taken at once.
+    fn retarget_strip(&mut self, config: &Config) {
+        self.strip_k.spring = chrome_spring(config);
+        self.aim_strip();
+    }
+
+    /// Sets `strip_k`'s target from the lone-tab state (the first one is taken at once).
+    fn aim_strip(&mut self) {
+        let target = if self.strip_wanted_away() { 0.0 } else { 1.0 };
+        self.strip_k.target = target;
+        if !self.strip_placed {
+            self.strip_placed = true;
+            self.strip_k.snap(target);
+        }
+    }
+
+    /// The separate tab row is sliding in or away (the page follows it every frame).
+    pub fn strip_moving(&self) -> bool {
+        !self.strip_k.is_settled(PRESENTATION_SETTLED)
+    }
+
+    /// How much of the separate tab row is shown (0-1), exactly its target once settled.
+    fn strip_shown(&self) -> f32 {
+        settled_value(&self.strip_k)
+    }
+
+    /// The room the separate tab row (with its gap) takes under the toolbar, `shown` of it.
+    fn strip_room(tab_bar: TabBarStyle, shown: f32) -> f32 {
+        if tab_bar == TabBarStyle::Separate { (TAB_STRIP_HEIGHT + TAB_STRIP_GAP) * shown } else { 0.0 }
+    }
+
     /// F11 fullscreen has fully hidden the bars (and they aren't being revealed).
     fn chrome_gone(&self) -> bool {
         self.presentation
@@ -2400,8 +2631,11 @@ impl Chrome {
                 style.inset.top = wanted;
                 ui.set_style(node, style);
             }
-            ui.set_opacity(node, 1.0 - away);
-            ui.set_visible(node, shown);
+            let strip = node == self.tab_strip;
+            // The tab row fades as it slides away (a lone tab); it is gone once away.
+            let fade = if strip { self.strip_shown().powi(2) } else { 1.0 };
+            ui.set_opacity(node, (1.0 - away) * fade);
+            ui.set_visible(node, shown && (!strip || self.strip_shown() > STRIP_GONE));
         }
         // Flat mode's toolbar surface follows the bars (its height follows the page's top).
         ui.set_opacity(self.toolbar_band, 1.0 - away);
@@ -2414,6 +2648,10 @@ impl Chrome {
         if moving || self.presentation {
             self.presentation_k.step(dt);
             self.reveal_k.step(dt);
+            self.place_bars(ui);
+        }
+        if self.strip_moving() {
+            self.strip_k.step(dt);
             self.place_bars(ui);
         }
         self.animate(ui, dt);
@@ -2501,7 +2739,11 @@ impl Chrome {
             self.tab_widths.ready = false;
         }
         self.tab_bar = l.tab_bar;
+        self.hide_lone_tab = l.hide_single_tab_bar;
+        self.destructive = config.appearance.destructive;
+        self.retarget_strip(config);
         ui.set_visible(self.home_button, l.home_button);
+        self.hidden_buttons.clone_from(&config.layout.hidden_toolbar_buttons);
         let separate = l.tab_bar == TabBarStyle::Separate;
         ui.set_visible(self.tab_capsule, !separate);
         ui.set_visible(self.address_slot, separate);
@@ -2625,8 +2867,9 @@ impl Chrome {
             }
         }
         let narrow = self.mode == Mode::Narrow || bare;
-        // With the sidebar open, its own header holds the toggle.
+        // With the sidebar open, its own header holds the toggle (and the window buttons).
         ui.set_visible(self.bar_sidebar_button, !show_sidebar);
+        self.layout_lights(ui, config, show_sidebar);
         ui.set_visible(self.forward, !narrow);
         for &pill in &self.pills {
             ui.set_visible(pill, !narrow);
@@ -2649,27 +2892,183 @@ impl Chrome {
             ui.set_visible(self.downloads, false);
         } else {
             // Unlocked again (or never locked): the page buttons the lock hid come back.
-            for node in [self.back, self.share, self.new_tab] {
-                ui.set_visible(node, true);
-            }
-            ui.set_visible(self.extensions, self.extensions_shown);
+            ui.set_visible(self.back, true);
+            ui.set_visible(self.share, !self.is_hidden("share"));
+            ui.set_visible(self.new_tab, !self.is_hidden("new_tab"));
+            ui.set_visible(self.extensions, self.extensions_shown && !self.is_hidden("extensions"));
             let downloads = self.download_state.is_some_and(|(shown, _)| shown);
-            ui.set_visible(self.downloads, downloads);
+            ui.set_visible(self.downloads, downloads && !self.is_hidden("downloads"));
         }
         // The bar, tab row and bookmarks bar: where F11 fullscreen has them now, and which
         // of them are shown at all (locked, fullscreen; see `bars_shown`).
         self.place_bars(ui);
     }
 
+    /// Shows the window buttons where they belong and sizes them from the config: custom
+    /// decorations only, never in fullscreen; on the left they sit in the sidebar's header
+    /// while the sidebar is open (docked or floating) and in the toolbar otherwise, on the
+    /// right always at the toolbar's end.
+    fn layout_lights(&mut self, ui: &mut Ui, config: &Config, show_sidebar: bool) {
+        let layout = &config.layout;
+        let wanted = crate::window_frame::lights_wanted(config, self.is_fullscreen());
+        let left = config.window.controls_side == ControlsSide::Left;
+        let shown = [wanted && left && !show_sidebar, wanted && !left, wanted && left && show_sidebar];
+        let beside = (layout.traffic_light_margin - GROUP_GAP).max(0.0);
+        let look = (LightColors::from_config(config), layout.traffic_light_ring);
+        if look != self.lights_look {
+            self.lights_look = look;
+            self.lights_dirty = true;
+        }
+        let inner_size = (layout.traffic_light_size - 2.0 * layout.traffic_light_ring).max(0.0);
+        for (i, (set, shown)) in self.lights.iter().zip(shown).enumerate() {
+            if ui.is_visible(set.group) != shown {
+                self.lights_dirty = true;
+            }
+            ui.set_visible(set.group, shown);
+            let mut style = ui.style(set.group);
+            style.gap = Size { width: length(layout.traffic_light_gap), height: length(0.0) };
+            style.margin = match i {
+                0 => Rect { left: length(0.0), right: length(beside), top: length(0.0), bottom: length(0.0) },
+                1 => Rect { left: length(beside), right: length(0.0), top: length(0.0), bottom: length(0.0) },
+                // The sidebar's header pushes the toggle to the far end.
+                _ => Rect { left: length(0.0), right: auto(), top: length(0.0), bottom: length(0.0) },
+            };
+            if style != ui.style(set.group) {
+                ui.set_style(set.group, style);
+            }
+            for ((&disc, &inner), &glyph) in set.discs.iter().zip(&set.inners).zip(&set.glyphs) {
+                for (node, side) in [(disc, layout.traffic_light_size), (inner, inner_size)] {
+                    let mut style = ui.style(node);
+                    style.size = square(side);
+                    if style != ui.style(node) {
+                        ui.set_style(node, style);
+                    }
+                }
+                ui.set_icon_size(glyph, layout.traffic_light_size * LIGHT_GLYPH);
+            }
+        }
+        self.bar_lights_inset = if shown[0] {
+            crate::window_frame::lights_inset(
+                layout.traffic_light_size,
+                layout.traffic_light_gap,
+                layout.traffic_light_margin,
+            )
+        } else {
+            0.0
+        };
+    }
+
+    /// Whether a press at `p` on empty chrome moves the window: the toolbar's, the tab row's and
+    /// the bookmarks bar's free space (gaps between and around their buttons and tabs), the
+    /// margin above them and the sidebar's header. Buttons, tabs, fields and everything that
+    /// lies above the bars (popovers, sheets) are not.
+    pub fn is_drag_region(&self, ui: &Ui, config: &Config, p: Vec2) -> bool {
+        if self.is_fullscreen() || p.y < 0.0 || p.y >= self.page_rect(config, self.window).origin.y {
+            return false;
+        }
+        let Some(node) = ui.hit(p) else { return true };
+        if ui.hit_action(p).is_some() {
+            return false;
+        }
+        if ui.widget(node).is_some_and(|w| {
+            matches!(
+                w.kind,
+                axion_ui::WidgetKind::TextField(_)
+                    | axion_ui::WidgetKind::Toggle { .. }
+                    | axion_ui::WidgetKind::Slider { .. }
+                    | axion_ui::WidgetKind::Segmented { .. }
+            )
+        }) {
+            return false;
+        }
+        if node == self.sidebar {
+            return ui.frame(self.sidebar_header).contains(p);
+        }
+        let bars = [self.bar, self.tab_strip, self.bookmarks.bar];
+        let mut at = Some(node);
+        while let Some(n) = at {
+            // A popover is built inside the bar it flows out of, but floats above it.
+            if ui.widget(n).is_some_and(|w| w.overlay) {
+                return false;
+            }
+            if bars.contains(&n) {
+                return true;
+            }
+            at = ui.parent(n);
+        }
+        false
+    }
+
+    /// The light a node belongs to (the disc or its glyph), if any.
+    fn light_at(&self, node: NodeId) -> Option<Light> {
+        self.lights.iter().find_map(|set| {
+            Light::ALL.into_iter().find(|l| {
+                let i = l.index();
+                set.discs[i] == node || set.inners[i] == node || set.glyphs[i] == node
+            })
+        })
+    }
+
+    /// Draws the window buttons for the pointer (`hovered`: the button under it, `pressed`: the
+    /// held one), whether the window is in front and whether it is maximized. Call every frame.
+    pub fn update_lights(
+        &mut self,
+        ui: &mut Ui,
+        hovered: Option<NodeId>,
+        pressed: Option<NodeId>,
+        focused: bool,
+        maximized: bool,
+    ) {
+        let mut state = self.lights_state;
+        state.set_hovered(hovered.and_then(|n| self.light_at(n)));
+        state.set_pressed(pressed.and_then(|n| self.light_at(n)));
+        state.set_focused(focused);
+        state.set_maximized(maximized);
+        if state == self.lights_state && !self.lights_dirty {
+            return;
+        }
+        self.lights_state = state;
+        self.lights_dirty = false;
+        for set in &self.lights {
+            for light in Light::ALL {
+                let look = state.look(light, &self.lights_look.0);
+                let i = light.index();
+                let (disc, inner, glyph) = (set.discs[i], set.inners[i], set.glyphs[i]);
+                if let Some(w) = ui.widget_mut(inner) {
+                    w.background = Background::Fill(Paint::Fixed(look.color), 1.0);
+                }
+                if let Some(w) = ui.widget_mut(disc) {
+                    w.background = Background::Fill(Paint::Fixed(look.ring), 1.0);
+                    if light == Light::Zoom
+                        && let Some(tooltip) = &mut w.tooltip
+                    {
+                        tooltip.label = if maximized { tr("Restore") } else { tr("Zoom") }.to_owned();
+                    }
+                }
+                if let Some(w) = ui.widget_mut(glyph) {
+                    w.set_paint(Paint::Fixed(look.glyph_color));
+                }
+                ui.set_icon(glyph, look.glyph);
+                ui.set_visible(glyph, look.glyph_shown);
+            }
+        }
+    }
+
     /// The page's rectangle (logical px): below the toolbar, beside a docked sidebar, with a
     /// small margin to the window edges so its rounded corners read as a card.
     pub fn page_rect(&self, config: &Config, window: Vec2) -> Frame {
-        self.card_rect(config, window, self.chrome_away(), self.docked_sidebar_width(config))
+        self.card_rect(
+            config,
+            window,
+            self.chrome_away(),
+            self.docked_sidebar_width(config),
+            self.strip_shown(),
+        )
     }
 
     /// The page card for a docked sidebar `sidebar` wide, with the chrome `away` (0–1) gone
     /// (F11: the card's margins shrink away as the chrome leaves).
-    fn card_rect(&self, config: &Config, window: Vec2, away: f32, sidebar: f32) -> Frame {
+    fn card_rect(&self, config: &Config, window: Vec2, away: f32, sidebar: f32, strip: f32) -> Frame {
         if away >= 1.0 {
             return Frame { origin: Vec2::ZERO, size: window };
         }
@@ -2677,8 +3076,7 @@ impl Chrome {
         let l = &layout_in_use;
         // The page's left edge follows the sidebar as it slides.
         let left = sidebar + l.page_margin;
-        let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 }
-            + self.bookmarks_room();
+        let strip = Self::strip_room(l.tab_bar, strip) + self.bookmarks_room();
         let top = l.margin + l.bar_height + strip + l.margin / 2.0;
         let keep = 1.0 - away;
         let origin = Vec2::new(left, top) * keep;
@@ -2703,7 +3101,7 @@ impl Chrome {
         } else {
             0.0
         };
-        self.card_rect(config, window, 0.0, sidebar)
+        self.card_rect(config, window, 0.0, sidebar, self.strip_k.target)
     }
 
     /// The toolbar node: popovers that should flow out of the bar's glass live in it.
@@ -2791,11 +3189,51 @@ impl Chrome {
         ui.frame(self.downloads)
     }
 
+    /// Whether the user hid the toolbar button `name` (`layout.hidden_toolbar_buttons`).
+    fn is_hidden(&self, name: &str) -> bool {
+        self.hidden_buttons.iter().any(|b| b == name)
+    }
+
+    /// The toolbar button under `node` (a node of the toolbar, or one of its children).
+    pub fn toolbar_button_at(&self, ui: &Ui, node: NodeId) -> Option<crate::context_registry::ToolbarButton> {
+        use crate::context_registry::ToolbarButton;
+        let buttons = [
+            (self.share, ToolbarButton::Share),
+            (self.new_tab, ToolbarButton::NewTab),
+            (self.extensions, ToolbarButton::Extensions),
+            (self.downloads, ToolbarButton::Downloads),
+            (self.home_button, ToolbarButton::Home),
+        ];
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if let Some((_, button)) = buttons.iter().find(|(b, _)| *b == n) {
+                return Some(*button);
+            }
+            at = ui.parent(n);
+        }
+        None
+    }
+
+    /// Whether `node` lies in the toolbar (the bar), outside its address field.
+    pub fn in_bar(&self, ui: &Ui, node: NodeId) -> bool {
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if n == self.address_slot || n == self.address_field {
+                return false;
+            }
+            if n == self.bar {
+                return true;
+            }
+            at = ui.parent(n);
+        }
+        false
+    }
+
     /// Shows or hides the toolbar's extensions button (`extensions.enabled`).
     pub fn set_extensions_button(&mut self, ui: &mut Ui, shown: bool) {
         if self.extensions_shown != shown {
             self.extensions_shown = shown;
-            ui.set_visible(self.extensions, shown && !self.locked);
+            ui.set_visible(self.extensions, shown && !self.locked && !self.is_hidden("extensions"));
         }
     }
 
@@ -2862,9 +3300,10 @@ impl Chrome {
 
     /// The network chip: hidden (`None`), or shown with the route's state (green: connected,
     /// accent: connecting, red: down, grey: this site goes direct).
-    pub fn set_network_chip(&mut self, ui: &mut Ui, chip: Option<crate::network::ChipState>) {
+    pub fn set_network_chip(&mut self, ui: &mut Ui, chip: Option<crate::network::ChipState>, session: bool) {
         use crate::network::ChipState;
         self.network_wanted = chip;
+        ui.set_visible(self.network_label, chip.is_some() && session);
         ui.set_visible(self.network_button, chip.is_some() && self.extras_fit());
         let Some(state) = chip else { return };
         ui.set_icon(
@@ -2930,7 +3369,7 @@ impl Chrome {
 
     /// The sidebar's button when the sidebar is closed: the Playlist page keeps clear of it.
     pub fn sidebar_button_room(&self) -> f32 {
-        BUTTON + 2.0 * self.bar_top.max(8.0)
+        self.bar_lights_inset + BUTTON + 2.0 * self.bar_top.max(8.0)
     }
 
     pub fn set_audio(&mut self, ui: &mut Ui, playing: bool, muted: bool) {
@@ -3191,6 +3630,7 @@ impl Chrome {
     /// fill). Call every frame with the UI's hovered node.
     pub fn update_hover(&mut self, ui: &mut Ui, hovered: Option<NodeId>) {
         self.update_separators(ui, hovered);
+        self.update_close_hover(ui, hovered);
         let row = hovered.filter(|&n| {
             self.items.iter().any(|i| i.node == n && i.surface == Surface::Sidebar)
                 && ui.widget(n).is_some_and(|w| w.background != Background::Glass(GlassLevel::Thin))
@@ -3212,9 +3652,54 @@ impl Chrome {
         self.hovered_row = row;
     }
 
+    /// Lights the dot of the tab close button under the pointer red: tinted glass in the
+    /// destructive colour (a flat tint in flat mode), never a fill behind a glass button.
+    fn update_close_hover(&mut self, ui: &mut Ui, hovered: Option<NodeId>) {
+        let is_close = |ui: &Ui, n: NodeId| {
+            ui.widget(n)
+                .and_then(|w| w.action)
+                .and_then(ChromeAction::from_id)
+                .is_some_and(|a| matches!(a, ChromeAction::CloseTab(_)))
+        };
+        let now = hovered.filter(|&n| is_close(ui, n));
+        if now == self.hovered_close {
+            return;
+        }
+        if let Some(old) = self.hovered_close.take()
+            && is_close(ui, old)
+        {
+            self.paint_close_dot(ui, old, false);
+        }
+        if let Some(new) = now {
+            self.paint_close_dot(ui, new, true);
+        }
+        self.hovered_close = now;
+    }
+
+    /// The dot of close button `button` at rest, or lit red.
+    fn paint_close_dot(&self, ui: &mut Ui, button: NodeId, lit: bool) {
+        let Some(dot) = ui.children(button).first().copied() else { return };
+        if let Some(w) = ui.widget_mut(dot) {
+            w.background = if lit {
+                Background::TintedGlass(GlassLevel::Thin, Paint::Fixed(self.destructive))
+            } else {
+                Background::Fill(Paint::Label, CLOSE_DOT_OPACITY)
+            };
+        }
+        if let Some(cross) = ui.children(dot).first().copied()
+            && let Some(w) = ui.widget_mut(cross)
+        {
+            w.set_paint(if lit { Paint::OnColor(self.destructive) } else { Paint::Surface });
+        }
+    }
+
     /// Rebuilds the tab segments and sidebar rows from the tab model. `other` is the group
     /// not shown (listed in the sidebar only).
     pub fn sync_tabs(&mut self, ui: &mut Ui, tabs: &Tabs, other: &Tabs, favicons: &Favicons) {
+        // The rebuilt close buttons are at rest; the persistent one of the address is put back.
+        if self.hovered_close.take() == Some(self.address_close) {
+            self.paint_close_dot(ui, self.address_close, false);
+        }
         for pill in std::mem::take(&mut self.pills) {
             ui.remove(pill);
         }
@@ -3229,6 +3714,8 @@ impl Chrome {
         self.tab_widths.separator_hover = None;
         let narrow = self.mode == Mode::Narrow;
         let separate = self.tab_bar == TabBarStyle::Separate;
+        self.lone_tab = lone_tab(tabs);
+        self.aim_strip();
         let mut order = Vec::with_capacity(tabs.len());
         let private = self.private_mode;
         ui.set_opacity(self.address, 1.0);
@@ -4145,6 +4632,21 @@ impl Chrome {
         }
     }
 
+    /// Whether `node` is the address field's slot of the separate tab bar (or inside it).
+    pub fn address_slot_contains(&self, ui: &Ui, node: NodeId) -> bool {
+        if self.tab_bar != TabBarStyle::Separate {
+            return false;
+        }
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if n == self.address {
+                return true;
+            }
+            at = ui.parent(n);
+        }
+        false
+    }
+
     /// The separate tab bar's row (a plane of its own).
     pub fn tab_strip_node(&self) -> NodeId {
         self.tab_strip
@@ -4156,7 +4658,7 @@ impl Chrome {
         let layout_in_use = config.effective_layout();
         let l = &layout_in_use;
         let m = l.margin;
-        let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 };
+        let strip = Self::strip_room(l.tab_bar, self.strip_shown());
         let bar = self.bookmarks.bar;
         let mut style = ui.style(bar);
         // Left and width follow the items (see `fit_bookmarks`); the top follows F11's
@@ -4528,6 +5030,134 @@ mod tests {
         }
     }
 
+    /// The separate tab row slides away with one lone tab and comes back with a second tab, a
+    /// pinned or a grouped one; the page follows it; the key turns it off; flat mode and Reduce
+    /// Motion get there too.
+    /// "Hide Button" (`layout.hidden_toolbar_buttons`) takes the share, new tab, extensions and
+    /// downloads buttons out of the toolbar, and clearing the list brings them back.
+    #[test]
+    fn hidden_toolbar_buttons_leave_and_return() {
+        let mut config = Config::default();
+        let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+        let mut chrome = Chrome::build(&mut ui, &config);
+        let window = Vec2::new(1400.0, 900.0);
+        chrome.set_download_indicator(&mut ui, true, None);
+        chrome.apply_layout(&mut ui, &config, window);
+        let buttons = [
+            ("share", chrome.share),
+            ("new_tab", chrome.new_tab),
+            ("extensions", chrome.extensions),
+            ("downloads", chrome.downloads),
+        ];
+        for (name, node) in buttons {
+            assert!(ui.is_visible(node), "{name} shown by default");
+        }
+        for (hidden, node) in buttons {
+            config.layout.hidden_toolbar_buttons = vec![hidden.to_owned()];
+            chrome.apply_layout(&mut ui, &config, window);
+            for (name, other) in buttons {
+                assert_eq!(ui.is_visible(other), name != hidden, "{name} with {hidden} hidden");
+            }
+            // The indicator's updates never bring a hidden button back.
+            chrome.set_download_indicator(&mut ui, true, Some(0.5));
+            chrome.set_extensions_button(&mut ui, true);
+            assert!(!ui.is_visible(node), "{hidden} stays hidden");
+        }
+        config.layout.hidden_toolbar_buttons.clear();
+        chrome.apply_layout(&mut ui, &config, window);
+        assert!(buttons.iter().all(|&(_, node)| ui.is_visible(node)));
+    }
+
+    #[test]
+    fn the_tab_row_hides_with_a_lone_tab() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let favicons = Favicons::new(device, queue, None);
+        let window = Vec2::new(1400.0, 900.0);
+        let tabs_of = |n: u32, pinned: bool, group: Option<u32>| {
+            let mut tabs = Tabs::default();
+            for i in 0..n {
+                let mut tab = Tab::new(ViewId(i), &format!("https://t{i}.example"));
+                tab.pinned = pinned;
+                tab.group = group;
+                tabs.insert(tab, i == 0);
+            }
+            tabs
+        };
+        assert!(lone_tab(&tabs_of(1, false, None)));
+        assert!(!lone_tab(&tabs_of(0, false, None)));
+        assert!(!lone_tab(&tabs_of(2, false, None)));
+        assert!(!lone_tab(&tabs_of(1, true, None)), "a pinned tab keeps the row");
+        assert!(!lone_tab(&tabs_of(1, false, Some(1))), "a grouped tab keeps the row");
+        // (The sidebar's slide settles within a fraction of a pixel.)
+        let near =
+            |a: Frame, b: Frame| (a.origin - b.origin).length() < 0.1 && (a.size - b.size).length() < 0.1;
+        for (flat, reduce) in [(false, false), (true, false), (false, true)] {
+            let mut config = Config::default();
+            config.layout.tab_bar = TabBarStyle::Separate;
+            config.glass.reduce_motion = reduce;
+            if flat {
+                config.glass.style = axion_config::GlassStyle::Flat;
+            }
+            let case = format!("flat {flat}, reduce motion {reduce}");
+            let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+            ui.set_viewport(window, 1.0);
+            let mut chrome = Chrome::build(&mut ui, &config);
+            let other = Tabs::default();
+            let settle = |chrome: &mut Chrome, ui: &mut Ui, config: &Config| {
+                for _ in 0..300 {
+                    chrome.animate_all(ui, 1.0 / 60.0);
+                    chrome.apply_layout(ui, config, window);
+                    ui.layout();
+                }
+            };
+            chrome.apply_layout(&mut ui, &config, window);
+            chrome.sync_tabs(&mut ui, &tabs_of(3, false, None), &other, &favicons);
+            settle(&mut chrome, &mut ui, &config);
+            let with_row = chrome.page_rect(&config, window);
+            assert!(shown(&ui, chrome.tab_strip), "{case}: three tabs show the row");
+
+            // Down to one tab: the row slides away over several frames, the page grows into it.
+            chrome.sync_tabs(&mut ui, &tabs_of(1, false, None), &other, &favicons);
+            assert!(chrome.strip_moving(), "{case}: animated, not at once");
+            let mut heights = Vec::new();
+            for _ in 0..300 {
+                chrome.animate_all(&mut ui, 1.0 / 60.0);
+                chrome.apply_layout(&mut ui, &config, window);
+                heights.push(chrome.page_rect(&config, window).size.y);
+            }
+            assert!(heights.windows(2).any(|w| w[1] > w[0] + 0.5), "{case}: grows frame by frame");
+            ui.layout();
+            assert!(!chrome.strip_moving());
+            assert!(!shown(&ui, chrome.tab_strip), "{case}: the row is gone");
+            let alone = chrome.page_rect(&config, window);
+            let gained = alone.size.y - with_row.size.y;
+            assert!(
+                (gained - (TAB_STRIP_HEIGHT + TAB_STRIP_GAP)).abs() < 0.01
+                    && alone.origin.y < with_row.origin.y,
+                "{case}: the page gained the row's room ({gained})"
+            );
+            assert!(near(alone, chrome.settled_page_rect(&config, window)));
+
+            // A second tab, or a pinned one: back.
+            for tabs in [tabs_of(2, false, None), tabs_of(1, true, None)] {
+                chrome.sync_tabs(&mut ui, &tabs, &other, &favicons);
+                settle(&mut chrome, &mut ui, &config);
+                assert!(shown(&ui, chrome.tab_strip), "{case}: the row is back");
+                assert!(near(chrome.page_rect(&config, window), with_row), "{case}: page as before");
+                chrome.sync_tabs(&mut ui, &tabs_of(1, false, None), &other, &favicons);
+                settle(&mut chrome, &mut ui, &config);
+                assert!(!shown(&ui, chrome.tab_strip));
+            }
+
+            // Switched off: the row stays with a lone tab.
+            config.layout.hide_single_tab_bar = false;
+            chrome.apply_layout(&mut ui, &config, window);
+            settle(&mut chrome, &mut ui, &config);
+            assert!(shown(&ui, chrome.tab_strip), "{case}: the key keeps the row");
+            assert!(near(chrome.page_rect(&config, window), with_row), "{case}: page as before");
+        }
+    }
+
     /// Whether `node` and every parent of it are displayed.
     fn shown(ui: &Ui, node: NodeId) -> bool {
         let mut at = Some(node);
@@ -4668,6 +5298,150 @@ mod tests {
             assert!(n >= last, "width {w}");
             last = n;
         }
+    }
+
+    #[test]
+    fn window_button_actions_round_trip() {
+        for action in [ChromeAction::WindowClose, ChromeAction::WindowMinimize, ChromeAction::WindowZoom] {
+            assert_eq!(ChromeAction::from_id(action.id()), Some(action));
+        }
+    }
+
+    /// A chrome laid out in a 1400 x 900 window, the sidebar slide settled.
+    fn settled_chrome(config: &Config, open: bool, fullscreen: bool) -> (Ui, Chrome) {
+        let window = Vec2::new(1400.0, 900.0);
+        let mut ui = Ui::new(axion_ui::Theme::new(config, false), 1.0);
+        let mut chrome = Chrome::build(&mut ui, config);
+        chrome.docked_open = open;
+        if fullscreen {
+            chrome.set_page_fullscreen(true);
+        }
+        ui.set_viewport(window, 1.0);
+        for _ in 0..600 {
+            chrome.animate_all(&mut ui, 1.0 / 60.0);
+            chrome.apply_layout(&mut ui, config, window);
+            ui.layout();
+        }
+        (ui, chrome)
+    }
+
+    /// Which row of window buttons is shown: in the toolbar while the sidebar is closed, in the
+    /// sidebar's header while it is open, at the toolbar's right end on that side; never with
+    /// the desktop's frame or in fullscreen. They never overlap the toolbar group beside them.
+    #[test]
+    fn window_buttons_sit_where_the_layout_wants_them() {
+        use axion_config::WindowDecorations;
+        let shown_sets = |config: &Config, open: bool, fullscreen: bool| -> [bool; 3] {
+            let (ui, chrome) = settled_chrome(config, open, fullscreen);
+            let first = ui.frame(chrome.lights[0].group);
+            if ui.is_visible(chrome.lights[0].group) {
+                let nav_left = ui.frame(chrome.nav).origin.x;
+                assert!(
+                    first.origin.x + first.size.x <= nav_left,
+                    "the buttons stay left of the toolbar group"
+                );
+                let (size, gap) = (config.layout.traffic_light_size, config.layout.traffic_light_gap);
+                assert_eq!(first.size.x, crate::window_frame::lights_width(size, gap));
+            }
+            [0, 1, 2].map(|i| ui.is_visible(chrome.lights[i].group))
+        };
+        let mut config = Config::default();
+        assert_eq!(shown_sets(&config, true, false), [false, false, true], "docked sidebar open");
+        assert_eq!(shown_sets(&config, false, false), [true, false, false], "sidebar closed");
+        config.window.controls_side = ControlsSide::Right;
+        assert_eq!(shown_sets(&config, true, false), [false, true, false]);
+        assert_eq!(shown_sets(&config, false, false), [false, true, false]);
+        config.window.controls_side = ControlsSide::Left;
+        assert_eq!(shown_sets(&config, false, true), [false, false, false], "fullscreen");
+        config.window.decorations = WindowDecorations::System;
+        assert_eq!(shown_sets(&config, false, false), [false, false, false], "the desktop's frame");
+        assert_eq!(shown_sets(&config, true, false), [false, false, false]);
+    }
+
+    /// The window buttons follow the pointer (glyphs), the window's focus (grey) and its
+    /// maximized state (the zoom button's glyph), and every button is a flat disc, never glass.
+    #[test]
+    fn window_buttons_look_follows_the_state() {
+        let config = Config::default();
+        let (mut ui, mut chrome) = settled_chrome(&config, true, false);
+        let (close, zoom) = (chrome.lights[2].discs[0], chrome.lights[2].discs[2]);
+        let tint = |ui: &Ui, node: NodeId| match ui.widget(node).map(|w| w.background) {
+            Some(Background::Fill(Paint::Fixed(c), _)) => c,
+            other => panic!("not a flat fill: {other:?}"),
+        };
+        let disc_colour = |ui: &Ui, chrome: &Chrome, i: usize| tint(ui, chrome.lights[2].inners[i]);
+        // Flat discs with a ring, no glass anywhere in a button.
+        for i in 0..3 {
+            let (ring, inner) = (chrome.lights[2].discs[i], chrome.lights[2].inners[i]);
+            assert!(matches!(ui.widget(ring).map(|w| w.background), Some(Background::Fill(..))));
+            assert!(matches!(ui.widget(inner).map(|w| w.background), Some(Background::Fill(..))));
+            assert_eq!(ui.frame(ring).size.x, config.layout.traffic_light_size);
+        }
+        let red = config.window.light_close;
+        assert_eq!(disc_colour(&ui, &chrome, 0), red);
+        assert_eq!(
+            tint(&ui, close),
+            crate::window_frame::LightsState::default()
+                .look(Light::Close, &LightColors::from_config(&config))
+                .ring
+        );
+        chrome.update_lights(&mut ui, None, None, true, false);
+        assert!(!ui.is_visible(chrome.lights[2].glyphs[0]));
+        chrome.update_lights(&mut ui, Some(zoom), None, true, false);
+        assert!((0..3).all(|i| ui.is_visible(chrome.lights[2].glyphs[i])), "glyphs show on all three");
+        ui.layout();
+        // The glyph box sits exactly in the middle of its disc, on both axes.
+        for i in 0..3 {
+            let disc = ui.frame(chrome.lights[2].discs[i]).center();
+            let glyph = ui.frame(chrome.lights[2].glyphs[i]).center();
+            assert!((disc - glyph).abs().max_element() < 0.01, "glyph {i} off centre: {disc:?} vs {glyph:?}");
+        }
+        chrome.update_lights(&mut ui, None, None, false, false);
+        assert!(!ui.is_visible(chrome.lights[2].glyphs[0]));
+        assert_eq!(
+            disc_colour(&ui, &chrome, 0),
+            config.window.light_unfocused,
+            "grey while the window is behind"
+        );
+        chrome.update_lights(&mut ui, None, Some(close), true, false);
+        assert!(disc_colour(&ui, &chrome, 0).r < red.r, "darker while held");
+        chrome.update_lights(&mut ui, None, None, true, false);
+        assert_eq!(disc_colour(&ui, &chrome, 0), red);
+        chrome.update_lights(&mut ui, Some(zoom), None, true, true);
+        let icon = match ui.widget(chrome.lights[2].glyphs[2]).map(|w| &w.kind) {
+            Some(axion_ui::WidgetKind::Icon { icon, .. }) => *icon,
+            _ => panic!("not an icon"),
+        };
+        assert_eq!(icon, Icon::RestoreArrows);
+        let label = ui.widget(zoom).and_then(|w| w.tooltip.as_ref()).map(|t| t.label.clone());
+        assert_eq!(label.as_deref(), Some("Restore"));
+    }
+
+    /// Free toolbar space moves the window; buttons, tabs and the address do not.
+    #[test]
+    fn only_free_toolbar_space_drags_the_window() {
+        let config = Config::default();
+        let window = Vec2::new(1400.0, 900.0);
+        let (ui, mut chrome) = settled_chrome(&config, true, false);
+        let centre = |n: NodeId| ui.frame(n).center();
+        let page = chrome.page_rect(&config, window);
+        assert!(chrome.is_drag_region(&ui, &config, Vec2::new(700.0, 2.0)), "the margin above the bar");
+        assert!(!chrome.is_drag_region(&ui, &config, page.center()), "the page");
+        assert!(!chrome.is_drag_region(&ui, &config, Vec2::new(700.0, -1.0)));
+        assert!(!chrome.is_drag_region(&ui, &config, centre(chrome.share)), "a button");
+        assert!(!chrome.is_drag_region(&ui, &config, centre(chrome.lights[2].discs[0])), "a window button");
+        // The gap between two toolbar groups does.
+        let nav = ui.frame(chrome.nav);
+        let gap = Vec2::new(nav.origin.x + nav.size.x + 2.0, nav.center().y);
+        assert!(chrome.is_drag_region(&ui, &config, gap), "between groups");
+        // The sidebar's header is free space; its rows are not.
+        let header = ui.frame(chrome.sidebar_header);
+        assert!(chrome.is_drag_region(&ui, &config, header.center() + Vec2::new(20.0, 0.0)));
+        let below = Vec2::new(header.center().x, header.origin.y + header.size.y + 80.0);
+        assert!(!chrome.is_drag_region(&ui, &config, below));
+        // Never in fullscreen.
+        chrome.set_page_fullscreen(true);
+        assert!(!chrome.is_drag_region(&ui, &config, Vec2::new(700.0, 2.0)));
     }
 
     #[test]

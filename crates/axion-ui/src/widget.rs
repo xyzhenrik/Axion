@@ -53,6 +53,13 @@ pub struct Label {
     pub(crate) max_lines: usize,
 }
 
+impl Label {
+    /// The text shown.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
 pub struct TextField {
     pub(crate) editor: Editor,
     pub(crate) buffer: Buffer,
@@ -213,6 +220,13 @@ pub struct Widget {
     pub tooltip: Option<Tooltip>,
     /// The pointer passes through this widget and everything inside it (a tab that is closing).
     pub passthrough: bool,
+    /// Pressing it leaves the keyboard focus where it is (a row of the list under a text field:
+    /// the field keeps its caret and the list, which closes with the focus, stays until the click
+    /// is done).
+    pub keeps_focus: bool,
+    /// Floats above the bars (a popover's card): never part of the window's own chrome, so a press
+    /// on it is never the start of a window move.
+    pub overlay: bool,
     /// Absolute frame in logical pixels, updated by layout.
     pub(crate) frame: Rect,
 }
@@ -243,6 +257,8 @@ impl Widget {
             track: None,
             tooltip: None,
             passthrough: false,
+            keeps_focus: false,
+            overlay: false,
             frame: Rect::default(),
         }
     }
@@ -357,6 +373,18 @@ impl Widget {
     /// See [`Widget::isolated`].
     pub fn with_isolated(mut self) -> Self {
         self.isolated = true;
+        self
+    }
+
+    /// See [`Widget::overlay`].
+    pub fn as_overlay(mut self) -> Self {
+        self.overlay = true;
+        self
+    }
+
+    /// See [`Widget::keeps_focus`].
+    pub fn keeping_focus(mut self) -> Self {
+        self.keeps_focus = true;
         self
     }
 

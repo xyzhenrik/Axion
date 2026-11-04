@@ -4,7 +4,9 @@
 use axion_config::{BookmarksBar, Config};
 
 use super::*;
-use crate::context_menu::{BookmarkCommand, TabCommand, TabMenuInfo, bookmark_items, group_items, tab_items};
+use crate::context_menu::{
+    BookmarkCommand, TabCommand, TabMenuInfo, address_items, bookmark_items, group_items, tab_items,
+};
 
 /// Pages that count as the home page for `layout.bookmarks_bar = "home"`: the configured home
 /// page and Axion's own new-tab pages (easy to extend when more arrive).
@@ -62,6 +64,19 @@ impl Browser {
             self.open_tab_menu(item);
             return true;
         }
+        // The separate tab bar's address field stands for the current tab (in the compact bar the
+        // address is the tab's own segment, handled above). While it is being edited a right
+        // click is the field's.
+        if button == Button::Right
+            && !self.is_locked()
+            && self.config.tabs.address_context_menu
+            && self.chrome.address_slot_contains(&self.ui, node)
+            && self.ui.focused() != Some(self.chrome.address_field)
+            && let Some(active) = self.group(self.private_mode).active().map(|t| t.view)
+        {
+            self.open_address_menu(active);
+            return true;
+        }
         if button == Button::Right
             && !self.is_locked()
             && let Some((id, header)) = self.chrome.tab_group_at(&self.ui, node)
@@ -74,6 +89,20 @@ impl Browser {
             // A middle click on a group's header is not a click on a tab.
             return true;
         }
+        // The overview's cards: the tab's menu.
+        if button == Button::Right
+            && self.overview.is_open()
+            && !self.is_locked()
+            && let Some(OverviewAction::Select(i) | OverviewAction::Close(i)) = self
+                .ui
+                .hit_action(p)
+                .and_then(|n| self.ui.widget(n))
+                .and_then(|w| w.action)
+                .and_then(OverviewAction::from_id)
+        {
+            self.open_card_menu(i, p);
+            return true;
+        }
         if button == Button::Right
             && !self.is_locked()
             && let Some((private, header)) = self.chrome.group_header_at(&self.ui, node)
@@ -81,7 +110,9 @@ impl Browser {
             self.open_group_menu(private, header);
             return true;
         }
-        false
+        // Everything else the registry has a menu for (sidebar rows, lists, toolbar buttons,
+        // settings rows, the player, extensions, the network chip).
+        button == Button::Right && self.registry_click(p)
     }
 
     pub(super) fn close_other_menus(&mut self) {
@@ -89,28 +120,60 @@ impl Browser {
         self.account_menu.close(&mut self.ui, &self.config);
     }
 
-    /// Opens a tab's context menu, flowing out of its segment or row.
-    pub(super) fn open_tab_menu(&mut self, item: TabItem) {
-        let group = self.group(item.private);
-        let Some(index) = group.index_of(item.view) else { return };
+    /// What decides the rows of the menu of tab `view` (in the normal or private `private`
+    /// group), and the tab group it is in.
+    pub(super) fn tab_menu_info(&self, private: bool, view: ViewId) -> Option<(TabMenuInfo, Option<u32>)> {
+        let group = self.group(private);
+        let index = group.index_of(view)?;
         let tabs = group.all();
         let tab = &tabs[index];
         let host = axion_store::site_host(&tab.url);
         let info = TabMenuInfo {
             pinned: tab.pinned,
             muted: tab.muted,
-            private: item.private,
+            private,
             others: tabs.iter().enumerate().any(|(i, t)| i != index && !t.pinned),
             right: tabs[index + 1..].iter().any(|t| !t.pinned),
             can_reopen: group.has_closed(),
             can_bookmark: self.store.is_some(),
-            can_group: !item.private && !tab.pinned,
+            can_group: !private && !tab.pinned,
             in_group: tab.group.is_some(),
             site_muted: host.as_ref().is_some_and(|h| self.muted_sites.contains(h))
                 || (tab.muted && tab.site_muted),
             has_site: host.is_some(),
         };
-        let choices = self.group_choices(tab.group);
+        Some((info, tab.group))
+    }
+
+    /// Opens the current tab's menu from a right click on the address field (separate tab
+    /// bar): the tab menu's rows, flowing out of the field.
+    pub(super) fn open_address_menu(&mut self, view: ViewId) {
+        let private = self.private_mode;
+        let Some((info, tab_group)) = self.tab_menu_info(private, view) else { return };
+        let choices = self.group_choices(tab_group);
+        let items = address_items(info, &choices, &self.keymap);
+        self.close_other_menus();
+        self.context_tab = Some((view, private));
+        self.context_row = None;
+        let plane = self.chrome.bar_node();
+        let anchor = self.chrome.address_frame(&self.ui);
+        let window = self.logical_size();
+        self.context_menus.open(
+            &mut self.ui,
+            &self.config,
+            plane,
+            anchor,
+            window,
+            Placement::BelowStart,
+            items,
+            None,
+        );
+    }
+
+    /// Opens a tab's context menu, flowing out of its segment or row.
+    pub(super) fn open_tab_menu(&mut self, item: TabItem) {
+        let Some((info, tab_group)) = self.tab_menu_info(item.private, item.view) else { return };
+        let choices = self.group_choices(tab_group);
         let items = tab_items(info, &choices, &self.keymap);
         self.close_other_menus();
         self.context_tab = Some((item.view, item.private));

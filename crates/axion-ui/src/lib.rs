@@ -442,6 +442,28 @@ impl Ui {
         self.tree.children(node).unwrap_or_default()
     }
 
+    /// `node`'s children without collecting them (hit testing and painting walk every node,
+    /// every frame: a list copied per node added up in long lists).
+    fn child_ids(&self, node: NodeId) -> impl DoubleEndedIterator<Item = NodeId> + '_ {
+        let count = self.tree.child_count(node);
+        (0..count).filter_map(move |i| self.tree.child_at_index(node, i).ok())
+    }
+
+    /// Whether `px` (physical px) lies so far outside the clip of the clipped subtree being
+    /// painted that nothing of it can show: more than the clip's own size away, which leaves
+    /// room for anything a widget draws beyond its frame (shadows, lenses). A long scrolled list
+    /// then paints only the rows near its visible part.
+    fn far_outside_clip(&self, px: Rect) -> bool {
+        let stack = self.clip_stack.borrow();
+        let Some(c) = stack.last() else { return false };
+        let margin = c.size.max_element();
+        let (min, max) = (c.origin - Vec2::splat(margin), c.origin + c.size + Vec2::splat(margin));
+        px.origin.x > max.x
+            || px.origin.y > max.y
+            || px.origin.x + px.size.x < min.x
+            || px.origin.y + px.size.y < min.y
+    }
+
     pub fn clear_children(&mut self, node: NodeId) {
         for child in self.tree.children(node).unwrap_or_default() {
             self.remove(child);
@@ -490,7 +512,10 @@ impl Ui {
     }
 
     pub fn is_visible(&self, node: NodeId) -> bool {
-        self.style(node).display != Display::None
+        // Borrowed, not `style()`: hit testing and painting ask this of every node, and a copy
+        // of the whole style each time added up in long lists. (A missing node has the default
+        // style, which is shown.)
+        self.tree.style(node).map_or(true, |s| s.display != Display::None)
     }
 
     pub fn set_text(&mut self, node: NodeId, text: &str) {
@@ -501,6 +526,27 @@ impl Ui {
         {
             label.text = text.to_owned();
             set_buffer_text(&mut label.buffer, self.fonts.get_mut(), &family, text, label.style, label.align);
+            let _ = self.tree.mark_dirty(node);
+            self.needs_layout = true;
+        }
+    }
+
+    /// Changes a text field's placeholder (the hint shown while it is empty).
+    pub fn set_placeholder(&mut self, node: NodeId, text: &str) {
+        let family = self.theme.font_family().to_owned();
+        let Some(widget) = self.tree.get_node_context_mut(node) else { return };
+        if let WidgetKind::TextField(field) = &mut widget.kind
+            && field.placeholder_text != text
+        {
+            field.placeholder_text = text.to_owned();
+            set_buffer_text(
+                &mut field.placeholder,
+                self.fonts.get_mut(),
+                &family,
+                text,
+                field.style,
+                Align::Start,
+            );
             let _ = self.tree.mark_dirty(node);
             self.needs_layout = true;
         }
@@ -910,6 +956,10 @@ impl Ui {
         if let Some(widget) = self.tree.get_node_context_mut(node) {
             widget.frame = frame;
             match &mut widget.kind {
+                // A label that has no room (hidden: taffy gives it no box) has nothing to shape;
+                // shaping a wrapped one at a width of one pixel costs about a millisecond each,
+                // on every layout. It is measured and sized again when it is shown.
+                WidgetKind::Label(_) if frame.size.x <= 0.0 && frame.size.y <= 0.0 => {}
                 WidgetKind::Label(label) => {
                     // A little slack so rounding never ellipsizes a label that fits.
                     if label.max_lines > 1 {
@@ -977,14 +1027,11 @@ impl Ui {
             return None;
         }
         // A segmented control takes the pointer itself (its segments may carry actions).
-        let children = if matches!(widget.kind, WidgetKind::Segmented { .. }) {
-            Vec::new()
-        } else {
-            self.tree.children(node).unwrap_or_default()
-        };
-        for child in children.into_iter().rev() {
-            if let Some(hit) = self.hit_in(child, p) {
-                return Some(hit);
+        if !matches!(widget.kind, WidgetKind::Segmented { .. }) {
+            for child in self.child_ids(node).rev() {
+                if let Some(hit) = self.hit_in(child, p) {
+                    return Some(hit);
+                }
             }
         }
         let solid = !widget.join_only && widget.background != Background::None
@@ -1235,7 +1282,7 @@ impl Ui {
             } else {
                 events.extend(self.focus(hit));
             }
-        } else {
+        } else if !self.actionable(hit).and_then(|n| self.widget(n)).is_some_and(|w| w.keeps_focus) {
             events.extend(self.blur());
         }
         self.pressed = self.actionable(hit);
@@ -1693,7 +1740,7 @@ impl Ui {
     /// While glass is held, it follows the pointer a little (rubber band) when dragged away.
     fn pull_glass(&mut self, p: Vec2) {
         let Some((glass, anchor)) = self.press_anchor else { return };
-        // Reduce Motion: it swells in place.
+        // Reduce Motion: it swells in place and does not drift, but it still stretches.
         let still = self.theme.config().glass.reduce_motion;
         if let Some(press) = self.press_scale.get_mut(&glass) {
             let d = p - anchor;
@@ -1704,7 +1751,7 @@ impl Ui {
             if reach.length() > 0.0 {
                 press.dir = reach / reach.length();
             }
-            press.distance.target = if still { 0.0 } else { reach.length() };
+            press.distance.target = reach.length();
             press.offset.target = if still {
                 Vec2::ZERO
             } else if press.pull.x == press.pull.y {
@@ -1996,6 +2043,11 @@ impl Ui {
             && (lens_on.is_some()
                 || matches!(widget.background, Background::Glass(_) | Background::TintedGlass(..)));
         let press_xf = press_xf.filter(|_| lensed || lens_glow.is_none());
+        // Far outside a scrolled list's visible part: the row and everything in it is cut away
+        // (nothing moves it in: not held, not animating its frame).
+        if press_xf.is_none() && widget.visual_frame.is_none() && self.far_outside_clip(px) {
+            return;
+        }
         let mark = press_xf.as_ref().map(|_| marks(stacks));
         // An animated background carries its content along (mapped from the layout frame onto
         // it), and the content fades with the background's growth: both share one value.
@@ -2310,6 +2362,8 @@ impl Ui {
             }
         }
 
+        // Glass shapes of the subtree start after this node's own (already placed).
+        let glass_mark = (press_xf.is_some() || frame_xf.is_some()).then(|| marks(stacks));
         if widget.clip {
             // The subtree as its own layers, each cut to this widget's frame.
             let mut sub: Vec<Stack<'a>> = Vec::new();
@@ -2319,7 +2373,7 @@ impl Ui {
                 let cut = stack.last().map_or(px, |outer| clip(px, *outer));
                 stack.push(cut);
             }
-            for child in self.tree.children(node).unwrap_or_default() {
+            for child in self.child_ids(node) {
                 self.paint_node(child, child_depth, dim, child_fade, &mut sub);
             }
             self.painting_clipped.set(self.painting_clipped.get() - 1);
@@ -2334,17 +2388,40 @@ impl Ui {
                 }
             }
             stacks[child_depth].after.extend(layers);
+            Self::carry_subtree(
+                stacks,
+                press_xf,
+                mark,
+                frame_xf,
+                frame_mark,
+                glass_mark.as_deref(),
+                child_depth,
+            );
             return;
         }
-        let glass_mark = press_xf.as_ref().map(|_| marks(stacks));
-        for child in self.tree.children(node).unwrap_or_default() {
+        for child in self.child_ids(node) {
             self.paint_node(child, child_depth, dim, child_fade, stacks);
         }
+        Self::carry_subtree(stacks, press_xf, mark, frame_xf, frame_mark, glass_mark.as_deref(), child_depth);
+    }
+
+    /// Carries everything a subtree painted along with its root: the animated background
+    /// (`visual_frame`: popover, menu, sheet opening) and then a held glass's swell and pull.
+    /// Content, nested glass (any depth) and clipped lists all move together.
+    fn carry_subtree(
+        stacks: &mut [Stack<'_>],
+        press_xf: Option<PressXf>,
+        mark: Option<Vec<Mark>>,
+        frame_xf: Option<PressXf>,
+        frame_mark: Option<Vec<Mark>>,
+        glass_mark: Option<&[Mark]>,
+        child_depth: usize,
+    ) {
         if let (Some(xf), Some(mark)) = (frame_xf, frame_mark) {
-            transform_since(stacks, &mark, None, &xf, child_depth);
+            transform_since(stacks, &mark, glass_mark, &xf, child_depth);
         }
         if let (Some(xf), Some(mark)) = (press_xf, mark) {
-            transform_since(stacks, &mark, glass_mark.as_deref(), &xf, child_depth);
+            transform_since(stacks, &mark, glass_mark, &xf, child_depth);
         }
     }
 
@@ -2730,9 +2807,19 @@ fn transform_since(
         }
         transform_content(&mut stack.content, m, xf);
         for layer in stack.after.iter_mut().skip(m.after) {
-            if let Layer::Content(c) = layer {
-                transform_content(c, &Mark::NONE, xf);
-                c.clip = c.clip.map(|r| xf.rect(r));
+            match layer {
+                Layer::Content(c) => {
+                    transform_content(c, &Mark::NONE, xf);
+                    c.clip = c.clip.map(|r| xf.rect(r));
+                }
+                Layer::Glass { shapes, .. } if glass_mark.is_some() => {
+                    for shape in shapes {
+                        shape.center = xf.place(shape.center);
+                        shape.half_size *= xf.diag();
+                        shape.corner_radius *= xf.uniform();
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -3473,6 +3560,44 @@ mod tests {
         assert_eq!(glass_shapes(&ui), 1, "the visible button is glass, the scrolled-out one is not drawn");
     }
 
+    #[test]
+    fn a_long_clipped_list_paints_only_rows_near_its_visible_part() {
+        let mut ui = ui();
+        let root = ui.root();
+        let boxed = ui.add(
+            root,
+            Widget::container().with_clip(),
+            Style { size: Size { width: length(200.0), height: length(100.0) }, ..Default::default() },
+        );
+        let list = ui.add(
+            boxed,
+            Widget::container(),
+            Style { flex_direction: FlexDirection::Column, flex_shrink: 0.0, ..Default::default() },
+        );
+        let rows: Vec<NodeId> = (0..200)
+            .map(|_| {
+                ui.add(
+                    list,
+                    Widget::container().with_background(Background::Fill(Paint::Accent, 1.0)),
+                    Style {
+                        size: Size { width: length(200.0), height: length(20.0) },
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        ui.layout();
+        let mut layers = Vec::new();
+        ui.paint(&mut layers);
+        let quads: usize =
+            layers.iter().map(|l| if let Layer::Content(c) = l { c.quads.len() } else { 0 }).sum();
+        // 5 rows show; those within the clip's own height of it are kept (a margin for shadows
+        // and lenses), the other ~185 are left out.
+        assert!((5..=20).contains(&quads), "{quads} rows painted");
+        assert!(ui.frame(rows[199]).origin.y > 3000.0);
+    }
+
     fn flat_ui() -> Ui {
         let mut config = axion_config::Config::default();
         config.glass.style = axion_config::GlassStyle::Flat;
@@ -4018,10 +4143,107 @@ mod tests {
         assert!((inner.half_size.x / 18.0 - g.x).abs() < 0.01, "{} vs {}", inner.half_size.x / 18.0, g.x);
     }
 
+    /// A popover opening: its glass buttons (and glass nested in them) follow the popover's
+    /// animated frame exactly like its content: same scale, offset and overshoot.
     #[test]
-    fn no_drag_stretch_under_reduce_motion_or_flat() {
+    fn glass_nested_in_an_opening_popover_follows_its_visual_frame() {
+        for flat in [false, true] {
+            let mut config = axion_config::Config::default();
+            if flat {
+                config.glass.style = axion_config::GlassStyle::Flat;
+            }
+            let mut ui = Ui::new(Theme::new(&config, false), 1.0);
+            ui.set_viewport(Vec2::new(800.0, 600.0), 1.0);
+            let root = ui.root();
+            let popover = ui.add(
+                root,
+                Widget::container().with_background(Background::Glass(GlassLevel::Regular)).with_radius(24.0),
+                Style {
+                    position: Position::Absolute,
+                    inset: taffy::Rect {
+                        left: length(300.0),
+                        top: length(100.0),
+                        right: auto(),
+                        bottom: auto(),
+                    },
+                    size: Size { width: length(200.0), height: length(160.0) },
+                    ..Default::default()
+                },
+            );
+            let button = ui.add(
+                popover,
+                Widget::container()
+                    .with_background(Background::Glass(GlassLevel::Thin))
+                    .with_action(ActionId(77))
+                    .with_radius(CAPSULE),
+                Style {
+                    position: Position::Absolute,
+                    inset: taffy::Rect {
+                        left: length(140.0),
+                        top: length(100.0),
+                        right: auto(),
+                        bottom: auto(),
+                    },
+                    size: Size { width: length(44.0), height: length(44.0) },
+                    justify_content: JustifyContent::CENTER,
+                    align_items: AlignItems::CENTER,
+                    ..Default::default()
+                },
+            );
+            ui.add(button, Widget::icon(axion_compositor::Icon::Back, 20.0), Style::default());
+            ui.layout();
+            let layout = ui.frame(popover);
+            let inner = ui.frame(button);
+            // Growing from a small drop, overshooting past the final size, settled.
+            // (From just past `motion.content_reveal_from`: below it the content is hidden.)
+            let steps = [(0.86, 0.85), (0.9, 0.9), (1.0, 1.0), (1.12, 1.08), (0.97, 0.98)];
+            for (kx, ky) in steps {
+                let size = layout.size * Vec2::new(kx, ky);
+                let origin = layout.origin + Vec2::new(10.0, -6.0) * (1.0 - kx) + (layout.size - size) / 2.0;
+                ui.set_visual_frame(popover, Some(Rect { origin, size }));
+                let mut layers = Vec::new();
+                ui.paint(&mut layers);
+                // The expected rect of the button: the layout rect mapped like the content.
+                let ratio = size / layout.size;
+                let centre = origin + size / 2.0 + (inner.center() - layout.center()) * ratio;
+                let want = Rect { origin: centre - inner.size * ratio / 2.0, size: inner.size * ratio };
+                let icon = layers
+                    .iter()
+                    .filter_map(|l| if let Layer::Content(c) = l { c.icons.first().copied() } else { None })
+                    .next_back()
+                    .expect("the icon");
+                assert!(
+                    (icon.rect.center() - want.center()).length() < 0.01,
+                    "flat {flat} {kx}: icon {:?} vs {want:?}",
+                    icon.rect
+                );
+                if flat {
+                    assert!(layers.iter().all(|l| !matches!(l, Layer::Glass { .. })));
+                    continue;
+                }
+                let thin = layers
+                    .iter()
+                    .filter_map(|l| {
+                        if let Layer::Glass { shapes, .. } = l { shapes.last().copied() } else { None }
+                    })
+                    .next_back()
+                    .expect("the button's glass");
+                assert!(
+                    (thin.center - want.center()).length() < 0.01,
+                    "{kx}: glass centre {:?} vs {:?}",
+                    thin.center,
+                    want.center()
+                );
+                assert!((thin.half_size - want.size / 2.0).length() < 0.01, "{kx}: {:?}", thin.half_size);
+                assert!((thin.center - icon.rect.center()).length() < 0.01);
+            }
+        }
+    }
+
+    #[test]
+    fn no_drag_stretch_in_flat_mode() {
         let mut config = axion_config::Config::default();
-        config.glass.reduce_motion = true;
+        config.glass.style = axion_config::GlassStyle::Flat;
         let mut ui = Ui::new(Theme::new(&config, false), 1.0);
         ui.set_viewport(Vec2::new(800.0, 600.0), 1.0);
         let (_, button, _) = row(&mut ui);

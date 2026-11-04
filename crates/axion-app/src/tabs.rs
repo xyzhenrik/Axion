@@ -139,6 +139,9 @@ pub struct Tab {
     pub group: Option<u32>,
     /// What it records now (microphone, camera, screen).
     pub capture: crate::permissions::Capture,
+    /// The tab whose page opened this one with `window.open()` and is still connected to it
+    /// (`window.opener`): when the page closes itself, the opener is shown again.
+    pub opener: Option<ViewId>,
 }
 
 impl Tab {
@@ -165,6 +168,7 @@ impl Tab {
             pinned: false,
             group: None,
             capture: Default::default(),
+            opener: None,
             last_viewed: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as i64),

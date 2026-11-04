@@ -17,17 +17,19 @@ mod provider;
 mod release;
 mod schedule;
 mod source;
+pub mod tarball;
 #[cfg(test)]
 mod testing;
 mod version;
 
 pub use axion_config::{UpdateChannel, Updates};
 pub use checksum::{expected_hash, sha256_bytes, sha256_file, verify_file};
-pub use error::UpdateError;
+pub use error::{UpdateError, summarize_files};
 pub use http::Http;
 pub use install::{
-    AppImageInstalled, Checkout, InstallKind, Progress, Step, Tools, detect, detect_current,
-    inspect_checkout, install_appimage, is_clean, published_checksum, update_checkout,
+    AppImageInstalled, Checkout, Divergence, InstallKind, Progress, Step, Tools, detect, detect_current,
+    dirty_files, divergence, inspect_checkout, install_appimage, is_clean, published_checksum,
+    update_checkout,
 };
 pub use provider::{GitHub, Manifest, Provider, newer_than};
 pub use release::{Asset, Release, plain_notes};
@@ -36,6 +38,7 @@ pub use schedule::{
 };
 pub use semver::Version;
 pub use source::{Repository, Source, parse_repository};
+pub use tarball::Staged;
 pub use version::{is_newer, parse_version, running_version};
 
 /// `Axion/<version>`, the user agent of every request.

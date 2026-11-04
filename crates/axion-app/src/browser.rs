@@ -31,6 +31,7 @@ use crate::accounts::{AddAccountSheet, Relaunch, SheetAction};
 use crate::avatars::{Avatars, PhotoChooser, PhotoFor};
 use crate::chrome::{Chrome, ChromeAction, MoveKey, NowPlaying, PanelItem, Section, Surface, TabItem};
 use crate::circuit_popover::CircuitPopover;
+use crate::click_probe;
 use crate::context_menu::ContextMenus;
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
@@ -95,7 +96,9 @@ use crate::zoom::{self, SiteZoom};
 mod capture;
 mod circuit;
 mod context;
+mod default_browser;
 mod ext_popup;
+mod frame;
 mod import;
 mod network;
 mod network_popup;
@@ -105,6 +108,9 @@ mod page_context;
 mod permissions;
 mod playlist;
 mod reading;
+mod registry;
+mod sheets;
+mod start;
 mod tabgroups;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
@@ -207,8 +213,6 @@ const SESSION_SAVE_DELAY: Duration = Duration::from_secs(2);
 /// A page whose renderer ends is reloaded at most this often.
 const RENDERER_RELOAD_GAP: Duration = Duration::from_secs(10);
 const SESSION_PINNED_KEY: &str = "session_pinned_tabs";
-/// History rows shown in the sidebar panel.
-const PANEL_HISTORY_LIMIT: usize = 300;
 /// Most bookmarks a sidebar search lists.
 const PANEL_SEARCH_LIMIT: usize = 1000;
 /// The History panel's clear button, and what it says while asking to confirm.
@@ -299,6 +303,8 @@ pub struct Browser {
     /// Site permissions: the prompt, the recording indicator's popover and the decisions.
     permissions: permissions::PermissionsUi,
     toast: Toast,
+    /// The pending language the "Restart to apply" toast was already shown for.
+    language_toast_for: Option<axion_i18n::Language>,
     updater: Updater,
     update_alert: UpdateAlert,
     print_dialog: PrintDialog,
@@ -310,6 +316,11 @@ pub struct Browser {
     hardware_status: crate::hardware::Status,
     /// When the first automatic update check runs (a moment after start; none when not due).
     update_check_at: Option<Instant>,
+    /// Desktop notifications (an update was found while the window is in the background).
+    notifier: crate::platform::notify::Notifier,
+    /// The running update's progress lines are refreshed on this schedule (and the bar moves).
+    update_progress_at: Instant,
+    update_progress_tick: u32,
     /// Where the install stood when the About page was last drawn.
     update_phase: Phase,
     /// The app icon as a texture for the About page (made when first needed).
@@ -344,6 +355,7 @@ pub struct Browser {
     /// The Playlist: its videos, and its page, popover and thumbnails.
     playlist: crate::playlist::Playlist,
     playlist_ui: playlist::PlaylistUi,
+    start_ui: start::StartUi,
     /// The active page's last reported scroll position (CSS px).
     /// Frames saved so far by the `AXION_CAPTURE_FRAMES` debug aid.
     capture_frame: u32,
@@ -351,6 +363,9 @@ pub struct Browser {
     flat_audit: bool,
     /// Typing latency probe (`AXION_TYPE_PROBE`, see `typing_probe`).
     probe: Option<ProbeRun>,
+    /// Clicks still to make into the page (`AXION_CLICK_PROBE`, see `click_probe`), and when
+    /// the run started.
+    click_probe: (Instant, std::collections::VecDeque<click_probe::Click>),
     /// Those frames, kept in memory until the sequence is complete (saving each one at once
     /// would stall the frame loop and change the timing being looked at).
     captured_frames: Vec<image::RgbaImage>,
@@ -373,6 +388,26 @@ pub struct Browser {
     session_changed: Instant,
     settings: SettingsSheet,
     passwords: Passwords,
+    /// History and Downloads as glass sheets (`general.list_sheets`).
+    history_sheet: crate::list_sheet::ListSheet,
+    /// Reads, searches and deletes History for its sheet off the UI thread (`list_worker`).
+    list_worker: Option<crate::list_worker::ListWorker>,
+    /// Looks up the address bar's suggestions and inline completion off the UI thread
+    /// (`suggest_worker`).
+    suggest_worker: Option<crate::suggest_worker::SuggestWorker>,
+    /// The newest suggestion lookup asked for: older answers are dropped.
+    suggest_generation: u64,
+    /// The text typed at the end of the address field whose inline completion is on its way.
+    completion_wanted: Option<String>,
+    /// The newest History load asked for: older answers are dropped.
+    list_generation: u64,
+    /// Whether the answer to the newest load keeps the scroll position.
+    list_keep_scroll: bool,
+    downloads_sheet: crate::list_sheet::ListSheet,
+    /// The History sheet's clear button was clicked once (the second click clears).
+    history_confirm: bool,
+    /// What the open registry menu is about (see `context_registry`).
+    menu_target: Option<crate::context_registry::Target>,
     /// Unsaved settings changes since this time (saving is throttled while dragging).
     config_dirty_since: Option<Instant>,
     /// What we last wrote to config.toml, so the file watcher can ignore our own writes.
@@ -456,6 +491,12 @@ pub struct Browser {
     paths: ConfigPaths,
     /// The account's profile directory (`window.toml` lives in it).
     profile_dir: PathBuf,
+    /// Launches of Axion on this profile that were handed to this window (`crate::instance`).
+    launches: Option<crate::instance::Inbox>,
+    /// Who the system's default browser is, and the hint to change it.
+    default_browser: default_browser::DefaultBrowser,
+    /// What the toast's buttons do.
+    toast_kind: default_browser::ToastKind,
     /// What `window.toml` holds (or will hold once `window_state_dirty` is due).
     window_state: axion_config::WindowState,
     window_state_dirty: Option<Instant>,
@@ -476,6 +517,8 @@ pub struct Browser {
     pointer_captured_by_ui: bool,
     pointer_on_page: bool,
     clicks: ClickCounter,
+    /// The window's own frame: focus, corners, the toolbar as a title bar.
+    frame: frame::FrameState,
     page_cursor: CursorKind,
     clipboard: Option<arboard::Clipboard>,
     tabs_changed: bool,
@@ -547,9 +590,16 @@ pub struct Browser {
     shown_textures: Vec<wgpu::TextureView>,
     /// The shown page frame's texture and a view of it, kept while the texture is the same.
     page_view: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Views of the tab overview's thumbnails, kept while their textures are the same (see
+    /// `texture_views`).
+    overview_views: crate::texture_views::ViewCache<ViewId>,
+    /// The same for the Playlist player's picture.
+    playlist_views: crate::texture_views::ViewCache<ViewId>,
     /// The shown scene's layer fingerprints (trace logging only).
     shown_layers: Vec<u64>,
     idle_redraw_at: Option<Instant>,
+    /// Frames skipped as unchanged in a row (see `ui.idle_frames_before_slowing`).
+    idle_skips: u32,
     /// Whether the pointer was hidden with the fullscreen player's controls at the last check.
     player_pointer_hidden: bool,
     frame_interval: Duration,
@@ -576,6 +626,20 @@ pub struct Browser {
     present_mode: String,
 }
 
+/// Whether windows can be transparent here (Wayland): X11 drivers offer no alpha for a surface.
+fn transparent_windows(event_loop: &ActiveEventLoop) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::wayland::ActiveEventLoopExtWayland as _;
+        event_loop.is_wayland()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = event_loop;
+        true
+    }
+}
+
 impl Browser {
     pub fn new(event_loop: &ActiveEventLoop, options: Options) -> Result<Self> {
         let bases = Bases::discover()?;
@@ -591,6 +655,25 @@ impl Browser {
             tracing::error!("{e}; using defaults");
             Config::default()
         });
+        // One Axion per account: a launch on an open profile hands its URLs over and ends here,
+        // before it makes a window (and before Chromium could answer with a window of its own).
+        let single = if config.general.single_instance {
+            let request = crate::instance::Request { urls: options.urls.clone(), focus: focus_allowed() };
+            match crate::instance::claim(&account_paths.profile, &request, options.waker.clone()) {
+                Ok(crate::instance::Claim::Primary(inbox)) => Some(inbox),
+                Ok(crate::instance::Claim::Forwarded) => {
+                    tracing::info!("Axion is already open on this profile; the URLs went to its window");
+                    return Err(Forwarded.into());
+                }
+                Err(e) => {
+                    tracing::warn!("single instance unavailable: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let hint_wanted = config.general.default_browser_hint && options.capture.is_none();
         crate::locale::apply(config.general.language);
         let start_language = axion_i18n::language();
         let keymap = load_keymap(&paths);
@@ -617,6 +700,15 @@ impl Browser {
             .with_window_icon(crate::app_icon::window_icon())
             .with_inner_size(winit::dpi::LogicalSize::<f64>::from(size))
             .with_min_inner_size(winit::dpi::LogicalSize::new(480.0, 360.0))
+            // Custom decorations: no title bar from the desktop (Axion draws the window buttons)
+            // and a transparent window, so the corners can be rounded.
+            .with_decorations(config.window.decorations != axion_config::WindowDecorations::Custom)
+            // (Wayland only: an X11 window with an alpha visual but an opaque surface can come up
+            // see-through, and X11 has no surface alpha to round the corners with anyway.)
+            .with_transparent(
+                config.window.decorations == axion_config::WindowDecorations::Custom
+                    && transparent_windows(event_loop),
+            )
             .with_maximized(options.maximized || (restore && saved_window.maximized))
             // Test runs (`--capture`, `AXION_NO_FOCUS=1`) must not steal the focus from the user.
             .with_active(options.capture.is_none() && std::env::var_os("AXION_NO_FOCUS").is_none());
@@ -649,6 +741,11 @@ impl Browser {
         // Pages arrive as 8-bit sRGB-encoded BGRA and the compositor blends in that space, so
         // the swapchain must not re-encode: prefer a non-sRGB format.
         let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
+        let (alpha_mode, surface_alpha) = frame::pick_alpha_mode(
+            &caps.alpha_modes,
+            config.window.decorations == axion_config::WindowDecorations::Custom,
+        );
+        tracing::info!(modes = ?caps.alpha_modes, chosen = ?alpha_mode, rounded = surface_alpha != axion_compositor::SurfaceAlpha::Opaque, "surface alpha");
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -656,7 +753,7 @@ impl Browser {
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
@@ -714,6 +811,20 @@ impl Browser {
             tracing::warn!("setting the database timeout failed: {e}");
         }
         let store_path = store.as_ref().map(|_| profile.join("axion.sqlite"));
+        let list_worker = store_path.clone().map(|path| {
+            crate::list_worker::ListWorker::spawn(
+                path,
+                Duration::from_millis(u64::from(config.data.db_busy_timeout_ms)),
+                options.waker.clone(),
+            )
+        });
+        let suggest_worker = store_path.clone().map(|path| {
+            crate::suggest_worker::SuggestWorker::spawn(
+                path,
+                Duration::from_millis(u64::from(config.data.db_busy_timeout_ms)),
+                options.waker.clone(),
+            )
+        });
         PrivateLock::drop_old_password(store.as_ref());
         let muted_sites = tabgroups::load_muted_sites(store.as_ref());
         let shields = ShieldsState::new(&profile, &config, store.as_ref());
@@ -743,6 +854,7 @@ impl Browser {
                         .max(0.0)
                         / 1000.0,
                 ),
+                partial_uploads: config.hardware.partial_page_uploads,
                 hardware_video_decoding: crate::hardware::video_decoding(&config),
                 extra_switches: {
                     let mut switches = crate::hardware::chromium_switches(&config.hardware);
@@ -753,6 +865,20 @@ impl Browser {
                 load_extensions: extensions.load_dirs(),
                 block_web_store: !config.extensions.web_store,
                 waker: options.waker.clone(),
+                real_popups: config.tabs.popups_keep_opener,
+                page_copy: match config.clipboard.page_copy {
+                    axion_config::PageCopy::Auto => axion_engine::PageCopyMode::Auto,
+                    axion_config::PageCopy::Always => axion_engine::PageCopyMode::Always,
+                    axion_config::PageCopy::Never => axion_engine::PageCopyMode::Never,
+                },
+                max_page_copy_bytes: config.clipboard.max_page_copy_kb as usize * 1024,
+
+                on_relaunch: single.as_ref().map(|inbox| {
+                    let push = inbox.pusher(options.waker.clone());
+                    axion_engine::cef::RelaunchHandler::new(move |urls| {
+                        push(crate::instance::Request { urls, focus: true });
+                    })
+                }),
             },
         )?;
         engine.set_request_policy(Some(shields.policy()));
@@ -808,10 +934,15 @@ impl Browser {
                 }
             };
         let passwords = Passwords::build(&mut ui, chrome.bar_node(), &vault_path, device_key, &account_name);
+        let history_sheet =
+            crate::list_sheet::ListSheet::build(&mut ui, crate::list_sheet::SheetKind::History);
+        let downloads_sheet =
+            crate::list_sheet::ListSheet::build(&mut ui, crate::list_sheet::SheetKind::Downloads);
         let lock = PrivateLock::new();
         let mut favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         favicons.set_dark(dark);
         favicons.set_contrast(config.appearance.favicon_contrast);
+        favicons.set_max_in_memory(config.ui.max_site_icons_in_memory as usize);
         let mut home = HomePage::new(&profile, favicons.dir().map(Into::into));
         // The single background image of older versions moves into the backgrounds directory.
         let migrated = home.migrate(&mut config);
@@ -838,6 +969,7 @@ impl Browser {
         let playlist = crate::playlist::Playlist::new(&profile);
         let playlist_ui =
             playlist::PlaylistUi::build(&mut ui, &config, chrome.bar_node(), device.clone(), queue.clone());
+        let start_ui = start::StartUi::build(&mut ui, &config, device.clone(), queue.clone());
         let add_account = AddAccountSheet::build(&mut ui);
         let group_sheet = GroupSheet::build(&mut ui);
         let tab_search = TabSearch::build(&mut ui);
@@ -902,6 +1034,7 @@ impl Browser {
             extensions_confirm_remove: false,
             permissions,
             toast,
+            language_toast_for: None,
             updater: Updater::new(),
             update_alert,
             print_dialog,
@@ -910,6 +1043,9 @@ impl Browser {
             gpu_confirm: false,
             hardware_status,
             update_check_at,
+            notifier: crate::platform::notify::Notifier::default(),
+            update_progress_at: Instant::now(),
+            update_progress_tick: 0,
             update_phase: Phase::Idle,
             about_icon: None,
             tooltip,
@@ -928,12 +1064,17 @@ impl Browser {
             player,
             playlist,
             playlist_ui,
+            start_ui,
             capture_frame: 0,
             flat_audit: false,
             probe: std::env::var("AXION_TYPE_PROBE")
                 .ok()
                 .and_then(|v| typing_probe::Spec::parse(&v))
                 .map(ProbeRun::new),
+            click_probe: (
+                Instant::now(),
+                std::env::var("AXION_CLICK_PROBE").map(|v| click_probe::parse(&v)).unwrap_or_default().into(),
+            ),
             captured_frames: Vec::new(),
             pip: None,
             instance,
@@ -952,6 +1093,16 @@ impl Browser {
             session_changed: Instant::now(),
             settings,
             passwords,
+            history_sheet,
+            list_worker,
+            suggest_worker,
+            suggest_generation: 0,
+            completion_wanted: None,
+            list_generation: 0,
+            list_keep_scroll: false,
+            downloads_sheet,
+            history_confirm: false,
+            menu_target: None,
             config_dirty_since: migrated.then(Instant::now),
             last_saved_config: None,
             panel_urls: Vec::new(),
@@ -1009,6 +1160,9 @@ impl Browser {
             keymap,
             paths,
             profile_dir: profile.clone(),
+            launches: single,
+            default_browser: default_browser::DefaultBrowser::new(hint_wanted),
+            toast_kind: default_browser::ToastKind::default(),
             window_state: saved_window.clone(),
             window_state_dirty: None,
             shutdown_guard: None,
@@ -1023,6 +1177,7 @@ impl Browser {
             pointer_captured_by_ui: false,
             pointer_on_page: false,
             clicks: ClickCounter::default(),
+            frame: frame::FrameState::new(surface_alpha, options.capture.is_some()),
             page_cursor: CursorKind::Default,
             clipboard: arboard::Clipboard::new().inspect_err(|e| tracing::warn!("no clipboard: {e}")).ok(),
             tabs_changed: true,
@@ -1045,7 +1200,10 @@ impl Browser {
             shown_textures: Vec::new(),
             shown_layers: Vec::new(),
             page_view: None,
+            overview_views: Default::default(),
+            playlist_views: Default::default(),
             idle_redraw_at: None,
+            idle_skips: 0,
             player_pointer_hidden: false,
             frame_interval: frame_rate::display_interval(None),
             refresh_watch: RefreshWatch::default(),
@@ -1091,6 +1249,7 @@ impl Browser {
         browser.sync_frame_rate();
         browser.update_layout();
         browser.start_onboarding(&options, accounts_file, config_file);
+        browser.start_default_browser_check();
         browser.playlist_start();
         browser.engine.set_color_scheme(browser.dark);
         if restore && saved_window.fullscreen {
@@ -1140,6 +1299,7 @@ impl Browser {
         if self.settings.is_open() {
             self.settings.resize(&mut self.ui, size);
         }
+        self.resize_list_sheets(size);
         self.onboarding.resize(&mut self.ui, &self.config, size);
         let view_size = self.view_size();
         // While the sidebar slides, the shown tab's size is managed by the slide (see
@@ -1186,6 +1346,64 @@ impl Browser {
         self.parked.insert(tab, false);
         self.tabs_changed = true;
         Ok(())
+    }
+
+    /// A page opened a window that keeps its opener (a sign-in popup): it becomes the next tab
+    /// and is shown, as the click that opened it asked for.
+    fn popup_opened(&mut self, view: ViewId, opener: ViewId, url: &str) {
+        let Some(private) = find_tab(&self.tabs, &self.parked, opener).map(|t| t.private) else {
+            self.engine.close_view(view);
+            return;
+        };
+        let mut tab = Tab::new(view, url);
+        tab.private = private;
+        tab.opener = Some(opener);
+        if self.tabs.index_of(opener).is_some() {
+            let previous = self.tabs.active().map(|t| t.view);
+            self.tabs.insert(tab, true);
+            self.on_active_changed(previous);
+            self.chrome.release_tab_widths(&self.ui, None, true);
+        } else {
+            tab.needs_snapshot = true;
+            self.parked.insert(tab, false);
+        }
+        self.tabs_changed = true;
+    }
+
+    /// A popup closed itself (`window.close()`, as sign-in windows do when they are done):
+    /// its tab goes, and the page that opened it is shown again.
+    fn popup_closed(&mut self, view: ViewId) {
+        let Some(index) = self.tabs.index_of(view) else { return };
+        let Some(opener) = self.tabs.all()[index].opener else { return };
+        let was_active = index == self.tabs.active_index();
+        self.close_tab(index);
+        if was_active
+            && let Some(i) = self.tabs.index_of(opener)
+            && i != self.tabs.active_index()
+        {
+            self.select_tab(i);
+        }
+    }
+
+    /// A page copied text (a "Copy" button): where Chromium cannot reach the desktop
+    /// clipboard, it ends up here.
+    fn page_clipboard_write(&mut self, view: ViewId, text: Option<String>, html: Option<String>) {
+        // A copy needs a click or key press, so only the page in front can have made one.
+        if Some(view) != self.active_view() {
+            tracing::debug!(?view, "ignored a copy from a page that is not shown");
+            return;
+        }
+        let Some(clipboard) = &mut self.clipboard else { return };
+        let bytes = text.as_ref().map_or(0, String::len) + html.as_ref().map_or(0, String::len);
+        let result = match (html, text) {
+            (Some(html), text) => clipboard.set_html(html, text),
+            (None, Some(text)) => clipboard.set_text(text),
+            (None, None) => return,
+        };
+        match result {
+            Ok(()) => tracing::info!(bytes, "a page copied to the clipboard"),
+            Err(e) => tracing::warn!("a page's copy could not reach the clipboard: {e}"),
+        }
     }
 
     fn open_tab(&mut self, url: &str, activate: bool) -> Result<()> {
@@ -1422,6 +1640,8 @@ impl Browser {
                 self.chrome.toggle_sidebar();
                 self.update_layout();
             }
+            // The native start page is not scaled by page zoom (its web view is hidden).
+            Action::ZoomIn | Action::ZoomOut | Action::ZoomReset if self.start_shown() => {}
             Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
                 if let Some(tab) = self.tabs.active() {
                     let level = match action {
@@ -1454,6 +1674,8 @@ impl Browser {
                     self.sync_about();
                     self.settings.set_memory_used(self.memory.used());
                     self.settings.set_site_permissions(self.permissions.model.remembered());
+                    self.settings.set_default_browser(self.default_browser_view());
+                    self.start_default_browser_check();
                     let window = self.logical_size();
                     // Out of what it was opened from (the address field by default).
                     let fallback = self.address_origin();
@@ -1495,6 +1717,9 @@ impl Browser {
                     self.bookmarks_changed = true;
                 }
             }
+            Action::ShowHistory if self.config.general.list_sheets => {
+                self.show_list(crate::list_sheet::SheetKind::History);
+            }
             Action::ShowBookmarks | Action::ShowHistory => {
                 if !self.chrome.sidebar_open() {
                     self.chrome.toggle_sidebar();
@@ -1504,6 +1729,10 @@ impl Browser {
                 self.show_panel(panel);
             }
             Action::OpenPasswords => self.open_passwords(),
+            // The pointer decides what the menu is about (see `open_menu_from_keyboard`).
+            Action::ContextMenu => {
+                self.open_menu_from_keyboard();
+            }
             // The account menu's Lock: only accounts with a password have something to lock.
             Action::Lock => {
                 if self.passwords.has_password() {
@@ -1515,6 +1744,8 @@ impl Browser {
             Action::ViewSource => self.view_source(),
             Action::Print => self.open_print(),
             Action::Screenshot => self.start_screenshot(),
+            // The native start page has no text to search (its web view is hidden).
+            Action::Find if self.start_shown() => {}
             Action::Find => self.open_find(),
             Action::FindNext | Action::FindPrevious => {
                 if self.find.is_open() {
@@ -1530,6 +1761,9 @@ impl Browser {
                 }
             }
             Action::Quit => self.quit_at = Some(Instant::now()),
+            Action::CloseWindow | Action::MinimizeWindow | Action::ToggleMaximize => {
+                self.window_action(action)
+            }
             Action::CommandPalette => {
                 if self.palette.is_open() {
                     self.close_palette();
@@ -1782,6 +2016,7 @@ impl Browser {
             maximized: self.window.is_maximized(),
             capture,
             exe: None,
+            swap: self.updater.pending_swap(),
         });
         self.capture = None;
         // The next start of a plain `axion` opens it too.
@@ -1802,6 +2037,11 @@ impl Browser {
 
     pub fn set_shutdown_guard(&mut self, guard: crate::shutdown::Guard) {
         self.shutdown_guard = Some(guard);
+    }
+
+    /// A tarball update waiting to be swapped in (applied when Axion quits without relaunching).
+    pub fn pending_swap(&self) -> Option<axion_update::Staged> {
+        self.updater.pending_swap()
     }
 
     /// The relaunch to start once this browser is dropped (Chromium shut down).
@@ -1976,10 +2216,7 @@ impl Browser {
         let Some(player) = self
             .media_of(view)
             .and_then(|(m, _)| {
-                m.players
-                    .iter()
-                    .filter(|p| !p.preview && p.is_playing())
-                    .max_by(|a, b| a.area().total_cmp(&b.area()))
+                m.real_players().filter(|p| p.is_playing()).max_by(|a, b| a.area().total_cmp(&b.area()))
             })
             .cloned()
         else {
@@ -2122,6 +2359,39 @@ impl Browser {
     fn close_settings(&mut self) {
         let fallback = self.address_origin();
         self.settings.close(&mut self.ui, &self.config, fallback);
+        self.remind_language_restart();
+    }
+
+    /// Closing Settings with a language change still waiting for a restart says so once (a
+    /// toast with a Restart button), unless the user chose "Later" or the tour is up.
+    fn remind_language_restart(&mut self) {
+        let Some(language) = self.settings.pending_language(&self.config) else {
+            self.language_toast_for = None;
+            return;
+        };
+        if !self.settings.language_restart_due(&self.config)
+            || self.language_toast_for == Some(language)
+            || self.onboarding.is_open()
+        {
+            return;
+        }
+        self.language_toast_for = Some(language);
+        let mut anchor = self.chrome.share_frame(&self.ui);
+        if anchor.size.x <= 0.0 {
+            anchor = self.chrome.address_frame(&self.ui);
+        }
+        let window = self.logical_size();
+        self.toast_kind = default_browser::ToastKind::LanguageRestart;
+        self.toast.show_with_actions(
+            &mut self.ui,
+            &self.config,
+            anchor,
+            window,
+            Icon::Globe,
+            tr("Restart to apply the new language"),
+            Some(tr("Restart")),
+            Some(tr("Later")),
+        );
     }
 
     /// Closes Passwords: it drains back into where it came from.
@@ -3110,9 +3380,9 @@ impl Browser {
             Panel::History => {
                 let now = unix_now();
                 let mut entries = if query.is_empty() {
-                    store.recent_history(PANEL_HISTORY_LIMIT)
+                    store.recent_history(self.config.sidebar.history_rows as usize)
                 } else {
-                    store.search_history(&query, PANEL_HISTORY_LIMIT, now)
+                    store.search_history(&query, self.config.sidebar.history_rows as usize, now)
                 }
                 .unwrap_or_default();
                 // The list is grouped by day, newest first (search ranks by relevance).
@@ -3429,6 +3699,9 @@ impl Browser {
             MenuAction::Bookmark(command) => return self.bookmark_command(command),
             MenuAction::Playlist(command) => return self.playlist_command(command),
             MenuAction::Page(command) => return self.page_command(command),
+            MenuAction::Context(verb) => return self.context_command(verb),
+            // The start page's engine menu is handled by the page (`start_event`).
+            MenuAction::StartEngine(_) => return,
             _ => {}
         }
         let Some(tab) = self.tabs.active() else { return };
@@ -3516,6 +3789,8 @@ impl Browser {
             | MenuAction::Group(_)
             | MenuAction::Playlist(_)
             | MenuAction::Page(_)
+            | MenuAction::Context(_)
+            | MenuAction::StartEngine(_)
             | MenuAction::Bookmark(_) => {}
         }
     }
@@ -3551,6 +3826,11 @@ impl Browser {
         }
         if self.passwords.is_open() {
             self.close_passwords();
+        }
+        for kind in [crate::list_sheet::SheetKind::History, crate::list_sheet::SheetKind::Downloads] {
+            if self.sheet(kind).is_open() {
+                self.close_list_sheet(kind);
+            }
         }
     }
 
@@ -3843,6 +4123,17 @@ impl Browser {
                 event if self.onboarding.is_open() && self.onboarding.wants(&event) => {
                     self.onboarding_event(event);
                 }
+                event if self.start_event(&event) => {}
+                UiEvent::Clicked { action, .. } if self.history_sheet.owns_action(action) => {
+                    if let Some(click) = self.history_sheet.click(&self.ui, action, self.pointer) {
+                        self.list_sheet_click(crate::list_sheet::SheetKind::History, click);
+                    }
+                }
+                UiEvent::Clicked { action, .. } if self.downloads_sheet.owns_action(action) => {
+                    if let Some(click) = self.downloads_sheet.click(&self.ui, action, self.pointer) {
+                        self.list_sheet_click(crate::list_sheet::SheetKind::Downloads, click);
+                    }
+                }
                 event if self.passwords.wants(&event) => {
                     let (ui, config, clipboard) = (&mut self.ui, &mut self.config, &mut self.clipboard);
                     let outcome = self.passwords.event(ui, config, clipboard, self.pointer, event);
@@ -3967,12 +4258,7 @@ impl Browser {
                 }
                 UiEvent::Clicked { action, .. } if PlayerControl::from_id(action).is_some() => {
                     let Some(control) = PlayerControl::from_id(action) else { continue };
-                    match self.player.click(&mut self.ui, control, &self.config) {
-                        PlayerOutcome::Command(view, command) => self.media_command(view, &command),
-                        PlayerOutcome::PictureInPicture(view, player) => self.start_pip(view, player),
-                        PlayerOutcome::AddToPlaylist(view, player) => self.playlist_add_player(view, &player),
-                        PlayerOutcome::Nothing => {}
-                    }
+                    self.player_control(control);
                 }
                 UiEvent::ValueChanged { node, value } if node == self.player.volume() => {
                     if let Some((view, commands)) = self.player.volume_command(value) {
@@ -4063,9 +4349,9 @@ impl Browser {
                     }
                     self.update_alert_action(action);
                 }
-                UiEvent::Clicked { action, .. } if self.toast.owns(action) => {
-                    self.toast.dismiss(&mut self.ui, &self.config);
-                    self.open_about(false);
+                UiEvent::Clicked { action, .. } if self.toast.owns(action) => self.toast_primary(),
+                UiEvent::Clicked { action, .. } if self.toast.owns_secondary(action) => {
+                    self.toast_secondary()
                 }
                 UiEvent::Clicked { action, .. } if self.account_menu.owns(action) => {
                     if let Some(click) = self.account_menu.click(&mut self.ui, &self.config, action) {
@@ -4166,6 +4452,9 @@ impl Browser {
                     Some(ChromeAction::ToggleSidebar) => self.run(Action::ToggleSidebar),
                     Some(ChromeAction::Back) => self.run(Action::Back),
                     Some(ChromeAction::Forward) => self.run(Action::Forward),
+                    Some(ChromeAction::WindowClose) => self.run(Action::CloseWindow),
+                    Some(ChromeAction::WindowMinimize) => self.run(Action::MinimizeWindow),
+                    Some(ChromeAction::WindowZoom) => self.run(Action::ToggleMaximize),
                     Some(ChromeAction::Home) => {
                         let home = self.config.general.effective_homepage().to_owned();
                         self.navigate_to(home);
@@ -4203,7 +4492,10 @@ impl Browser {
                     }
                     Some(ChromeAction::PageMenu) => self.open_page_menu(),
                     Some(ChromeAction::Bookmarks) => self.show_panel(Panel::Bookmarks),
-                    Some(ChromeAction::History) => self.show_panel(Panel::History),
+                    Some(ChromeAction::History) => {
+                        self.sheet_from_row(node);
+                        self.show_list(crate::list_sheet::SheetKind::History);
+                    }
                     Some(ChromeAction::Passwords) => {
                         // The sheet comes out of the row (the sidebar is too big an origin).
                         let row = self.ui.frame(node);
@@ -4225,7 +4517,10 @@ impl Browser {
                     }
                     Some(ChromeAction::ClearPanel) => self.clear_panel(),
                     Some(ChromeAction::DeletePanelItem(i)) => self.delete_panel_item(i),
-                    Some(ChromeAction::Downloads) => self.show_panel(Panel::Downloads),
+                    Some(ChromeAction::Downloads) => {
+                        self.sheet_from_row(node);
+                        self.show_list(crate::list_sheet::SheetKind::Downloads);
+                    }
                     Some(ChromeAction::Playlist) => {
                         if self.playlist_open() {
                             self.close_playlist();
@@ -4303,6 +4598,7 @@ impl Browser {
                     None => {}
                 },
                 UiEvent::Submitted { node, text } if node == self.chrome.address_field => {
+                    let text = self.finish_completion(text);
                     match self.suggestions.selected() {
                         Some(s) => self.navigate_to(s.url.clone()),
                         None => self.navigate_from_address(&text),
@@ -4341,6 +4637,8 @@ impl Browser {
     pub fn pump(&mut self) {
         let _op = crate::stall::op("pump");
         let started = Instant::now();
+        self.open_forwarded_launches();
+        self.poll_default_browser();
         self.pump_engine();
         self.poll_capture();
         let page_frames = self.engine.counters().page_frames;
@@ -4365,6 +4663,28 @@ impl Browser {
         ];
         for recorder in recorders.into_iter().flatten() {
             recorder.wakeup(took);
+        }
+    }
+
+    /// Opens what other launches of Axion on this profile handed over: their URLs in new tabs
+    /// (the first one shown), and the window brought to the front (not in test runs).
+    fn open_forwarded_launches(&mut self) {
+        let Some(inbox) = &self.launches else { return };
+        let requests = inbox.drain();
+        for request in requests {
+            let mut first = true;
+            for url in request.urls.iter().filter(|u| !u.trim().is_empty()) {
+                tracing::info!(%url, "opening a URL handed over by another launch");
+                if let Err(e) = self.open_tab(url, first) {
+                    tracing::warn!(%url, "could not open the URL of another launch: {e:#}");
+                }
+                first = false;
+            }
+            if request.focus && focus_allowed() {
+                self.window.set_minimized(false);
+                self.window.focus_window();
+            }
+            self.request_redraw();
         }
     }
 
@@ -4505,6 +4825,7 @@ impl Browser {
                     // The fill offer was for the page that was there (a save offer stays).
                     self.passwords.hide_prompt(Some(view), true);
                     self.permissions_navigated(view, &url);
+                    self.start_ui.engine_urls.insert(view, url.clone());
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
                         tab.url = url;
                         self.tabs_changed = true;
@@ -4723,7 +5044,12 @@ impl Browser {
                 EngineEvent::CaptureChanged { view, audio, video } => {
                     self.capture_changed(view, audio, video)
                 }
+                EngineEvent::PopupOpened { view, opener, url } => self.popup_opened(view, opener, &url),
+                EngineEvent::ClipboardWrite { view, text, html } => {
+                    self.page_clipboard_write(view, text, html)
+                }
                 EngineEvent::Closed { view } => {
+                    self.popup_closed(view);
                     self.permissions_closed(view);
                     self.playlist.sniffed.remove(&view);
                     self.page_colors.closed(view);
@@ -4796,6 +5122,7 @@ impl Browser {
             }
             Outcome::Close => self.close_settings(),
             Outcome::ShowWelcomeTour => self.open_onboarding(0),
+            Outcome::MakeDefaultBrowser => self.make_default_browser(),
             Outcome::CheckForUpdates => {
                 self.updater.check(&self.config, true);
                 self.refresh_about();
@@ -4803,6 +5130,21 @@ impl Browser {
             Outcome::InstallUpdate => self.request_update_install(),
             Outcome::OpenReleasePage => self.open_release_page(),
             Outcome::RelaunchNow => self.relaunch_for_update(),
+            Outcome::CancelUpdate => {
+                self.updater.cancel();
+            }
+            Outcome::DismissUpdate => {
+                if self.updater.phase() == Phase::Done {
+                    self.updater.defer();
+                } else {
+                    self.updater.dismiss();
+                }
+                self.refresh_about();
+            }
+            Outcome::RetryUpdate => {
+                self.updater.retry(&self.config);
+                self.refresh_about();
+            }
             Outcome::CopyDiagnostics => self.copy_gpu_diagnostics(),
             Outcome::RestartAxion => self.restart_to_apply_settings(),
             Outcome::ConfirmGpuFrames => self.confirm_gpu_frames(),
@@ -4991,6 +5333,9 @@ impl Browser {
         if changed && self.downloads_popover.is_open() {
             self.open_downloads_popover();
         }
+        if changed {
+            self.refresh_sheet(crate::list_sheet::SheetKind::Downloads, true);
+        }
         for event in self.downloads.poll() {
             match event {
                 downloads::Event::CacheSize(size) => self.settings.set_cache_size(Some(size)),
@@ -5058,11 +5403,13 @@ impl Browser {
             || self.overview.is_open()
             || self.settings.is_open()
             || self.passwords.is_open()
+            || self.any_list_sheet_open()
             || self.add_account.is_open()
             || self.group_sheet.is_open()
             || self.tab_search.is_open()
             || self.onboarding.is_open()
             || self.update_alert.is_open()
+            || (self.updater.phase() == Phase::Running && self.settings.is_open())
             || self.print_dialog.is_open()
             || self.shot.is_active()
             || self.lock_screen.is_alert_open()
@@ -5347,11 +5694,21 @@ impl Browser {
         let items = self.downloads.items(List::Popover, self.store.as_ref(), &self.config, unix_now(), limit);
         let anchor = self.chrome.downloads_frame(&self.ui);
         let width = self.logical_size().x;
-        self.downloads_popover.open(&mut self.ui, &self.config, anchor, width, &items);
+        self.downloads_popover.open(&mut self.ui, &self.config, anchor, width, &items, &self.favicons);
     }
 
     /// The full Downloads list in the sidebar (opening the sidebar if needed).
     fn show_all_downloads(&mut self) {
+        if self.config.general.list_sheets {
+            // Out of the toolbar's download button.
+            let button = self.chrome.downloads_frame(&self.ui);
+            if button.size.x > 0.0 {
+                self.sheet_origin =
+                    Some(Origin { plane: self.chrome.bar_node(), point: button.center(), control: button });
+            }
+            self.show_list(crate::list_sheet::SheetKind::Downloads);
+            return;
+        }
         if !self.chrome.sidebar_open() {
             self.run(Action::ToggleSidebar);
         }
@@ -5400,6 +5757,8 @@ impl Browser {
             self.updater.check(&self.config, false);
             self.refresh_about();
         }
+        self.poll_notifications();
+        self.tick_update_progress();
         let notices = self.updater.poll();
         if notices.is_empty() {
             return;
@@ -5423,11 +5782,27 @@ impl Browser {
                         )
                         && self.config.updates.notified_version != release.version.to_string()
                     {
+                        // Decided before the version is marked as announced.
+                        let desktop = crate::platform::notify::should_notify(
+                            &self.config.updates,
+                            &release,
+                            self.window.has_focus(),
+                            &axion_update::SystemClock,
+                        );
                         self.config.updates.notified_version = release.version.to_string();
                         self.config_dirty_since.get_or_insert(Instant::now());
                         let text =
                             tr_fmt!("Axion {version} is available", version = release.version.to_string());
+                        self.toast_kind = default_browser::ToastKind::Update;
                         self.show_toast_with_action(Icon::Download, &text, tr("Update"));
+                        if desktop {
+                            self.notifier.send(crate::platform::notify::update_payload(
+                                &text,
+                                &axion_update::plain_notes(&release.notes, 400),
+                                tr("Update"),
+                                tr("Later"),
+                            ));
+                        }
                     }
                 }
                 Notice::Changed => self.sync_update_alert(),
@@ -5436,6 +5811,42 @@ impl Browser {
         // The page redraws when the install starts or ends, not for every progress line.
         if checked || self.updater.phase() != self.update_phase {
             self.refresh_about();
+        }
+    }
+
+    /// What the user did with a desktop notification: "Update" opens Info & Updates and asks to
+    /// install, "Later" snoozes the reminders.
+    fn poll_notifications(&mut self) {
+        for event in self.notifier.events() {
+            match event {
+                crate::platform::notify::NotifyEvent::Update => {
+                    self.window.focus_window();
+                    self.open_about(false);
+                    self.request_update_install();
+                }
+                crate::platform::notify::NotifyEvent::Later => {
+                    axion_update::remind_later(&mut self.config.updates, &axion_update::SystemClock);
+                    self.config_dirty_since.get_or_insert(Instant::now());
+                    self.refresh_about();
+                }
+            }
+        }
+    }
+
+    /// While an update runs: the page's step, last output line and bar are changed in place a
+    /// few times a second (rebuilding the page for every line would be wasteful).
+    fn tick_update_progress(&mut self) {
+        if self.updater.phase() != Phase::Running || !self.settings.shows_run() {
+            return;
+        }
+        let interval = Duration::from_millis(u64::from(self.config.updates.progress_interval_ms.max(50)));
+        if self.update_progress_at.elapsed() < interval {
+            return;
+        }
+        self.update_progress_at = Instant::now();
+        self.update_progress_tick = self.update_progress_tick.wrapping_add(1);
+        if let Some(run) = self.updater.run_info() {
+            self.settings.update_run(&mut self.ui, &run, self.update_progress_tick);
         }
     }
 
@@ -5529,35 +5940,28 @@ impl Browser {
             return;
         }
         match self.updater.phase() {
-            Phase::Idle => self.update_alert.close(),
             Phase::Confirm => {
+                self.update_alert.close();
                 if action == AlertAction::Primary {
+                    // The sheet is gone at once; progress, result and errors are on the page.
                     self.updater.start_install(&self.config);
-                    self.sync_update_alert();
-                    self.refresh_about();
+                    self.show_update_progress();
                 } else {
                     self.updater.dismiss();
-                    self.update_alert.close();
                 }
             }
-            Phase::Running => {
-                if action == AlertAction::Secondary {
-                    self.updater.cancel();
-                }
-            }
-            Phase::Done => {
-                if action == AlertAction::Primary {
-                    self.relaunch_for_update();
-                } else {
-                    // The page keeps offering "Relaunch Now".
-                    self.update_alert.close();
-                }
-            }
-            Phase::Failed => {
-                self.updater.dismiss();
-                self.update_alert.close();
-                self.refresh_about();
-            }
+            // Only the confirmation is a sheet.
+            _ => self.update_alert.close(),
+        }
+    }
+
+    /// Shows Settings › Info & Updates, where an update that is running reports itself.
+    fn show_update_progress(&mut self) {
+        self.settings.set_category(Category::About);
+        if self.settings.is_open() {
+            self.refresh_about();
+        } else {
+            self.run(Action::OpenSettings);
         }
     }
 
@@ -5573,6 +5977,7 @@ impl Browser {
             maximized: self.window.is_maximized(),
             capture: None,
             exe: Some(exe),
+            swap: self.updater.pending_swap(),
         });
         tracing::info!("relaunching into the updated Axion");
     }
@@ -5669,6 +6074,7 @@ impl Browser {
                     self.apply_shields_config();
                     self.apply_network_config();
                     self.apply_theme();
+                    self.apply_frame_config();
                     self.update_layout();
                     self.sync_frame_rate();
                     self.tabs_changed = true;
@@ -5856,6 +6262,12 @@ impl Browser {
         let (config, store) =
             if private { (&mut scratch, None) } else { (&mut self.config, self.store.as_ref()) };
         let action = self.home.handle(message, config, store);
+        self.home_action(view, private, action);
+    }
+
+    /// What a start page (the HTML one's message or the native one's command) asked for.
+    fn home_action(&mut self, view: ViewId, private: bool, action: HomeAction) {
+        self.start_ui.stale = true;
         match action {
             HomeAction::Nothing => {}
             HomeAction::Go(text) => {
@@ -5914,6 +6326,7 @@ impl Browser {
         self.engine.set_color_scheme(self.dark);
         let delay = self.page_color_delay();
         self.page_colors.set_dark(self.dark, self.active_view(), delay);
+        self.favicons.set_max_in_memory(self.config.ui.max_site_icons_in_memory as usize);
         let contrast_changed = self.favicons.set_contrast(self.config.appearance.favicon_contrast);
         if self.favicons.set_dark(self.dark) {
             // Sites with their own icon for the scheme show it at once.
@@ -6030,8 +6443,14 @@ impl Browser {
                 };
                 if self.pointer.is_some_and(|p| self.ext_popup_wheel(p, delta)) {
                     // The extension popup scrolled.
+                } else if self.pointer.is_some_and(|p| self.start_wheel(p, delta)) {
+                    // The start page's top sites flipped a page.
                 } else if self.overview.is_open() {
                     self.overview.scroll_by(&mut self.ui, delta.y);
+                } else if self.history_sheet.is_open() {
+                    self.history_sheet.scroll_by(&mut self.ui, &self.favicons, delta.y);
+                } else if self.downloads_sheet.is_open() {
+                    self.downloads_sheet.scroll_by(&mut self.ui, &self.favicons, delta.y);
                 } else if self.passwords.is_open() {
                     self.passwords.scroll_by(&mut self.ui, delta.y);
                 } else if self.settings.is_open() {
@@ -6065,6 +6484,7 @@ impl Browser {
                 }
             }
             WindowEvent::Focused(focused) => {
+                self.frame_focus(focused);
                 if !focused {
                     // The button-up may go to another window: nothing stays held.
                     self.release_pointer_holds();
@@ -6150,6 +6570,11 @@ impl Browser {
     }
 
     fn update_cursor(&self) {
+        if let Some(icon) = self.pointer.and_then(|p| self.resize_cursor_at(p)) {
+            self.window.set_cursor_visible(true);
+            self.window.set_cursor(icon);
+            return;
+        }
         let popup_cursor = self.ext_popup_cursor();
         let icon = match self.ui.cursor() {
             _ if popup_cursor.is_some() => popup_cursor.and_then(input::cursor_icon),
@@ -6291,6 +6716,16 @@ impl Browser {
             return;
         };
         let view = self.active_view();
+        // The window's edges (resize) come before everything else; the toolbar's free space is
+        // checked once menus and popovers had their say (below).
+        if pressed
+            && button == winit::event::MouseButton::Left
+            && self.custom_frame()
+            && self.resize_edge_at(p).is_some()
+            && self.frame_press(button, p)
+        {
+            return;
+        }
         match button {
             winit::event::MouseButton::Back if pressed => return self.run(Action::Back),
             winit::event::MouseButton::Forward if pressed => return self.run(Action::Forward),
@@ -6353,6 +6788,14 @@ impl Browser {
         if pressed && button != winit::event::MouseButton::Left && self.secondary_click(button, p) {
             return;
         }
+        // Free toolbar space: a drag moves the window, a double click maximizes it, a right
+        // click opens the system window menu (custom decorations).
+        if pressed
+            && matches!(button, winit::event::MouseButton::Left | winit::event::MouseButton::Right)
+            && self.frame_press(button, p)
+        {
+            return;
+        }
         if pressed
             && self.extensions_popover.is_open()
             && !self.extensions_popover.contains(&self.ui, p)
@@ -6410,6 +6853,12 @@ impl Browser {
             && !self.chrome.playlist_button_frame(&self.ui).contains(p)
         {
             self.playlist_ui.popover.close(&mut self.ui, &self.config);
+            return;
+        }
+        if pressed && self.start_press(p) {
+            return;
+        }
+        if pressed && button == winit::event::MouseButton::Middle && self.start_middle_click(p) {
             return;
         }
         if pressed && self.playlist_open() && self.playlist_ui.page.menu().is_open() {
@@ -6516,6 +6965,30 @@ impl Browser {
             self.close_extension_popup();
             return false;
         }
+        if pressed
+            && self.any_list_sheet_open()
+            && !self.context_menus.is_open()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            for kind in [crate::list_sheet::SheetKind::History, crate::list_sheet::SheetKind::Downloads] {
+                if self.sheet(kind).is_open() {
+                    // Escape leaves selection mode first, then closes the sheet.
+                    if self.sheet(kind).is_selecting() {
+                        self.end_sheet_selection(kind);
+                    } else {
+                        self.close_list_sheet(kind);
+                    }
+                }
+            }
+            return false;
+        }
+        if pressed
+            && self.any_list_sheet_open()
+            && !self.context_menus.is_open()
+            && self.list_sheet_key(event)
+        {
+            return false;
+        }
         if pressed && self.passwords.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.close_passwords();
             let _ = self.ui.blur();
@@ -6544,6 +7017,14 @@ impl Browser {
             && self.ui.focused().is_none()
             && input::key(event) == Some(Key::Named("Escape".into()))
             && self.playlist_escape()
+        {
+            return false;
+        }
+        if pressed
+            && self.start_shown()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+            && self.ui.focused().is_none()
+            && self.start_escape()
         {
             return false;
         }
@@ -6668,9 +7149,19 @@ impl Browser {
             self.engine.run_script(view, "document.fullscreenElement && document.exitFullscreen();", false);
             return false;
         }
+        // The Menu key and Shift+F10: the context menu of what the pointer is over (else the key
+        // goes on to the page, which has its own).
+        if pressed
+            && let Some(chord) = input::chord(event, self.modifiers)
+            && self.keymap.action_for(&chord) == Some(Action::ContextMenu)
+            && self.open_menu_from_keyboard()
+        {
+            return false;
+        }
         if pressed
             && let Some(chord) = input::chord(event, self.modifiers)
             && let Some(action) = self.keymap.action_for(&chord)
+            && action != Action::ContextMenu
             // Media keys (Space, arrows…) are ours only while a video is fullscreen.
             && (!action.is_media()
                 || (self.player.mode() == PlayerMode::Fullscreen || self.playlist_open())
@@ -6722,6 +7213,9 @@ impl Browser {
             return false;
         }
 
+        if self.start_field_tab(event) || self.start_key(event) {
+            return false;
+        }
         if self.ui.focused().is_some() {
             if pressed {
                 if let Some(key) = input::key(event) {
@@ -6991,6 +7485,8 @@ impl Browser {
                         self.pointer_moved(Vec2::new(x, y));
                     }
                 }
+                aid if aid.starts_with("start-") && self.start_aid(aid) => {}
+                "back" => self.run(Action::Back),
                 "overview-open" => self.open_overview(),
                 card if card.starts_with("overview-close:") => {
                     if let Ok(i) = card["overview-close:".len()..].parse::<usize>() {
@@ -7022,8 +7518,44 @@ impl Browser {
                 "capture-stop" => self.capture_action(crate::permission_prompt::CaptureAction::StopAll),
                 // Test aid: load "navigate:URL" in the shown tab (after "private": a private one).
                 url if url.starts_with("navigate:") => self.navigate_to(url["navigate:".len()..].to_owned()),
-                "history" => self.show_panel(Panel::History),
-                "downloads" => self.show_panel(Panel::Downloads),
+                "history" => self.show_list(crate::list_sheet::SheetKind::History),
+                "downloads" => self.show_list(crate::list_sheet::SheetKind::Downloads),
+                "history-panel" => self.show_panel(Panel::History),
+                "downloads-panel" => self.show_panel(Panel::Downloads),
+                "seed-lists" if std::env::var_os("AXION_PROFILE_DIR").is_some() => self.seed_lists_for_test(),
+                // Test aids for the list sheets: "seed-history:N" adds N history rows over 90 days
+                // (needs AXION_PROFILE_DIR), "sheet-scroll:PX" scrolls the open sheet, "sheet-stats"
+                // logs its widget count and the time a layout and a rebuild take.
+                n if n.starts_with("seed-history:") && std::env::var_os("AXION_PROFILE_DIR").is_some() => {
+                    self.seed_history_for_test(&n["seed-history:".len()..]);
+                }
+                px if px.starts_with("sheet-scroll:") => {
+                    self.sheet_scroll_for_test(&px["sheet-scroll:".len()..])
+                }
+                "sheet-stats" => self.sheet_stats_for_test(),
+                // Real pointer clicks with Shift or Ctrl held ("shift-click-action:N"), Ctrl+A
+                // and the Delete key in the open list sheet.
+                id if id.starts_with("shift-click-action:") => {
+                    self.modifiers.shift = true;
+                    self.click_action_for_test(&id["shift-click-action:".len()..], false);
+                    self.modifiers.shift = false;
+                }
+                id if id.starts_with("ctrl-click-action:") => {
+                    self.modifiers.ctrl = true;
+                    self.click_action_for_test(&id["ctrl-click-action:".len()..], false);
+                    self.modifiers.ctrl = false;
+                }
+                "sheet-select-all" => self.sheet_select_all(),
+                "sheet-delete-key" => self.delete_sheet_selection(),
+                // Capture aid: right click at X,Y as a real pointer event ("context:XxY").
+                at if at.starts_with("context:") => self.context_click_for_test(&at["context:".len()..]),
+                // Capture aids: a real left or right click on the button with this action id.
+                id if id.starts_with("click-action:") => {
+                    self.click_action_for_test(&id["click-action:".len()..], false);
+                }
+                id if id.starts_with("context-action:") => {
+                    self.click_action_for_test(&id["context-action:".len()..], true);
+                }
                 "downloads-popover" => self.toggle_downloads_popover(),
                 // Capture aids: the extensions popover, and the details of the first extension.
                 "extensions-popover" => self.toggle_extensions_popover(),
@@ -7040,6 +7572,8 @@ impl Browser {
                 "share" => self.copy_link(),
                 // Capture aid: a toast without needing the clipboard.
                 "toast" => self.show_toast(Icon::Check, tr("Link copied")),
+                // Capture aid: the startup hint to make Axion the default browser.
+                "default-hint" => self.show_default_browser_hint_now(),
                 query if query.starts_with("panel-search:") => {
                     let field = self.chrome.panel_search_field();
                     self.ui.set_field_text(field, &query["panel-search:".len()..]);
@@ -7074,6 +7608,17 @@ impl Browser {
                 "update-install" => self.request_update_install(),
                 "update-confirm" => self.update_alert_action(AlertAction::Primary),
                 "update-cancel" => self.update_alert_action(AlertAction::Secondary),
+                // Capture aids for the page's buttons: Cancel, Later / Close, Try again, Restart.
+                "update-stop" => self.updater.cancel(),
+                "update-later" => {
+                    self.updater.defer();
+                    self.refresh_about();
+                }
+                "update-retry" => {
+                    self.updater.retry(&self.config);
+                    self.refresh_about();
+                }
+                "update-restart" => self.relaunch_for_update(),
                 // Capture aid: a real pointer click on the toast's Update button.
                 "toast-click" => {
                     let at = self.toast.button_center(&self.ui);
@@ -7374,6 +7919,9 @@ impl Browser {
                 // Capture aid: open the player's speed menu.
                 // Capture aid: scroll the page down by 600 px.
                 "toggle-sidebar" => self.run(Action::ToggleSidebar),
+                // Capture aids: the window buttons' look: "unfocused" / "focused", and the
+                // window counting as "window-maximized" / "window-restored".
+                aid if self.frame_capture_aid(aid) => {}
                 // Capture aid: F11, whole-page fullscreen (again to leave it).
                 // ("hover:X:0" then rests the pointer at the top edge: the bars come back.)
                 "presentation" | "fullscreen" => self.run(Action::ToggleFullscreen),
@@ -7544,6 +8092,17 @@ impl Browser {
                     self.settings_outcome(Outcome::Changed);
                     self.refresh_settings();
                 }
+                // Capture aids for the language restart prompt: "language-change:de|en" picks a
+                // language as the picker does, "settings-close" closes the sheet.
+                lang if lang.starts_with("language-change:") => {
+                    self.config.general.language = match &lang["language-change:".len()..] {
+                        "de" => UiLanguage::German,
+                        _ => UiLanguage::English,
+                    };
+                    self.settings_outcome(Outcome::Changed);
+                    self.refresh_settings();
+                }
+                "settings-close" => self.close_settings(),
                 "hardware-confirm" => self.confirm_gpu_frames(),
                 "player-speed" => {
                     let _ = self.player.click(&mut self.ui, PlayerControl::Speed, &self.config);
@@ -7705,6 +8264,12 @@ impl Browser {
                         self.open_tab_menu(item);
                     }
                 }
+                // Capture aid: the menu of a right click on the address field.
+                "address-menu" => {
+                    if let Some(view) = self.active_view() {
+                        self.open_address_menu(view);
+                    }
+                }
                 "add-account" => self.open_add_account(),
                 // Capture aid: type "add-account-name:NAME" into the open Add Account sheet.
                 name if name.starts_with("add-account-name:") => {
@@ -7792,7 +8357,13 @@ impl Browser {
         self.last_frame = now;
         self.ui.animate(dt);
         let was_sliding = self.chrome.is_sliding();
+        let strip_was_moving = self.chrome.strip_moving();
         self.chrome.animate_all(&mut self.ui, dt);
+        if strip_was_moving {
+            // The tab row slides in or away (a lone tab): the bookmarks bar and the page follow
+            // it every frame; the page's engine view is resized paced, like with a window resize.
+            self.update_layout();
+        }
         if was_sliding {
             // The page's rectangle and the toolbar follow the sidebar frame by frame, but the
             // page itself is resized once, as the slide starts, to its size once it settles:
@@ -7883,6 +8454,7 @@ impl Browser {
         self.settings.animate(&mut self.ui, dt);
         let address = self.chrome.address_frame(&self.ui);
         self.passwords.animate(&mut self.ui, &self.config, dt, address);
+        self.animate_list_sheets(dt);
         self.animate_permissions(dt, address);
         self.update_player(dt);
         self.update_playlist_buttons();
@@ -7895,6 +8467,7 @@ impl Browser {
         } else if self.playlist.playback.is_some() {
             self.playlist_background_tick();
         }
+        self.update_start_page(dt);
         self.suggestions.animate(&mut self.ui, dt);
         if self.overview.is_open() {
             let query = self.ui.field_text(self.overview.search_field()).unwrap_or_default().to_owned();
@@ -7902,12 +8475,28 @@ impl Browser {
                 self.overview_query = query;
                 self.rebuild_overview();
             }
-            let engine = &self.engine;
+            // A start tab's web view is hidden behind the native page and has no picture of it:
+            // its card shows the wallpaper (or nothing, then the card's own look).
+            let native = self.config.home.native;
+            let home_views: std::collections::HashSet<ViewId> = self
+                .tabs
+                .all()
+                .iter()
+                .filter(|t| native && is_home_url(&t.url) && !start::wants_html(&t.url) && !t.private)
+                .map(|t| t.view)
+                .collect();
+            let card = self.start_card_picture();
+            let (engine, views) = (&self.engine, &mut self.overview_views);
             self.overview.update(&mut self.ui, dt, |view| {
+                if home_views.contains(&view) {
+                    return card.clone();
+                }
                 let frame = engine.frame(view)?;
                 let size = (frame.texture.width(), frame.texture.height());
-                Some((frame.texture.create_view(&Default::default()), size))
+                Some((views.view(view, &frame.texture), size))
             });
+        } else {
+            self.overview_views.clear();
         }
         self.settings.poll_search(&mut self.ui, &self.config, &self.keymap);
         self.poll_panel_search();
@@ -7925,6 +8514,7 @@ impl Browser {
         let link_blocked = blocked && !self.find.is_open() && !self.suggestions.is_visible();
         self.link_preview.animate(&mut self.ui, &self.config, page, pointer, active, link_blocked, dt);
         self.take_engine_icons();
+        self.take_tile_icons();
         self.poll_svg_icons();
         if self.now_art.poll(&self.favicons) {
             self.update_now_playing();
@@ -7939,6 +8529,7 @@ impl Browser {
         }
         let hovered = if self.tab_drag.is_dragging() { None } else { self.ui.hovered() };
         self.chrome.update_hover(&mut self.ui, hovered);
+        self.update_frame();
         self.update_tab_drag(dt);
         let started = Instant::now();
         self.pace_page_resizes(now);
@@ -7949,13 +8540,19 @@ impl Browser {
         self.tab_drag.animate_rows(&mut self.ui, &self.chrome, &self.config, dt);
         self.tab_close.animate(&mut self.ui, dt);
         self.overview.animate_cards(&mut self.ui, &self.config, dt);
-        if let Some(view) = self.display_view() {
+        // The native start page stands in for its tab's (hidden) web view.
+        // Its view stays hidden while the page is covered too, and then has nothing to draw: its
+        // last frame belongs to the page the tab came from.
+        let native = (self.start_ui.page.is_open() && !self.is_locked())
+            || self.display_view().is_some_and(|v| self.start_view_hidden(v));
+        if let Some(view) = self.display_view().filter(|_| !native) {
             self.engine.request_frame(view);
         }
         self.snapshot_background_tabs();
 
         // Locked private pages aren't drawn at all (the lock screen covers their place).
-        let frame = self.display_view().filter(|_| !self.is_locked()).and_then(|v| self.engine.frame(v));
+        let frame =
+            self.display_view().filter(|_| !self.is_locked() && !native).and_then(|v| self.engine.frame(v));
         self.probe_page_frame(frame.as_ref());
         // The same view while the frame texture stays: an unchanged scene keeps its fingerprint.
         let page_view = frame.as_ref().map(|f| match &self.page_view {
@@ -7974,7 +8571,9 @@ impl Browser {
         let page = self.page_rect();
         let tint_dt = self.last_tint_step.elapsed().as_secs_f32();
         self.last_tint_step = Instant::now();
-        self.adapt_appearance(page_view.as_ref(), tint_dt);
+        let wallpaper = self.start_wallpaper_layers();
+        let wallpaper_view = wallpaper.as_ref().map(|w| w.0.clone());
+        self.adapt_appearance(page_view.as_ref().or(wallpaper_view.as_ref()), tint_dt);
         let page_px = Rect { origin: page.origin * s, size: page.size * s };
         let anchor = self.slide_anchor();
 
@@ -8062,6 +8661,31 @@ impl Browser {
                 }
             }
         }
+        // The native start page's wallpaper lies under its plane (so its glass refracts it): the
+        // picture covers the page card, then the dim.
+        if native && let Some((view, size, opacity, dim)) = &wallpaper {
+            let radius = self.chrome.page_corner_radius(&self.config) * s;
+            let ground = theme.color(Paint::Ground);
+            layers.push(Layer::Content(axion_compositor::Content {
+                quads: vec![axion_compositor::Quad::fill(page_px, radius, ground)],
+                ..Default::default()
+            }));
+            let mut image = ImageDraw::new(view, page_px);
+            image.uv = crate::playlist_page::cover(*size, page_px.size);
+            image.radius = radius;
+            image.opacity = *opacity;
+            layers.push(Layer::Image(image));
+            if *dim > 0.0 {
+                layers.push(Layer::Content(axion_compositor::Content {
+                    quads: vec![axion_compositor::Quad::fill(
+                        page_px,
+                        radius,
+                        [0.0, 0.0, 0.0, dim * opacity],
+                    )],
+                    ..Default::default()
+                }));
+            }
+        }
         let started = Instant::now();
         self.ui.paint(&mut layers);
         self.frame_times.paint = ms_since(started);
@@ -8111,6 +8735,7 @@ impl Browser {
             let mut h = std::hash::DefaultHasher::new();
             scene.fingerprint().hash(&mut h);
             size.hash(&mut h);
+            self.frame.shape.to_bits().hash(&mut h);
             self.engine.counters().page_frames.hash(&mut h);
             h.finish()
         };
@@ -8119,9 +8744,11 @@ impl Browser {
         {
             drop(scene);
             self.frames_skipped += 1;
-            self.idle_redraw_at = Some(now + self.frame_interval);
+            self.idle_skips = self.idle_skips.saturating_add(1);
+            self.idle_redraw_at = Some(now + self.idle_wait());
             return Ok(());
         }
+        self.idle_skips = 0;
         self.idle_redraw_at = None;
         if tracing::enabled!(tracing::Level::TRACE) {
             // Debug aid: which layers changed since the frame shown (why it was drawn).
@@ -8227,11 +8854,38 @@ impl Browser {
         if self.ui.field_caret(field) != Some((typed.len(), None)) {
             return;
         }
-        let Some(completion) = self.store.as_ref().and_then(|s| s.autocomplete(&typed).ok().flatten()) else {
+        if self.suggest_worker.is_some() {
+            // Looked up with the suggestions (`update_suggestions`), applied when it arrives.
+            self.completion_wanted = Some(typed);
             return;
-        };
-        if completion.len() > typed.len() && completion.starts_with(&typed) {
-            self.ui.set_field_text_selecting(field, &completion, typed.len()..completion.len());
+        }
+        if let Some(completion) = self.store.as_ref().and_then(|s| s.autocomplete(&typed).ok().flatten()) {
+            self.apply_completion(&typed, &completion);
+        }
+    }
+
+    /// Puts the inline `completion` of `typed` into the address field, its added part selected,
+    /// if the field still holds exactly `typed` with the caret at its end.
+    fn apply_completion(&mut self, typed: &str, completion: &str) {
+        let field = self.chrome.address_field;
+        if self.ui.field_text(field) != Some(typed) || self.ui.field_caret(field) != Some((typed.len(), None))
+        {
+            return;
+        }
+        if completion.len() > typed.len() && completion.starts_with(typed) {
+            self.ui.set_field_text_selecting(field, completion, typed.len()..completion.len());
+        }
+    }
+
+    /// Enter in the address field before the inline completion of `text` arrived: looked up at
+    /// once, so what is opened doesn't depend on how fast the lookup was.
+    fn finish_completion(&mut self, text: String) -> String {
+        if self.completion_wanted.take().is_none_or(|wanted| wanted != text) {
+            return text;
+        }
+        match self.store.as_ref().and_then(|s| s.autocomplete(&text).ok().flatten()) {
+            Some(completion) if completion.len() > text.len() && completion.starts_with(&text) => completion,
+            _ => text,
         }
     }
 
@@ -8249,7 +8903,9 @@ impl Browser {
         let editing = self.ui.focused() == Some(self.chrome.address_field) && !self.overview.is_open();
         let text = self.typed_address();
         let typed = editing && self.tabs.active().is_none_or(|t| t.url != text);
+        let answers = self.suggest_worker.as_ref().map(crate::suggest_worker::SuggestWorker::poll);
         if !typed {
+            self.completion_wanted = None;
             if self.suggestions.is_visible() {
                 self.suggestions.hide(&mut self.ui, &self.config);
             }
@@ -8258,9 +8914,44 @@ impl Browser {
             return;
         }
         let anchor = self.chrome.address_frame(&self.ui);
-        let (store, search_url) = (self.store.as_ref(), self.config.general.search_url.clone());
+        let newest = self.suggest_generation;
+        self.suggestions.flush_pending(&mut self.ui, &self.config, anchor, &self.favicons);
+        for answer in answers.unwrap_or_default().into_iter().filter(|a| a.generation == newest) {
+            let (ui, config, favicons) = (&mut self.ui, &self.config, &self.favicons);
+            self.suggestions.set_items(ui, config, &answer.text, answer.items, anchor, favicons);
+            if let Some(completion) = answer.completion
+                && self.completion_wanted.as_deref() == Some(answer.text.as_str())
+            {
+                self.completion_wanted = None;
+                self.apply_completion(&answer.text, &completion);
+            }
+        }
+        let search_url = self.config.general.search_url.clone();
+        let mut asked = false;
+        if text != self.suggestions.query()
+            && let Some(worker) = &self.suggest_worker
+        {
+            self.suggest_generation += 1;
+            asked = worker.send(crate::suggest_worker::Request {
+                generation: self.suggest_generation,
+                text: text.clone(),
+                search_url: search_url.clone(),
+                now: unix_now(),
+                complete: self.completion_wanted.as_deref() == Some(text.as_str()),
+            });
+            if !asked {
+                // The worker is gone (it could not open the database): looked up here from now on.
+                self.suggest_worker = None;
+            }
+        }
+        let store = self.store.as_ref();
+        let previous = if asked { self.suggestions.items().to_vec() } else { Vec::new() };
         self.suggestions.update(&mut self.ui, &self.config, &text, anchor, &self.favicons, || {
-            suggest(&text, store, &search_url, unix_now())
+            if asked {
+                crate::suggestions::provisional(&text, &search_url, &previous)
+            } else {
+                suggest(&text, store, &search_url, unix_now())
+            }
         });
         self.suggestions.reposition(&mut self.ui, anchor);
         let current = self.tabs.active().map(|t| t.url.clone());
@@ -8322,6 +9013,18 @@ impl Browser {
     /// changed, nothing presented, so nothing waited for the display), one display refresh later.
     pub fn redraw_at(&self) -> Option<Instant> {
         self.idle_redraw_at
+    }
+
+    /// How long after a skipped frame the next one runs: a display refresh, or once the window
+    /// has been idle for a while, `ui.idle_check_interval_ms` (see `frame_rate::idle_wait`).
+    fn idle_wait(&self) -> Duration {
+        let ui = &self.config.ui;
+        frame_rate::idle_wait(
+            self.frame_interval,
+            self.idle_skips,
+            ui.idle_frames_before_slowing,
+            Duration::from_millis(u64::from(ui.idle_check_interval_ms)),
+        )
     }
 
     /// While the sidebar slides: the frame to show for the page, drawn from the page
@@ -8435,9 +9138,46 @@ impl Browser {
         }
     }
 
+    /// Click probe: clicks the page for each entry that is due.
+    fn tick_click_probe(&mut self) {
+        let (started, queue) = &mut self.click_probe;
+        let elapsed = started.elapsed();
+        let mut due = Vec::new();
+        while queue.front().is_some_and(|c| c.after <= elapsed) {
+            due.extend(queue.pop_front());
+        }
+        let Some(view) = self.active_view() else { return };
+        for click in due {
+            if let Some(letter) = click.ctrl {
+                tracing::info!(%letter, "key probe");
+                for key in input::ctrl_keys(letter) {
+                    self.engine.send_input(view, &key);
+                }
+                continue;
+            }
+            tracing::info!(x = click.x, y = click.y, "click probe");
+            let pos = Vec2::new(click.x, click.y);
+            let modifiers = axion_engine::Modifiers::default();
+            self.engine.send_input(view, &InputEvent::MouseMove { pos, modifiers });
+            for pressed in [true, false] {
+                self.engine.send_input(
+                    view,
+                    &InputEvent::MouseButton {
+                        pos,
+                        button: axion_engine::MouseButton::Left,
+                        pressed,
+                        click_count: 1,
+                        modifiers,
+                    },
+                );
+            }
+        }
+    }
+
     /// Typing probe: types the next character when it is due (between frames, as a key event
     /// would arrive), and logs the summary once everything is typed and shown.
     pub fn tick_probe(&mut self) {
+        self.tick_click_probe();
         let now = Instant::now();
         let Some(probe) = &self.probe else { return };
         if let Some(c) = probe.char_due(now) {
@@ -8567,6 +9307,24 @@ impl Drop for Browser {
 #[derive(Debug)]
 pub struct CaptureDone;
 
+/// Whether Axion may take the focus (test runs set `AXION_NO_FOCUS`).
+fn focus_allowed() -> bool {
+    std::env::var_os("AXION_NO_FOCUS").is_none()
+}
+
+/// This launch handed its URLs to the Axion that already has the profile open (see
+/// `crate::instance`) and has nothing left to do.
+#[derive(Debug)]
+pub struct Forwarded;
+
+impl std::fmt::Display for Forwarded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("handed over to the running Axion")
+    }
+}
+
+impl std::error::Error for Forwarded {}
+
 impl std::fmt::Display for CaptureDone {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("capture done")
@@ -8680,6 +9438,9 @@ fn allowed_while_locked(action: Action) -> bool {
             | Action::OpenSettings
             | Action::ToggleFullscreen
             | Action::Quit
+            | Action::CloseWindow
+            | Action::MinimizeWindow
+            | Action::ToggleMaximize
     )
 }
 
@@ -8698,6 +9459,9 @@ fn keeps_playlist(action: Action) -> bool {
                 | Action::Lock
                 | Action::ToggleFullscreen
                 | Action::Quit
+                | Action::CloseWindow
+                | Action::MinimizeWindow
+                | Action::ToggleMaximize
         )
 }
 
@@ -8887,7 +9651,7 @@ mod tests {
     /// private tabs; and Passwords swallowed the sidebar's rows of the other tab group.)
     #[test]
     fn action_ids_are_never_shared() {
-        for id in 0..60_000 {
+        for id in (0..60_000).chain(90_000..110_000) {
             let id = ActionId(id);
             let claims = [
                 ChromeAction::from_id(id).is_some(),
@@ -8897,7 +9661,12 @@ mod tests {
                 LockScreen::is_lock_action(id),
                 SettingsAction::from_id(id).is_some(),
                 PlayerControl::from_id(id).is_some(),
-                (CONTEXT_MENU_BASE..CONTEXT_MENU_BASE + 5 * MAX_ITEMS as u32).contains(&id.0),
+                (CONTEXT_MENU_BASE..CONTEXT_MENU_BASE + 6 * MAX_ITEMS as u32).contains(&id.0),
+                crate::eye::owns(id),
+                id.0 >= crate::action_ids::HISTORY_SHEET
+                    && id.0 < crate::action_ids::HISTORY_SHEET + crate::list_sheet::SPAN,
+                id.0 >= crate::action_ids::DOWNLOADS_SHEET
+                    && id.0 < crate::action_ids::DOWNLOADS_SHEET + crate::list_sheet::SPAN,
                 (PAGE_MENU_BASE..ACCOUNT_MENU_BASE + MAX_ITEMS as u32).contains(&id.0),
                 crate::playlist_page::PageAction::owns(id),
                 (crate::playlist_page::MENU_BASE..crate::playlist_page::MENU_BASE + 2 * MAX_ITEMS as u32)

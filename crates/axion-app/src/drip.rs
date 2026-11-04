@@ -94,6 +94,9 @@ pub struct Drip {
     fade: Animated<f32>,
     /// Fade mode: the share of its size the card appears at (`motion.fade_scale_from`).
     fade_scale: f32,
+    /// Opening: the first steps are limited to `step_max` seconds each (see `Motion::open_step_max_ms`).
+    guard_frames: u32,
+    step_max: f32,
 }
 
 /// A spring from the config, at the configured speed (Reduce Motion: quick, no overshoot; flat
@@ -178,7 +181,17 @@ impl Drip {
             flat: false,
             fade: Animated::new(0.0, Spring::CRISP),
             fade_scale: 1.0,
+            guard_frames: 0,
+            step_max: f32::INFINITY,
         }
+    }
+
+    /// The time building the surface took must not count as animation time: its first steps
+    /// are short however long the frames were.
+    fn arm_guard(&mut self, config: &Config) {
+        let max = config.motion.open_step_max_ms;
+        self.guard_frames = if max > 0.0 { config.motion.open_guard_frames } else { 0 };
+        self.step_max = (max / 1000.0).max(0.0);
     }
 
     /// Fade mode: the card is at its target at once and fades in or out.
@@ -221,6 +234,7 @@ impl Drip {
         let spec = self.class.open(config);
         let spring = liquid_spring(config, spec);
         self.set_cap(config, spec);
+        self.arm_guard(config);
         for edge in &mut self.edges {
             edge.spring = spring;
         }
@@ -330,6 +344,14 @@ impl Drip {
         if self.phase == Phase::Closed {
             return self.phase;
         }
+        let dt = if self.guard_frames > 0 && dt > 0.0 {
+            // Only frames that advance count (the opening call steps by 0).
+            self.guard_frames -= 1;
+            tracing::trace!(dt, limited = dt.min(self.step_max), "popover opening: guarded step");
+            dt.min(self.step_max)
+        } else {
+            dt
+        };
         for (i, edge) in self.edges.iter_mut().enumerate() {
             edge.step(dt);
             // The hard clamp: never further past the target than allowed, and no momentum
@@ -421,6 +443,51 @@ impl Drip {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// How far (0-1, by height) the drip has grown after steps of `dts` seconds.
+    fn grown_after(config: &Config, dts: &[f32]) -> f32 {
+        let mut drip = Drip::new();
+        let anchor = Frame::new(100.0, 10.0, 34.0, 34.0);
+        let target = Frame::new(60.0, 70.0, 280.0, 300.0);
+        drip.open(config, anchor, target);
+        // The opening call steps by 0, as `Popover::open` does.
+        drip.step(0.0);
+        for &dt in dts {
+            drip.step(dt);
+        }
+        (drip.frame().size.y - anchor.size.y) / (target.size.y - anchor.size.y)
+    }
+
+    #[test]
+    fn a_slow_first_frame_does_not_make_the_glass_leap_ahead() {
+        let config = Config::default();
+        // The frame after the click took 100 ms (content built, glyphs shaped): it counts as one
+        // short step, not as 100 ms of the spring.
+        let hitch = grown_after(&config, &[0.1]);
+        let smooth = grown_after(&config, &[0.02]);
+        assert!((hitch - smooth).abs() < 1e-6, "hitch {hitch} vs one short frame {smooth}");
+        assert!(hitch < 0.2, "the first frame shows a drop, not the final glass: {hitch}");
+        // Without the guard the same frame leaps far ahead (the bug).
+        let mut off = Config::default();
+        off.motion.open_step_max_ms = 0.0;
+        assert!(grown_after(&off, &[0.1]) > 0.3);
+        // The guard only covers the first frames: later ones are as long as they are.
+        let frames = config.motion.open_guard_frames as usize;
+        let mut dts = vec![0.016; frames];
+        dts.push(0.1);
+        assert!(grown_after(&config, &dts) > grown_after(&config, &vec![0.016; frames + 1]));
+    }
+
+    #[test]
+    fn flat_mode_fades_in_over_the_same_guarded_steps() {
+        let mut config = Config::default();
+        config.glass.style = axion_config::GlassStyle::Flat;
+        let mut drip = Drip::new();
+        drip.open(&config, Frame::new(0.0, 0.0, 30.0, 30.0), Frame::new(50.0, 50.0, 200.0, 200.0));
+        drip.step(0.0);
+        drip.step(0.1);
+        assert!(drip.fade() < 0.5, "a slow first frame does not show the flat card at once: {}", drip.fade());
+    }
 
     #[test]
     fn opens_and_closes() {

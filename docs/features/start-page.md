@@ -75,3 +75,30 @@ gear panel opens Settings.
 start page, or enter any address. The home button (**Show home button**) opens the same page.
 
 The start page follows the glass style: with **Flat** it uses solid neutral surfaces with no blur, springs or glass effects (it is served flat from the first paint and switches live when you change the setting); **Liquid Glass** is unchanged.
+
+## The native start page (`home.native`)
+
+With `home.native = true` (the default) the start page is drawn by Axion itself instead of as a
+web page. It has the same parts, switches and data, but its search field, tiles, gear panel and
+dialog are real Liquid Glass that refracts the wallpaper behind them. The HTML page stays as the
+fallback: with `home.native = false`, or by opening `axion://home/?html=1`.
+
+Differences from the HTML page:
+
+- **Keyboard**: Tab and Shift+Tab walk the gear, the engine button, the search field and the tiles;
+  arrow keys move between tiles; Enter or Space presses; Esc closes the panel, the menu or the
+  dialog. Typing a character while nothing has the focus starts the search. A focused tile shows as
+  accent-tinted glass.
+- **Right click** on a tile opens the same menu as before (Open, Open in New Tab, Open in Private
+  Tab, Copy Link, Pin or Unpin, Remove from Start Page). Middle click or Ctrl+click opens a
+  background tab.
+- **Wallpaper**: still pictures, and animated GIF, WebP and APNG (a longer animation is cut at
+  `home.animated_wallpaper_max_mb`, frames are scaled to `home.animated_wallpaper_max_edge`). An
+  animated wallpaper pauses on its frame while the window is minimized and while any tab, the
+  Playlist or Picture in Picture plays media. Videos show their thumbnail as a still (the thumbnail
+  is made once the HTML page has shown the video).
+- **Not available natively**: text selection and drag and drop on the page, page zoom (the zoom
+  indicator may still show), Find on Page, DevTools for the page, an input method editor (compose
+  and CJK input) and a screen-reader tree. Text over a wallpaper has no shadow.
+- The tab overview shows a start tab's card as the wallpaper (or the card's plain look without
+  one).
