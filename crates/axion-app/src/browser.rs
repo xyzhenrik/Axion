@@ -909,6 +909,7 @@ impl Browser {
         let mut favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         favicons.set_dark(dark);
         favicons.set_contrast(config.appearance.favicon_contrast);
+        favicons.set_max_in_memory(config.ui.max_site_icons_in_memory as usize);
         let mut home = HomePage::new(&profile, favicons.dir().map(Into::into));
         // The single background image of older versions moves into the backgrounds directory.
         let migrated = home.migrate(&mut config);
@@ -6250,6 +6251,7 @@ impl Browser {
         self.engine.set_color_scheme(self.dark);
         let delay = self.page_color_delay();
         self.page_colors.set_dark(self.dark, self.active_view(), delay);
+        self.favicons.set_max_in_memory(self.config.ui.max_site_icons_in_memory as usize);
         let contrast_changed = self.favicons.set_contrast(self.config.appearance.favicon_contrast);
         if self.favicons.set_dark(self.dark) {
             // Sites with their own icon for the scheme show it at once.

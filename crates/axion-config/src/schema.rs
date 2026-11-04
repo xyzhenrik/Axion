@@ -1768,6 +1768,10 @@ pub struct Ui {
     /// every display refresh). This is also the most a timer-driven change of the interface
     /// (a tooltip appearing, a notice leaving) can come late.
     pub idle_check_interval_ms: u32,
+    /// Most site icons kept in memory (and on the graphics card); the least recently shown of
+    /// the ones cached on disk leave memory beyond it and are read again when needed (0: no
+    /// limit).
+    pub max_site_icons_in_memory: u32,
 }
 
 impl Default for Ui {
@@ -1784,6 +1788,7 @@ impl Default for Ui {
             skip_unchanged_frames: true,
             idle_frames_before_slowing: 30,
             idle_check_interval_ms: 50,
+            max_site_icons_in_memory: 512,
         }
     }
 }

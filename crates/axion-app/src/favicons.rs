@@ -156,6 +156,8 @@ struct Cached {
     raw: Arc<Raw>,
     /// Where it was downloaded from (unknown for icons cached by older versions).
     source: Option<String>,
+    /// Its PNG is in the cache folder: it may leave memory and be read again when needed.
+    on_disk: bool,
 }
 
 /// What a site's pages said about their icons.
@@ -188,6 +190,12 @@ pub struct Favicons {
     aliases: HashMap<String, String>,
     /// The app icon, the icon of all `axion://` pages.
     app_icon: Option<SiteIcon>,
+    /// When each icon in memory was last asked for (a counter), and the most kept: beyond it the
+    /// least recently used icon that is on disk leaves memory (scrolling through a long history
+    /// loaded every site's icon and kept them all, see `ui.max_site_icons_in_memory`).
+    last_used: RefCell<HashMap<Key, u64>>,
+    uses: std::cell::Cell<u64>,
+    max_in_memory: usize,
 }
 
 impl Favicons {
@@ -210,6 +218,9 @@ impl Favicons {
             shown: RefCell::default(),
             aliases: HashMap::new(),
             app_icon: None,
+            last_used: RefCell::default(),
+            uses: std::cell::Cell::new(0),
+            max_in_memory: usize::MAX,
         };
         this.app_icon = image::load_from_memory_with_format(APP_ICON_PNG, image::ImageFormat::Png)
             .inspect_err(|e| tracing::warn!("app icon as site icon: {e}"))
@@ -219,6 +230,43 @@ impl Favicons {
                 this.upload(img.width(), img.height(), img.as_raw())
             });
         this
+    }
+
+    /// Keeps at most `max` icons in memory (0: no limit).
+    pub fn set_max_in_memory(&mut self, max: usize) {
+        self.max_in_memory = if max == 0 { usize::MAX } else { max };
+        self.evict();
+    }
+
+    /// How many icons are held in memory.
+    #[cfg(test)]
+    pub fn in_memory(&self) -> usize {
+        self.by_key.borrow().len()
+    }
+
+    fn touch(&self, key: &Key) {
+        let n = self.uses.get() + 1;
+        self.uses.set(n);
+        self.last_used.borrow_mut().insert(key.clone(), n);
+    }
+
+    /// Lets the least recently used icons that can be read again from disk leave memory while
+    /// more than `max_in_memory` are held.
+    fn evict(&self) {
+        let mut by_key = self.by_key.borrow_mut();
+        while by_key.len() > self.max_in_memory {
+            let last_used = self.last_used.borrow();
+            let oldest = by_key
+                .iter()
+                .filter(|(_, c)| c.on_disk)
+                .min_by_key(|(k, _)| last_used.get(*k).copied().unwrap_or(0))
+                .map(|(k, _)| k.clone());
+            drop(last_used);
+            let Some(key) = oldest else { break };
+            by_key.remove(&key);
+            self.shown.borrow_mut().remove(&key);
+            self.last_used.borrow_mut().remove(&key);
+        }
     }
 
     /// Icon files were added to the cache folder by someone else (an import): hosts that had
@@ -325,6 +373,7 @@ impl Favicons {
     fn cached(&self, host: &str, scheme: Scheme) -> Option<Cached> {
         let key = (host.to_owned(), scheme);
         if let Some(cached) = self.by_key.borrow().get(&key) {
+            self.touch(&key);
             return Some(cached.clone());
         }
         if self.not_on_disk.borrow().contains(&key) {
@@ -333,7 +382,9 @@ impl Favicons {
         let cached = self.load_from_disk(host, scheme);
         match &cached {
             Some(cached) => {
-                self.by_key.borrow_mut().insert(key, cached.clone());
+                self.by_key.borrow_mut().insert(key.clone(), cached.clone());
+                self.touch(&key);
+                self.evict();
             }
             None => {
                 self.not_on_disk.borrow_mut().insert(key);
@@ -352,7 +403,12 @@ impl Favicons {
         let (w, h) = image.dimensions();
         let source = std::fs::read_to_string(source_file(&path)).ok().map(|s| s.trim().to_owned());
         let icon = self.upload(w, h, image.as_raw());
-        Some(Cached { icon, raw: Arc::new(Raw { width: w, height: h, rgba: image.into_raw() }), source })
+        Some(Cached {
+            icon,
+            raw: Arc::new(Raw { width: w, height: h, rgba: image.into_raw() }),
+            source,
+            on_disk: true,
+        })
     }
 
     /// Chromium reported the page's icon URLs (without media queries): returns the next URL to
@@ -515,14 +571,7 @@ impl Favicons {
         let icon = self.upload(width, height, rgba);
         let key = (host.clone(), scheme);
         let raw = Arc::new(Raw { width, height, rgba: rgba.to_vec() });
-        self.shown.borrow_mut().remove(&key);
-        self.by_key.borrow_mut().insert(key.clone(), Cached { icon, raw, source: Some(url.to_owned()) });
-        self.not_on_disk.borrow_mut().remove(&key);
-        if let Some(search) = self.searches.get_mut(&key) {
-            // Done; what was tried stays tried (no fetching in circles).
-            search.in_flight = None;
-            search.candidates.clear();
-        }
+        let mut on_disk = false;
         if persist
             && let Some(path) = self.cache_path(&host, scheme)
             && let Some(image) = image::RgbaImage::from_raw(width, height, rgba.to_vec())
@@ -531,7 +580,20 @@ impl Favicons {
                 tracing::debug!("caching the icon of {host} failed: {e}");
             } else if let Err(e) = std::fs::write(source_file(&path), url) {
                 tracing::debug!("noting where the icon of {host} came from failed: {e}");
+            } else {
+                on_disk = true;
             }
+        }
+        self.shown.borrow_mut().remove(&key);
+        let cached = Cached { icon, raw, source: Some(url.to_owned()), on_disk };
+        self.by_key.borrow_mut().insert(key.clone(), cached);
+        self.touch(&key);
+        self.evict();
+        self.not_on_disk.borrow_mut().remove(&key);
+        if let Some(search) = self.searches.get_mut(&key) {
+            // Done; what was tried stays tried (no fetching in circles).
+            search.in_flight = None;
+            search.candidates.clear();
         }
     }
 
@@ -641,6 +703,37 @@ pub fn favicon_or(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icons_beyond_the_limit_leave_memory_least_recently_used_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut icons = Favicons::new(device, queue, Some(dir.path().to_owned()));
+        icons.set_max_in_memory(2);
+        let rgba = [200u8; 4 * 4 * 4];
+        for site in ["a", "b", "c"] {
+            let page = format!("https://{site}.example/");
+            icons.insert(&page, &format!("{page}favicon.ico"), 4, 4, &rgba, true);
+            // "a" stays in use.
+            assert!(icons.get("https://a.example/").is_some());
+        }
+        assert_eq!(icons.in_memory(), 2);
+        assert!(icons.by_key.borrow().contains_key(&("a.example".to_owned(), Scheme::Light)));
+        // The one that left is read again from disk when asked for.
+        assert!(icons.get("https://b.example/").is_some());
+        assert_eq!(icons.in_memory(), 2);
+    }
+
+    #[test]
+    fn icons_only_in_memory_never_leave_it() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut icons = Favicons::new(device, queue, None);
+        icons.set_max_in_memory(1);
+        let rgba = [200u8; 4 * 4 * 4];
+        icons.insert("https://a.example/", "https://a.example/i.png", 4, 4, &rgba, true);
+        icons.insert("https://b.example/", "https://b.example/i.png", 4, 4, &rgba, true);
+        assert_eq!(icons.in_memory(), 2, "nothing on disk to read them back from");
+    }
 
     #[test]
     fn internal_pages_are_recognised() {
