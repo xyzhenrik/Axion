@@ -1763,11 +1763,29 @@ pub struct Clipboard {
     /// Larger images and files on the clipboard are left out of a paste (MB). Only used where
     /// Axion hands the clipboard to pages itself (Wayland).
     pub max_paste_mb: u32,
+    /// Whether text a page copies (`navigator.clipboard.writeText()`, `document.execCommand("copy")`,
+    /// "Copy" buttons) is handed to the desktop clipboard by Axion.
+    pub page_copy: PageCopy,
+    /// Text a page copies is cut off at this size (KB).
+    pub max_page_copy_kb: u32,
+}
+
+/// Who puts what a page copies on the desktop clipboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PageCopy {
+    /// Axion where Chromium cannot reach the clipboard itself (Wayland), else Chromium.
+    #[default]
+    Auto,
+    /// Always Axion (also on X11; for testing).
+    Always,
+    /// Only Chromium.
+    Never,
 }
 
 impl Default for Clipboard {
     fn default() -> Self {
-        Self { max_paste_mb: 64 }
+        Self { max_paste_mb: 64, page_copy: PageCopy::Auto, max_page_copy_kb: 4096 }
     }
 }
 
@@ -1845,6 +1863,11 @@ pub struct Shields {
     /// Remove click-tracking parameters (fbclid, gclid, …) from links.
     pub strip_tracking_parameters: bool,
     pub block_third_party_cookies: bool,
+    /// Sites a page may always send and store cookies to, even as a third party: the sign-in
+    /// providers behind "Sign in with Google/Apple/Microsoft" buttons, whose embedded frames and
+    /// token requests only work with their own session cookies. Each entry covers the host and
+    /// its subdomains. Empty: no exception.
+    pub sign_in_hosts: Vec<String>,
     /// Filter lists in Adblock Plus / uBlock Origin syntax.
     pub lists: Vec<String>,
     /// Refresh the lists after this many hours.
@@ -1860,6 +1883,16 @@ impl Default for Shields {
             block_redirects: true,
             strip_tracking_parameters: true,
             block_third_party_cookies: true,
+            sign_in_hosts: [
+                "accounts.google.com",
+                "appleid.apple.com",
+                "idmsa.apple.com",
+                "login.microsoftonline.com",
+                "login.live.com",
+                "www.facebook.com",
+            ]
+            .map(String::from)
+            .to_vec(),
             lists: vec![
                 "https://easylist.to/easylist/easylist.txt".into(),
                 "https://easylist.to/easylist/easyprivacy.txt".into(),
@@ -1990,6 +2023,11 @@ impl Network {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Tabs {
+    /// A page that opens a window (`window.open()`, as sign-in with Google, Apple, GitHub does)
+    /// gets a real popup: a new tab that keeps `window.opener`, so the sign-in can report back
+    /// and close itself. Off: every new window is an unrelated tab (such sign-ins never
+    /// finish). Applies after a restart.
+    pub popups_keep_opener: bool,
     /// Freeze tabs (pause their scripts and timers) after this long in the background (0: never).
     pub freeze_after_minutes: f32,
     /// Unload tabs (keep only URL and a snapshot) after this long in the background (0: never).
@@ -2065,6 +2103,7 @@ pub struct Tabs {
 impl Default for Tabs {
     fn default() -> Self {
         Self {
+            popups_keep_opener: true,
             freeze_after_minutes: 10.0,
             discard_after_minutes: 120.0,
             limit_memory: true,

@@ -31,6 +31,7 @@ use crate::accounts::{AddAccountSheet, Relaunch, SheetAction};
 use crate::avatars::{Avatars, PhotoChooser, PhotoFor};
 use crate::chrome::{Chrome, ChromeAction, MoveKey, NowPlaying, PanelItem, Section, Surface, TabItem};
 use crate::circuit_popover::CircuitPopover;
+use crate::click_probe;
 use crate::context_menu::ContextMenus;
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
@@ -351,6 +352,9 @@ pub struct Browser {
     flat_audit: bool,
     /// Typing latency probe (`AXION_TYPE_PROBE`, see `typing_probe`).
     probe: Option<ProbeRun>,
+    /// Clicks still to make into the page (`AXION_CLICK_PROBE`, see `click_probe`), and when
+    /// the run started.
+    click_probe: (Instant, std::collections::VecDeque<click_probe::Click>),
     /// Those frames, kept in memory until the sequence is complete (saving each one at once
     /// would stall the frame loop and change the timing being looked at).
     captured_frames: Vec<image::RgbaImage>,
@@ -753,6 +757,13 @@ impl Browser {
                 load_extensions: extensions.load_dirs(),
                 block_web_store: !config.extensions.web_store,
                 waker: options.waker.clone(),
+                real_popups: config.tabs.popups_keep_opener,
+                page_copy: match config.clipboard.page_copy {
+                    axion_config::PageCopy::Auto => axion_engine::PageCopyMode::Auto,
+                    axion_config::PageCopy::Always => axion_engine::PageCopyMode::Always,
+                    axion_config::PageCopy::Never => axion_engine::PageCopyMode::Never,
+                },
+                max_page_copy_bytes: config.clipboard.max_page_copy_kb as usize * 1024,
             },
         )?;
         engine.set_request_policy(Some(shields.policy()));
@@ -934,6 +945,10 @@ impl Browser {
                 .ok()
                 .and_then(|v| typing_probe::Spec::parse(&v))
                 .map(ProbeRun::new),
+            click_probe: (
+                Instant::now(),
+                std::env::var("AXION_CLICK_PROBE").map(|v| click_probe::parse(&v)).unwrap_or_default().into(),
+            ),
             captured_frames: Vec::new(),
             pip: None,
             instance,
@@ -1186,6 +1201,64 @@ impl Browser {
         self.parked.insert(tab, false);
         self.tabs_changed = true;
         Ok(())
+    }
+
+    /// A page opened a window that keeps its opener (a sign-in popup): it becomes the next tab
+    /// and is shown, as the click that opened it asked for.
+    fn popup_opened(&mut self, view: ViewId, opener: ViewId, url: &str) {
+        let Some(private) = find_tab(&self.tabs, &self.parked, opener).map(|t| t.private) else {
+            self.engine.close_view(view);
+            return;
+        };
+        let mut tab = Tab::new(view, url);
+        tab.private = private;
+        tab.opener = Some(opener);
+        if self.tabs.index_of(opener).is_some() {
+            let previous = self.tabs.active().map(|t| t.view);
+            self.tabs.insert(tab, true);
+            self.on_active_changed(previous);
+            self.chrome.release_tab_widths(&self.ui, None, true);
+        } else {
+            tab.needs_snapshot = true;
+            self.parked.insert(tab, false);
+        }
+        self.tabs_changed = true;
+    }
+
+    /// A popup closed itself (`window.close()`, as sign-in windows do when they are done):
+    /// its tab goes, and the page that opened it is shown again.
+    fn popup_closed(&mut self, view: ViewId) {
+        let Some(index) = self.tabs.index_of(view) else { return };
+        let Some(opener) = self.tabs.all()[index].opener else { return };
+        let was_active = index == self.tabs.active_index();
+        self.close_tab(index);
+        if was_active
+            && let Some(i) = self.tabs.index_of(opener)
+            && i != self.tabs.active_index()
+        {
+            self.select_tab(i);
+        }
+    }
+
+    /// A page copied text (a "Copy" button): where Chromium cannot reach the desktop
+    /// clipboard, it ends up here.
+    fn page_clipboard_write(&mut self, view: ViewId, text: Option<String>, html: Option<String>) {
+        // A copy needs a click or key press, so only the page in front can have made one.
+        if Some(view) != self.active_view() {
+            tracing::debug!(?view, "ignored a copy from a page that is not shown");
+            return;
+        }
+        let Some(clipboard) = &mut self.clipboard else { return };
+        let bytes = text.as_ref().map_or(0, String::len) + html.as_ref().map_or(0, String::len);
+        let result = match (html, text) {
+            (Some(html), text) => clipboard.set_html(html, text),
+            (None, Some(text)) => clipboard.set_text(text),
+            (None, None) => return,
+        };
+        match result {
+            Ok(()) => tracing::info!(bytes, "a page copied to the clipboard"),
+            Err(e) => tracing::warn!("a page's copy could not reach the clipboard: {e}"),
+        }
     }
 
     fn open_tab(&mut self, url: &str, activate: bool) -> Result<()> {
@@ -4723,7 +4796,12 @@ impl Browser {
                 EngineEvent::CaptureChanged { view, audio, video } => {
                     self.capture_changed(view, audio, video)
                 }
+                EngineEvent::PopupOpened { view, opener, url } => self.popup_opened(view, opener, &url),
+                EngineEvent::ClipboardWrite { view, text, html } => {
+                    self.page_clipboard_write(view, text, html)
+                }
                 EngineEvent::Closed { view } => {
+                    self.popup_closed(view);
                     self.permissions_closed(view);
                     self.playlist.sniffed.remove(&view);
                     self.page_colors.closed(view);
@@ -8435,9 +8513,39 @@ impl Browser {
         }
     }
 
+    /// Click probe: clicks the page for each entry that is due.
+    fn tick_click_probe(&mut self) {
+        let (started, queue) = &mut self.click_probe;
+        let elapsed = started.elapsed();
+        let mut due = Vec::new();
+        while queue.front().is_some_and(|c| c.after <= elapsed) {
+            due.extend(queue.pop_front());
+        }
+        let Some(view) = self.active_view() else { return };
+        for click in due {
+            tracing::info!(x = click.x, y = click.y, "click probe");
+            let pos = Vec2::new(click.x, click.y);
+            let modifiers = axion_engine::Modifiers::default();
+            self.engine.send_input(view, &InputEvent::MouseMove { pos, modifiers });
+            for pressed in [true, false] {
+                self.engine.send_input(
+                    view,
+                    &InputEvent::MouseButton {
+                        pos,
+                        button: axion_engine::MouseButton::Left,
+                        pressed,
+                        click_count: 1,
+                        modifiers,
+                    },
+                );
+            }
+        }
+    }
+
     /// Typing probe: types the next character when it is due (between frames, as a key event
     /// would arrive), and logs the summary once everything is typed and shown.
     pub fn tick_probe(&mut self) {
+        self.tick_click_probe();
         let now = Instant::now();
         let Some(probe) = &self.probe else { return };
         if let Some(c) = probe.char_due(now) {
