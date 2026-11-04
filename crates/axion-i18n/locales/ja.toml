@@ -131,8 +131,6 @@
 "That file couldn't be read." = ""
 "That file is too large for a WireGuard config." = ""
 "The clipboard holds no text." = ""
-"The secrets couldn't be stored in the vault." = ""
-"To store the password or keys, unlock Passwords first (Settings › Passwords)." = ""
 
 # crates/axion-app/src/browser/page_context.rs
 "Address copied" = ""
@@ -1157,7 +1155,6 @@
 "Circuits" = ""
 "Coming in this build" = ""
 "Config file (.conf)" = ""
-"Config read. Keys will be stored in the password vault." = ""
 "Connect" = ""
 "Connections" = ""
 "DNS {servers}" = ""
@@ -1196,10 +1193,7 @@
 "Site rules" = ""
 "Sites with their own route below use that one in every tab. Everything else follows the choice above." = ""
 "Tabs of this account" = ""
-"The password is stored in your password vault, not in the settings file. Names are always resolved by the proxy, never on this computer." = ""
 "The port is a number from 1 to 65535." = ""
-"The private key and any preshared keys go to your password vault. Scripts in the config (PostUp and the like) are never run." = ""
-"These connections keep a password or key in your password vault. Unlock Passwords (Settings › Passwords) and they connect." = ""
 "This kind of connection is coming in this build: you can set it up now, it connects as soon as the part that runs it is installed." = ""
 "Tor default" = ""
 "Type" = ""
