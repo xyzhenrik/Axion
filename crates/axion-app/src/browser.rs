@@ -8393,7 +8393,10 @@ impl Browser {
         self.tab_close.animate(&mut self.ui, dt);
         self.overview.animate_cards(&mut self.ui, &self.config, dt);
         // The native start page stands in for its tab's (hidden) web view.
-        let native = self.start_ui.page.is_open() && !self.is_locked();
+        // Its view stays hidden while the page is covered too, and then has nothing to draw: its
+        // last frame belongs to the page the tab came from.
+        let native = (self.start_ui.page.is_open() && !self.is_locked())
+            || self.display_view().is_some_and(|v| self.start_view_hidden(v));
         if let Some(view) = self.display_view().filter(|_| !native) {
             self.engine.request_frame(view);
         }

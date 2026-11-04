@@ -101,19 +101,28 @@ impl Browser {
         (is_home_url(url) && !wants_html(url)).then_some(tab.view)
     }
 
-    /// Something covers the page area with its own plane (the start page then is not drawn, and
-    /// its web view stays hidden).
+    /// Something replaces the page area with a plane of its own (the start page then is not
+    /// drawn; its web view stays hidden, and is never drawn either, see [`Self::start_view_hidden`]).
     fn start_covered(&self) -> bool {
-        self.overview.is_open()
-            || self.settings.is_open()
-            || self.playlist_open()
-            || self.passwords.is_open()
-            || self.any_list_sheet_open()
+        self.overview.is_open() || self.playlist_open()
     }
 
-    /// The native start page is on screen (or handing over to the site that replaces it).
+    /// A sheet lies over the page (Settings, Passwords, History, ...). The start page stays
+    /// under it like any tab's page, but takes no pointer or keys.
+    fn start_sheet_open(&self) -> bool {
+        self.settings.is_open() || self.passwords.is_open() || self.any_list_sheet_open()
+    }
+
+    /// The active tab's web view is the one hidden under (or instead of) the native page: its
+    /// last frame is another page's (the tab navigated here from a site) and is never drawn.
+    pub(super) fn start_view_hidden(&self, view: ViewId) -> bool {
+        self.start_ui.hidden_view == Some(view)
+    }
+
+    /// The native start page is on screen and takes input (or is handing over to the site that
+    /// replaces it).
     pub(super) fn start_shown(&self) -> bool {
-        self.start_ui.page.is_open()
+        self.start_ui.page.is_open() && !self.start_sheet_open()
     }
 
     /// Every frame: shows or hides the page, keeps its model and wallpaper current, animates.
@@ -143,7 +152,7 @@ impl Browser {
             self.update_start_model(view);
         }
         self.update_start_clock();
-        let pointer = self.pointer;
+        let pointer = self.pointer.filter(|_| !self.start_sheet_open());
         self.start_ui.page.animate(&mut self.ui, &self.config, dt, pointer);
         self.update_wallpaper(dt);
         // The panel's thumbnails arrive from the thumbnail thread.
