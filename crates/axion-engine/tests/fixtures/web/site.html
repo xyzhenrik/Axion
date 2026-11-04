@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OAuth relying party</title>
+<!--
+  The page with the "Sign in with ..." buttons. Origin http://localhost:8101; the identity provider
+  (idp.html) is on http://127.0.0.1:8102, another site. Run serve.py, then click (AXION_CLICK_PROBE):
+  button N is at x=120, y=45+70*N in the page.
+    0  window.open(url, name, "width=480,height=640")   popup with features
+    1  window.open(url)                                  plain window.open (a tab in Chrome, with opener)
+    2  <a target=_blank>                                 (noopener by default: no opener expected)
+    3  redirect flow in the same tab (idp /authorize -> callback.html)
+  The iframe at the bottom is an idp frame (third-party cookie).
+-->
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  button, a.b { position: absolute; left: 20px; width: 200px; height: 50px; box-sizing: border-box; }
+  a.b { display: block; border: 1px solid #888; text-align: center; line-height: 50px; color: #000; }
+  #spin { position: absolute; right: 20px; top: 20px; width: 30px; height: 30px; background: #36c;
+          animation: turn 1s linear infinite; }
+  @keyframes turn { to { transform: rotate(360deg); } }
+  iframe { position: absolute; left: 20px; top: 330px; width: 300px; height: 60px; }
+</style>
+<div id="spin"></div>
+<button id="b0" style="top:20px">popup (features)</button>
+<button id="b1" style="top:90px">window.open (plain)</button>
+<a id="b2" class="b" style="top:160px" href="http://127.0.0.1:8102/idp.html?flow=blank" target="_blank">target=_blank</a>
+<button id="b3" style="top:230px">redirect flow</button>
+<iframe src="http://127.0.0.1:8102/frame.html"></iframe>
+<script>
+  const IDP = 'http://127.0.0.1:8102';
+  const report = (o) => fetch('/report?' + new URLSearchParams(o), { keepalive: true });
+  const brands = navigator.userAgentData ? navigator.userAgentData.brands.map((b) => b.brand + '/' + b.version).join(',') : 'none';
+  report({ step: 'ua', ua: navigator.userAgent, brands, webdriver: String(navigator.webdriver) });
+  addEventListener('message', (e) => {
+    report({ step: 'site got message', from: e.origin, data: JSON.stringify(e.data) });
+  });
+  const watch = (w, name) => {
+    if (!w) return report({ step: name + ' returned null' });
+    report({ step: name + ' opened' });
+    const t = setInterval(() => { if (w.closed) { clearInterval(t); report({ step: name + ' closed' }); } }, 200);
+  };
+  b0.onclick = () => watch(open(IDP + '/idp.html?flow=popup', 'idp', 'width=480,height=640'), 'popup');
+  b1.onclick = () => watch(open(IDP + '/idp.html?flow=plain'), 'plain');
+  b3.onclick = () => { location.href = IDP + '/authorize'; };
+  // A second idp frame a moment later: it carries the idp cookie unless third-party cookies are blocked.
+  setTimeout(() => { const f = document.createElement('iframe'); f.src = IDP + '/frame.html?again'; f.style.top = '400px'; document.body.append(f); }, 1500);
+  report({ step: 'site loaded' });
+</script>

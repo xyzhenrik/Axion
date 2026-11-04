@@ -62,6 +62,20 @@ pub trait RequestPolicy: Send + Sync {
     fn allow_navigation_initiator(&self, page_url: &str, initiator: &str, url: &str) -> bool;
     /// JavaScript to run in each document of `url` as it starts loading (main thread).
     fn page_script(&self, url: &str) -> Option<String>;
+    /// Whether a page may open a window at `url` (main thread). `opener_frame` is the URL of
+    /// the frame that asked when it is not the page itself. The engine asks before it creates
+    /// a real popup (one that keeps `window.opener`); a refused one is reported as
+    /// [`EngineEvent::NewViewRequested`](crate::EngineEvent::NewViewRequested) instead.
+    fn allow_popup(
+        &self,
+        opener_url: &str,
+        opener_frame: Option<&str>,
+        url: &str,
+        user_gesture: bool,
+    ) -> bool {
+        let _ = (opener_url, opener_frame, url, user_gesture);
+        true
+    }
 }
 
 /// How a *media view* (a view that only plays one captured video source, Axion's Playlist)

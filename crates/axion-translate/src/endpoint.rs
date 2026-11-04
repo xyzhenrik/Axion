@@ -49,7 +49,8 @@ fn request(url: &str, api_key: &str, timeout: Duration, job: &Job) -> Result<Vec
         .build()
         .into();
     let mut body = serde_json::json!({
-        "q": job.texts, "source": job.from, "target": job.to, "format": "text",
+        "q": job.texts, "source": crate::lang::endpoint_code(&job.from),
+        "target": crate::lang::endpoint_code(&job.to), "format": "text",
     });
     if !api_key.is_empty() {
         body["api_key"] = api_key.into();

@@ -13,7 +13,7 @@ use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, CAPSULE, Paint, Ui, Widget};
 
 /// Action ids of the eyes: a small range of their own.
-const BASE: u32 = 13_000;
+const BASE: u32 = crate::action_ids::EYES;
 const COUNT: u32 = 256;
 const SIDE: f32 = 28.0;
 const ICON: f32 = 18.0;

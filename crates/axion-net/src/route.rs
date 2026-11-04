@@ -145,6 +145,17 @@ impl RoutingConfig {
         self.site_rules.iter().filter(|r| host_matches(host, &r.host)).max_by_key(|r| r.host.len())
     }
 
+    /// The same routing with a session route on top: every kind of tab goes through `target`
+    /// and the site rules are set aside (the settings keep them; this value is not saved).
+    pub fn with_session_route(&self, target: &Target) -> RoutingConfig {
+        RoutingConfig {
+            default: target.clone(),
+            private: Some(target.clone()),
+            site_rules: Vec::new(),
+            ..self.clone()
+        }
+    }
+
     /// The route for a request.
     pub fn resolve(&self, query: &RouteQuery<'_>) -> Target {
         if let Some(t) = query.tab_override {
@@ -218,6 +229,22 @@ mod tests {
 
     fn q<'a>(host: &'a str, private: bool, over: Option<&'a Target>) -> RouteQuery<'a> {
         RouteQuery { host, private, tab_override: over }
+    }
+
+    #[test]
+    fn a_session_route_beats_everything_and_leaves_the_original_alone() {
+        let c = cfg();
+        let vpn = Target::Connection("vpn".into());
+        let s = c.with_session_route(&vpn);
+        for private in [false, true] {
+            assert_eq!(s.resolve(&q("www.example.com", private, None)), vpn, "site rule is set aside");
+            assert_eq!(s.resolve(&q("news.org", private, None)), vpn);
+        }
+        assert!(s.site_rules.is_empty() && s.always_routed(false) && s.always_routed(true));
+        assert!(s.kill_switch);
+        // The original (what Settings edits) is untouched: switching off restores it.
+        assert_eq!(c.resolve(&q("www.example.com", false, None)), Target::Direct);
+        assert_eq!(c.site_rules.len(), 2);
     }
 
     #[test]
