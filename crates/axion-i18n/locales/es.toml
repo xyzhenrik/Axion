@@ -1468,3 +1468,20 @@
 # crates/axion-app/src/list_sheet.rs
 "Select items" = "Selecciona elementos"
 "{count} selected" = "{count} seleccionados"
+
+# crates/axion-app/src/chrome.rs
+"Minimize" = "Minimizar"
+
+# crates/axion-app/src/settings.rs
+"Axion" = "Axion"
+"Axion: the toolbar holds the window buttons and the window has rounded corners. System: the desktop's own title bar and frame." = "Axion: la barra de herramientas incluye los botones de la ventana y la ventana tiene esquinas redondeadas. Sistema: la barra de título y el marco del escritorio."
+"Close window" = "Cerrar ventana"
+"Left" = "Izquierda"
+"Maximize or restore window" = "Maximizar o restaurar ventana"
+"Minimize window" = "Minimizar ventana"
+"Right" = "Derecha"
+"System" = "Sistema"
+"Window buttons" = "Botones de ventana"
+
+# crates/axion-app/src/settings/search.rs
+"Window frame" = "Marco de la ventana"

@@ -110,7 +110,7 @@ impl Browser {
                     return false;
                 }
                 let count = self.frame.clicks.press(MouseButton::Left, p);
-                if count >= 2 && count % 2 == 0 {
+                if count >= 2 && count.is_multiple_of(2) {
                     self.run(Action::ToggleMaximize);
                 } else if let Err(e) = self.window.drag_window() {
                     tracing::debug!("the window cannot be moved by dragging: {e}");

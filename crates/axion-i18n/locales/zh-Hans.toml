@@ -1468,3 +1468,20 @@
 # crates/axion-app/src/list_sheet.rs
 "Select items" = "选择项目"
 "{count} selected" = "已选择 {count} 项"
+
+# crates/axion-app/src/chrome.rs
+"Minimize" = "最小化"
+
+# crates/axion-app/src/settings.rs
+"Axion" = "Axion"
+"Axion: the toolbar holds the window buttons and the window has rounded corners. System: the desktop's own title bar and frame." = "Axion：窗口按钮位于工具栏中，窗口带圆角。系统：使用桌面自带的标题栏和边框。"
+"Close window" = "关闭窗口"
+"Left" = "左侧"
+"Maximize or restore window" = "最大化或还原窗口"
+"Minimize window" = "最小化窗口"
+"Right" = "右侧"
+"System" = "系统"
+"Window buttons" = "窗口按钮"
+
+# crates/axion-app/src/settings/search.rs
+"Window frame" = "窗口边框"

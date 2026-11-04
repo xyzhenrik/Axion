@@ -610,6 +610,20 @@ pub struct Browser {
     present_mode: String,
 }
 
+/// Whether windows can be transparent here (Wayland): X11 drivers offer no alpha for a surface.
+fn transparent_windows(event_loop: &ActiveEventLoop) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::wayland::ActiveEventLoopExtWayland as _;
+        event_loop.is_wayland()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = event_loop;
+        true
+    }
+}
+
 impl Browser {
     pub fn new(event_loop: &ActiveEventLoop, options: Options) -> Result<Self> {
         let bases = Bases::discover()?;
@@ -673,7 +687,12 @@ impl Browser {
             // Custom decorations: no title bar from the desktop (Axion draws the window buttons)
             // and a transparent window, so the corners can be rounded.
             .with_decorations(config.window.decorations != axion_config::WindowDecorations::Custom)
-            .with_transparent(config.window.decorations == axion_config::WindowDecorations::Custom)
+            // (Wayland only: an X11 window with an alpha visual but an opaque surface can come up
+            // see-through, and X11 has no surface alpha to round the corners with anyway.)
+            .with_transparent(
+                config.window.decorations == axion_config::WindowDecorations::Custom
+                    && transparent_windows(event_loop),
+            )
             .with_maximized(options.maximized || (restore && saved_window.maximized))
             // Test runs (`--capture`, `AXION_NO_FOCUS=1`) must not steal the focus from the user.
             .with_active(options.capture.is_none() && std::env::var_os("AXION_NO_FOCUS").is_none());

@@ -1468,3 +1468,20 @@
 # crates/axion-app/src/list_sheet.rs
 "Select items" = "Выберите элементы"
 "{count} selected" = "Выбрано: {count}"
+
+# crates/axion-app/src/chrome.rs
+"Minimize" = "Свернуть"
+
+# crates/axion-app/src/settings.rs
+"Axion" = "Axion"
+"Axion: the toolbar holds the window buttons and the window has rounded corners. System: the desktop's own title bar and frame." = "Axion: кнопки окна находятся на панели инструментов, а углы окна скруглены. Система: заголовок и рамка окна от рабочего стола."
+"Close window" = "Закрыть окно"
+"Left" = "Слева"
+"Maximize or restore window" = "Развернуть или восстановить окно"
+"Minimize window" = "Свернуть окно"
+"Right" = "Справа"
+"System" = "Система"
+"Window buttons" = "Кнопки окна"
+
+# crates/axion-app/src/settings/search.rs
+"Window frame" = "Рамка окна"
