@@ -1053,6 +1053,8 @@ pub struct Layout {
     pub window_corner_radius: f32,
     /// Diameter of Axion's own window buttons (close, minimize, zoom), logical px.
     pub traffic_light_size: f32,
+    /// Width of the slightly darker ring around each window button, logical px (0: none).
+    pub traffic_light_ring: f32,
     /// Gap between two of the window buttons.
     pub traffic_light_gap: f32,
     /// Gap between the window buttons and the toolbar group next to them.
@@ -1129,7 +1131,8 @@ impl Default for Layout {
             page_corner_radius: 10.0,
             page_margin: 8.0,
             window_corner_radius: 14.0,
-            traffic_light_size: 14.0,
+            traffic_light_size: 18.0,
+            traffic_light_ring: 1.0,
             traffic_light_gap: 8.0,
             traffic_light_margin: 14.0,
             tab_bar: TabBarStyle::Separate,
@@ -1696,6 +1699,15 @@ pub struct WindowBehavior {
     /// With `decorations = "custom"`: width (logical px) of the strip along the window's edges
     /// that resizes it when dragged (the corners count double).
     pub resize_border_px: f32,
+    /// With `decorations = "custom"`: the flat colours of the window buttons (never glass).
+    pub light_close: Color,
+    pub light_minimize: Color,
+    pub light_zoom: Color,
+    /// The buttons of a window that is not in front (until the pointer is over them).
+    pub light_unfocused: Color,
+    /// The glyph (x, -, arrows) on the buttons while the pointer is over them, the same on all
+    /// three; translucent, so it reads as a darker shade of each button's colour.
+    pub light_glyph: Color,
 }
 
 /// Who draws the window's frame.
@@ -1731,6 +1743,11 @@ impl Default for WindowBehavior {
             decorations: WindowDecorations::Custom,
             controls_side: ControlsSide::Left,
             resize_border_px: 6.0,
+            light_close: Color::rgb(0xFF5F57),
+            light_minimize: Color::rgb(0xFEBC2E),
+            light_zoom: Color::rgb(0x28C840),
+            light_unfocused: Color::rgb(0x9A9A9F),
+            light_glyph: Color::rgb(0x2B1200).with_alpha(0.72),
         }
     }
 }
