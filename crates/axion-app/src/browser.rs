@@ -109,6 +109,7 @@ mod playlist;
 mod reading;
 mod registry;
 mod sheets;
+mod start;
 mod tabgroups;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
@@ -353,6 +354,7 @@ pub struct Browser {
     /// The Playlist: its videos, and its page, popover and thumbnails.
     playlist: crate::playlist::Playlist,
     playlist_ui: playlist::PlaylistUi,
+    start_ui: start::StartUi,
     /// The active page's last reported scroll position (CSS px).
     /// Frames saved so far by the `AXION_CAPTURE_FRAMES` debug aid.
     capture_frame: u32,
@@ -900,6 +902,7 @@ impl Browser {
         let playlist = crate::playlist::Playlist::new(&profile);
         let playlist_ui =
             playlist::PlaylistUi::build(&mut ui, &config, chrome.bar_node(), device.clone(), queue.clone());
+        let start_ui = start::StartUi::build(&mut ui, &config, device.clone(), queue.clone());
         let add_account = AddAccountSheet::build(&mut ui);
         let group_sheet = GroupSheet::build(&mut ui);
         let tab_search = TabSearch::build(&mut ui);
@@ -993,6 +996,7 @@ impl Browser {
             player,
             playlist,
             playlist_ui,
+            start_ui,
             capture_frame: 0,
             flat_audit: false,
             probe: std::env::var("AXION_TYPE_PROBE")
@@ -1660,6 +1664,8 @@ impl Browser {
             Action::ViewSource => self.view_source(),
             Action::Print => self.open_print(),
             Action::Screenshot => self.start_screenshot(),
+            // The native start page has no text to search (its web view is hidden).
+            Action::Find if self.start_shown() => {}
             Action::Find => self.open_find(),
             Action::FindNext | Action::FindPrevious => {
                 if self.find.is_open() {
@@ -3578,6 +3584,8 @@ impl Browser {
             MenuAction::Playlist(command) => return self.playlist_command(command),
             MenuAction::Page(command) => return self.page_command(command),
             MenuAction::Context(verb) => return self.context_command(verb),
+            // The start page's engine menu is handled by the page (`start_event`).
+            MenuAction::StartEngine(_) => return,
             _ => {}
         }
         let Some(tab) = self.tabs.active() else { return };
@@ -3666,6 +3674,7 @@ impl Browser {
             | MenuAction::Playlist(_)
             | MenuAction::Page(_)
             | MenuAction::Context(_)
+            | MenuAction::StartEngine(_)
             | MenuAction::Bookmark(_) => {}
         }
     }
@@ -3998,6 +4007,7 @@ impl Browser {
                 event if self.onboarding.is_open() && self.onboarding.wants(&event) => {
                     self.onboarding_event(event);
                 }
+                event if self.start_event(&event) => {}
                 UiEvent::Clicked { action, .. } if self.history_sheet.owns_action(action) => {
                     if let Some(click) = self.history_sheet.click(&self.ui, action, self.pointer) {
                         self.list_sheet_click(crate::list_sheet::SheetKind::History, click);
@@ -4695,6 +4705,7 @@ impl Browser {
                     // The fill offer was for the page that was there (a save offer stays).
                     self.passwords.hide_prompt(Some(view), true);
                     self.permissions_navigated(view, &url);
+                    self.start_ui.engine_urls.insert(view, url.clone());
                     if let Some(tab) = tab_mut(&mut self.tabs, &mut self.parked, view) {
                         tab.url = url;
                         self.tabs_changed = true;
@@ -6130,6 +6141,12 @@ impl Browser {
         let (config, store) =
             if private { (&mut scratch, None) } else { (&mut self.config, self.store.as_ref()) };
         let action = self.home.handle(message, config, store);
+        self.home_action(view, private, action);
+    }
+
+    /// What a start page (the HTML one's message or the native one's command) asked for.
+    fn home_action(&mut self, view: ViewId, private: bool, action: HomeAction) {
+        self.start_ui.stale = true;
         match action {
             HomeAction::Nothing => {}
             HomeAction::Go(text) => {
@@ -6304,6 +6321,8 @@ impl Browser {
                 };
                 if self.pointer.is_some_and(|p| self.ext_popup_wheel(p, delta)) {
                     // The extension popup scrolled.
+                } else if self.pointer.is_some_and(|p| self.start_wheel(p, delta)) {
+                    // The start page's top sites flipped a page.
                 } else if self.overview.is_open() {
                     self.overview.scroll_by(&mut self.ui, delta.y);
                 } else if self.history_sheet.is_open() {
@@ -6690,6 +6709,12 @@ impl Browser {
             self.playlist_ui.popover.close(&mut self.ui, &self.config);
             return;
         }
+        if pressed && self.start_press(p) {
+            return;
+        }
+        if pressed && button == winit::event::MouseButton::Middle && self.start_middle_click(p) {
+            return;
+        }
         if pressed && self.playlist_open() && self.playlist_ui.page.menu().is_open() {
             // A click outside a Playlist menu only dismisses it.
             if !self.playlist_ui.page.menu().contains(&self.ui, p) {
@@ -6834,6 +6859,14 @@ impl Browser {
             && self.ui.focused().is_none()
             && input::key(event) == Some(Key::Named("Escape".into()))
             && self.playlist_escape()
+        {
+            return false;
+        }
+        if pressed
+            && self.start_shown()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+            && self.ui.focused().is_none()
+            && self.start_escape()
         {
             return false;
         }
@@ -7022,6 +7055,9 @@ impl Browser {
             return false;
         }
 
+        if self.start_field_tab(event) || self.start_key(event) {
+            return false;
+        }
         if self.ui.focused().is_some() {
             if pressed {
                 if let Some(key) = input::key(event) {
@@ -7291,6 +7327,7 @@ impl Browser {
                         self.pointer_moved(Vec2::new(x, y));
                     }
                 }
+                aid if aid.starts_with("start-") && self.start_aid(aid) => {}
                 "overview-open" => self.open_overview(),
                 card if card.starts_with("overview-close:") => {
                     if let Ok(i) = card["overview-close:".len()..].parse::<usize>() {
@@ -8233,6 +8270,7 @@ impl Browser {
         } else if self.playlist.playback.is_some() {
             self.playlist_background_tick();
         }
+        self.update_start_page(dt);
         self.suggestions.animate(&mut self.ui, dt);
         if self.overview.is_open() {
             let query = self.ui.field_text(self.overview.search_field()).unwrap_or_default().to_owned();
@@ -8241,7 +8279,21 @@ impl Browser {
                 self.rebuild_overview();
             }
             let engine = &self.engine;
+            // A start tab's web view is hidden behind the native page and has no picture of it:
+            // its card shows the wallpaper (or nothing, then the card's own look).
+            let native = self.config.home.native;
+            let home_views: std::collections::HashSet<ViewId> = self
+                .tabs
+                .all()
+                .iter()
+                .filter(|t| native && is_home_url(&t.url) && !t.private)
+                .map(|t| t.view)
+                .collect();
+            let card = self.start_card_picture();
             self.overview.update(&mut self.ui, dt, |view| {
+                if home_views.contains(&view) {
+                    return card.clone();
+                }
                 let frame = engine.frame(view)?;
                 let size = (frame.texture.width(), frame.texture.height());
                 Some((frame.texture.create_view(&Default::default()), size))
@@ -8287,13 +8339,16 @@ impl Browser {
         self.tab_drag.animate_rows(&mut self.ui, &self.chrome, &self.config, dt);
         self.tab_close.animate(&mut self.ui, dt);
         self.overview.animate_cards(&mut self.ui, &self.config, dt);
-        if let Some(view) = self.display_view() {
+        // The native start page stands in for its tab's (hidden) web view.
+        let native = self.start_ui.page.is_open() && !self.is_locked();
+        if let Some(view) = self.display_view().filter(|_| !native) {
             self.engine.request_frame(view);
         }
         self.snapshot_background_tabs();
 
         // Locked private pages aren't drawn at all (the lock screen covers their place).
-        let frame = self.display_view().filter(|_| !self.is_locked()).and_then(|v| self.engine.frame(v));
+        let frame =
+            self.display_view().filter(|_| !self.is_locked() && !native).and_then(|v| self.engine.frame(v));
         self.probe_page_frame(frame.as_ref());
         // The same view while the frame texture stays: an unchanged scene keeps its fingerprint.
         let page_view = frame.as_ref().map(|f| match &self.page_view {
@@ -8312,7 +8367,9 @@ impl Browser {
         let page = self.page_rect();
         let tint_dt = self.last_tint_step.elapsed().as_secs_f32();
         self.last_tint_step = Instant::now();
-        self.adapt_appearance(page_view.as_ref(), tint_dt);
+        let wallpaper = self.start_wallpaper_layers();
+        let wallpaper_view = wallpaper.as_ref().map(|w| w.0.clone());
+        self.adapt_appearance(page_view.as_ref().or(wallpaper_view.as_ref()), tint_dt);
         let page_px = Rect { origin: page.origin * s, size: page.size * s };
         let anchor = self.slide_anchor();
 
@@ -8398,6 +8455,31 @@ impl Browser {
                 if let Layer::Image(image) = layer {
                     image.opacity = opacity.clamp(0.0, 1.0);
                 }
+            }
+        }
+        // The native start page's wallpaper lies under its plane (so its glass refracts it): the
+        // picture covers the page card, then the dim.
+        if native && let Some((view, size, opacity, dim)) = &wallpaper {
+            let radius = self.chrome.page_corner_radius(&self.config) * s;
+            let ground = theme.color(Paint::Ground);
+            layers.push(Layer::Content(axion_compositor::Content {
+                quads: vec![axion_compositor::Quad::fill(page_px, radius, ground)],
+                ..Default::default()
+            }));
+            let mut image = ImageDraw::new(view, page_px);
+            image.uv = crate::playlist_page::cover(*size, page_px.size);
+            image.radius = radius;
+            image.opacity = *opacity;
+            layers.push(Layer::Image(image));
+            if *dim > 0.0 {
+                layers.push(Layer::Content(axion_compositor::Content {
+                    quads: vec![axion_compositor::Quad::fill(
+                        page_px,
+                        radius,
+                        [0.0, 0.0, 0.0, dim * opacity],
+                    )],
+                    ..Default::default()
+                }));
             }
         }
         let started = Instant::now();

@@ -30,6 +30,10 @@ impl Browser {
         if self.passwords.is_open() || self.overview.is_open() {
             return None;
         }
+        // A tile of the native start page.
+        if let Some(target) = self.start_tile_target(p) {
+            return Some(target);
+        }
         let hit = self.ui.hit(p)?;
         let action_node = self.ui.hit_action(p);
         let action = action_node.and_then(|n| self.ui.widget(n)).and_then(|w| w.action);

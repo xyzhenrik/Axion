@@ -827,6 +827,10 @@ impl Browser {
             self.engine.set_hidden(view, false);
             self.engine.resize(view, self.view_size());
             self.engine.set_focus(view, true);
+            // A start tab's view goes back under the native page.
+            if self.start_ui.hidden_view == Some(view) {
+                self.start_ui.hidden_view = None;
+            }
         }
         self.playlist_ui.button = None;
         self.tabs_changed = true;

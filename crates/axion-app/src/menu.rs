@@ -92,6 +92,8 @@ pub enum MenuAction {
     Page(crate::page_menu::PageCommand),
     /// A row of a menu of the context registry (see `context_registry`).
     Context(crate::context_registry::Verb),
+    /// The start page's engine menu: the engine's index in `settings::SEARCH_ENGINES`.
+    StartEngine(usize),
 }
 
 /// Where a menu opens relative to its button.

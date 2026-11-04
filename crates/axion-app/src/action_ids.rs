@@ -75,6 +75,7 @@ pub const RANGES: &[Block] = &[
     block("passwords", 20_000, 21_100),
     block("onboarding", 30_000, 31_000),
     block("playlist page", 40_000, 49_000),
+    block("start page", 50_000, 52_000),
     block("eyes", EYES, EYES + 256),
     block("chrome tab mute", 60_000, 62_000),
     block("group sheet", 70_000, 71_000),

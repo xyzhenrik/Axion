@@ -86,6 +86,8 @@ mod shields_popover;
 mod shutdown;
 mod spinner;
 mod stall;
+mod start_page;
+mod start_wallpaper;
 mod suggestions;
 mod svg_icons;
 mod tab_search;
