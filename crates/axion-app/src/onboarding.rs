@@ -45,6 +45,8 @@ pub enum Step {
     /// Bookmarks and history of the other browsers found on this computer (only offered when
     /// there are some).
     Import,
+    /// Make Axion the system's default browser (offered on Linux; "Continue" skips it).
+    Default,
     /// Name, picture and an optional password of the local account.
     Account,
 }
@@ -54,6 +56,19 @@ impl Step {
     /// The steps when there is something to import.
     pub const WITH_IMPORT: [Step; 6] =
         [Step::Welcome, Step::Appearance, Step::Layout, Step::Glass, Step::Import, Step::Account];
+    /// The steps with the default browser offer.
+    pub const WITH_DEFAULT: [Step; 6] =
+        [Step::Welcome, Step::Appearance, Step::Layout, Step::Glass, Step::Default, Step::Account];
+    /// The steps with both.
+    pub const WITH_IMPORT_AND_DEFAULT: [Step; 7] = [
+        Step::Welcome,
+        Step::Appearance,
+        Step::Layout,
+        Step::Glass,
+        Step::Import,
+        Step::Default,
+        Step::Account,
+    ];
 }
 
 /// How the introduction ended.
@@ -72,20 +87,32 @@ pub struct Flow {
     ending: Option<Ending>,
     /// Whether the import step is part of the flow.
     import: bool,
+    /// Whether the default browser step is part of the flow.
+    default_offer: bool,
 }
 
 impl Flow {
     /// Starts at step `index` (counting from 0; clamped to the last step); `import`: the
     /// import step is part of the flow.
     pub fn at(index: usize, import: bool) -> Self {
-        let mut flow = Self { index: 0, ending: None, import };
+        Self::at_with(index, import, false)
+    }
+
+    /// [`Self::at`], with the default browser step part of the flow if `default_offer`.
+    pub fn at_with(index: usize, import: bool, default_offer: bool) -> Self {
+        let mut flow = Self { index: 0, ending: None, import, default_offer };
         flow.index = index.min(flow.steps().len() - 1);
         flow
     }
 
     /// The steps of this flow, in order.
     pub fn steps(&self) -> &'static [Step] {
-        if self.import { &Step::WITH_IMPORT } else { &Step::ALL }
+        match (self.import, self.default_offer) {
+            (false, false) => &Step::ALL,
+            (true, false) => &Step::WITH_IMPORT,
+            (false, true) => &Step::WITH_DEFAULT,
+            (true, true) => &Step::WITH_IMPORT_AND_DEFAULT,
+        }
     }
 
     pub fn step(&self) -> Step {
@@ -207,7 +234,9 @@ const BACK: ActionId = ActionId(BASE + 1);
 const SKIP: ActionId = ActionId(BASE + 2);
 const CHOOSE_PHOTO: ActionId = ActionId(BASE + 3);
 const REMOVE_PHOTO: ActionId = ActionId(BASE + 4);
-const LANGUAGE_BASE: u32 = BASE + 10;
+const MAKE_DEFAULT: ActionId = ActionId(BASE + 5);
+/// One id per `UiLanguage::ALL` entry (more than the 10 ids between the other groups).
+const LANGUAGE_BASE: u32 = BASE + 200;
 const THEME_BASE: u32 = BASE + 20;
 const ACCENT_BASE: u32 = BASE + 30;
 const TAB_BAR_BASE: u32 = BASE + 40;
@@ -217,8 +246,6 @@ const IMPORT_BASE: u32 = BASE + 70;
 /// Browsers listed in the import step.
 pub const MAX_SOURCES: usize = 4;
 
-const LANGUAGES: [(&str, UiLanguage); 3] =
-    [("System", UiLanguage::System), ("English", UiLanguage::English), ("Deutsch", UiLanguage::German)];
 const THEMES: [ThemeMode; 3] = [ThemeMode::Light, ThemeMode::Dark, ThemeMode::Auto];
 const TAB_BARS: [TabBarStyle; 2] = [TabBarStyle::Compact, TabBarStyle::Separate];
 const GLASS_STYLES: [GlassStyle; 2] = [GlassStyle::Liquid, GlassStyle::Flat];
@@ -261,6 +288,8 @@ pub enum Click {
     Skip,
     ChoosePhoto,
     RemovePhoto,
+    /// Make Axion the default browser (the default browser step).
+    MakeDefault,
     /// Selects or deselects the browser at this index in the import step.
     Import(usize),
     Pick(Pick),
@@ -275,9 +304,10 @@ fn click_of(id: ActionId) -> Option<Click> {
         SKIP => Click::Skip,
         CHOOSE_PHOTO => Click::ChoosePhoto,
         REMOVE_PHOTO => Click::RemovePhoto,
+        MAKE_DEFAULT => Click::MakeDefault,
         _ => {
-            if let Some(i) = index(LANGUAGE_BASE, LANGUAGES.len()) {
-                Click::Pick(Pick::Language(LANGUAGES[i].1))
+            if let Some(i) = index(LANGUAGE_BASE, UiLanguage::ALL.len()) {
+                Click::Pick(Pick::Language(UiLanguage::ALL[i]))
             } else if let Some(i) = index(THEME_BASE, THEMES.len()) {
                 Click::Pick(Pick::Theme(THEMES[i]))
             } else if let Some(i) = index(ACCENT_BASE, ACCENT_SWATCHES.len()) {
@@ -329,6 +359,8 @@ pub enum Reaction {
     Moved,
     ChoosePhoto,
     RemovePhoto,
+    /// Make Axion the default browser; the step stays.
+    MakeDefault,
     /// The import step was left with these browsers (indexes into the offered ones) selected:
     /// start importing their bookmarks and history. The step has moved on.
     Import(Vec<usize>),
@@ -941,11 +973,19 @@ struct Draft {
     name_set: bool,
 }
 
+/// The account step's fields. An account that has a password already shows no password fields
+/// (`None`): nothing is read from, or required of, them.
 #[derive(Clone, Copy)]
 struct Fields {
     name: NodeId,
-    password: NodeId,
-    confirm: NodeId,
+    password: Option<NodeId>,
+    confirm: Option<NodeId>,
+}
+
+impl Fields {
+    fn contains(&self, node: NodeId) -> bool {
+        [Some(self.name), self.password, self.confirm].contains(&Some(node))
+    }
 }
 
 /// A browser offered in the import step.
@@ -992,6 +1032,10 @@ pub struct Onboarding {
     /// import of the current picks was started already.
     sources: Vec<ImportChoice>,
     import_started: bool,
+    /// The default browser step is part of the introduction, and who the default is now
+    /// (`None`: not known yet).
+    default_offer: bool,
+    default_state: Option<crate::default_browser::State>,
 }
 
 impl Onboarding {
@@ -1038,7 +1082,21 @@ impl Onboarding {
             apart: 28.0,
             sources: Vec::new(),
             import_started: false,
+            default_offer: false,
+            default_state: None,
         }
+    }
+
+    /// Whether the introduction offers to make Axion the default browser; set before
+    /// [`Self::open`].
+    pub fn set_default_offer(&mut self, offered: bool, state: Option<crate::default_browser::State>) {
+        self.default_offer = offered;
+        self.default_state = state;
+    }
+
+    /// Who the default browser is now (the step shows it); rebuild afterwards.
+    pub fn set_default_state(&mut self, state: Option<crate::default_browser::State>) {
+        self.default_state = state;
     }
 
     /// The browsers whose data can be imported. With none, the introduction has no import
@@ -1090,7 +1148,7 @@ impl Onboarding {
     /// Shows the introduction from the first step (or `step`, a capture aid).
     pub fn open(&mut self, ui: &mut Ui, config: &Config, window: Vec2, step: usize) -> Vec<UiEvent> {
         self.open = true;
-        self.flow = Flow::at(step, !self.sources.is_empty());
+        self.flow = Flow::at_with(step, !self.sources.is_empty(), self.default_offer);
         self.draft = Draft { name: self.account.name.clone(), ..Draft::default() };
         self.error = None;
         self.focus = None;
@@ -1133,7 +1191,7 @@ impl Onboarding {
                 Some(*node) == self.reduce_transparency || Some(*node) == self.reduce_motion
             }
             UiEvent::Submitted { node, .. } | UiEvent::Cancelled { node } => {
-                self.fields.is_some_and(|f| [f.name, f.password, f.confirm].contains(node))
+                self.fields.is_some_and(|f| f.contains(*node))
             }
             _ => false,
         }
@@ -1154,15 +1212,22 @@ impl Onboarding {
     /// Enter in a field of the account step: on to the next field, then finish.
     pub fn submitted(&mut self, ui: &mut Ui, config: &Config, node: NodeId) -> Reaction {
         let Some(f) = self.fields else { return Reaction::Nothing };
+        // Name, password, repeat; without password fields (the account has one) Enter in the name
+        // finishes.
         let next = if node == f.name {
             f.password
-        } else if node == f.password {
+        } else if Some(node) == f.password {
             f.confirm
         } else {
-            return self.press(ui, config, Click::Continue);
+            None
         };
-        let _ = ui.focus(next);
-        Reaction::Nothing
+        match next {
+            Some(next) => {
+                let _ = ui.focus(next);
+                Reaction::Nothing
+            }
+            None => self.press(ui, config, Click::Continue),
+        }
     }
 
     /// Takes a click; the browser applies the configuration picks.
@@ -1211,6 +1276,7 @@ impl Onboarding {
                 self.sync_draft(ui);
                 Reaction::RemovePhoto
             }
+            Click::MakeDefault => Reaction::MakeDefault,
             Click::Import(i) => {
                 if let Some(source) = self.sources.get_mut(i) {
                     source.selected = !source.selected;
@@ -1262,7 +1328,9 @@ impl Onboarding {
         if name.is_empty() {
             return Err(tr("Enter a name.").to_owned());
         }
-        let password = (!self.draft.password.is_empty()).then(|| self.draft.password.clone());
+        // An account with a password keeps it: there is nothing to set, so nothing to check.
+        let password =
+            (!self.has_password && !self.draft.password.is_empty()).then(|| self.draft.password.clone());
         if let Some(password) = &password {
             if password.chars().count() < MIN_MASTER_LENGTH {
                 return Err(tr_fmt!("Use at least {count} characters.", count = MIN_MASTER_LENGTH));
@@ -1283,8 +1351,11 @@ impl Onboarding {
             }
             self.draft.name = name.to_owned();
         }
-        self.draft.password = Zeroizing::new(ui.field_text(fields.password).unwrap_or_default().to_owned());
-        self.draft.confirm = Zeroizing::new(ui.field_text(fields.confirm).unwrap_or_default().to_owned());
+        let text = |node: Option<NodeId>| {
+            Zeroizing::new(node.and_then(|n| ui.field_text(n)).unwrap_or_default().to_owned())
+        };
+        self.draft.password = text(fields.password);
+        self.draft.confirm = text(fields.confirm);
     }
 
     /// Capture aid: types a name into the account step.
@@ -1301,8 +1372,9 @@ impl Onboarding {
         self.draft.password = Zeroizing::new(text.to_owned());
         self.draft.confirm = Zeroizing::new(text.to_owned());
         if let Some(fields) = self.fields {
-            ui.set_field_text(fields.password, text);
-            ui.set_field_text(fields.confirm, text);
+            for node in [fields.password, fields.confirm].into_iter().flatten() {
+                ui.set_field_text(node, text);
+            }
         }
     }
 
@@ -1345,8 +1417,7 @@ impl Onboarding {
 
     /// Whether a field of the sheet has the keyboard.
     pub fn editing(&self, ui: &Ui) -> bool {
-        self.fields
-            .is_some_and(|f| ui.focused().is_some_and(|n| [f.name, f.password, f.confirm].contains(&n)))
+        self.fields.is_some_and(|f| ui.focused().is_some_and(|n| f.contains(n)))
     }
 
     /// Marks the focused control: it grows a little and thickens its glass.
@@ -1459,6 +1530,7 @@ impl Onboarding {
             Step::Layout => self.layout(ui, body, config, inner),
             Step::Glass => self.glass(ui, body, config, inner),
             Step::Import => self.import_step(ui, body, config, inner),
+            Step::Default => self.default_step(ui, body, inner),
             Step::Account => self.account_step(ui, body, config, inner),
         }
         self.footer(ui, config);
@@ -1500,12 +1572,12 @@ impl Onboarding {
     /// A capsule button.
     fn pill(&mut self, ui: &mut Ui, parent: NodeId, action: ActionId, text: &str, kind: PillKind) -> NodeId {
         let (background, label_paint) = match kind {
-            PillKind::Primary | PillKind::Selected => {
+            PillKind::Primary | PillKind::SmallSelected => {
                 (Background::TintedGlass(GlassLevel::Thin, Paint::Accent), Some(Paint::OnAccent))
             }
             PillKind::Plain | PillKind::Small => (Background::Glass(GlassLevel::Thin), None),
         };
-        let height = if kind == PillKind::Small { 32.0 } else { BUTTON_HEIGHT };
+        let height = if kind.is_small() { 32.0 } else { BUTTON_HEIGHT };
         let node = ui.add(
             parent,
             Widget::container().with_action(action).with_radius(CAPSULE).with_background(background),
@@ -1516,7 +1588,7 @@ impl Onboarding {
                     height: auto(),
                 },
                 flex_shrink: 0.0,
-                padding: pad(if kind == PillKind::Small { 16.0 } else { 24.0 }, 0.0),
+                padding: pad(if kind.is_small() { 16.0 } else { 24.0 }, 0.0),
                 justify_content: JustifyContent::CENTER,
                 align_items: AlignItems::CENTER,
                 ..Default::default()
@@ -1525,7 +1597,11 @@ impl Onboarding {
         let label = ui.add_label(
             node,
             text,
-            if kind == PillKind::Small { TextStyle::Footnote } else { TextStyle::BodyEmphasis },
+            match kind {
+                PillKind::Small => TextStyle::Footnote,
+                PillKind::SmallSelected => TextStyle::Callout,
+                _ => TextStyle::BodyEmphasis,
+            },
             Style::default(),
         );
         if let Some(paint) = label_paint
@@ -1710,15 +1786,26 @@ impl Onboarding {
         if let Some(w) = ui.widget_mut(label) {
             w.set_paint(Paint::Secondary);
         }
-        let languages = ui.add(body, Widget::container(), row(self.apart));
-        for (i, &(name, language)) in LANGUAGES.iter().enumerate() {
+        // Many choices: small pills that wrap, each language in its own name.
+        let languages = ui.add(
+            body,
+            Widget::container(),
+            Style {
+                flex_wrap: FlexWrap::Wrap,
+                gap: Size { width: length(self.apart), height: length(self.apart * 0.5) },
+                max_size: Size { width: length(inner), height: auto() },
+                ..row(self.apart)
+            },
+        );
+        for (i, &language) in UiLanguage::ALL.iter().enumerate() {
             let selected = config.general.language == language;
+            let name = crate::locale::native_name(language).unwrap_or_else(|| tr("System default"));
             self.pill(
                 ui,
                 languages,
                 ActionId(LANGUAGE_BASE + i as u32),
                 name,
-                if selected { PillKind::Selected } else { PillKind::Plain },
+                if selected { PillKind::SmallSelected } else { PillKind::Small },
             );
         }
     }
@@ -1973,6 +2060,32 @@ impl Onboarding {
         }
     }
 
+    /// Offers to make Axion the default browser; "Continue" skips it.
+    fn default_step(&mut self, ui: &mut Ui, body: NodeId, inner: f32) {
+        use crate::default_browser::State;
+        self.title(
+            ui,
+            body,
+            tr("Make Axion your default browser"),
+            tr("Links you click in other apps will open in Axion. You can change this any time in Settings."),
+            inner,
+        );
+        let (note, can_change) = match &self.default_state {
+            Some(State::Axion) => (tr("Axion is your default browser."), false),
+            Some(State::Other(_)) | None => (tr("Your system opens links in another browser."), true),
+            Some(State::Unavailable) => (tr("This system does not let Axion change that."), false),
+        };
+        if can_change {
+            let row =
+                ui.add(body, Widget::container(), Style { margin: margin(0.0, 0.0, 6.0, 0.0), ..row(0.0) });
+            self.pill(ui, row, MAKE_DEFAULT, tr("Make Default"), PillKind::Primary);
+        }
+        let label = ui.add_label(body, note, TextStyle::Footnote, Style::default());
+        if let Some(w) = ui.widget_mut(label) {
+            w.set_paint(Paint::Secondary);
+        }
+    }
+
     /// A browser to import from: a wide piece of glass with its name, what it holds and a
     /// selection mark.
     fn source_row(&mut self, ui: &mut Ui, parent: NodeId, index: usize, source: &ImportChoice, width: f32) {
@@ -2095,11 +2208,11 @@ impl Onboarding {
             w.set_paint(Paint::Secondary);
         }
         let (password, confirm) = if self.has_password {
-            (name, name)
+            (None, None)
         } else {
             (
-                self.field(ui, fields, tr("Password"), width, true),
-                self.field(ui, fields, tr("Repeat password"), width, true),
+                Some(self.field(ui, fields, tr("Password"), width, true)),
+                Some(self.field(ui, fields, tr("Repeat password"), width, true)),
             )
         };
         if self.has_password {
@@ -2114,8 +2227,10 @@ impl Onboarding {
             }
         }
         ui.set_field_text(name, &self.draft.name);
-        if !self.has_password {
+        if let Some(password) = password {
             ui.set_field_text(password, &self.draft.password);
+        }
+        if let Some(confirm) = confirm {
             ui.set_field_text(confirm, &self.draft.confirm);
         }
         self.fields = Some(Fields { name, password, confirm });
@@ -2159,14 +2274,44 @@ impl Onboarding {
 enum PillKind {
     Plain,
     Primary,
-    /// A chosen option among pills.
-    Selected,
     Small,
+    /// A chosen option among many small pills (the language list).
+    SmallSelected,
+}
+
+impl PillKind {
+    fn is_small(self) -> bool {
+        matches!(self, PillKind::Small | PillKind::SmallSelected)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_browser_step_is_optional_and_comes_before_the_account() {
+        assert!(!Flow::at(0, false).steps().contains(&Step::Default));
+        let flow = Flow::at_with(0, false, true);
+        assert_eq!(flow.steps(), Step::WITH_DEFAULT);
+        let both = Flow::at_with(0, true, true);
+        assert_eq!(both.steps(), Step::WITH_IMPORT_AND_DEFAULT);
+        // Continue skips it: it only offers.
+        let mut flow = Flow::at_with(4, false, true);
+        assert_eq!(flow.step(), Step::Default);
+        assert!(flow.next());
+        assert_eq!(flow.step(), Step::Account);
+        assert_eq!(Flow::at_with(99, true, true).step(), Step::Account);
+    }
+
+    #[test]
+    fn the_offer_button_is_a_click_of_its_own() {
+        assert_eq!(click_of(MAKE_DEFAULT), Some(Click::MakeDefault));
+        let others = [CONTINUE, BACK, SKIP, CHOOSE_PHOTO, REMOVE_PHOTO];
+        assert!(others.iter().all(|&id| id != MAKE_DEFAULT));
+        // Nothing else maps to the same click.
+        assert_eq!((0..20_000).filter(|&n| click_of(ActionId(n)) == Some(Click::MakeDefault)).count(), 1);
+    }
 
     #[test]
     fn next_walks_through_the_steps_and_ends_finished() {
@@ -2246,6 +2391,60 @@ mod tests {
         onboarding.set_sources(sources);
         onboarding.open(&mut ui, &config, Vec2::new(1280.0, 800.0), 0);
         (ui, onboarding)
+    }
+
+    /// Finishing the account step: the field texts typed there, and `Continue`.
+    fn finish_account(has_password: bool, name: &str, password: Option<&str>) -> (Reaction, Ui, Onboarding) {
+        let config = Config::default();
+        let (mut ui, mut onboarding) = sheet(Vec::new());
+        onboarding.set_account(AccountView { name: "Henrik".into(), ..AccountView::default() }, has_password);
+        onboarding.goto(&mut ui, &config, 4);
+        assert_eq!(onboarding.flow.step(), Step::Account);
+        assert!(onboarding.flow.is_last());
+        onboarding.set_name(&mut ui, name);
+        if let Some(password) = password {
+            onboarding.set_password(&mut ui, password);
+        }
+        let reaction = onboarding.press(&mut ui, &config, Click::Continue);
+        (reaction, ui, onboarding)
+    }
+
+    #[test]
+    fn an_account_with_a_password_finishes_without_one() {
+        // Regression: the hidden password fields stood for the name field, so the name
+        // ("Henrik", 6 characters) was read as a new password and refused.
+        let (reaction, ..) = finish_account(true, "Henrik", None);
+        match reaction {
+            Reaction::End(Ending::Finished, Some(choice)) => {
+                assert_eq!(choice.name, "Henrik");
+                assert!(choice.password.is_none(), "an existing password is left alone");
+            }
+            _ => panic!("the account step should have finished"),
+        }
+        // Even with a short name and Enter in the name field.
+        let (reaction, ..) = finish_account(true, "Al", None);
+        assert!(matches!(reaction, Reaction::End(Ending::Finished, Some(_))));
+    }
+
+    #[test]
+    fn an_account_with_a_password_has_no_password_fields() {
+        let (_, _, onboarding) = finish_account(true, "Henrik", None);
+        let fields = onboarding.fields.expect("the account step was built");
+        assert!(fields.password.is_none() && fields.confirm.is_none());
+    }
+
+    #[test]
+    fn a_new_password_is_still_checked_for_accounts_without_one() {
+        let (reaction, ..) = finish_account(false, "Henrik", Some("short"));
+        assert!(matches!(reaction, Reaction::Nothing), "too short is refused");
+        let (reaction, ..) = finish_account(false, "Henrik", Some("long enough password"));
+        match reaction {
+            Reaction::End(Ending::Finished, Some(choice)) => assert!(choice.password.is_some()),
+            _ => panic!("a good password finishes"),
+        }
+        // No password at all is fine (it is optional).
+        let (reaction, ..) = finish_account(false, "Henrik", None);
+        assert!(matches!(reaction, Reaction::End(Ending::Finished, Some(c)) if c.password.is_none()));
     }
 
     fn choice(label: &str, selected: bool) -> ImportChoice {

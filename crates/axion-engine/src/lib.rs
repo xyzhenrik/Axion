@@ -34,6 +34,19 @@ use glam::Vec2;
 /// Console messages starting with this are [`EngineEvent::PageMessage`]s.
 pub const PAGE_MESSAGE_PREFIX: &str = "\u{1}axion:";
 
+/// Who puts what a page copies (`navigator.clipboard.writeText()`, "Copy" buttons) on the
+/// desktop clipboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PageCopyMode {
+    /// Axion where Chromium cannot reach the clipboard itself (Wayland), else Chromium.
+    #[default]
+    Auto,
+    /// Always Axion.
+    Always,
+    /// Only Chromium.
+    Never,
+}
+
 /// Identifies one view (tab) for the lifetime of the engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ViewId(pub u32);
@@ -193,6 +206,22 @@ pub enum EngineEvent {
         user_gesture: bool,
         /// The URL of the frame that asked, if it isn't the page itself (an iframe).
         opener_frame: Option<String>,
+    },
+    /// A page opened a window that keeps its opener (`window.opener`, `postMessage`, and
+    /// `window.close()` from inside): the engine created `view` for it already, loading `url`.
+    /// The browser gives it a tab and closes that tab on [`EngineEvent::Closed`].
+    PopupOpened {
+        view: ViewId,
+        opener: ViewId,
+        url: String,
+    },
+    /// A page copied to the clipboard (`navigator.clipboard.writeText()`, `write()`,
+    /// `document.execCommand("copy")`) and Chromium cannot hand it to the desktop itself
+    /// (see [`Engine::has_system_clipboard`]): the browser puts it there.
+    ClipboardWrite {
+        view: ViewId,
+        text: Option<String>,
+        html: Option<String>,
     },
     /// A message from the page script (a console message starting with
     /// [`PAGE_MESSAGE_PREFIX`]; the page's own console output isn't reported).

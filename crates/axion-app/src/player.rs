@@ -594,6 +594,8 @@ impl PlayerOverlay {
         if !cx.page_fullscreen || !config.media.fullscreen_player {
             return (Mode::Hidden, None, None);
         }
+        // Deliberately the whole list: the page made this element fullscreen, so it is the
+        // user's video whatever the preview heuristic says.
         let player = media
             .players
             .iter()

@@ -37,6 +37,8 @@ pub struct Settings {
     pub block_redirects: bool,
     pub strip_tracking_parameters: bool,
     pub block_third_party_cookies: bool,
+    /// Hosts (and their subdomains) that may always get cookies, even as a third party.
+    pub sign_in_hosts: Vec<String>,
     pub lists: Vec<String>,
     pub update_interval: Duration,
 }
@@ -50,6 +52,7 @@ impl Default for Settings {
             block_redirects: true,
             strip_tracking_parameters: true,
             block_third_party_cookies: true,
+            sign_in_hosts: Vec::new(),
             lists: Vec::new(),
             update_interval: Duration::from_secs(4 * 24 * 3600),
         }
@@ -301,11 +304,17 @@ impl Shields {
 
     /// Whether a request may send and store cookies: not when it goes to another site than
     /// the page's (third-party cookies follow you across sites).
+    /// Sign-in providers (`Settings::sign_in_hosts`) are the exception: their embedded
+    /// frames and token requests only work with their own session cookies.
     pub fn allow_cookies(&self, url: &str, page_url: &str) -> bool {
-        if !read(&self.settings).block_third_party_cookies || self.level(page_url) == Level::Off {
+        if !read(&self.settings).block_third_party_cookies
+            || self.level(page_url) == Level::Off
+            || !site::is_cross_site(url, page_url)
+        {
             return true;
         }
-        !site::is_cross_site(url, page_url)
+        let settings = read(&self.settings);
+        site::raw_host(url).is_some_and(|host| site::host_in(&host, &settings.sign_in_hosts))
     }
 
     /// Whether a frame of origin `initiator` may navigate the tab from `page` to `url`: the
@@ -519,6 +528,11 @@ mod tests {
         assert!(!s.allow_cookies("https://tracker.net/p", "https://news.site/"));
         s.set_site_level("news.site", Some(Level::Off));
         assert!(s.allow_cookies("https://tracker.net/p", "https://news.site/"));
+        // Sign-in providers keep their cookies in frames of other sites.
+        let settings = Settings { sign_in_hosts: vec!["accounts.google.com".into()], ..Settings::default() };
+        let s = Shields::with_rules(RULES, settings);
+        assert!(s.allow_cookies("https://accounts.google.com/gsi/status", "https://news.site/"));
+        assert!(!s.allow_cookies("https://tracker.net/p", "https://news.site/"));
     }
 
     #[test]

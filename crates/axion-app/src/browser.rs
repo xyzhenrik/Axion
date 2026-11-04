@@ -31,6 +31,7 @@ use crate::accounts::{AddAccountSheet, Relaunch, SheetAction};
 use crate::avatars::{Avatars, PhotoChooser, PhotoFor};
 use crate::chrome::{Chrome, ChromeAction, MoveKey, NowPlaying, PanelItem, Section, Surface, TabItem};
 use crate::circuit_popover::CircuitPopover;
+use crate::click_probe;
 use crate::context_menu::ContextMenus;
 use crate::desktop::DesktopTheme;
 use crate::downloads::{self, Downloads, List};
@@ -95,6 +96,7 @@ use crate::zoom::{self, SiteZoom};
 mod capture;
 mod circuit;
 mod context;
+mod default_browser;
 mod ext_popup;
 mod import;
 mod network;
@@ -310,6 +312,11 @@ pub struct Browser {
     hardware_status: crate::hardware::Status,
     /// When the first automatic update check runs (a moment after start; none when not due).
     update_check_at: Option<Instant>,
+    /// Desktop notifications (an update was found while the window is in the background).
+    notifier: crate::platform::notify::Notifier,
+    /// The running update's progress lines are refreshed on this schedule (and the bar moves).
+    update_progress_at: Instant,
+    update_progress_tick: u32,
     /// Where the install stood when the About page was last drawn.
     update_phase: Phase,
     /// The app icon as a texture for the About page (made when first needed).
@@ -351,6 +358,9 @@ pub struct Browser {
     flat_audit: bool,
     /// Typing latency probe (`AXION_TYPE_PROBE`, see `typing_probe`).
     probe: Option<ProbeRun>,
+    /// Clicks still to make into the page (`AXION_CLICK_PROBE`, see `click_probe`), and when
+    /// the run started.
+    click_probe: (Instant, std::collections::VecDeque<click_probe::Click>),
     /// Those frames, kept in memory until the sequence is complete (saving each one at once
     /// would stall the frame loop and change the timing being looked at).
     captured_frames: Vec<image::RgbaImage>,
@@ -456,6 +466,12 @@ pub struct Browser {
     paths: ConfigPaths,
     /// The account's profile directory (`window.toml` lives in it).
     profile_dir: PathBuf,
+    /// Launches of Axion on this profile that were handed to this window (`crate::instance`).
+    launches: Option<crate::instance::Inbox>,
+    /// Who the system's default browser is, and the hint to change it.
+    default_browser: default_browser::DefaultBrowser,
+    /// What the toast's buttons do.
+    toast_kind: default_browser::ToastKind,
     /// What `window.toml` holds (or will hold once `window_state_dirty` is due).
     window_state: axion_config::WindowState,
     window_state_dirty: Option<Instant>,
@@ -591,6 +607,25 @@ impl Browser {
             tracing::error!("{e}; using defaults");
             Config::default()
         });
+        // One Axion per account: a launch on an open profile hands its URLs over and ends here,
+        // before it makes a window (and before Chromium could answer with a window of its own).
+        let single = if config.general.single_instance {
+            let request = crate::instance::Request { urls: options.urls.clone(), focus: focus_allowed() };
+            match crate::instance::claim(&account_paths.profile, &request, options.waker.clone()) {
+                Ok(crate::instance::Claim::Primary(inbox)) => Some(inbox),
+                Ok(crate::instance::Claim::Forwarded) => {
+                    tracing::info!("Axion is already open on this profile; the URLs went to its window");
+                    return Err(Forwarded.into());
+                }
+                Err(e) => {
+                    tracing::warn!("single instance unavailable: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let hint_wanted = config.general.default_browser_hint && options.capture.is_none();
         crate::locale::apply(config.general.language);
         let start_language = axion_i18n::language();
         let keymap = load_keymap(&paths);
@@ -753,6 +788,20 @@ impl Browser {
                 load_extensions: extensions.load_dirs(),
                 block_web_store: !config.extensions.web_store,
                 waker: options.waker.clone(),
+                real_popups: config.tabs.popups_keep_opener,
+                page_copy: match config.clipboard.page_copy {
+                    axion_config::PageCopy::Auto => axion_engine::PageCopyMode::Auto,
+                    axion_config::PageCopy::Always => axion_engine::PageCopyMode::Always,
+                    axion_config::PageCopy::Never => axion_engine::PageCopyMode::Never,
+                },
+                max_page_copy_bytes: config.clipboard.max_page_copy_kb as usize * 1024,
+
+                on_relaunch: single.as_ref().map(|inbox| {
+                    let push = inbox.pusher(options.waker.clone());
+                    axion_engine::cef::RelaunchHandler::new(move |urls| {
+                        push(crate::instance::Request { urls, focus: true });
+                    })
+                }),
             },
         )?;
         engine.set_request_policy(Some(shields.policy()));
@@ -910,6 +959,9 @@ impl Browser {
             gpu_confirm: false,
             hardware_status,
             update_check_at,
+            notifier: crate::platform::notify::Notifier::default(),
+            update_progress_at: Instant::now(),
+            update_progress_tick: 0,
             update_phase: Phase::Idle,
             about_icon: None,
             tooltip,
@@ -934,6 +986,10 @@ impl Browser {
                 .ok()
                 .and_then(|v| typing_probe::Spec::parse(&v))
                 .map(ProbeRun::new),
+            click_probe: (
+                Instant::now(),
+                std::env::var("AXION_CLICK_PROBE").map(|v| click_probe::parse(&v)).unwrap_or_default().into(),
+            ),
             captured_frames: Vec::new(),
             pip: None,
             instance,
@@ -1009,6 +1065,9 @@ impl Browser {
             keymap,
             paths,
             profile_dir: profile.clone(),
+            launches: single,
+            default_browser: default_browser::DefaultBrowser::new(hint_wanted),
+            toast_kind: default_browser::ToastKind::default(),
             window_state: saved_window.clone(),
             window_state_dirty: None,
             shutdown_guard: None,
@@ -1091,6 +1150,7 @@ impl Browser {
         browser.sync_frame_rate();
         browser.update_layout();
         browser.start_onboarding(&options, accounts_file, config_file);
+        browser.start_default_browser_check();
         browser.playlist_start();
         browser.engine.set_color_scheme(browser.dark);
         if restore && saved_window.fullscreen {
@@ -1186,6 +1246,64 @@ impl Browser {
         self.parked.insert(tab, false);
         self.tabs_changed = true;
         Ok(())
+    }
+
+    /// A page opened a window that keeps its opener (a sign-in popup): it becomes the next tab
+    /// and is shown, as the click that opened it asked for.
+    fn popup_opened(&mut self, view: ViewId, opener: ViewId, url: &str) {
+        let Some(private) = find_tab(&self.tabs, &self.parked, opener).map(|t| t.private) else {
+            self.engine.close_view(view);
+            return;
+        };
+        let mut tab = Tab::new(view, url);
+        tab.private = private;
+        tab.opener = Some(opener);
+        if self.tabs.index_of(opener).is_some() {
+            let previous = self.tabs.active().map(|t| t.view);
+            self.tabs.insert(tab, true);
+            self.on_active_changed(previous);
+            self.chrome.release_tab_widths(&self.ui, None, true);
+        } else {
+            tab.needs_snapshot = true;
+            self.parked.insert(tab, false);
+        }
+        self.tabs_changed = true;
+    }
+
+    /// A popup closed itself (`window.close()`, as sign-in windows do when they are done):
+    /// its tab goes, and the page that opened it is shown again.
+    fn popup_closed(&mut self, view: ViewId) {
+        let Some(index) = self.tabs.index_of(view) else { return };
+        let Some(opener) = self.tabs.all()[index].opener else { return };
+        let was_active = index == self.tabs.active_index();
+        self.close_tab(index);
+        if was_active
+            && let Some(i) = self.tabs.index_of(opener)
+            && i != self.tabs.active_index()
+        {
+            self.select_tab(i);
+        }
+    }
+
+    /// A page copied text (a "Copy" button): where Chromium cannot reach the desktop
+    /// clipboard, it ends up here.
+    fn page_clipboard_write(&mut self, view: ViewId, text: Option<String>, html: Option<String>) {
+        // A copy needs a click or key press, so only the page in front can have made one.
+        if Some(view) != self.active_view() {
+            tracing::debug!(?view, "ignored a copy from a page that is not shown");
+            return;
+        }
+        let Some(clipboard) = &mut self.clipboard else { return };
+        let bytes = text.as_ref().map_or(0, String::len) + html.as_ref().map_or(0, String::len);
+        let result = match (html, text) {
+            (Some(html), text) => clipboard.set_html(html, text),
+            (None, Some(text)) => clipboard.set_text(text),
+            (None, None) => return,
+        };
+        match result {
+            Ok(()) => tracing::info!(bytes, "a page copied to the clipboard"),
+            Err(e) => tracing::warn!("a page's copy could not reach the clipboard: {e}"),
+        }
     }
 
     fn open_tab(&mut self, url: &str, activate: bool) -> Result<()> {
@@ -1454,6 +1572,8 @@ impl Browser {
                     self.sync_about();
                     self.settings.set_memory_used(self.memory.used());
                     self.settings.set_site_permissions(self.permissions.model.remembered());
+                    self.settings.set_default_browser(self.default_browser_view());
+                    self.start_default_browser_check();
                     let window = self.logical_size();
                     // Out of what it was opened from (the address field by default).
                     let fallback = self.address_origin();
@@ -1782,6 +1902,7 @@ impl Browser {
             maximized: self.window.is_maximized(),
             capture,
             exe: None,
+            swap: self.updater.pending_swap(),
         });
         self.capture = None;
         // The next start of a plain `axion` opens it too.
@@ -1802,6 +1923,11 @@ impl Browser {
 
     pub fn set_shutdown_guard(&mut self, guard: crate::shutdown::Guard) {
         self.shutdown_guard = Some(guard);
+    }
+
+    /// A tarball update waiting to be swapped in (applied when Axion quits without relaunching).
+    pub fn pending_swap(&self) -> Option<axion_update::Staged> {
+        self.updater.pending_swap()
     }
 
     /// The relaunch to start once this browser is dropped (Chromium shut down).
@@ -1976,10 +2102,7 @@ impl Browser {
         let Some(player) = self
             .media_of(view)
             .and_then(|(m, _)| {
-                m.players
-                    .iter()
-                    .filter(|p| !p.preview && p.is_playing())
-                    .max_by(|a, b| a.area().total_cmp(&b.area()))
+                m.real_players().filter(|p| p.is_playing()).max_by(|a, b| a.area().total_cmp(&b.area()))
             })
             .cloned()
         else {
@@ -4063,9 +4186,9 @@ impl Browser {
                     }
                     self.update_alert_action(action);
                 }
-                UiEvent::Clicked { action, .. } if self.toast.owns(action) => {
-                    self.toast.dismiss(&mut self.ui, &self.config);
-                    self.open_about(false);
+                UiEvent::Clicked { action, .. } if self.toast.owns(action) => self.toast_primary(),
+                UiEvent::Clicked { action, .. } if self.toast.owns_secondary(action) => {
+                    self.toast_secondary()
                 }
                 UiEvent::Clicked { action, .. } if self.account_menu.owns(action) => {
                     if let Some(click) = self.account_menu.click(&mut self.ui, &self.config, action) {
@@ -4341,6 +4464,8 @@ impl Browser {
     pub fn pump(&mut self) {
         let _op = crate::stall::op("pump");
         let started = Instant::now();
+        self.open_forwarded_launches();
+        self.poll_default_browser();
         self.pump_engine();
         self.poll_capture();
         let page_frames = self.engine.counters().page_frames;
@@ -4365,6 +4490,28 @@ impl Browser {
         ];
         for recorder in recorders.into_iter().flatten() {
             recorder.wakeup(took);
+        }
+    }
+
+    /// Opens what other launches of Axion on this profile handed over: their URLs in new tabs
+    /// (the first one shown), and the window brought to the front (not in test runs).
+    fn open_forwarded_launches(&mut self) {
+        let Some(inbox) = &self.launches else { return };
+        let requests = inbox.drain();
+        for request in requests {
+            let mut first = true;
+            for url in request.urls.iter().filter(|u| !u.trim().is_empty()) {
+                tracing::info!(%url, "opening a URL handed over by another launch");
+                if let Err(e) = self.open_tab(url, first) {
+                    tracing::warn!(%url, "could not open the URL of another launch: {e:#}");
+                }
+                first = false;
+            }
+            if request.focus && focus_allowed() {
+                self.window.set_minimized(false);
+                self.window.focus_window();
+            }
+            self.request_redraw();
         }
     }
 
@@ -4723,7 +4870,12 @@ impl Browser {
                 EngineEvent::CaptureChanged { view, audio, video } => {
                     self.capture_changed(view, audio, video)
                 }
+                EngineEvent::PopupOpened { view, opener, url } => self.popup_opened(view, opener, &url),
+                EngineEvent::ClipboardWrite { view, text, html } => {
+                    self.page_clipboard_write(view, text, html)
+                }
                 EngineEvent::Closed { view } => {
+                    self.popup_closed(view);
                     self.permissions_closed(view);
                     self.playlist.sniffed.remove(&view);
                     self.page_colors.closed(view);
@@ -4796,6 +4948,7 @@ impl Browser {
             }
             Outcome::Close => self.close_settings(),
             Outcome::ShowWelcomeTour => self.open_onboarding(0),
+            Outcome::MakeDefaultBrowser => self.make_default_browser(),
             Outcome::CheckForUpdates => {
                 self.updater.check(&self.config, true);
                 self.refresh_about();
@@ -4803,6 +4956,21 @@ impl Browser {
             Outcome::InstallUpdate => self.request_update_install(),
             Outcome::OpenReleasePage => self.open_release_page(),
             Outcome::RelaunchNow => self.relaunch_for_update(),
+            Outcome::CancelUpdate => {
+                self.updater.cancel();
+            }
+            Outcome::DismissUpdate => {
+                if self.updater.phase() == Phase::Done {
+                    self.updater.defer();
+                } else {
+                    self.updater.dismiss();
+                }
+                self.refresh_about();
+            }
+            Outcome::RetryUpdate => {
+                self.updater.retry(&self.config);
+                self.refresh_about();
+            }
             Outcome::CopyDiagnostics => self.copy_gpu_diagnostics(),
             Outcome::RestartAxion => self.restart_to_apply_settings(),
             Outcome::ConfirmGpuFrames => self.confirm_gpu_frames(),
@@ -5063,6 +5231,7 @@ impl Browser {
             || self.tab_search.is_open()
             || self.onboarding.is_open()
             || self.update_alert.is_open()
+            || (self.updater.phase() == Phase::Running && self.settings.is_open())
             || self.print_dialog.is_open()
             || self.shot.is_active()
             || self.lock_screen.is_alert_open()
@@ -5400,6 +5569,8 @@ impl Browser {
             self.updater.check(&self.config, false);
             self.refresh_about();
         }
+        self.poll_notifications();
+        self.tick_update_progress();
         let notices = self.updater.poll();
         if notices.is_empty() {
             return;
@@ -5423,11 +5594,27 @@ impl Browser {
                         )
                         && self.config.updates.notified_version != release.version.to_string()
                     {
+                        // Decided before the version is marked as announced.
+                        let desktop = crate::platform::notify::should_notify(
+                            &self.config.updates,
+                            &release,
+                            self.window.has_focus(),
+                            &axion_update::SystemClock,
+                        );
                         self.config.updates.notified_version = release.version.to_string();
                         self.config_dirty_since.get_or_insert(Instant::now());
                         let text =
                             tr_fmt!("Axion {version} is available", version = release.version.to_string());
+                        self.toast_kind = default_browser::ToastKind::Update;
                         self.show_toast_with_action(Icon::Download, &text, tr("Update"));
+                        if desktop {
+                            self.notifier.send(crate::platform::notify::update_payload(
+                                &text,
+                                &axion_update::plain_notes(&release.notes, 400),
+                                tr("Update"),
+                                tr("Later"),
+                            ));
+                        }
                     }
                 }
                 Notice::Changed => self.sync_update_alert(),
@@ -5436,6 +5623,42 @@ impl Browser {
         // The page redraws when the install starts or ends, not for every progress line.
         if checked || self.updater.phase() != self.update_phase {
             self.refresh_about();
+        }
+    }
+
+    /// What the user did with a desktop notification: "Update" opens Info & Updates and asks to
+    /// install, "Later" snoozes the reminders.
+    fn poll_notifications(&mut self) {
+        for event in self.notifier.events() {
+            match event {
+                crate::platform::notify::NotifyEvent::Update => {
+                    self.window.focus_window();
+                    self.open_about(false);
+                    self.request_update_install();
+                }
+                crate::platform::notify::NotifyEvent::Later => {
+                    axion_update::remind_later(&mut self.config.updates, &axion_update::SystemClock);
+                    self.config_dirty_since.get_or_insert(Instant::now());
+                    self.refresh_about();
+                }
+            }
+        }
+    }
+
+    /// While an update runs: the page's step, last output line and bar are changed in place a
+    /// few times a second (rebuilding the page for every line would be wasteful).
+    fn tick_update_progress(&mut self) {
+        if self.updater.phase() != Phase::Running || !self.settings.shows_run() {
+            return;
+        }
+        let interval = Duration::from_millis(u64::from(self.config.updates.progress_interval_ms.max(50)));
+        if self.update_progress_at.elapsed() < interval {
+            return;
+        }
+        self.update_progress_at = Instant::now();
+        self.update_progress_tick = self.update_progress_tick.wrapping_add(1);
+        if let Some(run) = self.updater.run_info() {
+            self.settings.update_run(&mut self.ui, &run, self.update_progress_tick);
         }
     }
 
@@ -5529,35 +5752,28 @@ impl Browser {
             return;
         }
         match self.updater.phase() {
-            Phase::Idle => self.update_alert.close(),
             Phase::Confirm => {
+                self.update_alert.close();
                 if action == AlertAction::Primary {
+                    // The sheet is gone at once; progress, result and errors are on the page.
                     self.updater.start_install(&self.config);
-                    self.sync_update_alert();
-                    self.refresh_about();
+                    self.show_update_progress();
                 } else {
                     self.updater.dismiss();
-                    self.update_alert.close();
                 }
             }
-            Phase::Running => {
-                if action == AlertAction::Secondary {
-                    self.updater.cancel();
-                }
-            }
-            Phase::Done => {
-                if action == AlertAction::Primary {
-                    self.relaunch_for_update();
-                } else {
-                    // The page keeps offering "Relaunch Now".
-                    self.update_alert.close();
-                }
-            }
-            Phase::Failed => {
-                self.updater.dismiss();
-                self.update_alert.close();
-                self.refresh_about();
-            }
+            // Only the confirmation is a sheet.
+            _ => self.update_alert.close(),
+        }
+    }
+
+    /// Shows Settings › Info & Updates, where an update that is running reports itself.
+    fn show_update_progress(&mut self) {
+        self.settings.set_category(Category::About);
+        if self.settings.is_open() {
+            self.refresh_about();
+        } else {
+            self.run(Action::OpenSettings);
         }
     }
 
@@ -5573,6 +5789,7 @@ impl Browser {
             maximized: self.window.is_maximized(),
             capture: None,
             exe: Some(exe),
+            swap: self.updater.pending_swap(),
         });
         tracing::info!("relaunching into the updated Axion");
     }
@@ -7040,6 +7257,8 @@ impl Browser {
                 "share" => self.copy_link(),
                 // Capture aid: a toast without needing the clipboard.
                 "toast" => self.show_toast(Icon::Check, tr("Link copied")),
+                // Capture aid: the startup hint to make Axion the default browser.
+                "default-hint" => self.show_default_browser_hint_now(),
                 query if query.starts_with("panel-search:") => {
                     let field = self.chrome.panel_search_field();
                     self.ui.set_field_text(field, &query["panel-search:".len()..]);
@@ -7074,6 +7293,17 @@ impl Browser {
                 "update-install" => self.request_update_install(),
                 "update-confirm" => self.update_alert_action(AlertAction::Primary),
                 "update-cancel" => self.update_alert_action(AlertAction::Secondary),
+                // Capture aids for the page's buttons: Cancel, Later / Close, Try again, Restart.
+                "update-stop" => self.updater.cancel(),
+                "update-later" => {
+                    self.updater.defer();
+                    self.refresh_about();
+                }
+                "update-retry" => {
+                    self.updater.retry(&self.config);
+                    self.refresh_about();
+                }
+                "update-restart" => self.relaunch_for_update(),
                 // Capture aid: a real pointer click on the toast's Update button.
                 "toast-click" => {
                     let at = self.toast.button_center(&self.ui);
@@ -7705,6 +7935,12 @@ impl Browser {
                         self.open_tab_menu(item);
                     }
                 }
+                // Capture aid: the menu of a right click on the address field.
+                "address-menu" => {
+                    if let Some(view) = self.active_view() {
+                        self.open_address_menu(view);
+                    }
+                }
                 "add-account" => self.open_add_account(),
                 // Capture aid: type "add-account-name:NAME" into the open Add Account sheet.
                 name if name.starts_with("add-account-name:") => {
@@ -7792,7 +8028,13 @@ impl Browser {
         self.last_frame = now;
         self.ui.animate(dt);
         let was_sliding = self.chrome.is_sliding();
+        let strip_was_moving = self.chrome.strip_moving();
         self.chrome.animate_all(&mut self.ui, dt);
+        if strip_was_moving {
+            // The tab row slides in or away (a lone tab): the bookmarks bar and the page follow
+            // it every frame; the page's engine view is resized paced, like with a window resize.
+            self.update_layout();
+        }
         if was_sliding {
             // The page's rectangle and the toolbar follow the sidebar frame by frame, but the
             // page itself is resized once, as the slide starts, to its size once it settles:
@@ -8435,9 +8677,39 @@ impl Browser {
         }
     }
 
+    /// Click probe: clicks the page for each entry that is due.
+    fn tick_click_probe(&mut self) {
+        let (started, queue) = &mut self.click_probe;
+        let elapsed = started.elapsed();
+        let mut due = Vec::new();
+        while queue.front().is_some_and(|c| c.after <= elapsed) {
+            due.extend(queue.pop_front());
+        }
+        let Some(view) = self.active_view() else { return };
+        for click in due {
+            tracing::info!(x = click.x, y = click.y, "click probe");
+            let pos = Vec2::new(click.x, click.y);
+            let modifiers = axion_engine::Modifiers::default();
+            self.engine.send_input(view, &InputEvent::MouseMove { pos, modifiers });
+            for pressed in [true, false] {
+                self.engine.send_input(
+                    view,
+                    &InputEvent::MouseButton {
+                        pos,
+                        button: axion_engine::MouseButton::Left,
+                        pressed,
+                        click_count: 1,
+                        modifiers,
+                    },
+                );
+            }
+        }
+    }
+
     /// Typing probe: types the next character when it is due (between frames, as a key event
     /// would arrive), and logs the summary once everything is typed and shown.
     pub fn tick_probe(&mut self) {
+        self.tick_click_probe();
         let now = Instant::now();
         let Some(probe) = &self.probe else { return };
         if let Some(c) = probe.char_due(now) {
@@ -8566,6 +8838,24 @@ impl Drop for Browser {
 
 #[derive(Debug)]
 pub struct CaptureDone;
+
+/// Whether Axion may take the focus (test runs set `AXION_NO_FOCUS`).
+fn focus_allowed() -> bool {
+    std::env::var_os("AXION_NO_FOCUS").is_none()
+}
+
+/// This launch handed its URLs to the Axion that already has the profile open (see
+/// `crate::instance`) and has nothing left to do.
+#[derive(Debug)]
+pub struct Forwarded;
+
+impl std::fmt::Display for Forwarded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("handed over to the running Axion")
+    }
+}
+
+impl std::error::Error for Forwarded {}
 
 impl std::fmt::Display for CaptureDone {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

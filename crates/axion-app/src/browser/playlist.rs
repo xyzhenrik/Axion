@@ -1484,8 +1484,7 @@ impl Browser {
         let wait = Duration::from_secs_f32(cfg.resolve_click_seconds.max(0.2));
         let due = r.clicked_at.is_none_or(|t| t.elapsed() >= wait);
         let click = r.media.as_ref().and_then(|m| {
-            m.players
-                .iter()
+            m.real_players()
                 .filter(|p| {
                     p.kind == axion_media::Kind::Video && !p.native && p.area() > 0.0 && !p.is_playing()
                 })

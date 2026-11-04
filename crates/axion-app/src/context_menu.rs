@@ -97,16 +97,40 @@ pub struct TabMenuInfo {
     pub has_site: bool,
 }
 
-/// The rows of a tab's context menu: short and compact, only what concerns that one tab.
-/// The group-wide commands live in the menu of the group's header ([`group_items`]).
-pub fn tab_items(info: TabMenuInfo, groups: &[GroupChoice], keymap: &Keymap) -> Vec<MenuItem> {
-    let shortcut = |action: Action| keymap.chords_for(action).first().map(ToString::to_string);
+/// One row of a tab's (or tab group's) menu, with the shortcut of `action` from the keymap at
+/// its end. The one place these rows are built, so the tab menus and the address field's
+/// menu never differ.
+fn command_row(
+    keymap: &Keymap,
+    icon: Icon,
+    label: &str,
+    command: TabCommand,
+    action: Option<Action>,
+) -> MenuItem {
+    let item = MenuItem::new(icon, label, MenuAction::Tab(command));
+    match action.and_then(|a| keymap.chords_for(a).first().map(ToString::to_string)) {
+        Some(keys) => item.with_detail(keys),
+        None => item,
+    }
+}
+
+/// "Close Tab": destructive, so red.
+fn close_tab_row(keymap: &Keymap) -> MenuItem {
+    command_row(keymap, Icon::Close, tr("Close Tab"), TabCommand::Close, Some(Action::CloseTab))
+        .separated()
+        .destructive()
+}
+
+/// "Close Other Tabs": destructive, so red.
+fn close_others_row(keymap: &Keymap, separated: bool) -> MenuItem {
+    let row = command_row(keymap, Icon::Close, tr("Close Other Tabs"), TabCommand::CloseOthers, None);
+    if separated { row.separated().destructive() } else { row.destructive() }
+}
+
+/// The rows that only concern the one tab (all but its closing), shared by the tab menus.
+fn tab_rows(info: TabMenuInfo, groups: &[GroupChoice], keymap: &Keymap) -> Vec<MenuItem> {
     let item = |icon: Icon, label: &str, command: TabCommand, action: Option<Action>| {
-        let item = MenuItem::new(icon, label, MenuAction::Tab(command));
-        match action.and_then(shortcut) {
-            Some(keys) => item.with_detail(keys),
-            None => item,
-        }
+        command_row(keymap, icon, label, command, action)
     };
     let mut items = vec![
         item(Icon::Reload, tr("Reload"), TabCommand::Reload, Some(Action::Reload)),
@@ -153,30 +177,36 @@ pub fn tab_items(info: TabMenuInfo, groups: &[GroupChoice], keymap: &Keymap) -> 
             items.push(item(Icon::Close, tr("Remove from Group"), TabCommand::RemoveFromGroup, None));
         }
     }
-    items.push(item(Icon::Close, tr("Close Tab"), TabCommand::Close, Some(Action::CloseTab)).separated());
     items
 }
 
-/// The rows of a tab group header's menu ("N Tabs" or "Private"); `info` describes the group's
-/// active tab, which the per-tab rows (pin, move) act on.
-pub fn group_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
-    let shortcut = |action: Action| keymap.chords_for(action).first().map(ToString::to_string);
-    let item = |icon: Icon, label: &str, command: TabCommand, action: Option<Action>| {
-        let item = MenuItem::new(icon, label, MenuAction::Tab(command));
-        match action.and_then(shortcut) {
-            Some(keys) => item.with_detail(keys),
-            None => item,
-        }
-    };
-    let mut items = vec![item(Icon::Plus, tr("New Tab"), TabCommand::NewTabToTheRight, Some(Action::NewTab))];
-    if info.can_reopen {
-        items.push(item(
-            Icon::History,
-            tr("Reopen Closed Tab"),
-            TabCommand::ReopenClosed,
-            Some(Action::ReopenClosedTab),
-        ));
+/// The rows of a tab's context menu: short and compact, only what concerns that one tab.
+/// The group-wide commands live in the menu of the group's header ([`group_items`]).
+pub fn tab_items(info: TabMenuInfo, groups: &[GroupChoice], keymap: &Keymap) -> Vec<MenuItem> {
+    let mut items = tab_rows(info, groups, keymap);
+    items.push(close_tab_row(keymap));
+    items
+}
+
+/// The rows of the menu of the address field (right click on the separate tab bar's address):
+/// the current tab's own rows, then what the group header's menu adds for it (pin, private) and
+/// the closing rows. Same rows as the tab menus (see [`command_row`]).
+pub fn address_items(info: TabMenuInfo, groups: &[GroupChoice], keymap: &Keymap) -> Vec<MenuItem> {
+    let mut items = tab_rows(info, groups, keymap);
+    items.extend(pin_and_private_rows(info, keymap));
+    items.push(close_tab_row(keymap));
+    if info.others {
+        items.push(close_others_row(keymap, false));
     }
+    items
+}
+
+/// Pin / unpin and the move between normal and private browsing, for the current tab.
+fn pin_and_private_rows(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
+    let item = |icon: Icon, label: &str, command: TabCommand, action: Option<Action>| {
+        command_row(keymap, icon, label, command, action)
+    };
+    let mut items = Vec::new();
     if !info.private {
         items.push(if info.pinned {
             item(Icon::Pin, tr("Unpin Current Tab"), TabCommand::Unpin, Some(Action::PinTab)).separated()
@@ -189,11 +219,30 @@ pub fn group_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
     } else {
         item(Icon::Hand, tr("Move Current to Private"), TabCommand::MoveToPrivate, None)
     });
+    items
+}
+
+/// The rows of a tab group header's menu ("N Tabs" or "Private"); `info` describes the group's
+/// active tab, which the per-tab rows (pin, move) act on.
+pub fn group_items(info: TabMenuInfo, keymap: &Keymap) -> Vec<MenuItem> {
+    let item = |icon: Icon, label: &str, command: TabCommand, action: Option<Action>| {
+        command_row(keymap, icon, label, command, action)
+    };
+    let mut items = vec![item(Icon::Plus, tr("New Tab"), TabCommand::NewTabToTheRight, Some(Action::NewTab))];
+    if info.can_reopen {
+        items.push(item(
+            Icon::History,
+            tr("Reopen Closed Tab"),
+            TabCommand::ReopenClosed,
+            Some(Action::ReopenClosedTab),
+        ));
+    }
+    items.extend(pin_and_private_rows(info, keymap));
     if info.can_bookmark {
         items.push(item(Icon::Bookmark, tr("Bookmark All Tabs"), TabCommand::BookmarkAll, None));
     }
     if info.others {
-        items.push(item(Icon::Close, tr("Close Other Tabs"), TabCommand::CloseOthers, None).separated());
+        items.push(close_others_row(keymap, true));
     }
     items
 }
@@ -222,7 +271,7 @@ pub fn tab_group_items(group: &crate::tabs::TabGroup) -> Vec<MenuItem> {
         MenuItem::new(Icon::TabGroup, tr("Colour"), MenuAction::Group(GroupCommand::Rename))
             .with_submenu(colors),
         item(Icon::TabGroup, tr("Ungroup Tabs"), GroupCommand::Ungroup).separated(),
-        item(Icon::Close, tr("Close Group"), GroupCommand::Close),
+        item(Icon::Close, tr("Close Group"), GroupCommand::Close).destructive(),
     ]
 }
 
@@ -235,7 +284,8 @@ pub fn bookmark_items(index: usize) -> Vec<MenuItem> {
             MenuAction::Bookmark(BookmarkCommand::OpenInNewTab(index)),
         ),
         MenuItem::new(Icon::Trash, tr("Delete"), MenuAction::Bookmark(BookmarkCommand::Delete(index)))
-            .separated(),
+            .separated()
+            .destructive(),
     ]
 }
 
@@ -418,6 +468,44 @@ mod tests {
         }
         let private = group_labels(TabMenuInfo { private: true, ..Default::default() });
         assert_eq!(private, ["New Tab", "Move Current to Normal"]);
+    }
+
+    #[test]
+    fn closing_rows_are_destructive_and_nothing_else_is() {
+        let info = TabMenuInfo { others: true, can_bookmark: true, can_group: true, ..Default::default() };
+        let keymap = Keymap::default();
+        for (menu, items) in [
+            ("tab", tab_items(info, &[], &keymap)),
+            ("group", group_items(info, &keymap)),
+            ("address", address_items(info, &[], &keymap)),
+        ] {
+            for item in &items {
+                assert_eq!(item.destructive, item.label.starts_with("Close "), "{menu}: {}", item.label);
+            }
+            assert!(items.iter().any(|i| i.destructive), "{menu} has a closing row");
+        }
+        assert!(bookmark_items(0).iter().any(|i| i.destructive && i.label == "Delete"));
+    }
+
+    #[test]
+    fn the_address_menu_has_the_tab_menus_rows() {
+        let info = TabMenuInfo { others: true, can_bookmark: true, can_group: true, ..Default::default() };
+        let keymap = Keymap::default();
+        let tab = labels(info);
+        let address: Vec<String> = address_items(info, &[], &keymap).into_iter().map(|i| i.label).collect();
+        // Everything of the tab's menu but its closing row comes first, in the same order.
+        let own = &tab[..tab.len() - 1];
+        assert_eq!(&address[..own.len()], own);
+        for label in ["Pin Current Tab", "Move Current to Private", "Close Tab", "Close Other Tabs"] {
+            assert!(address.iter().any(|l| l == label), "{label} missing in {address:?}");
+        }
+        let close =
+            |items: Vec<MenuItem>| items.into_iter().find(|i| i.label == "Close Tab").map(|i| i.detail);
+        assert_eq!(close(address_items(info, &[], &keymap)), close(tab_items(info, &[], &keymap)));
+        // Alone, there is nothing to close besides the tab itself.
+        let alone: Vec<String> =
+            address_items(TabMenuInfo::default(), &[], &keymap).into_iter().map(|i| i.label).collect();
+        assert!(!alone.iter().any(|l| l == "Close Other Tabs"));
     }
 
     #[test]
