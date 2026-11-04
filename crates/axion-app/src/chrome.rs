@@ -20,7 +20,7 @@ use glam::Vec2;
 
 use axion_engine::ViewId;
 
-use crate::favicons::{Favicons, favicon_node};
+use crate::favicons::{Favicons, favicon_node, favicon_or};
 use crate::tabs::{Tab, Tabs};
 use crate::url::display_host;
 
@@ -390,10 +390,45 @@ pub struct PanelItem {
     pub deletable: bool,
     /// Shown instead of the URL's favicon (a download's file).
     pub icon: Option<Icon>,
+    /// With `icon`: the URL's site icon comes first, `icon` is only the fallback for a site that
+    /// has none (a download's source site).
+    pub site_icon: bool,
     /// A progress bar under the detail (0–1; a download's).
     pub progress: Option<f32>,
     /// Trailing buttons, sending [`ChromeAction::PanelButton`] (at most [`PANEL_BUTTONS`]).
     pub buttons: Vec<Icon>,
+}
+
+impl PanelItem {
+    /// The fields that decide a row's icon, for a copy with another `icon`.
+    pub fn clone_shallow(&self) -> PanelItem {
+        PanelItem {
+            url: self.url.clone(),
+            site_icon: self.site_icon,
+            icon: self.icon,
+            ..PanelItem::default()
+        }
+    }
+}
+
+/// The icon at the start of a panel row (sidebar list or sheet): the file's glyph, the site's
+/// favicon, or a favicon that falls back to the glyph. Returns whether it is the site's icon.
+pub fn panel_row_icon(ui: &mut Ui, parent: NodeId, item: &PanelItem, side: f32, favicons: &Favicons) -> bool {
+    match item.icon {
+        Some(icon) if item.site_icon => {
+            let found = favicons.get(&item.url).is_some();
+            favicon_or(ui, parent, &item.url, side, favicons, icon);
+            found
+        }
+        Some(icon) => {
+            ui.add(parent, Widget::icon(icon, side + 2.0).with_paint(Paint::Accent), Style::default());
+            false
+        }
+        None => {
+            favicon_node(ui, parent, &item.url, side, favicons);
+            favicons.get(&item.url).is_some()
+        }
+    }
 }
 
 /// A folding group of panel rows (a history day): its heading's chevron, and the clipped
@@ -585,6 +620,8 @@ pub struct Chrome {
     /// (`extensions.enabled`).
     extensions: NodeId,
     extensions_shown: bool,
+    /// `layout.hidden_toolbar_buttons` as of the last layout.
+    hidden_buttons: Vec<String>,
     shield_glyph: NodeId,
     address_favicon: NodeId,
     /// While typing a new address: `Some(url)` whose icon to show (`None` inside = globe).
@@ -1765,6 +1802,7 @@ impl Chrome {
             share: share_button,
             extensions: extensions_button,
             extensions_shown: true,
+            hidden_buttons: Vec::new(),
             shield_glyph,
             address_favicon,
             address_icon_override: None,
@@ -2066,14 +2104,7 @@ impl Chrome {
                     ..row(12.0)
                 },
             );
-            match item.icon {
-                Some(icon) => {
-                    ui.add(row_node, Widget::icon(icon, 22.0).with_paint(Paint::Accent), Style::default());
-                }
-                None => {
-                    favicon_node(ui, row_node, &item.url, 20.0, favicons);
-                }
-            }
+            panel_row_icon(ui, row_node, item, 20.0, favicons);
             let text = ui.add(
                 row_node,
                 Widget::container(),
@@ -2203,7 +2234,7 @@ impl Chrome {
             return;
         }
         self.download_state = Some(state);
-        ui.set_visible(self.downloads, shown && !self.locked);
+        ui.set_visible(self.downloads, shown && !self.locked && !self.is_hidden("downloads"));
         ui.set_visible(self.download_track, progress.is_some());
         let mut style = ui.style(self.download_fill);
         style.size.width = percent(progress.unwrap_or(0.0).clamp(0.0, 1.0));
@@ -2579,6 +2610,7 @@ impl Chrome {
         self.destructive = config.appearance.destructive;
         self.retarget_strip(config);
         ui.set_visible(self.home_button, l.home_button);
+        self.hidden_buttons.clone_from(&config.layout.hidden_toolbar_buttons);
         let separate = l.tab_bar == TabBarStyle::Separate;
         ui.set_visible(self.tab_capsule, !separate);
         ui.set_visible(self.address_slot, separate);
@@ -2726,12 +2758,12 @@ impl Chrome {
             ui.set_visible(self.downloads, false);
         } else {
             // Unlocked again (or never locked): the page buttons the lock hid come back.
-            for node in [self.back, self.share, self.new_tab] {
-                ui.set_visible(node, true);
-            }
-            ui.set_visible(self.extensions, self.extensions_shown);
+            ui.set_visible(self.back, true);
+            ui.set_visible(self.share, !self.is_hidden("share"));
+            ui.set_visible(self.new_tab, !self.is_hidden("new_tab"));
+            ui.set_visible(self.extensions, self.extensions_shown && !self.is_hidden("extensions"));
             let downloads = self.download_state.is_some_and(|(shown, _)| shown);
-            ui.set_visible(self.downloads, downloads);
+            ui.set_visible(self.downloads, downloads && !self.is_hidden("downloads"));
         }
         // The bar, tab row and bookmarks bar: where F11 fullscreen has them now, and which
         // of them are shown at all (locked, fullscreen; see `bars_shown`).
@@ -2873,11 +2905,51 @@ impl Chrome {
         ui.frame(self.downloads)
     }
 
+    /// Whether the user hid the toolbar button `name` (`layout.hidden_toolbar_buttons`).
+    fn is_hidden(&self, name: &str) -> bool {
+        self.hidden_buttons.iter().any(|b| b == name)
+    }
+
+    /// The toolbar button under `node` (a node of the toolbar, or one of its children).
+    pub fn toolbar_button_at(&self, ui: &Ui, node: NodeId) -> Option<crate::context_registry::ToolbarButton> {
+        use crate::context_registry::ToolbarButton;
+        let buttons = [
+            (self.share, ToolbarButton::Share),
+            (self.new_tab, ToolbarButton::NewTab),
+            (self.extensions, ToolbarButton::Extensions),
+            (self.downloads, ToolbarButton::Downloads),
+            (self.home_button, ToolbarButton::Home),
+        ];
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if let Some((_, button)) = buttons.iter().find(|(b, _)| *b == n) {
+                return Some(*button);
+            }
+            at = ui.parent(n);
+        }
+        None
+    }
+
+    /// Whether `node` lies in the toolbar (the bar), outside its address field.
+    pub fn in_bar(&self, ui: &Ui, node: NodeId) -> bool {
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if n == self.address_slot || n == self.address_field {
+                return false;
+            }
+            if n == self.bar {
+                return true;
+            }
+            at = ui.parent(n);
+        }
+        false
+    }
+
     /// Shows or hides the toolbar's extensions button (`extensions.enabled`).
     pub fn set_extensions_button(&mut self, ui: &mut Ui, shown: bool) {
         if self.extensions_shown != shown {
             self.extensions_shown = shown;
-            ui.set_visible(self.extensions, shown && !self.locked);
+            ui.set_visible(self.extensions, shown && !self.locked && !self.is_hidden("extensions"));
         }
     }
 
@@ -4676,6 +4748,41 @@ mod tests {
     /// The separate tab row slides away with one lone tab and comes back with a second tab, a
     /// pinned or a grouped one; the page follows it; the key turns it off; flat mode and Reduce
     /// Motion get there too.
+    /// "Hide Button" (`layout.hidden_toolbar_buttons`) takes the share, new tab, extensions and
+    /// downloads buttons out of the toolbar, and clearing the list brings them back.
+    #[test]
+    fn hidden_toolbar_buttons_leave_and_return() {
+        let mut config = Config::default();
+        let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+        let mut chrome = Chrome::build(&mut ui, &config);
+        let window = Vec2::new(1400.0, 900.0);
+        chrome.set_download_indicator(&mut ui, true, None);
+        chrome.apply_layout(&mut ui, &config, window);
+        let buttons = [
+            ("share", chrome.share),
+            ("new_tab", chrome.new_tab),
+            ("extensions", chrome.extensions),
+            ("downloads", chrome.downloads),
+        ];
+        for (name, node) in buttons {
+            assert!(ui.is_visible(node), "{name} shown by default");
+        }
+        for (hidden, node) in buttons {
+            config.layout.hidden_toolbar_buttons = vec![hidden.to_owned()];
+            chrome.apply_layout(&mut ui, &config, window);
+            for (name, other) in buttons {
+                assert_eq!(ui.is_visible(other), name != hidden, "{name} with {hidden} hidden");
+            }
+            // The indicator's updates never bring a hidden button back.
+            chrome.set_download_indicator(&mut ui, true, Some(0.5));
+            chrome.set_extensions_button(&mut ui, true);
+            assert!(!ui.is_visible(node), "{hidden} stays hidden");
+        }
+        config.layout.hidden_toolbar_buttons.clear();
+        chrome.apply_layout(&mut ui, &config, window);
+        assert!(buttons.iter().all(|&(_, node)| ui.is_visible(node)));
+    }
+
     #[test]
     fn the_tab_row_hides_with_a_lone_tab() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());

@@ -194,6 +194,7 @@ and tests.
 | `AXION_PROFILE_DIR` | Use this folder instead of `~/.local/share/axion/profile` for browsing data. |
 | `AXION_DEVICE_KEY_DIR` | Use this folder instead of `~/.local/share/axion` for the vault's device secret. |
 | `AXION_GPU` | `low`, `high` or part of a card's name. Overrides **Graphics card**. |
+| `AXION_OPENER_LOG` | A file: instead of opening files and folders in the desktop (Downloads: Open, Show in Folder), Axion appends a line per request (`open PATH`, `show PATH`, `uri URL`) to it. For tests. |
 | `AXION_OSR` | `software` or `gpu`. Overrides **Page frames**. Never use `gpu` on AMD graphics. |
 | `AXION_MONITOR` | Open the window on this monitor, for example `HDMI-A-1`. Works on X11 and XWayland (start with `env -u WAYLAND_DISPLAY`). |
 | `AXION_CHROMIUM_SWITCHES` | Extra Chromium command-line switches, separated by commas, for example `AXION_CHROMIUM_SWITCHES=autoplay-policy=no-user-gesture-required`. |

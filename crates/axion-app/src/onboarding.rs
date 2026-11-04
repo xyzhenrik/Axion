@@ -228,7 +228,7 @@ pub fn decide(first_run: &FirstRun) -> Launch {
 
 // ---- actions ----
 
-const BASE: u32 = 11_000;
+const BASE: u32 = 30_000;
 const CONTINUE: ActionId = ActionId(BASE);
 const BACK: ActionId = ActionId(BASE + 1);
 const SKIP: ActionId = ActionId(BASE + 2);
@@ -2290,7 +2290,7 @@ mod tests {
         let others = [CONTINUE, BACK, SKIP, CHOOSE_PHOTO, REMOVE_PHOTO];
         assert!(others.iter().all(|&id| id != MAKE_DEFAULT));
         // Nothing else maps to the same click.
-        assert_eq!((0..20_000).filter(|&n| click_of(ActionId(n)) == Some(Click::MakeDefault)).count(), 1);
+        assert_eq!((0..40_000).filter(|&n| click_of(ActionId(n)) == Some(Click::MakeDefault)).count(), 1);
     }
 
     #[test]

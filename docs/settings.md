@@ -60,7 +60,10 @@ passwords, website data and settings. More in [Accounts and privacy](features/ac
 | **Suggest making Axion the default browser** | At start, while Axion is not the default browser, a small notice offers to make it one. Its **Don't ask again** button turns this off for good. | On | `general.default_browser_hint` |
 | **One window per account** | Opening a link from another app (or running `axion URL`) while Axion is open adds a tab to the running window of that account instead of starting a second browser. | On | `general.single_instance` |
 | **Welcome tour** (**Show Welcome Tour**) | Runs the first-start introduction again. | - | `general.onboarding_done` |
+| **History and Downloads as sheets** (config only) | The sidebar's History and Downloads rows (and Ctrl+H, and "Show All Downloads" in the downloads popover) open a large glass sheet over the window, like Settings and Passwords, with a search field for History, the day headings, and the rows' buttons. Off: they are lists inside the sidebar. | On | `general.list_sheets` |
+| **Context menus** (config only) | A right click (or the Menu key, Shift+F10) on the sidebar's rows, the rows of History, Bookmarks and Downloads, toolbar buttons and the bare toolbar, the tab overview's cards, start page tiles, the fullscreen media player, the rows of the extensions list, the network chip and the toggles and sliders in Settings opens a menu (Settings rows: **Reset to Default**; toolbar buttons: **Hide Button**, **Customize Toolbar…**, **Show Hidden Buttons**). Off: only tabs, tab groups, bookmarks of the bookmarks bar and the page keep their menus. | On | `general.context_menus` |
 | **Show home button** | Puts a home button next to back and forward. It opens your homepage. | On | `layout.home_button` |
+| **Hidden toolbar buttons** (config only) | Buttons taken out of the toolbar with **Hide Button** in their right-click menu: `share`, `new_tab`, `extensions`, `downloads`. **Show Hidden Buttons** (in the menu of any toolbar button or of the bare toolbar) empties the list. | Empty | `layout.hidden_toolbar_buttons` |
 
 ### Start page
 
@@ -397,6 +400,7 @@ listed here.
 | **Download location** (**Change…**) | The folder for downloads. | Your desktop's Downloads folder | `downloads.directory` |
 | **Ask where to save each file** | Shows a file chooser for each download. Off: saves straight into the download location. | On | `downloads.ask_where_to_save` |
 | **Open “safe” files after downloading** | Opens pictures, movies, sounds, PDF and text documents when they finish. | Off | `downloads.open_safe_files` |
+| **Site icons in the downloads list** (config only) | Each download shows the icon of the site it came from; the file's icon only when the site has none. | On | `downloads.show_site_icons` |
 | **Remove download list items** | When finished downloads leave the list: **Manually**, **After One Day**, **When Axion Quits**. | Manually | `downloads.remove_list_items` (`manually`, `after_one_day`, `on_quit`) |
 
 ### Print and screenshots

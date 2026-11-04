@@ -89,6 +89,20 @@ impl Browser {
             // A middle click on a group's header is not a click on a tab.
             return true;
         }
+        // The overview's cards: the tab's menu.
+        if button == Button::Right
+            && self.overview.is_open()
+            && !self.is_locked()
+            && let Some(OverviewAction::Select(i) | OverviewAction::Close(i)) = self
+                .ui
+                .hit_action(p)
+                .and_then(|n| self.ui.widget(n))
+                .and_then(|w| w.action)
+                .and_then(OverviewAction::from_id)
+        {
+            self.open_card_menu(i, p);
+            return true;
+        }
         if button == Button::Right
             && !self.is_locked()
             && let Some((private, header)) = self.chrome.group_header_at(&self.ui, node)
@@ -96,7 +110,9 @@ impl Browser {
             self.open_group_menu(private, header);
             return true;
         }
-        false
+        // Everything else the registry has a menu for (sidebar rows, lists, toolbar buttons,
+        // settings rows, the player, extensions, the network chip).
+        button == Button::Right && self.registry_click(p)
     }
 
     pub(super) fn close_other_menus(&mut self) {
@@ -106,7 +122,7 @@ impl Browser {
 
     /// What decides the rows of the menu of tab `view` (in the normal or private `private`
     /// group), and the tab group it is in.
-    fn tab_menu_info(&self, private: bool, view: ViewId) -> Option<(TabMenuInfo, Option<u32>)> {
+    pub(super) fn tab_menu_info(&self, private: bool, view: ViewId) -> Option<(TabMenuInfo, Option<u32>)> {
         let group = self.group(private);
         let index = group.index_of(view)?;
         let tabs = group.all();

@@ -90,6 +90,8 @@ pub enum MenuAction {
     Playlist(crate::playlist::Command),
     /// The page's context menu (right click inside the page; see `page_menu`).
     Page(crate::page_menu::PageCommand),
+    /// A row of a menu of the context registry (see `context_registry`).
+    Context(crate::context_registry::Verb),
 }
 
 /// Where a menu opens relative to its button.
@@ -411,6 +413,12 @@ impl Menu {
             lit_row: None,
             destructive_color: Color::rgb(0xD0362B),
         }
+    }
+
+    /// Draws the menu (and its submenu) above the planes made after it.
+    pub fn raise(&self, ui: &mut Ui) {
+        self.sub.raise(ui);
+        self.popover.raise(ui);
     }
 
     /// The least width of the next opened menu (0: the usual).

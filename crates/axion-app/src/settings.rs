@@ -178,6 +178,17 @@ impl Category {
     }
 }
 
+/// A handle on one toggle or slider setting, for the context menu's "Reset to Default".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingRef(Setting);
+
+#[cfg(test)]
+impl SettingRef {
+    pub(crate) fn for_test() -> Self {
+        SettingRef(Setting::HomeClock)
+    }
+}
+
 /// A setting edited with a toggle or slider; sliders map 0–1 onto the setting's range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Setting {
@@ -1720,6 +1731,31 @@ impl SettingsSheet {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// The setting whose row lies under `p` (logical px): a toggle or slider row. For the
+    /// context menu's "Reset to Default".
+    pub fn setting_at(&self, ui: &Ui, p: Vec2) -> Option<SettingRef> {
+        if !self.open || !ui.is_visible(self.sheet) {
+            return None;
+        }
+        self.controls.iter().find_map(|&(node, setting)| {
+            let row = ui.parent(node)?;
+            (ui.is_visible(node) && ui.frame(row).contains(p)).then_some(SettingRef(setting))
+        })
+    }
+
+    /// Whether the setting has its default value in `config`.
+    pub fn is_default(&self, setting: SettingRef, config: &Config) -> bool {
+        (setting.0.get(config) - setting.0.get(&Config::default())).abs() < 1e-4
+    }
+
+    /// Puts the setting back to its default value; the page is rebuilt to show it.
+    pub fn reset(&mut self, setting: SettingRef, config: &mut Config) -> Outcome {
+        let default = setting.0.get(&Config::default());
+        setting.0.set(config, default);
+        self.rebuild = true;
+        Outcome::Changed
     }
 
     /// Whether `p` (logical px) is on the sheet itself (backdrop clicks outside close it).
@@ -4551,6 +4587,7 @@ fn shortcut_actions() -> Vec<KeyAction> {
         OpenPasswords,
         ToggleSidebar,
         OpenSettings,
+        ContextMenu,
         CommandPalette,
         ToggleFullscreen,
         Quit,
@@ -4586,7 +4623,7 @@ pub(crate) fn shortcut_group(action: KeyAction) -> &'static str {
         | ToggleSidebar => tr("Panels"),
         Lock | ToggleNetwork => tr("Privacy"),
         DevTools | DevToolsConsole | ViewSource => tr("Developer"),
-        OpenSettings | CommandPalette | ToggleFullscreen | Quit => tr("Window"),
+        OpenSettings | ContextMenu | CommandPalette | ToggleFullscreen | Quit => tr("Window"),
         _ => tr("Media (fullscreen video)"),
     }
 }
@@ -4633,6 +4670,7 @@ fn shortcut_source_name(action: KeyAction) -> &'static str {
         OpenPasswords => tr_mark("Open passwords"),
         ToggleSidebar => tr_mark("Toggle sidebar"),
         OpenSettings => tr_mark("Open settings"),
+        ContextMenu => tr_mark("Context menu"),
         CommandPalette => tr_mark("Command palette"),
         ToggleFullscreen => tr_mark("Toggle fullscreen"),
         Quit => tr_mark("Quit"),

@@ -107,6 +107,8 @@ mod page_context;
 mod permissions;
 mod playlist;
 mod reading;
+mod registry;
+mod sheets;
 mod tabgroups;
 
 const DEFAULT_WINDOW_SIZE: (f64, f64) = (1440.0, 900.0);
@@ -383,6 +385,13 @@ pub struct Browser {
     session_changed: Instant,
     settings: SettingsSheet,
     passwords: Passwords,
+    /// History and Downloads as glass sheets (`general.list_sheets`).
+    history_sheet: crate::list_sheet::ListSheet,
+    downloads_sheet: crate::list_sheet::ListSheet,
+    /// The History sheet's clear button was clicked once (the second click clears).
+    history_confirm: bool,
+    /// What the open registry menu is about (see `context_registry`).
+    menu_target: Option<crate::context_registry::Target>,
     /// Unsaved settings changes since this time (saving is throttled while dragging).
     config_dirty_since: Option<Instant>,
     /// What we last wrote to config.toml, so the file watcher can ignore our own writes.
@@ -857,6 +866,10 @@ impl Browser {
                 }
             };
         let passwords = Passwords::build(&mut ui, chrome.bar_node(), &vault_path, device_key, &account_name);
+        let history_sheet =
+            crate::list_sheet::ListSheet::build(&mut ui, crate::list_sheet::SheetKind::History);
+        let downloads_sheet =
+            crate::list_sheet::ListSheet::build(&mut ui, crate::list_sheet::SheetKind::Downloads);
         let lock = PrivateLock::new();
         let mut favicons = Favicons::new(device.clone(), queue.clone(), Some(profile.join("favicons")));
         favicons.set_dark(dark);
@@ -1008,6 +1021,10 @@ impl Browser {
             session_changed: Instant::now(),
             settings,
             passwords,
+            history_sheet,
+            downloads_sheet,
+            history_confirm: false,
+            menu_target: None,
             config_dirty_since: migrated.then(Instant::now),
             last_saved_config: None,
             panel_urls: Vec::new(),
@@ -1200,6 +1217,7 @@ impl Browser {
         if self.settings.is_open() {
             self.settings.resize(&mut self.ui, size);
         }
+        self.resize_list_sheets(size);
         self.onboarding.resize(&mut self.ui, &self.config, size);
         let view_size = self.view_size();
         // While the sidebar slides, the shown tab's size is managed by the slide (see
@@ -1615,6 +1633,9 @@ impl Browser {
                     self.bookmarks_changed = true;
                 }
             }
+            Action::ShowHistory if self.config.general.list_sheets => {
+                self.show_list(crate::list_sheet::SheetKind::History);
+            }
             Action::ShowBookmarks | Action::ShowHistory => {
                 if !self.chrome.sidebar_open() {
                     self.chrome.toggle_sidebar();
@@ -1624,6 +1645,10 @@ impl Browser {
                 self.show_panel(panel);
             }
             Action::OpenPasswords => self.open_passwords(),
+            // The pointer decides what the menu is about (see `open_menu_from_keyboard`).
+            Action::ContextMenu => {
+                self.open_menu_from_keyboard();
+            }
             // The account menu's Lock: only accounts with a password have something to lock.
             Action::Lock => {
                 if self.passwords.has_password() {
@@ -3552,6 +3577,7 @@ impl Browser {
             MenuAction::Bookmark(command) => return self.bookmark_command(command),
             MenuAction::Playlist(command) => return self.playlist_command(command),
             MenuAction::Page(command) => return self.page_command(command),
+            MenuAction::Context(verb) => return self.context_command(verb),
             _ => {}
         }
         let Some(tab) = self.tabs.active() else { return };
@@ -3639,6 +3665,7 @@ impl Browser {
             | MenuAction::Group(_)
             | MenuAction::Playlist(_)
             | MenuAction::Page(_)
+            | MenuAction::Context(_)
             | MenuAction::Bookmark(_) => {}
         }
     }
@@ -3674,6 +3701,11 @@ impl Browser {
         }
         if self.passwords.is_open() {
             self.close_passwords();
+        }
+        for kind in [crate::list_sheet::SheetKind::History, crate::list_sheet::SheetKind::Downloads] {
+            if self.sheet(kind).is_open() {
+                self.close_list_sheet(kind);
+            }
         }
     }
 
@@ -3966,6 +3998,16 @@ impl Browser {
                 event if self.onboarding.is_open() && self.onboarding.wants(&event) => {
                     self.onboarding_event(event);
                 }
+                UiEvent::Clicked { action, .. } if self.history_sheet.owns_action(action) => {
+                    if let Some(click) = self.history_sheet.click(&self.ui, action, self.pointer) {
+                        self.list_sheet_click(crate::list_sheet::SheetKind::History, click);
+                    }
+                }
+                UiEvent::Clicked { action, .. } if self.downloads_sheet.owns_action(action) => {
+                    if let Some(click) = self.downloads_sheet.click(&self.ui, action, self.pointer) {
+                        self.list_sheet_click(crate::list_sheet::SheetKind::Downloads, click);
+                    }
+                }
                 event if self.passwords.wants(&event) => {
                     let (ui, config, clipboard) = (&mut self.ui, &mut self.config, &mut self.clipboard);
                     let outcome = self.passwords.event(ui, config, clipboard, self.pointer, event);
@@ -4090,12 +4132,7 @@ impl Browser {
                 }
                 UiEvent::Clicked { action, .. } if PlayerControl::from_id(action).is_some() => {
                     let Some(control) = PlayerControl::from_id(action) else { continue };
-                    match self.player.click(&mut self.ui, control, &self.config) {
-                        PlayerOutcome::Command(view, command) => self.media_command(view, &command),
-                        PlayerOutcome::PictureInPicture(view, player) => self.start_pip(view, player),
-                        PlayerOutcome::AddToPlaylist(view, player) => self.playlist_add_player(view, &player),
-                        PlayerOutcome::Nothing => {}
-                    }
+                    self.player_control(control);
                 }
                 UiEvent::ValueChanged { node, value } if node == self.player.volume() => {
                     if let Some((view, commands)) = self.player.volume_command(value) {
@@ -4326,7 +4363,10 @@ impl Browser {
                     }
                     Some(ChromeAction::PageMenu) => self.open_page_menu(),
                     Some(ChromeAction::Bookmarks) => self.show_panel(Panel::Bookmarks),
-                    Some(ChromeAction::History) => self.show_panel(Panel::History),
+                    Some(ChromeAction::History) => {
+                        self.sheet_from_row(node);
+                        self.show_list(crate::list_sheet::SheetKind::History);
+                    }
                     Some(ChromeAction::Passwords) => {
                         // The sheet comes out of the row (the sidebar is too big an origin).
                         let row = self.ui.frame(node);
@@ -4348,7 +4388,10 @@ impl Browser {
                     }
                     Some(ChromeAction::ClearPanel) => self.clear_panel(),
                     Some(ChromeAction::DeletePanelItem(i)) => self.delete_panel_item(i),
-                    Some(ChromeAction::Downloads) => self.show_panel(Panel::Downloads),
+                    Some(ChromeAction::Downloads) => {
+                        self.sheet_from_row(node);
+                        self.show_list(crate::list_sheet::SheetKind::Downloads);
+                    }
                     Some(ChromeAction::Playlist) => {
                         if self.playlist_open() {
                             self.close_playlist();
@@ -5159,6 +5202,9 @@ impl Browser {
         if changed && self.downloads_popover.is_open() {
             self.open_downloads_popover();
         }
+        if changed {
+            self.refresh_sheet(crate::list_sheet::SheetKind::Downloads, true);
+        }
         for event in self.downloads.poll() {
             match event {
                 downloads::Event::CacheSize(size) => self.settings.set_cache_size(Some(size)),
@@ -5226,6 +5272,7 @@ impl Browser {
             || self.overview.is_open()
             || self.settings.is_open()
             || self.passwords.is_open()
+            || self.any_list_sheet_open()
             || self.add_account.is_open()
             || self.group_sheet.is_open()
             || self.tab_search.is_open()
@@ -5516,11 +5563,21 @@ impl Browser {
         let items = self.downloads.items(List::Popover, self.store.as_ref(), &self.config, unix_now(), limit);
         let anchor = self.chrome.downloads_frame(&self.ui);
         let width = self.logical_size().x;
-        self.downloads_popover.open(&mut self.ui, &self.config, anchor, width, &items);
+        self.downloads_popover.open(&mut self.ui, &self.config, anchor, width, &items, &self.favicons);
     }
 
     /// The full Downloads list in the sidebar (opening the sidebar if needed).
     fn show_all_downloads(&mut self) {
+        if self.config.general.list_sheets {
+            // Out of the toolbar's download button.
+            let button = self.chrome.downloads_frame(&self.ui);
+            if button.size.x > 0.0 {
+                self.sheet_origin =
+                    Some(Origin { plane: self.chrome.bar_node(), point: button.center(), control: button });
+            }
+            self.show_list(crate::list_sheet::SheetKind::Downloads);
+            return;
+        }
         if !self.chrome.sidebar_open() {
             self.run(Action::ToggleSidebar);
         }
@@ -6249,6 +6306,10 @@ impl Browser {
                     // The extension popup scrolled.
                 } else if self.overview.is_open() {
                     self.overview.scroll_by(&mut self.ui, delta.y);
+                } else if self.history_sheet.is_open() {
+                    self.history_sheet.scroll_by(&mut self.ui, delta.y);
+                } else if self.downloads_sheet.is_open() {
+                    self.downloads_sheet.scroll_by(&mut self.ui, delta.y);
                 } else if self.passwords.is_open() {
                     self.passwords.scroll_by(&mut self.ui, delta.y);
                 } else if self.settings.is_open() {
@@ -6733,6 +6794,18 @@ impl Browser {
             self.close_extension_popup();
             return false;
         }
+        if pressed
+            && self.any_list_sheet_open()
+            && !self.context_menus.is_open()
+            && input::key(event) == Some(Key::Named("Escape".into()))
+        {
+            for kind in [crate::list_sheet::SheetKind::History, crate::list_sheet::SheetKind::Downloads] {
+                if self.sheet(kind).is_open() {
+                    self.close_list_sheet(kind);
+                }
+            }
+            return false;
+        }
         if pressed && self.passwords.is_open() && input::key(event) == Some(Key::Named("Escape".into())) {
             self.close_passwords();
             let _ = self.ui.blur();
@@ -6885,9 +6958,19 @@ impl Browser {
             self.engine.run_script(view, "document.fullscreenElement && document.exitFullscreen();", false);
             return false;
         }
+        // The Menu key and Shift+F10: the context menu of what the pointer is over (else the key
+        // goes on to the page, which has its own).
+        if pressed
+            && let Some(chord) = input::chord(event, self.modifiers)
+            && self.keymap.action_for(&chord) == Some(Action::ContextMenu)
+            && self.open_menu_from_keyboard()
+        {
+            return false;
+        }
         if pressed
             && let Some(chord) = input::chord(event, self.modifiers)
             && let Some(action) = self.keymap.action_for(&chord)
+            && action != Action::ContextMenu
             // Media keys (Space, arrows…) are ours only while a video is fullscreen.
             && (!action.is_media()
                 || (self.player.mode() == PlayerMode::Fullscreen || self.playlist_open())
@@ -7239,8 +7322,20 @@ impl Browser {
                 "capture-stop" => self.capture_action(crate::permission_prompt::CaptureAction::StopAll),
                 // Test aid: load "navigate:URL" in the shown tab (after "private": a private one).
                 url if url.starts_with("navigate:") => self.navigate_to(url["navigate:".len()..].to_owned()),
-                "history" => self.show_panel(Panel::History),
-                "downloads" => self.show_panel(Panel::Downloads),
+                "history" => self.show_list(crate::list_sheet::SheetKind::History),
+                "downloads" => self.show_list(crate::list_sheet::SheetKind::Downloads),
+                "history-panel" => self.show_panel(Panel::History),
+                "downloads-panel" => self.show_panel(Panel::Downloads),
+                "seed-lists" if std::env::var_os("AXION_PROFILE_DIR").is_some() => self.seed_lists_for_test(),
+                // Capture aid: right click at X,Y as a real pointer event ("context:XxY").
+                at if at.starts_with("context:") => self.context_click_for_test(&at["context:".len()..]),
+                // Capture aids: a real left or right click on the button with this action id.
+                id if id.starts_with("click-action:") => {
+                    self.click_action_for_test(&id["click-action:".len()..], false);
+                }
+                id if id.starts_with("context-action:") => {
+                    self.click_action_for_test(&id["context-action:".len()..], true);
+                }
                 "downloads-popover" => self.toggle_downloads_popover(),
                 // Capture aids: the extensions popover, and the details of the first extension.
                 "extensions-popover" => self.toggle_extensions_popover(),
@@ -8125,6 +8220,7 @@ impl Browser {
         self.settings.animate(&mut self.ui, dt);
         let address = self.chrome.address_frame(&self.ui);
         self.passwords.animate(&mut self.ui, &self.config, dt, address);
+        self.animate_list_sheets(dt);
         self.animate_permissions(dt, address);
         self.update_player(dt);
         self.update_playlist_buttons();
@@ -9177,7 +9273,7 @@ mod tests {
     /// private tabs; and Passwords swallowed the sidebar's rows of the other tab group.)
     #[test]
     fn action_ids_are_never_shared() {
-        for id in 0..60_000 {
+        for id in (0..60_000).chain(90_000..110_000) {
             let id = ActionId(id);
             let claims = [
                 ChromeAction::from_id(id).is_some(),
@@ -9187,7 +9283,12 @@ mod tests {
                 LockScreen::is_lock_action(id),
                 SettingsAction::from_id(id).is_some(),
                 PlayerControl::from_id(id).is_some(),
-                (CONTEXT_MENU_BASE..CONTEXT_MENU_BASE + 5 * MAX_ITEMS as u32).contains(&id.0),
+                (CONTEXT_MENU_BASE..CONTEXT_MENU_BASE + 6 * MAX_ITEMS as u32).contains(&id.0),
+                crate::eye::owns(id),
+                id.0 >= crate::action_ids::HISTORY_SHEET
+                    && id.0 < crate::action_ids::HISTORY_SHEET + crate::list_sheet::SPAN,
+                id.0 >= crate::action_ids::DOWNLOADS_SHEET
+                    && id.0 < crate::action_ids::DOWNLOADS_SHEET + crate::list_sheet::SPAN,
                 (PAGE_MENU_BASE..ACCOUNT_MENU_BASE + MAX_ITEMS as u32).contains(&id.0),
                 crate::playlist_page::PageAction::owns(id),
                 (crate::playlist_page::MENU_BASE..crate::playlist_page::MENU_BASE + 2 * MAX_ITEMS as u32)

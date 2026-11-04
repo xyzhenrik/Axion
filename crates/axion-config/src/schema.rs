@@ -129,6 +129,13 @@ pub struct General {
     /// the running window of the same account and exits, instead of starting a second browser
     /// on the same profile. Off: every launch tries to start its own browser.
     pub single_instance: bool,
+    /// History and Downloads open as glass sheets over the window (like Settings and
+    /// Passwords). Off: they are lists in the sidebar.
+    pub list_sheets: bool,
+    /// Right clicks on the chrome (sidebar rows, toolbar buttons, tiles, players, settings rows,
+    /// extensions, the network chip) open a context menu. Off: only tabs, bookmarks and the page
+    /// keep theirs.
+    pub context_menus: bool,
 }
 
 /// Which language the interface is shown in.
@@ -184,6 +191,8 @@ impl Default for General {
             desktop_integration: true,
             default_browser_hint: true,
             single_instance: true,
+            list_sheets: true,
+            context_menus: true,
         }
     }
 }
@@ -926,6 +935,9 @@ pub struct Layout {
     pub hide_single_tab_bar: bool,
     /// A home button (opens `general.homepage`) next to back and forward.
     pub home_button: bool,
+    /// Toolbar buttons hidden from their right-click menu ("Hide Button"): any of `share`,
+    /// `new_tab`, `extensions`, `downloads`. "Show Hidden Buttons" empties the list.
+    pub hidden_toolbar_buttons: Vec<String>,
     /// F11 fullscreen: resting the pointer at the window's top edge brings the toolbar, tab
     /// row and bookmarks bar back over the page (it keeps its size) until the pointer leaves
     /// them. Off: they only come back when fullscreen ends.
@@ -990,6 +1002,7 @@ impl Default for Layout {
             tab_bar: TabBarStyle::Separate,
             hide_single_tab_bar: true,
             home_button: true,
+            hidden_toolbar_buttons: Vec::new(),
             fullscreen_reveal_chrome: true,
             fullscreen_reveal_delay: 0.35,
             fullscreen_reveal_edge: 3.0,
@@ -1185,6 +1198,9 @@ pub struct Downloads {
     pub remove_list_items: RemoveDownloads,
     /// How many finished downloads the list keeps at most.
     pub list_limit: u32,
+    /// A download's row shows the favicon of the site it came from (the file type's icon when
+    /// the site has none).
+    pub show_site_icons: bool,
 }
 
 impl Default for Downloads {
@@ -1195,6 +1211,7 @@ impl Default for Downloads {
             open_safe_files: false,
             remove_list_items: RemoveDownloads::Manually,
             list_limit: 500,
+            show_site_icons: true,
         }
     }
 }

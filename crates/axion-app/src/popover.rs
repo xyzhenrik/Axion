@@ -136,6 +136,16 @@ impl Popover {
         self.root
     }
 
+    /// Moves the popover (and its bridge) to the front of its plane's children, so it is drawn
+    /// above planes made after it.
+    pub fn raise(&self, ui: &mut Ui) {
+        let mut children = ui.children(self.parent);
+        children.retain(|&n| n != self.root && n != self.bridge);
+        children.push(self.root);
+        children.push(self.bridge);
+        ui.set_children(self.parent, &children);
+    }
+
     pub fn phase(&self) -> Phase {
         self.drip.phase()
     }

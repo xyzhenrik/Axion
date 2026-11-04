@@ -297,8 +297,11 @@ const BRIDGE_INTO_JOIN: f32 = 0.3;
 /// One glass menu per plane things can be right-clicked in.
 pub struct ContextMenus {
     menus: Vec<(NodeId, Menu)>,
-    /// The page's own menu (the last of `menus`).
+    /// The page's own menu.
     page: usize,
+    /// The registry's menu (the last of `menus`): in a plane of its own above everything, so it
+    /// opens over sheets and players (see `context_registry`).
+    overlay: usize,
     /// The row the open menu flows out of, whose content is faded out (see [`Self::cover_row`]).
     covered: Option<NodeId>,
 }
@@ -307,9 +310,10 @@ impl ContextMenus {
     /// A menu in each of `planes` (the toolbar, the tab strip, the sidebar, the bookmarks bar),
     /// and the page's menu in `page_plane` (drawn above the page).
     pub fn build(ui: &mut Ui, planes: &[NodeId], page_plane: NodeId) -> Self {
+        let root = ui.root();
         let menus: Vec<_> = planes
             .iter()
-            .chain([&page_plane])
+            .chain([&page_plane, &root])
             .enumerate()
             .map(|(k, &plane)| {
                 let base = CONTEXT_MENU_BASE + (k * MAX_ITEMS) as u32;
@@ -318,7 +322,33 @@ impl ContextMenus {
                 (plane, menu)
             })
             .collect();
-        Self { page: menus.len() - 1, menus, covered: None }
+        Self { page: menus.len() - 2, overlay: menus.len() - 1, menus, covered: None }
+    }
+
+    /// Opens the registry's menu, dripping out of `anchor` (a point or a control, logical px) above
+    /// everything else.
+    pub fn open_overlay(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        anchor: Frame,
+        window: Vec2,
+        width: f32,
+        items: Vec<MenuItem>,
+    ) {
+        for (k, (_, menu)) in self.menus.iter_mut().enumerate() {
+            if k != self.overlay {
+                menu.close(ui, config);
+            }
+        }
+        self.covered = None;
+        let menu = &mut self.menus[self.overlay].1;
+        menu.set_placement(Placement::Over);
+        menu.set_min_width(width);
+        menu.set_covered_nodes(ui, Vec::new());
+        menu.open(ui, config, anchor, window, items);
+        // Above the planes made after it (the media player's, the sheets').
+        menu.raise(ui);
     }
 
     /// Opens the page's menu, dripping out of `anchor` (a point in the page).
