@@ -11,6 +11,7 @@ use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, 
 use glam::Vec2;
 
 use crate::chrome::PanelItem;
+use crate::favicons::Favicons;
 use crate::popover::Popover;
 
 const ACTION_BASE: u32 = 6200;
@@ -82,8 +83,9 @@ impl DownloadsPopover {
         anchor: Frame,
         window_width: f32,
         items: &[PanelItem],
+        favicons: &Favicons,
     ) {
-        self.fill(ui, items);
+        self.fill(ui, items, favicons);
         let rows = if items.is_empty() { EMPTY } else { ROW * items.len() as f32 };
         let count = 2.0 + items.len().max(1) as f32;
         let height = 2.0 * (PADDING + INSET) + HEADER + rows + FOOTER + (count - 1.0) * GAP;
@@ -93,7 +95,7 @@ impl DownloadsPopover {
         self.popover.open(ui, config, anchor, target);
     }
 
-    fn fill(&mut self, ui: &mut Ui, items: &[PanelItem]) {
+    fn fill(&mut self, ui: &mut Ui, items: &[PanelItem], favicons: &Favicons) {
         ui.clear_children(self.plate);
         let header = ui.add(self.plate, Widget::container(), fixed_row(HEADER, 8.0));
         ui.add_label(header, tr("Downloads"), TextStyle::BodyEmphasis, Style::default());
@@ -107,8 +109,8 @@ impl DownloadsPopover {
                 Widget::container().with_action(ActionId(ROW_BASE + i as u32)).with_radius(14.0),
                 Style { padding: padding(8.0, 4.0), ..fixed_row(ROW, 10.0) },
             );
-            let icon = item.icon.unwrap_or(Icon::File);
-            ui.add(row_node, Widget::icon(icon, 24.0).with_paint(Paint::Accent), Style::default());
+            let shown = PanelItem { icon: item.icon.or(Some(Icon::File)), ..item.clone_shallow() };
+            crate::chrome::panel_row_icon(ui, row_node, &shown, 22.0, favicons);
             let text = ui.add(
                 row_node,
                 Widget::container(),

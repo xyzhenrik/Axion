@@ -122,19 +122,77 @@ pub struct General {
     /// icon set in `$XDG_DATA_HOME`), which is what gives the window its icon on Wayland.
     /// Off: Axion leaves the desktop entry alone (and removes nothing).
     pub desktop_integration: bool,
+    /// Linux: at start, offer to make Axion the default browser when it is not (a toast with
+    /// "Make default" and "Don't ask again"). "Don't ask again" turns this off.
+    pub default_browser_hint: bool,
+    /// A second `axion` launch (a link opened from another app, `axion URL`) hands its URLs to
+    /// the running window of the same account and exits, instead of starting a second browser
+    /// on the same profile. Off: every launch tries to start its own browser.
+    pub single_instance: bool,
+    /// History and Downloads open as glass sheets over the window (like Settings and
+    /// Passwords). Off: they are lists in the sidebar.
+    pub list_sheets: bool,
+    /// Right clicks on the chrome (sidebar rows, toolbar buttons, tiles, players, settings rows,
+    /// extensions, the network chip) open a context menu. Off: only tabs, bookmarks and the page
+    /// keep theirs.
+    pub context_menus: bool,
 }
 
-/// Which language the interface is shown in.
+/// Which language the interface is shown in. The values are the language tags of
+/// `axion-i18n`'s registry (`en`, `de`, `es`, `fr`, `tr`, `ja`, `pt-BR`, `it`, `ru`, `zh-Hans`,
+/// `ko`, `nl`, `pl`), or `system`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum UiLanguage {
-    /// The system's (`LC_ALL`/`LC_MESSAGES`/`LANG`), English when unsupported.
+    /// The system's (`LC_ALL`/`LC_MESSAGES`/`LANGUAGE`/`LANG`), English when unsupported.
     #[default]
+    #[serde(rename = "system")]
     System,
     #[serde(rename = "en")]
     English,
     #[serde(rename = "de")]
     German,
+    #[serde(rename = "es")]
+    Spanish,
+    #[serde(rename = "fr")]
+    French,
+    #[serde(rename = "tr")]
+    Turkish,
+    #[serde(rename = "ja")]
+    Japanese,
+    #[serde(rename = "pt-BR")]
+    PortugueseBrazil,
+    #[serde(rename = "it")]
+    Italian,
+    #[serde(rename = "ru")]
+    Russian,
+    #[serde(rename = "zh-Hans")]
+    ChineseSimplified,
+    #[serde(rename = "ko")]
+    Korean,
+    #[serde(rename = "nl")]
+    Dutch,
+    #[serde(rename = "pl")]
+    Polish,
+}
+
+impl UiLanguage {
+    /// Every choice, "system" first (the order the pickers list them in).
+    pub const ALL: [UiLanguage; 14] = [
+        UiLanguage::System,
+        UiLanguage::English,
+        UiLanguage::German,
+        UiLanguage::Spanish,
+        UiLanguage::French,
+        UiLanguage::Turkish,
+        UiLanguage::Japanese,
+        UiLanguage::PortugueseBrazil,
+        UiLanguage::Italian,
+        UiLanguage::Russian,
+        UiLanguage::ChineseSimplified,
+        UiLanguage::Korean,
+        UiLanguage::Dutch,
+        UiLanguage::Polish,
+    ];
 }
 
 /// The homepage Axion used before it had its own start page; configs that still carry it (or
@@ -175,7 +233,42 @@ impl Default for General {
             language: UiLanguage::System,
             onboarding_done: false,
             desktop_integration: true,
+            default_browser_hint: true,
+            single_instance: true,
+            list_sheets: true,
+            context_menus: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+
+    #[test]
+    fn every_language_round_trips_through_toml() {
+        for language in UiLanguage::ALL {
+            let general = General { language, ..General::default() };
+            let text = toml::to_string(&general).unwrap();
+            let back: General = toml::from_str(&text).unwrap();
+            assert_eq!(back.language, language, "{text}");
+        }
+        let general: General = toml::from_str("language = \"pt-BR\"").unwrap();
+        assert_eq!(general.language, UiLanguage::PortugueseBrazil);
+        let general: General = toml::from_str("language = \"zh-Hans\"").unwrap();
+        assert_eq!(general.language, UiLanguage::ChineseSimplified);
+        // Existing files keep working.
+        let general: General = toml::from_str("language = \"system\"").unwrap();
+        assert_eq!(general.language, UiLanguage::System);
+    }
+
+    #[test]
+    fn all_lists_each_variant_once() {
+        let mut seen = std::collections::HashSet::new();
+        for language in UiLanguage::ALL {
+            assert!(seen.insert(toml::to_string(&General { language, ..General::default() }).unwrap()));
+        }
+        assert_eq!(UiLanguage::ALL[0], UiLanguage::System);
     }
 }
 
@@ -320,6 +413,23 @@ pub struct Home {
     pub background_blur: f32,
     /// An open start page refreshes its Shields numbers at most this often.
     pub stats_refresh_seconds: f32,
+    /// Draws the start page natively (Liquid Glass tiles and search field that refract the
+    /// wallpaper) instead of the HTML page at `axion://home/`, which stays the fallback (and is
+    /// shown for `axion://home/?html=1`). The tab keeps its web view navigated to the HTML page,
+    /// hidden while the native page is shown.
+    pub native: bool,
+    /// A horizontal touchpad swipe over the top sites flips a page after this much travel (px).
+    pub top_sites_swipe_px: f32,
+    /// After a flip the next swipe is ignored for this long (ms), so one swipe flips one page.
+    pub top_sites_swipe_lock_ms: u32,
+    /// When a tab leaves the native start page for a site, the native page stays up for at most
+    /// this long (ms) until the site's first frame arrives (no flash of the hidden HTML page).
+    pub native_handoff_ms: u32,
+    /// The native start page keeps at most this many MB of decoded frames of an animated
+    /// wallpaper (GIF, WebP, APNG); a longer animation is cut there.
+    pub animated_wallpaper_max_mb: u32,
+    /// Frames of an animated wallpaper are scaled down to this longest side (px).
+    pub animated_wallpaper_max_edge: u32,
     /// Older setting (one background image, shown or not), replaced by `background`; accepted
     /// so old files load, and read once to migrate the old image.
     #[serde(skip_serializing)]
@@ -356,6 +466,12 @@ impl Default for Home {
             background_dim: 0.2,
             background_blur: 0.0,
             stats_refresh_seconds: 2.0,
+            native: true,
+            top_sites_swipe_px: 80.0,
+            top_sites_swipe_lock_ms: 400,
+            native_handoff_ms: 800,
+            animated_wallpaper_max_mb: 128,
+            animated_wallpaper_max_edge: 1280,
             show_background_image: None,
         }
     }
@@ -408,6 +524,9 @@ pub struct Appearance {
     pub accent: Color,
     /// How strongly glass tints towards the accent (0–1).
     pub accent_tint: f32,
+    /// The destructive red: closing tabs (the tab close button on hover, "Close Tab", "Close
+    /// Other Tabs", ...). Used as a glass tint, never as a fill behind a glass button.
+    pub destructive: Color,
     /// UI font family; falls back to the system sans-serif when missing.
     pub font_family: String,
     /// Scales every UI text size.
@@ -448,6 +567,7 @@ impl Default for Appearance {
             theme: ThemeMode::Auto,
             accent: Color::rgb(0x2E6BFF),
             accent_tint: 0.06,
+            destructive: Color::rgb(0xD0362B),
             font_family: "Inter".into(),
             text_scale: 1.0,
             adapt_to_page: false,
@@ -793,6 +913,14 @@ pub struct Motion {
     /// glass button at least this long (seconds) before it springs back, so a tap that is over
     /// within one frame still animates. 0 turns the minimum off.
     pub tap_hold: f32,
+    /// A popover, menu or sheet that opens advances at most this long (milliseconds) per frame
+    /// for its first `open_guard_frames` frames. Building the new surface (text, glass) takes
+    /// time that would otherwise count as animation time: the first step then leaps ahead and
+    /// the glass seems to appear at its final place before it grows out of its button. 0 turns
+    /// the guard off.
+    pub open_step_max_ms: f32,
+    /// How many frames after opening `open_step_max_ms` applies.
+    pub open_guard_frames: u32,
 }
 
 impl Default for Motion {
@@ -812,6 +940,8 @@ impl Default for Motion {
             switch: SpringSpec { response: 0.18, damping: 0.80 },
             speed: 1.0,
             tap_hold: 0.09,
+            open_step_max_ms: 20.0,
+            open_guard_frames: 4,
         }
     }
 }
@@ -898,8 +1028,14 @@ pub struct Layout {
     pub page_margin: f32,
     /// Tabs in their own row under the address bar, or in one compact row with it.
     pub tab_bar: TabBarStyle,
+    /// Separate tab bar: the row of tabs slides away while exactly one tab is open and there are
+    /// no tab groups or pinned tabs (like Safari); it comes back with the second tab.
+    pub hide_single_tab_bar: bool,
     /// A home button (opens `general.homepage`) next to back and forward.
     pub home_button: bool,
+    /// Toolbar buttons hidden from their right-click menu ("Hide Button"): any of `share`,
+    /// `new_tab`, `extensions`, `downloads`. "Show Hidden Buttons" empties the list.
+    pub hidden_toolbar_buttons: Vec<String>,
     /// F11 fullscreen: resting the pointer at the window's top edge brings the toolbar, tab
     /// row and bookmarks bar back over the page (it keeps its size) until the pointer leaves
     /// them. Off: they only come back when fullscreen ends.
@@ -962,7 +1098,9 @@ impl Default for Layout {
             page_corner_radius: 10.0,
             page_margin: 8.0,
             tab_bar: TabBarStyle::Separate,
+            hide_single_tab_bar: true,
             home_button: true,
+            hidden_toolbar_buttons: Vec::new(),
             fullscreen_reveal_chrome: true,
             fullscreen_reveal_delay: 0.35,
             fullscreen_reveal_edge: 3.0,
@@ -1158,6 +1296,9 @@ pub struct Downloads {
     pub remove_list_items: RemoveDownloads,
     /// How many finished downloads the list keeps at most.
     pub list_limit: u32,
+    /// A download's row shows the favicon of the site it came from (the file type's icon when
+    /// the site has none).
+    pub show_site_icons: bool,
 }
 
 impl Default for Downloads {
@@ -1168,6 +1309,7 @@ impl Default for Downloads {
             open_safe_files: false,
             remove_list_items: RemoveDownloads::Manually,
             list_limit: 500,
+            show_site_icons: true,
         }
     }
 }
@@ -1633,6 +1775,16 @@ pub struct Updates {
     pub timeout_seconds: u32,
     /// Larger downloads (the AppImage) are refused (MB).
     pub max_download_mb: u32,
+    /// A downloaded tarball may unpack to at most this much (MB); more is refused as a bomb.
+    pub max_extracted_mb: u32,
+    /// While an update runs, its progress lines and bar refresh this often (ms).
+    pub progress_interval_ms: u32,
+    /// Also announce a found update with a desktop notification (freedesktop Notifications),
+    /// besides the in-app toast and badge. Once per version.
+    pub desktop_notification: bool,
+    /// Send the desktop notification even while Axion's window has the focus (then the toast
+    /// is enough, so off by default).
+    pub desktop_notification_when_focused: bool,
     /// When the last check ran (Unix seconds; 0: never). Written by Axion.
     pub last_checked: u64,
     /// A version the user chose to skip: no automatic notice for it. Written by Axion.
@@ -1657,6 +1809,10 @@ impl Default for Updates {
             remind_later_hours: 24,
             timeout_seconds: 10,
             max_download_mb: 1024,
+            max_extracted_mb: 4096,
+            progress_interval_ms: 250,
+            desktop_notification: true,
+            desktop_notification_when_focused: false,
             last_checked: 0,
             skipped_version: String::new(),
             notified_version: String::new(),
@@ -1763,11 +1919,30 @@ pub struct Clipboard {
     /// Larger images and files on the clipboard are left out of a paste (MB). Only used where
     /// Axion hands the clipboard to pages itself (Wayland).
     pub max_paste_mb: u32,
+    /// Whether text a page copies (`navigator.clipboard.writeText()`, `document.execCommand("copy")`,
+    /// "Copy" buttons) and what the user copies in a page (Ctrl+C, Ctrl+X, context-menu Copy) is
+    /// handed to the desktop clipboard by Axion.
+    pub page_copy: PageCopy,
+    /// Text a page copies is cut off at this size (KB).
+    pub max_page_copy_kb: u32,
+}
+
+/// Who puts what a page copies on the desktop clipboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PageCopy {
+    /// Axion where Chromium cannot reach the clipboard itself (Wayland), else Chromium.
+    #[default]
+    Auto,
+    /// Always Axion (also on X11; for testing).
+    Always,
+    /// Only Chromium.
+    Never,
 }
 
 impl Default for Clipboard {
     fn default() -> Self {
-        Self { max_paste_mb: 64 }
+        Self { max_paste_mb: 64, page_copy: PageCopy::Auto, max_page_copy_kb: 4096 }
     }
 }
 
@@ -1845,6 +2020,11 @@ pub struct Shields {
     /// Remove click-tracking parameters (fbclid, gclid, …) from links.
     pub strip_tracking_parameters: bool,
     pub block_third_party_cookies: bool,
+    /// Sites a page may always send and store cookies to, even as a third party: the sign-in
+    /// providers behind "Sign in with Google/Apple/Microsoft" buttons, whose embedded frames and
+    /// token requests only work with their own session cookies. Each entry covers the host and
+    /// its subdomains. Empty: no exception.
+    pub sign_in_hosts: Vec<String>,
     /// Filter lists in Adblock Plus / uBlock Origin syntax.
     pub lists: Vec<String>,
     /// Refresh the lists after this many hours.
@@ -1860,6 +2040,16 @@ impl Default for Shields {
             block_redirects: true,
             strip_tracking_parameters: true,
             block_third_party_cookies: true,
+            sign_in_hosts: [
+                "accounts.google.com",
+                "appleid.apple.com",
+                "idmsa.apple.com",
+                "login.microsoftonline.com",
+                "login.live.com",
+                "www.facebook.com",
+            ]
+            .map(String::from)
+            .to_vec(),
             lists: vec![
                 "https://easylist.to/easylist/easylist.txt".into(),
                 "https://easylist.to/easylist/easyprivacy.txt".into(),
@@ -1931,6 +2121,14 @@ pub struct Network {
     pub show_chip: bool,
     /// Tell the user in a toast when a connection comes up or goes down.
     pub notify_changes: bool,
+    /// Keep the session route ("Use X for this session", from the address field's chip) across
+    /// restarts. Off: it is a pure session setting and Axion starts with the normal routes.
+    pub session_route_persist: bool,
+    /// The session route: while set, every tab (private ones too) goes through this
+    /// connection, whatever the defaults and site rules say; switching it off restores them.
+    /// Only written to the file while `session_route_persist` is on, and ignored when loaded
+    /// with it off.
+    pub session_route: Option<axion_net::Target>,
 }
 
 impl Default for Network {
@@ -1955,12 +2153,15 @@ impl Default for Network {
             connect_at_start: true,
             show_chip: true,
             notify_changes: true,
+            session_route_persist: false,
+            session_route: None,
         }
     }
 }
 
 impl Network {
-    /// The routing part, for `axion_net::NetManager`.
+    /// The routing the settings describe, without the session route (what Settings and the
+    /// per-site choices edit).
     pub fn routing(&self) -> axion_net::RoutingConfig {
         axion_net::RoutingConfig {
             connections: self.connections.clone(),
@@ -1969,6 +2170,34 @@ impl Network {
             site_rules: self.site_rules.clone(),
             kill_switch: self.kill_switch,
         }
+    }
+
+    /// The session route if it is usable: a connection that still exists.
+    pub fn session_target(&self) -> Option<axion_net::Target> {
+        match &self.session_route {
+            Some(axion_net::Target::Connection(id)) if self.connection(id).is_some() => {
+                self.session_route.clone()
+            }
+            _ => None,
+        }
+    }
+
+    /// The routing in force: the settings' routing, or with a session route every tab (private
+    /// ones too) through that connection and no per-site rules.
+    pub fn effective_routing(&self) -> axion_net::RoutingConfig {
+        match self.session_target() {
+            Some(target) => self.routing().with_session_route(&target),
+            None => self.routing(),
+        }
+    }
+
+    /// Drops what must not outlive the session: the session route, unless it is kept.
+    pub fn without_session_state(&self) -> Self {
+        let mut network = self.clone();
+        if !network.session_route_persist {
+            network.session_route = None;
+        }
+        network
     }
 
     pub fn connection(&self, id: &str) -> Option<&axion_net::Connection> {
@@ -1990,6 +2219,11 @@ impl Network {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Tabs {
+    /// A page that opens a window (`window.open()`, as sign-in with Google, Apple, GitHub does)
+    /// gets a real popup: a new tab that keeps `window.opener`, so the sign-in can report back
+    /// and close itself. Off: every new window is an unrelated tab (such sign-ins never
+    /// finish). Applies after a restart.
+    pub popups_keep_opener: bool,
     /// Freeze tabs (pause their scripts and timers) after this long in the background (0: never).
     pub freeze_after_minutes: f32,
     /// Unload tabs (keep only URL and a snapshot) after this long in the background (0: never).
@@ -2006,6 +2240,9 @@ pub struct Tabs {
     pub open_links_in_background: bool,
     /// A middle click on a tab (in the tab bar, the sidebar or the tab overview) closes it.
     pub middle_click_closes_tab: bool,
+    /// A right click on the address field of the separate tab bar opens the current tab's menu
+    /// (the one a right click on its tab opens).
+    pub address_context_menu: bool,
     /// A tab opened from a tab of a tab group (a link, New Tab to the Right) joins that group.
     pub new_tab_joins_group: bool,
     /// Tab groups show as a coloured chip with their name in the compact tab bar and the
@@ -2065,6 +2302,7 @@ pub struct Tabs {
 impl Default for Tabs {
     fn default() -> Self {
         Self {
+            popups_keep_opener: true,
             freeze_after_minutes: 10.0,
             discard_after_minutes: 120.0,
             limit_memory: true,
@@ -2073,6 +2311,7 @@ impl Default for Tabs {
             restore_session: true,
             open_links_in_background: true,
             middle_click_closes_tab: true,
+            address_context_menu: true,
             new_tab_joins_group: true,
             group_chips_in_bar: true,
             show_audio_indicator: true,
@@ -2470,6 +2709,11 @@ pub struct Translation {
     /// The offer opens by itself once such a page has loaded (otherwise only the Translate
     /// button appears in the address field).
     pub prompt: bool,
+    /// The offer opens by itself at most once per page load (per tab and navigation), and
+    /// closing it is final for that page: a repeated language report (dynamic page changes)
+    /// or other popovers closing never bring it back. Off: it may open again whenever the
+    /// page reports its language anew.
+    pub offer_once_per_page: bool,
     /// ISO 639-1 code pages are translated into; empty: the interface language.
     pub target_language: String,
     pub backend: TranslationBackend,
@@ -2522,6 +2766,7 @@ impl Default for Translation {
         Self {
             offer: true,
             prompt: true,
+            offer_once_per_page: true,
             target_language: String::new(),
             backend: TranslationBackend::Local,
             endpoint_url: String::new(),

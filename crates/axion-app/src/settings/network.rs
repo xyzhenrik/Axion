@@ -253,13 +253,6 @@ impl SettingsSheet {
         self.net.vault_unlocked = vault_unlocked;
     }
 
-    /// An error under the form (the save failed).
-    pub fn set_network_error(&mut self, error: Option<String>) {
-        if let Some(editor) = &mut self.net.editor {
-            editor.error = error;
-        }
-    }
-
     /// The form is done (saved).
     pub fn close_network_form(&mut self) {
         self.net.editor = None;
@@ -283,7 +276,8 @@ impl SettingsSheet {
                         })
                         .unwrap_or_else(|| "WireGuard".to_owned());
                 }
-                let mut note = tr("Config read. Keys will be stored in the password vault.").to_owned();
+                let mut note =
+                    tr("Config read. Keys will be stored encrypted with this device's key.").to_owned();
                 if !ignored.is_empty() {
                     note.push(' ');
                     note.push_str(&tr_fmt!("Ignored: {items}.", items = ignored.join(", ")));
@@ -596,10 +590,15 @@ impl SettingsSheet {
                 confirming,
             );
         }
-        if !self.net.vault_unlocked && conns.iter().any(needs_vault) {
+        // Only connections an older version left in the vault still need it, once.
+        let waiting_for_vault = |c: &Connection| {
+            needs_secrets(c)
+                && matches!(self.net.status_of(&c.id), Some(ConnectionStatus::Blocked(r)) if r.contains("vault"))
+        };
+        if !self.net.vault_unlocked && conns.iter().any(waiting_for_vault) {
             self.note(
                 ui,
-                tr("These connections keep a password or key in your password vault. Unlock Passwords (Settings › Passwords) and they connect."),
+                tr("These connections still keep a password or key in your password vault from an older version. Unlock Passwords (Settings › Passwords) once and they connect; the secrets then move out of the vault."),
             );
         }
         let row_node = self.button_row(ui);
@@ -699,6 +698,7 @@ impl SettingsSheet {
             Setting::NetConnectAtStart,
             Setting::NetShowChip,
             Setting::NetNotify,
+            Setting::NetSessionPersist,
         ] {
             self.control(ui, config, setting);
         }
@@ -775,7 +775,7 @@ impl SettingsSheet {
                 e.fields.password = Some(password);
                 self.note(
                     ui,
-                    tr("The password is stored in your password vault, not in the settings file. Names are always resolved by the proxy, never on this computer."),
+                    tr("The password is stored encrypted with this device's key, not in the settings file. Names are always resolved by the proxy, never on this computer."),
                 );
             }
             FormKind::WireGuard => {
@@ -818,7 +818,7 @@ impl SettingsSheet {
                 }
                 self.note(
                     ui,
-                    tr("The private key and any preshared keys go to your password vault. Scripts in the config (PostUp and the like) are never run."),
+                    tr("The private key and any preshared keys are stored encrypted with this device's key. Scripts in the config (PostUp and the like) are never run."),
                 );
             }
             FormKind::Tor => {
@@ -878,8 +878,8 @@ fn target_at(conns: &[Connection], index: usize) -> Target {
     }
 }
 
-/// Whether the connection keeps something in the vault.
-fn needs_vault(c: &Connection) -> bool {
+/// Whether the connection has a password or key.
+fn needs_secrets(c: &Connection) -> bool {
     match &c.kind {
         ConnectionKind::Proxy(p) => p.has_auth(),
         ConnectionKind::WireGuard(_) => true,

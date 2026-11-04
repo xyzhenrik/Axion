@@ -10,9 +10,13 @@ use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget};
 use glam::Vec2;
 
-const BACKDROP: ActionId = ActionId(9200);
-const PRIMARY: ActionId = ActionId(9201);
-const SECONDARY: ActionId = ActionId(9202);
+/// Action ids must be unique across the whole window: `handle_ui_events` matches the first
+/// arm that claims an id. These used to be 9200-9202, which the tab overview's header owns
+/// (Done / New Tab / Private), so a click on the sheet's primary button opened a new tab
+/// instead of starting the update and the sheet never went away. 9250+ is free (see the test).
+const BACKDROP: ActionId = ActionId(9250);
+const PRIMARY: ActionId = ActionId(9251);
+const SECONDARY: ActionId = ActionId(9252);
 
 const WIDTH: f32 = 440.0;
 const RADIUS: f32 = 24.0;
@@ -358,6 +362,25 @@ impl UpdateAlert {
             let size = frame.size * scale;
             let origin = frame.origin + (frame.size - size) / 2.0;
             ui.set_visual_frame(self.alert, Some(Frame { origin, size: size.max(Vec2::ONE) }));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::overview::OverviewAction;
+
+    #[test]
+    fn the_alerts_actions_are_not_claimed_by_an_earlier_handler() {
+        for id in [BACKDROP, PRIMARY, SECONDARY] {
+            assert!(OverviewAction::from_id(id).is_none(), "{id:?} belongs to the tab overview");
+        }
+        // Other fixed ranges of sheets and bars (see their modules): 9000s lock screen,
+        // 9650s accounts, 9200-9210 overview and toast, 9300s print, 9400s screenshot,
+        // 9500 player, 9700 pip.
+        for id in [BACKDROP, PRIMARY, SECONDARY] {
+            assert!(!(9000..9250).contains(&id.0) && !(9300..).contains(&id.0), "{id:?}");
         }
     }
 }

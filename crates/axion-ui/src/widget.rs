@@ -53,6 +53,13 @@ pub struct Label {
     pub(crate) max_lines: usize,
 }
 
+impl Label {
+    /// The text shown.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
 pub struct TextField {
     pub(crate) editor: Editor,
     pub(crate) buffer: Buffer,

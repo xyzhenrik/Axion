@@ -34,7 +34,7 @@ impl Browser {
         // The media bridge's player under the click (its rectangles are in CSS px).
         let player = tab.media.as_ref().and_then(|media| {
             let css = params.pos * self.scale() / media.dpr.max(f32::EPSILON);
-            page_menu::player_at(&media.players, css, &params.source_url).cloned()
+            page_menu::player_at(media.real_players(), css, &params.source_url).cloned()
         });
         let info = PageMenuInfo {
             can_go_back: tab.can_go_back,
@@ -52,6 +52,13 @@ impl Browser {
             label_chars: self.config.ui.page_context_menu_label_chars as usize,
             share: self.config.ui.page_context_menu_share,
         };
+        // A tile of the start page has its own, shorter menu.
+        if is_home_url(&tab.url)
+            && !params.link_url.trim().is_empty()
+            && self.show_tile_menu(params.link_url.trim(), pos)
+        {
+            return;
+        }
         let items = page_menu::items(&params, &info, &self.keymap);
         if items.is_empty() {
             return;
@@ -189,7 +196,7 @@ impl Browser {
     }
 
     /// Opens an address in a new private tab (in the background unless private tabs are shown).
-    fn open_private_tab(&mut self, url: &str) {
+    pub(super) fn open_private_tab(&mut self, url: &str) {
         if url.is_empty() {
             return;
         }
@@ -233,7 +240,7 @@ impl Browser {
         }
     }
 
-    fn copy_text(&mut self, text: &str, toast: &str) {
+    pub(super) fn copy_text(&mut self, text: &str, toast: &str) {
         let Some(clipboard) = &mut self.clipboard else { return };
         match clipboard.set_text(text.to_owned()) {
             Ok(()) => self.show_toast(Icon::Check, toast),

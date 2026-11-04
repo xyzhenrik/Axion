@@ -66,6 +66,20 @@ passwords, website data and settings. The first account is created for you on th
 
 More in [Accounts and privacy](features/accounts-and-privacy.md).
 
+## Default browser and links from other apps
+
+On Linux, Axion can be your **default browser**: the Welcome tour offers it (**Continue** skips
+it), **Settings › General › Default browser** shows who the default is and has a **Make Default**
+button, and while Axion is not the default a small notice at start offers it too (**Don't ask
+again** turns that off for good, or untick *Suggest making Axion the default browser*). It uses
+`xdg-settings`, falling back to `xdg-mime`, and Axion's own desktop entry
+(`~/.local/share/applications/axion.desktop`).
+
+Axion runs **once per account**: opening a link from another app, or running `axion URL` (also
+`axion file.html`) while that account is open, adds a tab to the open window, brings it to the
+front and the second process ends. Another account (`--account=ID`) or another
+`AXION_PROFILE_DIR` is a separate instance. Switch this off with `general.single_instance`.
+
 ## The basics
 
 ### The address field

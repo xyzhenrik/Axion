@@ -886,14 +886,6 @@ impl Passwords {
         )
     }
 
-    /// Stores the secrets of a connection (needs the unlocked vault).
-    pub fn set_network_secret(&mut self, id: &str, text: &str) -> Result<(), VaultError> {
-        self.vault
-            .as_mut()
-            .ok_or(VaultError::NotSetUp)?
-            .set_secret(&format!("{NETWORK_SECRET_PREFIX}{id}"), text)
-    }
-
     /// Forgets the secrets of a connection (needs the unlocked vault).
     pub fn remove_network_secret(&mut self, id: &str) -> Result<(), VaultError> {
         self.vault

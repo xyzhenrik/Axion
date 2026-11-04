@@ -507,6 +507,27 @@ impl Ui {
         }
     }
 
+    /// Changes a text field's placeholder (the hint shown while it is empty).
+    pub fn set_placeholder(&mut self, node: NodeId, text: &str) {
+        let family = self.theme.font_family().to_owned();
+        let Some(widget) = self.tree.get_node_context_mut(node) else { return };
+        if let WidgetKind::TextField(field) = &mut widget.kind
+            && field.placeholder_text != text
+        {
+            field.placeholder_text = text.to_owned();
+            set_buffer_text(
+                &mut field.placeholder,
+                self.fonts.get_mut(),
+                &family,
+                text,
+                field.style,
+                Align::Start,
+            );
+            let _ = self.tree.mark_dirty(node);
+            self.needs_layout = true;
+        }
+    }
+
     /// Lets a label wrap onto up to `lines` lines (ellipsis after the last) instead of staying
     /// on one line. The label should be allowed to shrink (`min_size.width: 0`).
     pub fn set_label_lines(&mut self, node: NodeId, lines: usize) {
