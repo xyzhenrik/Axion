@@ -8,7 +8,41 @@
   so the click opened a new tab behind the sheet and the sheet never closed. The update only ran
   when the app was restarted by hand.
 
+- **Sign-in with Google and other OAuth/SSO flows** returned nowhere: `window.open` popups became
+  unrelated tabs without `window.opener`. Popups are now real Chromium popups with an opener
+  (`postMessage`, `window.close()` work; `tabs.popups_keep_opener`), and sign-in provider iframes
+  keep their cookies (`shields.sign_in_hosts`).
+- **Copy**: copy buttons on websites (`navigator.clipboard`, `execCommand`, `ClipboardItem`), Ctrl+C,
+  Ctrl+X and the context-menu Copy now reach the desktop clipboard on Wayland (`clipboard.page_copy`).
+- **Second launch showed the Chromium UI** (and crashed the first instance): launching Axion again,
+  or opening a link from another app, now opens it as a tab in the running window of that profile
+  (`general.single_instance`).
+- **Downloads "Open folder"** did nothing: the password eye buttons shared their action ids with the
+  sidebar rows. Three more latent id collisions fixed, and a table test guards all id blocks.
+- **Video previews** (hover tiles, autoplay cards) no longer count as playback for the Playlist add
+  button, the page menu or the pause check.
+- **Translate offer** shows once per page load, a dismissal is final (`translation.offer_once_per_page`).
+- **Onboarding** with an existing account no longer asks for an 8-character password.
+- **Glass of a freshly opened popover, menu or sheet** can no longer leap on its first frame
+  (`motion.open_step_max_ms`, `motion.open_guard_frames`).
+
 ### New
+- **Network**: **Use X for this session** in the address-bar chip routes all tabs through a
+  connection until switched off (`network.session_route_persist`). Connection secrets are encrypted
+  with the device key, so connecting needs no vault password; old vault secrets migrate on unlock.
+- **Tab bar** hides while exactly one plain tab is open (`layout.hide_single_tab_bar`); right-click on
+  the address field opens the tab menu; closing actions are red.
+- **History and Downloads** are glass sheets like Settings and Passwords (`general.list_sheets`);
+  downloads show the site icon.
+- **Context menus everywhere** through one registry (sidebar rows, toolbar buttons, overview cards,
+  start page tiles, settings rows, extensions, network chip, media player); Menu key / Shift+F10.
+- **Default browser**: Settings > General, an onboarding step and an optional startup hint.
+- **Languages**: Spanish, French, Turkish, Japanese, Portuguese (Brazil), Italian, Russian, Simplified
+  Chinese, Korean, Dutch, Polish (machine-translated, review welcome), a picker in Settings, and all
+  58 Mozilla page-translation languages as translation targets.
+- **New app icon** (glass globe with orbit ring).
+- **Native start page** (experimental, `home.native = true`): the start page rendered by Axion with
+  real glass. Not yet on par with the HTML page (no video wallpaper, no IME, no zoom/find).
 - **Updater**: the sheet closes at once when you confirm; progress (step, newest output line, bar,
   **Cancel**), the result ("Updated to X", **Restart Axion** / **Later**) and failures (reason, last
   output, **Try again**) are on Settings > Info & Updates. The version line says "restart to finish
