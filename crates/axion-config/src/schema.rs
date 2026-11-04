@@ -1053,6 +1053,8 @@ pub struct Layout {
     pub window_corner_radius: f32,
     /// Diameter of Axion's own window buttons (close, minimize, zoom), logical px.
     pub traffic_light_size: f32,
+    /// A window button's glyph (x, -, zoom) as a share of its diameter.
+    pub traffic_light_glyph: f32,
     /// Width of the slightly darker ring around each window button, logical px (0: none).
     pub traffic_light_ring: f32,
     /// Gap between two of the window buttons.
@@ -1131,7 +1133,8 @@ impl Default for Layout {
             page_corner_radius: 10.0,
             page_margin: 8.0,
             window_corner_radius: 14.0,
-            traffic_light_size: 18.0,
+            traffic_light_size: 16.0,
+            traffic_light_glyph: 0.72,
             traffic_light_ring: 1.0,
             traffic_light_gap: 8.0,
             traffic_light_margin: 14.0,
@@ -1705,8 +1708,8 @@ pub struct WindowBehavior {
     pub light_zoom: Color,
     /// The buttons of a window that is not in front (until the pointer is over them).
     pub light_unfocused: Color,
-    /// The glyph (x, -, arrows) on the buttons while the pointer is over them, the same on all
-    /// three; translucent, so it reads as a darker shade of each button's colour.
+    /// The glyph (x, -, arrows) on the buttons while the pointer is over them: this shade
+    /// multiplied with each button's colour (a dark version of it); its alpha is kept.
     pub light_glyph: Color,
 }
 
@@ -1747,7 +1750,7 @@ impl Default for WindowBehavior {
             light_minimize: Color::rgb(0xFEBC2E),
             light_zoom: Color::rgb(0x28C840),
             light_unfocused: Color::rgb(0x9A9A9F),
-            light_glyph: Color::rgb(0x2B1200).with_alpha(0.72),
+            light_glyph: Color::rgb(0x707070),
         }
     }
 }

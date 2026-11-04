@@ -81,7 +81,7 @@ pub struct LightLook {
     pub ring: Color,
     /// The glyph inside (x, -, arrows), shown while the pointer is over the lights.
     pub glyph: Icon,
-    /// Its colour: the same on all three lights.
+    /// Its colour: the disc's colour times `window.light_glyph`.
     pub glyph_color: Color,
     pub glyph_shown: bool,
 }
@@ -153,8 +153,8 @@ impl LightsState {
             base
         };
         let glyph = match light {
-            Light::Close => Icon::Close,
-            Light::Minimize => Icon::Minus,
+            Light::Close => Icon::WindowClose,
+            Light::Minimize => Icon::WindowMinimize,
             Light::Zoom if self.maximized => Icon::RestoreArrows,
             Light::Zoom => Icon::ZoomArrows,
         };
@@ -162,10 +162,18 @@ impl LightsState {
             color,
             ring: darken(color, RING_DARKEN),
             glyph,
-            glyph_color: colors.glyph,
+            glyph_color: shade(color, colors.glyph),
             glyph_shown: self.glyphs_shown(),
         }
     }
+}
+
+/// A disc's glyph colour: the disc's colour multiplied by `shade` (so each glyph is a dark
+/// version of its own button), with the shade's alpha.
+fn shade(disc: Color, shade: Color) -> Color {
+    let mul = |a: u8, b: u8| (u32::from(a) * u32::from(b) + 127) / 255;
+    Color::rgb(mul(disc.r, shade.r) << 16 | mul(disc.g, shade.g) << 8 | mul(disc.b, shade.b))
+        .with_alpha(f32::from(shade.a) / 255.0)
 }
 
 fn darken(color: Color, by: f32) -> Color {
@@ -329,8 +337,8 @@ mod tests {
 
     #[test]
     fn the_lights_take_room_from_the_toolbar() {
-        assert_eq!(lights_width(18.0, 8.0), 70.0);
-        assert_eq!(lights_inset(18.0, 8.0, 14.0), 84.0);
+        assert_eq!(lights_width(16.0, 8.0), 64.0);
+        assert_eq!(lights_inset(16.0, 8.0, 14.0), 78.0);
         let c = Config::default();
         assert_eq!(
             lights_inset(
@@ -338,7 +346,7 @@ mod tests {
                 c.layout.traffic_light_gap,
                 c.layout.traffic_light_margin
             ),
-            84.0
+            78.0
         );
     }
 
@@ -401,13 +409,13 @@ mod tests {
     }
 
     #[test]
-    fn glyphs_share_one_colour_and_the_ring_is_darker() {
+    fn glyphs_are_a_dark_version_of_their_disc_and_the_ring_is_darker() {
         let c = LightColors::from_config(&Config::default());
         let mut s = LightsState::default();
         s.set_hovered(Some(Light::Close));
         for light in Light::ALL {
             let look = s.look(light, &c);
-            assert_eq!(look.glyph_color, c.glyph);
+            assert!(look.glyph_color.r < look.color.r && look.glyph_color.g < look.color.g);
             assert!(
                 look.ring.r <= look.color.r && look.ring.g <= look.color.g && look.ring.b <= look.color.b
             );
@@ -422,8 +430,8 @@ mod tests {
         assert_eq!(s.look(Light::Zoom, &c).glyph, Icon::ZoomArrows);
         assert!(s.set_maximized(true));
         assert_eq!(s.look(Light::Zoom, &c).glyph, Icon::RestoreArrows);
-        assert_eq!(s.look(Light::Close, &c).glyph, Icon::Close);
-        assert_eq!(s.look(Light::Minimize, &c).glyph, Icon::Minus);
+        assert_eq!(s.look(Light::Close, &c).glyph, Icon::WindowClose);
+        assert_eq!(s.look(Light::Minimize, &c).glyph, Icon::WindowMinimize);
         assert!(!s.set_maximized(true));
     }
 }

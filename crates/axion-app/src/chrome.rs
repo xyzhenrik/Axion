@@ -72,11 +72,6 @@ const BOOKMARK_GAP: f32 = 2.0;
 const BOOKMARKS_BAR_PADDING: f32 = 5.0;
 const BOOKMARK_FAVICON: f32 = 16.0;
 
-/// A window button's glyph (x, -, arrows) as a share of the button's diameter. All glyphs are
-/// drawn in a 24-unit box with their ink centred on (12, 12) (see `axion-compositor` icons), and
-/// the icon widget is centred in the disc on both axes, so they need no per-icon offset.
-const LIGHT_GLYPH: f32 = 0.62;
-
 /// The recording dot of a tab row (logical px).
 const CAPTURE_DOT: f32 = 8.0;
 /// The speaker of a playing or muted tab, and a tab group's markers (logical px).
@@ -1079,8 +1074,7 @@ fn build_lights(
         );
         let glyph = ui.add(
             inner,
-            Widget::icon(appearance.glyph, size * LIGHT_GLYPH)
-                .with_icon_weight(IconWeight::Heavy)
+            Widget::icon(appearance.glyph, size * layout.traffic_light_glyph)
                 .with_paint(Paint::Fixed(appearance.glyph_color)),
             Style::default(),
         );
@@ -2944,7 +2938,7 @@ impl Chrome {
                         ui.set_style(node, style);
                     }
                 }
-                ui.set_icon_size(glyph, layout.traffic_light_size * LIGHT_GLYPH);
+                ui.set_icon_size(glyph, layout.traffic_light_size * layout.traffic_light_glyph);
             }
         }
         self.bar_lights_inset = if shown[0] {
@@ -2997,6 +2991,11 @@ impl Chrome {
             at = ui.parent(n);
         }
         false
+    }
+
+    /// The disc of `light` in the first set that is shown (capture aids).
+    pub fn light_node(&self, light: Light) -> Option<NodeId> {
+        self.lights.first().map(|set| set.discs[light.index()])
     }
 
     /// The light a node belongs to (the disc or its glyph), if any.
