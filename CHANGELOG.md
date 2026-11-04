@@ -25,6 +25,18 @@
 - **Onboarding** with an existing account no longer asks for an 8-character password.
 - **Glass of a freshly opened popover, menu or sheet** can no longer leap on its first frame
   (`motion.open_step_max_ms`, `motion.open_guard_frames`).
+- **History and Downloads** lag: the list builds only the visible rows, older days are folded, the store
+  runs on a worker thread, and rows can be selected (checkboxes, Shift/Ctrl+click, whole days) and deleted.
+- **Performance**: no full layout shaping for hidden labels, async address-bar suggestions, cached
+  start page top sites, dirty-rect page uploads, slower idle redraw, bounded site-icon memory, scissored
+  glass blur (29 ms to 9.7 ms per frame on the Radeon iGPU in liquid mode). See docs/performance-notes.md.
+- **Glass nested in an opening popover** (e.g. the Shields settings button) now follows the popover's animation.
+- **Start page**: tiles keep their real icons (and fetch missing ones), stats sit in a glass card, the engine
+  menu shows each engine's icon without the connecting neck, and sheets no longer reveal an old tab behind them.
+- **Window frame**: Axion draws its own traffic-light buttons instead of the KDE title bar
+  (`window.decorations = "custom"`, `"system"` brings the desktop frame back).
+- **Language change** asks for a restart (inline row and toast); live switching is not implemented.
+- **Reduce Motion** keeps the glass stretch while dragging; only springs and drift are reduced.
 
 ### New
 - **Network**: **Use X for this session** in the address-bar chip routes all tabs through a

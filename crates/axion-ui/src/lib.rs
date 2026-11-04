@@ -1741,7 +1741,7 @@ impl Ui {
     /// While glass is held, it follows the pointer a little (rubber band) when dragged away.
     fn pull_glass(&mut self, p: Vec2) {
         let Some((glass, anchor)) = self.press_anchor else { return };
-        // Reduce Motion: it swells in place.
+        // Reduce Motion: it swells in place and does not drift, but it still stretches.
         let still = self.theme.config().glass.reduce_motion;
         if let Some(press) = self.press_scale.get_mut(&glass) {
             let d = p - anchor;
@@ -1752,7 +1752,7 @@ impl Ui {
             if reach.length() > 0.0 {
                 press.dir = reach / reach.length();
             }
-            press.distance.target = if still { 0.0 } else { reach.length() };
+            press.distance.target = reach.length();
             press.offset.target = if still {
                 Vec2::ZERO
             } else if press.pull.x == press.pull.y {
@@ -4241,9 +4241,9 @@ mod tests {
     }
 
     #[test]
-    fn no_drag_stretch_under_reduce_motion_or_flat() {
+    fn no_drag_stretch_in_flat_mode() {
         let mut config = axion_config::Config::default();
-        config.glass.reduce_motion = true;
+        config.glass.style = axion_config::GlassStyle::Flat;
         let mut ui = Ui::new(Theme::new(&config, false), 1.0);
         ui.set_viewport(Vec2::new(800.0, 600.0), 1.0);
         let (_, button, _) = row(&mut ui);

@@ -731,9 +731,10 @@ impl Glass {
         if self.reduce_motion || self.is_flat() { 0.0 } else { self.squash.max(0.0) }
     }
 
-    /// Largest stretch of pulled glass and of its content (0 under Reduce Motion and in flat mode).
+    /// Largest stretch of pulled glass and of its content (0 in flat mode; Reduce Motion keeps it:
+    /// the glass still stretches under the pointer, only springs and drift are reduced).
     pub fn drag_stretch_max(&self) -> f32 {
-        if self.reduce_motion || self.is_flat() { 0.0 } else { self.drag_stretch_max.max(0.0) }
+        if self.is_flat() { 0.0 } else { self.drag_stretch_max.max(0.0) }
     }
 
     /// Smallest range of the drag curve in logical px (at least 1).
@@ -3206,13 +3207,13 @@ mod glass_style_tests {
     }
 
     #[test]
-    fn drag_stretch_is_off_in_flat_mode_and_under_reduce_motion() {
+    fn drag_stretch_is_off_in_flat_mode_but_kept_under_reduce_motion() {
         let mut glass = Glass::default();
         assert_eq!(glass.drag_stretch_max(), glass.drag_stretch_max);
         assert_eq!(glass.drag_stretch_max, 0.05, "subtle, like iOS");
         assert_eq!(glass.drag_range_min(), 120.0);
         glass.reduce_motion = true;
-        assert_eq!(glass.drag_stretch_max(), 0.0);
+        assert_eq!(glass.drag_stretch_max(), glass.drag_stretch_max, "dragging still stretches");
         glass.reduce_motion = false;
         glass.style = GlassStyle::Flat;
         assert_eq!(glass.drag_stretch_max(), 0.0);
