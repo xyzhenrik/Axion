@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+(nothing yet)
+
+## 0.4.0
+
 ### Fixed
 - **Updater (source checkout)**: clicking "Update from Git" in the confirmation sheet did nothing
   visible: the sheet's buttons shared their action ids (9200-9202) with the tab overview's header,
@@ -37,6 +41,13 @@
   (`window.decorations = "custom"`, `"system"` brings the desktop frame back).
 - **Language change** asks for a restart (inline row and toast); live switching is not implemented.
 - **Reduce Motion** keeps the glass stretch while dragging; only springs and drift are reduced.
+- **Address bar suggestions** could not be clicked with the mouse (the press blurred the field and closed the
+  card); popovers no longer count as window-drag area.
+- **Screenshot** review card: the Close button did nothing.
+- **Closing a tab** with the pointer over the tab row no longer keeps the row wide
+  (`tabs.keep_width_while_closing`, off by default).
+- **Address field** is centred on the toolbar's centre line (`layout.address_max_width`).
+- **Glass stays glass** under popups (`glass.sheet_under_popup`, default `keep`).
 
 ### New
 - **Network**: **Use X for this session** in the address-bar chip routes all tabs through a
