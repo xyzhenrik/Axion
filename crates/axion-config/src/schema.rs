@@ -2032,7 +2032,8 @@ pub struct Tabs {
     pub close_animation: bool,
     /// Closing tabs with the pointer in the tab bar: the remaining tabs keep their widths until
     /// the pointer leaves the bar, so the next close button stays under the pointer.
-    pub keep_widths_while_closing: bool,
+    #[serde(alias = "keep_widths_while_closing")]
+    pub keep_width_while_closing: bool,
     /// Dragging a tab out of the window into another app drops its link there (a text field gets
     /// the address).
     pub drag_out_links: bool,
@@ -2083,7 +2084,7 @@ impl Default for Tabs {
             check_interval_seconds: 5.0,
             drag_threshold: 6.0,
             close_animation: true,
-            keep_widths_while_closing: true,
+            keep_width_while_closing: false,
             drag_out_links: true,
             drag_out_distance: 12.0,
             drag_out_image: true,
@@ -2619,6 +2620,12 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn old_keep_widths_key_still_loads() {
+        let c: super::Config = toml::from_str("[tabs]\nkeep_widths_while_closing = true\n").unwrap();
+        assert!(c.tabs.keep_width_while_closing);
+    }
+
     #[test]
     fn the_chrome_is_neutral_by_default() {
         let c = Config::default();

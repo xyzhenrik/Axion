@@ -354,6 +354,12 @@ pub fn held_width(wanted: f32, held: Option<f32>) -> f32 {
     held.map_or(wanted, |h| wanted.min(h))
 }
 
+/// Whether a width hold ends at once: the setting is off, a drag started, or one tab is left (the
+/// single-tab bar hides, nothing is held for the next close).
+pub fn release_hold_now(keep: bool, dragging: bool, tabs: usize) -> bool {
+    !keep || dragging || tabs <= 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,5 +445,21 @@ mod tests {
         let spring = Spring::new(0.25, 0.9);
         let mut slide: Slide<u32> = Slide::default();
         assert_eq!(slide.follow(7, Vec2::new(50.0, 0.0), spring, false, 1.0 / 120.0), None);
+    }
+
+    #[test]
+    fn hold_ends_when_off_dragging_or_one_tab_left() {
+        assert!(release_hold_now(false, false, 5));
+        assert!(release_hold_now(true, true, 5));
+        assert!(release_hold_now(true, false, 1));
+        assert!(release_hold_now(true, false, 0));
+        assert!(!release_hold_now(true, false, 2));
+    }
+
+    #[test]
+    fn no_hold_means_the_row_takes_its_new_widths() {
+        // Without a hold the width is exactly what the new tab count gets, pointer or not.
+        assert_eq!(held_width(300.0, None), 300.0);
+        assert!(!Config::default().tabs.keep_width_while_closing);
     }
 }

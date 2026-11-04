@@ -673,7 +673,7 @@ struct TabWidths {
     /// The strip's applied left edge and width.
     strip_applied: (f32, f32),
     /// A tab was closed with the pointer in the bar: the width the tabs had then, which they
-    /// keep until the pointer leaves (`tabs.keep_widths_while_closing`), and the separate
+    /// keep until the pointer leaves (`tabs.keep_width_while_closing`), and the separate
     /// bar's width then.
     hold: Option<f32>,
     hold_strip: f32,

@@ -1218,7 +1218,7 @@ impl Browser {
             // the page switch below do not wait for it.
             let label = if tab.url.is_empty() { tab.label() } else { crate::url::display_host(&tab.url) };
             self.tab_close.begin(tab.view, &tab.url, label);
-            if self.config.tabs.keep_widths_while_closing && !tab.pinned {
+            if self.config.tabs.keep_width_while_closing && !tab.pinned {
                 self.chrome.hold_tab_widths(&self.ui, self.pointer);
             }
         }
@@ -3642,7 +3642,11 @@ impl Browser {
         // Tabs held at their widths after a close are free once the pointer leaves the bar (they
         // slide to their widths), and at once when a drag starts.
         if self.chrome.tab_widths_held() {
-            let force = self.tab_drag.is_dragging() || !self.config.tabs.keep_widths_while_closing;
+            let force = crate::tabclose::release_hold_now(
+                self.config.tabs.keep_width_while_closing,
+                self.tab_drag.is_dragging(),
+                self.tabs.len(),
+            );
             self.release_held_tabs(force);
         }
     }
