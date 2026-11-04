@@ -13,6 +13,7 @@
 //! that monitor (X11/XWayland only).
 
 mod accounts;
+mod action_ids;
 mod app_icon;
 mod avatars;
 mod browser;
@@ -20,6 +21,7 @@ mod chrome;
 mod circuit_popover;
 mod click_probe;
 mod context_menu;
+mod context_registry;
 mod default_browser;
 mod desktop;
 mod desktop_integration;
@@ -47,6 +49,7 @@ mod input;
 mod instance;
 mod lifecycle;
 mod link_preview;
+mod list_sheet;
 mod locale;
 mod lockscreen;
 mod media_view;

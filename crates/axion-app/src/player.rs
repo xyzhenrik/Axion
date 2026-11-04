@@ -962,7 +962,7 @@ pub fn volume_actions(player: &Player, value: f32) -> Vec<Action> {
 }
 
 /// 1 → "1×", 1.25 → "1.25×".
-fn format_rate(rate: f64) -> String {
+pub(crate) fn format_rate(rate: f64) -> String {
     let text = format!("{rate:.2}");
     format!("{}×", text.trim_end_matches('0').trim_end_matches('.'))
 }

@@ -178,6 +178,17 @@ impl Category {
     }
 }
 
+/// A handle on one toggle or slider setting, for the context menu's "Reset to Default".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingRef(Setting);
+
+#[cfg(test)]
+impl SettingRef {
+    pub(crate) fn for_test() -> Self {
+        SettingRef(Setting::HomeClock)
+    }
+}
+
 /// A setting edited with a toggle or slider; sliders map 0–1 onto the setting's range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Setting {
@@ -272,6 +283,7 @@ enum Setting {
     NetConnectAtStart,
     NetShowChip,
     NetNotify,
+    NetSessionPersist,
 }
 
 impl Setting {
@@ -360,6 +372,7 @@ impl Setting {
             Setting::NetConnectAtStart => tr_mark("Connect when Axion starts"),
             Setting::NetShowChip => tr_mark("Show the connection in the address field"),
             Setting::NetNotify => tr_mark("Tell me when a connection comes up or goes down"),
+            Setting::NetSessionPersist => tr_mark("Keep the session route after a restart"),
             Setting::ExtensionsEnabled => tr_mark("Chrome extensions (after restart)"),
             Setting::ExtensionsWebStore => tr_mark("Install from the Chrome Web Store (after restart)"),
             Setting::ExtensionsAutoUpdate => tr_mark("Update Web Store extensions automatically"),
@@ -443,6 +456,7 @@ impl Setting {
                 | Setting::NetConnectAtStart
                 | Setting::NetShowChip
                 | Setting::NetNotify
+                | Setting::NetSessionPersist
                 | Setting::ExtensionsEnabled
                 | Setting::ExtensionsWebStore
                 | Setting::ExtensionsAutoUpdate
@@ -601,6 +615,7 @@ impl Setting {
             Setting::NetConnectAtStart => return c.network.connect_at_start as u8 as f32,
             Setting::NetShowChip => return c.network.show_chip as u8 as f32,
             Setting::NetNotify => return c.network.notify_changes as u8 as f32,
+            Setting::NetSessionPersist => return c.network.session_route_persist as u8 as f32,
             Setting::ExtensionsEnabled => return c.extensions.enabled as u8 as f32,
             Setting::ExtensionsWebStore => return c.extensions.web_store as u8 as f32,
             Setting::ExtensionsAutoUpdate => return c.extensions.auto_update as u8 as f32,
@@ -710,6 +725,7 @@ impl Setting {
             Setting::NetConnectAtStart => c.network.connect_at_start = on,
             Setting::NetShowChip => c.network.show_chip = on,
             Setting::NetNotify => c.network.notify_changes = on,
+            Setting::NetSessionPersist => c.network.session_route_persist = on,
             Setting::ExtensionsEnabled => c.extensions.enabled = on,
             Setting::ExtensionsWebStore => c.extensions.web_store = on,
             Setting::ExtensionsAutoUpdate => c.extensions.auto_update = on,
@@ -795,7 +811,7 @@ pub enum SettingsAction {
     ReaderFont(ReaderFont),
     ReaderTheme(ReaderTheme),
     TranslationBackend(TranslationBackend),
-    /// Index into [`TRANSLATE_TARGETS`].
+    /// Index into the translate-into choices (see `translate_target`).
     TranslateTarget(usize),
     /// Deletes the downloaded translation models.
     RemoveTranslationModels,
@@ -902,14 +918,31 @@ const TRANSLATION_BACKENDS: [(&str, TranslationBackend); 2] = [
     (tr_mark("On this computer"), TranslationBackend::Local),
     (tr_mark("Your server"), TranslationBackend::Endpoint),
 ];
-/// Languages pages are translated into: the code (empty: the interface language) and its name.
-const TRANSLATE_TARGETS: [(&str, &str); 5] = [
-    ("", tr_mark("Interface")),
-    ("en", tr_mark("English")),
-    ("de", tr_mark("German")),
-    ("fr", tr_mark("French")),
-    ("es", tr_mark("Spanish")),
-];
+/// Translate-into choices: entry 0 is "Interface" (code empty: the interface language), then
+/// every language the local models cover, in `axion_translate::lang::LANGUAGES` order.
+const TRANSLATE_TARGET_BASE: u32 = 1040;
+
+/// The code and English name of translate-into choice `i` (see [`TRANSLATE_TARGET_BASE`]).
+fn translate_target(i: usize) -> Option<(&'static str, &'static str)> {
+    if i == 0 {
+        return Some(("", tr_mark("Interface")));
+    }
+    axion_translate::lang::targets().nth(i - 1)
+}
+
+/// How many translate-into choices there are.
+fn translate_target_count() -> usize {
+    1 + axion_translate::lang::LANGUAGES.len()
+}
+
+/// The choice that stands for the configured target language (an unknown code is none).
+fn translate_target_index(code: &str) -> Option<usize> {
+    let wanted = axion_translate::lang::normalize(code).unwrap_or_default();
+    (0..translate_target_count()).find(|&i| translate_target(i).is_some_and(|(c, _)| c == wanted))
+}
+
+/// Interface-language choices: "System default", then every catalog language in its own name.
+const LANGUAGE_BASE: u32 = 1131;
 
 /// Remove buttons of the sites with data, and how many sites are listed.
 const SITE_DATA_BASE: u32 = 100;
@@ -964,9 +997,10 @@ fn set_icon_weight(config: &mut Config, preset: usize) {
     config.appearance.icon_stroke_dark = dark;
 }
 
-/// The language choices, named in their own language (never translated).
-const LANGUAGES: [(&str, UiLanguage); 3] =
-    [("System", UiLanguage::System), ("English", UiLanguage::English), ("Deutsch", UiLanguage::German)];
+/// The index of an interface-language choice in [`UiLanguage::ALL`].
+fn language_index(language: UiLanguage) -> usize {
+    UiLanguage::ALL.iter().position(|&l| l == language).unwrap_or(0)
+}
 
 /// The page rendering choices (labels are translated where drawn).
 const PAGE_FRAMES: [(&str, PageFrames); 3] = [
@@ -1018,9 +1052,7 @@ impl SettingsAction {
                     SettingsAction::Theme(ThemeMode::Auto) => 20,
                     SettingsAction::Theme(ThemeMode::Light) => 21,
                     SettingsAction::Theme(ThemeMode::Dark) => 22,
-                    SettingsAction::Language(language) => {
-                        23 + LANGUAGES.iter().position(|&(_, l)| l == language).unwrap_or(0) as u32
-                    }
+                    SettingsAction::Language(language) => LANGUAGE_BASE + language_index(language) as u32,
                     SettingsAction::GlassStyle(GlassStyle::Liquid) => 26,
                     SettingsAction::GlassStyle(GlassStyle::Flat) => 27,
                     SettingsAction::ShowWelcomeTour => 28,
@@ -1065,7 +1097,7 @@ impl SettingsAction {
                     }
                     SettingsAction::TranslationBackend(TranslationBackend::Local) => READING_BASE + 7,
                     SettingsAction::TranslationBackend(TranslationBackend::Endpoint) => READING_BASE + 8,
-                    SettingsAction::TranslateTarget(i) => READING_BASE + 10 + i as u32,
+                    SettingsAction::TranslateTarget(i) => TRANSLATE_TARGET_BASE + i as u32,
                     SettingsAction::RemoveTranslationModels => READING_BASE + 30,
                     SettingsAction::AddTrustedSite => 80,
                     SettingsAction::OpenPasswords => 85,
@@ -1127,7 +1159,9 @@ impl SettingsAction {
             20 => SettingsAction::Theme(ThemeMode::Auto),
             21 => SettingsAction::Theme(ThemeMode::Light),
             22 => SettingsAction::Theme(ThemeMode::Dark),
-            23..=25 => SettingsAction::Language(LANGUAGES[(n - 23) as usize].1),
+            n if (LANGUAGE_BASE..LANGUAGE_BASE + UiLanguage::ALL.len() as u32).contains(&n) => {
+                SettingsAction::Language(UiLanguage::ALL[(n - LANGUAGE_BASE) as usize])
+            }
             26 => SettingsAction::GlassStyle(GlassStyle::Liquid),
             27 => SettingsAction::GlassStyle(GlassStyle::Flat),
             28 => SettingsAction::ShowWelcomeTour,
@@ -1162,8 +1196,10 @@ impl SettingsAction {
             }
             n if n == READING_BASE + 7 => SettingsAction::TranslationBackend(TranslationBackend::Local),
             n if n == READING_BASE + 8 => SettingsAction::TranslationBackend(TranslationBackend::Endpoint),
-            n if (READING_BASE + 10..READING_BASE + 10 + TRANSLATE_TARGETS.len() as u32).contains(&n) => {
-                SettingsAction::TranslateTarget((n - READING_BASE - 10) as usize)
+            n if (TRANSLATE_TARGET_BASE..TRANSLATE_TARGET_BASE + translate_target_count() as u32)
+                .contains(&n) =>
+            {
+                SettingsAction::TranslateTarget((n - TRANSLATE_TARGET_BASE) as usize)
             }
             n if n == READING_BASE + 30 => SettingsAction::RemoveTranslationModels,
             85 => SettingsAction::OpenPasswords,
@@ -1722,6 +1758,31 @@ impl SettingsSheet {
         self.open
     }
 
+    /// The setting whose row lies under `p` (logical px): a toggle or slider row. For the
+    /// context menu's "Reset to Default".
+    pub fn setting_at(&self, ui: &Ui, p: Vec2) -> Option<SettingRef> {
+        if !self.open || !ui.is_visible(self.sheet) {
+            return None;
+        }
+        self.controls.iter().find_map(|&(node, setting)| {
+            let row = ui.parent(node)?;
+            (ui.is_visible(node) && ui.frame(row).contains(p)).then_some(SettingRef(setting))
+        })
+    }
+
+    /// Whether the setting has its default value in `config`.
+    pub fn is_default(&self, setting: SettingRef, config: &Config) -> bool {
+        (setting.0.get(config) - setting.0.get(&Config::default())).abs() < 1e-4
+    }
+
+    /// Puts the setting back to its default value; the page is rebuilt to show it.
+    pub fn reset(&mut self, setting: SettingRef, config: &mut Config) -> Outcome {
+        let default = setting.0.get(&Config::default());
+        setting.0.set(config, default);
+        self.rebuild = true;
+        Outcome::Changed
+    }
+
     /// Whether `p` (logical px) is on the sheet itself (backdrop clicks outside close it).
     pub fn contains(&self, ui: &Ui, p: Vec2) -> bool {
         ui.frame(self.sheet).contains(p)
@@ -1985,15 +2046,25 @@ impl SettingsSheet {
                     .map(|(i, (name, _))| (*name, SettingsAction::SearchEngine(i).id()))
                     .collect();
                 segmented(ui, row_node, &options, current);
-                // The language names stay as they are (each in its own language).
-                let row_node = self.row(ui, tr("Language"));
-                let languages: Vec<(&str, ActionId)> = LANGUAGES
+                // Every language is written in its own name, whatever the interface says now.
+                let languages: Vec<(&str, ActionId)> = UiLanguage::ALL
                     .iter()
-                    .map(|&(name, language)| (name, SettingsAction::Language(language).id()))
+                    .map(|&language| {
+                        let name =
+                            crate::locale::native_name(language).unwrap_or_else(|| tr("System default"));
+                        (name, SettingsAction::Language(language).id())
+                    })
                     .collect();
-                let current = LANGUAGES.iter().position(|&(_, l)| l == config.general.language);
-                segmented(ui, row_node, &languages, current);
-                self.note(ui, tr("Applies after restarting Axion."));
+                self.choice_grid(
+                    ui,
+                    tr("Language"),
+                    &languages,
+                    Some(language_index(config.general.language)),
+                );
+                self.note(
+                    ui,
+                    tr("Languages Axion has no translation for yet show English. Applies after restarting Axion."),
+                );
                 if cfg!(target_os = "linux") {
                     self.control(ui, config, Setting::AppMenuEntry);
                     self.note(
@@ -3407,15 +3478,19 @@ impl SettingsSheet {
         for setting in [Setting::TranslateOffer, Setting::TranslatePrompt, Setting::TranslateChanges] {
             self.control(ui, config, setting);
         }
-        let row_node = self.row(ui, tr("Translate pages into"));
-        let options: Vec<(&str, ActionId)> = TRANSLATE_TARGETS
-            .iter()
-            .enumerate()
-            .map(|(i, (_, name))| (tr(name), SettingsAction::TranslateTarget(i).id()))
+        // "Interface" first, then every language with local models, by name in the current language.
+        let mut options: Vec<(&str, ActionId)> = (0..translate_target_count())
+            .filter_map(|i| {
+                let (_, name) = translate_target(i)?;
+                Some((tr(name), SettingsAction::TranslateTarget(i).id()))
+            })
             .collect();
-        let current =
-            TRANSLATE_TARGETS.iter().position(|(code, _)| *code == config.translation.target_language);
-        segmented(ui, row_node, &options, current);
+        options[1..].sort_by_cached_key(|(name, _)| name.to_lowercase());
+        let current = translate_target_index(&config.translation.target_language).and_then(|i| {
+            let id = SettingsAction::TranslateTarget(i).id();
+            options.iter().position(|(_, a)| *a == id)
+        });
+        self.choice_grid(ui, tr("Translate pages into"), &options, current);
         let row_node = self.row(ui, tr("Translate"));
         let options: Vec<(&str, ActionId)> = TRANSLATION_BACKENDS
             .iter()
@@ -3728,6 +3803,69 @@ impl SettingsSheet {
         ui.set_label_lines(label, NOTE_LINES);
         if let Some(w) = ui.widget_mut(label) {
             w.set_paint(Paint::Secondary);
+        }
+    }
+
+    /// A row with its label above a wrapping set of choice pills (for more choices than a
+    /// segmented control holds). The current one is an accent-tinted glass pill, the others plain
+    /// glass: no fills, so it works the same in flat mode (where glass is a solid surface).
+    fn choice_grid(
+        &mut self,
+        ui: &mut Ui,
+        label: &str,
+        options: &[(&str, ActionId)],
+        current: Option<usize>,
+    ) {
+        let parent = self.group_for_row(ui);
+        let column = ui.add(
+            parent,
+            Widget::container(),
+            Style {
+                flex_direction: FlexDirection::Column,
+                flex_shrink: 0.0,
+                padding: padding(0.0, 10.0),
+                gap: Size { width: length(0.0), height: length(10.0) },
+                ..Default::default()
+            },
+        );
+        let title = ui.add_label(column, label, TextStyle::Body, grow_label());
+        ui.set_label_lines(title, LABEL_LINES);
+        let grid = ui.add(
+            column,
+            Widget::container(),
+            Style {
+                flex_wrap: FlexWrap::Wrap,
+                flex_shrink: 0.0,
+                gap: Size { width: length(CHOICE_GAP), height: length(CHOICE_GAP) },
+                ..row(CHOICE_GAP)
+            },
+        );
+        for (i, (name, action)) in options.iter().enumerate() {
+            let selected = Some(i) == current;
+            let background = if selected {
+                Background::TintedGlass(GlassLevel::Thin, Paint::Accent)
+            } else {
+                Background::Glass(GlassLevel::Thin)
+            };
+            let pill = ui.add(
+                grid,
+                Widget::container().with_action(*action).with_radius(CAPSULE).with_background(background),
+                Style {
+                    size: Size { width: auto(), height: length(CHOICE_HEIGHT) },
+                    padding: padding(16.0, 0.0),
+                    flex_shrink: 0.0,
+                    ..row(0.0)
+                },
+            );
+            let text = ui.add_label(
+                pill,
+                name,
+                if selected { TextStyle::BodyEmphasis } else { TextStyle::Callout },
+                Style::default(),
+            );
+            if selected && let Some(w) = ui.widget_mut(text) {
+                w.set_paint(Paint::OnAccent);
+            }
         }
     }
 
@@ -4075,8 +4213,8 @@ impl SettingsSheet {
                 Outcome::Changed
             }
             SettingsAction::TranslateTarget(i) => {
-                if let Some((code, _)) = TRANSLATE_TARGETS.get(i) {
-                    config.translation.target_language = (*code).to_owned();
+                if let Some((code, _)) = translate_target(i) {
+                    config.translation.target_language = code.to_owned();
                 }
                 Outcome::Changed
             }
@@ -4515,6 +4653,11 @@ pub fn segmented(ui: &mut Ui, parent: NodeId, options: &[(&str, ActionId)], curr
     }
 }
 
+/// Choice pills (language pickers): height, and the gap between them (wide enough that
+/// neighbouring glass pills don't merge).
+const CHOICE_HEIGHT: f32 = 34.0;
+const CHOICE_GAP: f32 = 12.0;
+
 /// Height of a settings segmented control and the gap between its edge and the pill.
 const SEGMENTED_HEIGHT: f32 = 36.0;
 const SEGMENTED_INSET: f32 = 3.0;
@@ -4551,6 +4694,7 @@ fn shortcut_actions() -> Vec<KeyAction> {
         OpenPasswords,
         ToggleSidebar,
         OpenSettings,
+        ContextMenu,
         CommandPalette,
         ToggleFullscreen,
         Quit,
@@ -4586,7 +4730,7 @@ pub(crate) fn shortcut_group(action: KeyAction) -> &'static str {
         | ToggleSidebar => tr("Panels"),
         Lock | ToggleNetwork => tr("Privacy"),
         DevTools | DevToolsConsole | ViewSource => tr("Developer"),
-        OpenSettings | CommandPalette | ToggleFullscreen | Quit => tr("Window"),
+        OpenSettings | ContextMenu | CommandPalette | ToggleFullscreen | Quit => tr("Window"),
         _ => tr("Media (fullscreen video)"),
     }
 }
@@ -4633,6 +4777,7 @@ fn shortcut_source_name(action: KeyAction) -> &'static str {
         OpenPasswords => tr_mark("Open passwords"),
         ToggleSidebar => tr_mark("Toggle sidebar"),
         OpenSettings => tr_mark("Open settings"),
+        ContextMenu => tr_mark("Context menu"),
         CommandPalette => tr_mark("Command palette"),
         ToggleFullscreen => tr_mark("Toggle fullscreen"),
         Quit => tr_mark("Quit"),
@@ -4872,6 +5017,57 @@ mod tests {
                 assert!(!seen.contains(&group), "{group} split");
                 seen.push(group);
             }
+        }
+    }
+
+    /// The language pickers' ids are unique and map back, and no id of the sheet is claimed by two
+    /// actions: every id that decodes to an action must be that action's own id.
+    #[test]
+    fn language_action_ids_are_unique() {
+        let mut ids = std::collections::BTreeSet::new();
+        for language in UiLanguage::ALL {
+            let action = SettingsAction::Language(language);
+            assert!(ids.insert(action.id().0), "{language:?} shares an id");
+            assert_eq!(SettingsAction::from_id(action.id()), Some(action));
+        }
+        for i in 0..translate_target_count() {
+            let action = SettingsAction::TranslateTarget(i);
+            assert!(ids.insert(action.id().0), "translate target {i} shares an id");
+            assert_eq!(SettingsAction::from_id(action.id()), Some(action));
+        }
+        assert_eq!(
+            SettingsAction::from_id(SettingsAction::TranslateTarget(translate_target_count()).id()),
+            None
+        );
+        assert_eq!(UiLanguage::ALL.len(), 14);
+        // Whole-sheet check: decoding an id and encoding the result gives the id back.
+        for n in 0..4000 {
+            let id = ActionId(ACTION_BASE + n);
+            if let Some(action) = SettingsAction::from_id(id) {
+                assert_eq!(action.id(), id, "{action:?} decodes from {n} but encodes elsewhere");
+            }
+        }
+        // The pickers sit in gaps of the sheet's id space: translate-into choices before the reading
+        // ids, languages after them (the whole-app test `action_ids_are_never_shared` checks them
+        // against everything else).
+        assert!(TRANSLATE_TARGET_BASE + translate_target_count() as u32 <= READING_BASE);
+        const { assert!(READING_BASE + 30 < LANGUAGE_BASE) };
+        assert!(LANGUAGE_BASE + UiLanguage::ALL.len() as u32 <= 1200);
+    }
+
+    #[test]
+    fn translate_targets_cover_the_models() {
+        assert_eq!(translate_target(0), Some(("", "Interface")));
+        assert_eq!(translate_target(1), Some(("en", "English")));
+        assert_eq!(translate_target(translate_target_count()), None);
+        assert_eq!(translate_target_index(""), Some(0));
+        assert!(translate_target_index("ja").is_some());
+        assert!(translate_target_index("pt-BR").is_some());
+        assert!(translate_target_index("zh-TW").is_some());
+        assert_eq!(translate_target_index("xx"), None);
+        // Every interface language of Axion can be a target.
+        for language in axion_i18n::Language::all() {
+            assert!(translate_target_index(language.translation_code()).is_some(), "{}", language.tag());
         }
     }
 }

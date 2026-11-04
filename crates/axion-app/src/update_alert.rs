@@ -377,7 +377,7 @@ mod tests {
             assert!(OverviewAction::from_id(id).is_none(), "{id:?} belongs to the tab overview");
         }
         // Other fixed ranges of sheets and bars (see their modules): 9000s lock screen,
-        // 9100s accounts, 9200-9210 overview and toast, 9300s print, 9400s screenshot,
+        // 9650s accounts, 9200-9210 overview and toast, 9300s print, 9400s screenshot,
         // 9500 player, 9700 pip.
         for id in [BACKDROP, PRIMARY, SECONDARY] {
             assert!(!(9000..9250).contains(&id.0) && !(9300..).contains(&id.0), "{id:?}");

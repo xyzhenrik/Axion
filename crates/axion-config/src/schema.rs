@@ -129,19 +129,70 @@ pub struct General {
     /// the running window of the same account and exits, instead of starting a second browser
     /// on the same profile. Off: every launch tries to start its own browser.
     pub single_instance: bool,
+    /// History and Downloads open as glass sheets over the window (like Settings and
+    /// Passwords). Off: they are lists in the sidebar.
+    pub list_sheets: bool,
+    /// Right clicks on the chrome (sidebar rows, toolbar buttons, tiles, players, settings rows,
+    /// extensions, the network chip) open a context menu. Off: only tabs, bookmarks and the page
+    /// keep theirs.
+    pub context_menus: bool,
 }
 
-/// Which language the interface is shown in.
+/// Which language the interface is shown in. The values are the language tags of
+/// `axion-i18n`'s registry (`en`, `de`, `es`, `fr`, `tr`, `ja`, `pt-BR`, `it`, `ru`, `zh-Hans`,
+/// `ko`, `nl`, `pl`), or `system`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum UiLanguage {
-    /// The system's (`LC_ALL`/`LC_MESSAGES`/`LANG`), English when unsupported.
+    /// The system's (`LC_ALL`/`LC_MESSAGES`/`LANGUAGE`/`LANG`), English when unsupported.
     #[default]
+    #[serde(rename = "system")]
     System,
     #[serde(rename = "en")]
     English,
     #[serde(rename = "de")]
     German,
+    #[serde(rename = "es")]
+    Spanish,
+    #[serde(rename = "fr")]
+    French,
+    #[serde(rename = "tr")]
+    Turkish,
+    #[serde(rename = "ja")]
+    Japanese,
+    #[serde(rename = "pt-BR")]
+    PortugueseBrazil,
+    #[serde(rename = "it")]
+    Italian,
+    #[serde(rename = "ru")]
+    Russian,
+    #[serde(rename = "zh-Hans")]
+    ChineseSimplified,
+    #[serde(rename = "ko")]
+    Korean,
+    #[serde(rename = "nl")]
+    Dutch,
+    #[serde(rename = "pl")]
+    Polish,
+}
+
+impl UiLanguage {
+    /// Every choice, "system" first (the order the pickers list them in).
+    pub const ALL: [UiLanguage; 14] = [
+        UiLanguage::System,
+        UiLanguage::English,
+        UiLanguage::German,
+        UiLanguage::Spanish,
+        UiLanguage::French,
+        UiLanguage::Turkish,
+        UiLanguage::Japanese,
+        UiLanguage::PortugueseBrazil,
+        UiLanguage::Italian,
+        UiLanguage::Russian,
+        UiLanguage::ChineseSimplified,
+        UiLanguage::Korean,
+        UiLanguage::Dutch,
+        UiLanguage::Polish,
+    ];
 }
 
 /// The homepage Axion used before it had its own start page; configs that still carry it (or
@@ -184,7 +235,40 @@ impl Default for General {
             desktop_integration: true,
             default_browser_hint: true,
             single_instance: true,
+            list_sheets: true,
+            context_menus: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+
+    #[test]
+    fn every_language_round_trips_through_toml() {
+        for language in UiLanguage::ALL {
+            let general = General { language, ..General::default() };
+            let text = toml::to_string(&general).unwrap();
+            let back: General = toml::from_str(&text).unwrap();
+            assert_eq!(back.language, language, "{text}");
+        }
+        let general: General = toml::from_str("language = \"pt-BR\"").unwrap();
+        assert_eq!(general.language, UiLanguage::PortugueseBrazil);
+        let general: General = toml::from_str("language = \"zh-Hans\"").unwrap();
+        assert_eq!(general.language, UiLanguage::ChineseSimplified);
+        // Existing files keep working.
+        let general: General = toml::from_str("language = \"system\"").unwrap();
+        assert_eq!(general.language, UiLanguage::System);
+    }
+
+    #[test]
+    fn all_lists_each_variant_once() {
+        let mut seen = std::collections::HashSet::new();
+        for language in UiLanguage::ALL {
+            assert!(seen.insert(toml::to_string(&General { language, ..General::default() }).unwrap()));
+        }
+        assert_eq!(UiLanguage::ALL[0], UiLanguage::System);
     }
 }
 
@@ -926,6 +1010,9 @@ pub struct Layout {
     pub hide_single_tab_bar: bool,
     /// A home button (opens `general.homepage`) next to back and forward.
     pub home_button: bool,
+    /// Toolbar buttons hidden from their right-click menu ("Hide Button"): any of `share`,
+    /// `new_tab`, `extensions`, `downloads`. "Show Hidden Buttons" empties the list.
+    pub hidden_toolbar_buttons: Vec<String>,
     /// F11 fullscreen: resting the pointer at the window's top edge brings the toolbar, tab
     /// row and bookmarks bar back over the page (it keeps its size) until the pointer leaves
     /// them. Off: they only come back when fullscreen ends.
@@ -990,6 +1077,7 @@ impl Default for Layout {
             tab_bar: TabBarStyle::Separate,
             hide_single_tab_bar: true,
             home_button: true,
+            hidden_toolbar_buttons: Vec::new(),
             fullscreen_reveal_chrome: true,
             fullscreen_reveal_delay: 0.35,
             fullscreen_reveal_edge: 3.0,
@@ -1185,6 +1273,9 @@ pub struct Downloads {
     pub remove_list_items: RemoveDownloads,
     /// How many finished downloads the list keeps at most.
     pub list_limit: u32,
+    /// A download's row shows the favicon of the site it came from (the file type's icon when
+    /// the site has none).
+    pub show_site_icons: bool,
 }
 
 impl Default for Downloads {
@@ -1195,6 +1286,7 @@ impl Default for Downloads {
             open_safe_files: false,
             remove_list_items: RemoveDownloads::Manually,
             list_limit: 500,
+            show_site_icons: true,
         }
     }
 }
@@ -2006,6 +2098,14 @@ pub struct Network {
     pub show_chip: bool,
     /// Tell the user in a toast when a connection comes up or goes down.
     pub notify_changes: bool,
+    /// Keep the session route ("Use X for this session", from the address field's chip) across
+    /// restarts. Off: it is a pure session setting and Axion starts with the normal routes.
+    pub session_route_persist: bool,
+    /// The session route: while set, every tab (private ones too) goes through this
+    /// connection, whatever the defaults and site rules say; switching it off restores them.
+    /// Only written to the file while `session_route_persist` is on, and ignored when loaded
+    /// with it off.
+    pub session_route: Option<axion_net::Target>,
 }
 
 impl Default for Network {
@@ -2030,12 +2130,15 @@ impl Default for Network {
             connect_at_start: true,
             show_chip: true,
             notify_changes: true,
+            session_route_persist: false,
+            session_route: None,
         }
     }
 }
 
 impl Network {
-    /// The routing part, for `axion_net::NetManager`.
+    /// The routing the settings describe, without the session route (what Settings and the
+    /// per-site choices edit).
     pub fn routing(&self) -> axion_net::RoutingConfig {
         axion_net::RoutingConfig {
             connections: self.connections.clone(),
@@ -2044,6 +2147,34 @@ impl Network {
             site_rules: self.site_rules.clone(),
             kill_switch: self.kill_switch,
         }
+    }
+
+    /// The session route if it is usable: a connection that still exists.
+    pub fn session_target(&self) -> Option<axion_net::Target> {
+        match &self.session_route {
+            Some(axion_net::Target::Connection(id)) if self.connection(id).is_some() => {
+                self.session_route.clone()
+            }
+            _ => None,
+        }
+    }
+
+    /// The routing in force: the settings' routing, or with a session route every tab (private
+    /// ones too) through that connection and no per-site rules.
+    pub fn effective_routing(&self) -> axion_net::RoutingConfig {
+        match self.session_target() {
+            Some(target) => self.routing().with_session_route(&target),
+            None => self.routing(),
+        }
+    }
+
+    /// Drops what must not outlive the session: the session route, unless it is kept.
+    pub fn without_session_state(&self) -> Self {
+        let mut network = self.clone();
+        if !network.session_route_persist {
+            network.session_route = None;
+        }
+        network
     }
 
     pub fn connection(&self, id: &str) -> Option<&axion_net::Connection> {

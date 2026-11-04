@@ -54,13 +54,16 @@ passwords, website data and settings. More in [Accounts and privacy](features/ac
 |---|---|---|---|
 | **Homepage** | The page that opens in new windows and tabs. Leave the field empty for Axion's own start page. | Axion Home (`axion://home/`) | `general.homepage` |
 | **Search engine** | Where searches typed in the address field and on the start page go. Choices: DuckDuckGo, Google, Brave, Startpage, Ecosia. | DuckDuckGo | `general.search_url` |
-| **Language** | The language of Axion's own interface: System, English or Deutsch. Applies after you restart Axion. | System | `general.language` (`system`, `en`, `de`) |
+| **Language** | The language of Axion's own interface. Every language is written in its own name (English, Deutsch, Español, Français, Türkçe, 日本語, Português (Brasil), Italiano, Русский, 简体中文, 한국어, Nederlands, Polski); **System default** follows `LC_ALL`/`LC_MESSAGES`/`LANGUAGE`/`LANG` (English when Axion has no catalog for it). Text a catalog does not translate yet shows English. Applies after you restart Axion. | System default | `general.language` (`system`, `en`, `de`, `es`, `fr`, `tr`, `ja`, `pt-BR`, `it`, `ru`, `zh-Hans`, `ko`, `nl`, `pl`) |
 | **Add Axion to the application menu** | Linux: adds Axion's desktop entry and icons for your user, which gives the window its icon in the taskbar and the application menu (on Wayland this is the only way). Applies after you restart Axion. | On | `general.desktop_integration` |
 | **Default browser** | Linux: shows whether Axion is your default browser and makes it one (the `xdg-settings` default for web links, plus the `http`/`https` handlers and HTML file types). Also offered once in the Welcome tour. | - | - |
 | **Suggest making Axion the default browser** | At start, while Axion is not the default browser, a small notice offers to make it one. Its **Don't ask again** button turns this off for good. | On | `general.default_browser_hint` |
 | **One window per account** | Opening a link from another app (or running `axion URL`) while Axion is open adds a tab to the running window of that account instead of starting a second browser. | On | `general.single_instance` |
 | **Welcome tour** (**Show Welcome Tour**) | Runs the first-start introduction again. | - | `general.onboarding_done` |
+| **History and Downloads as sheets** (config only) | The sidebar's History and Downloads rows (and Ctrl+H, and "Show All Downloads" in the downloads popover) open a large glass sheet over the window, like Settings and Passwords, with a search field for History, the day headings, and the rows' buttons. Off: they are lists inside the sidebar. | On | `general.list_sheets` |
+| **Context menus** (config only) | A right click (or the Menu key, Shift+F10) on the sidebar's rows, the rows of History, Bookmarks and Downloads, toolbar buttons and the bare toolbar, the tab overview's cards, start page tiles, the fullscreen media player, the rows of the extensions list, the network chip and the toggles and sliders in Settings opens a menu (Settings rows: **Reset to Default**; toolbar buttons: **Hide Button**, **Customize Toolbar…**, **Show Hidden Buttons**). Off: only tabs, tab groups, bookmarks of the bookmarks bar and the page keep their menus. | On | `general.context_menus` |
 | **Show home button** | Puts a home button next to back and forward. It opens your homepage. | On | `layout.home_button` |
+| **Hidden toolbar buttons** (config only) | Buttons taken out of the toolbar with **Hide Button** in their right-click menu: `share`, `new_tab`, `extensions`, `downloads`. **Show Hidden Buttons** (in the menu of any toolbar button or of the bare toolbar) empties the list. | Empty | `layout.hidden_toolbar_buttons` |
 
 ### Start page
 
@@ -253,7 +256,7 @@ Reader View and page translation. See [Reading and translation](features/reading
 | **Open the offer by itself** | The offer opens once when such a page has loaded. | On | `translation.prompt` |
 | *(file only)* Offer once per page | The offer opens by itself at most once for each page load in a tab, and closing it is final for that page: dynamic page changes or other popovers closing never bring it back. The Translate button still opens it. Off: it may open again when the page reports its language anew. | On | `translation.offer_once_per_page` |
 | **Translate text that appears later** | New text on a translated page (feeds, comments) is translated too. | On | `translation.translate_changes` |
-| **Translate pages into** | The target language: Interface (Axion's own language), English, German, French or Spanish. Any other code from the list below can be set in the file. | Interface | `translation.target_language` (empty = interface) |
+| **Translate pages into** | The target language: Interface (Axion's own language) or any of the languages the local models cover (every language Mozilla offers, 58 with English; they translate in both directions through English; Chinese is offered as Simplified and Traditional). Languages Mozilla does not offer are not listed. In the file, an ISO 639-1 code such as `ja`, `pt` or `nb`; `zh` is Simplified, `zht` Traditional. | Interface | `translation.target_language` (empty = interface) |
 | **Translate** | Where translating runs: **On this computer** (Bergamot models, nothing leaves the computer) or **Your server** (a LibreTranslate-compatible server; page text is sent to it). | On this computer | `translation.backend` (`local` or `endpoint`) |
 | **Downloaded language data** | Deletes the models downloaded for local translation. | - | - |
 | *(file only)* Server address | LibreTranslate-compatible endpoint, for example `http://localhost:5000/translate`. Only used with `backend = "endpoint"`; empty by default. | empty | `translation.endpoint_url` |
@@ -335,6 +338,7 @@ the password vault, not in `config.toml`.
 | `wireguard_handshake_timeout_secs` | 20 | How long a WireGuard handshake may stay unanswered before the connection is shown as failed (wrong key, dead server and blocked UDP look the same). |
 | `background_priority`, `tor_worker_threads` | on, 2 | Run Tor's directory download and verification at low CPU priority; how many worker threads the Tor client uses (1-8). |
 | `connect_at_start`, `show_chip`, `notify_changes` | on | Start default routes at launch; show the chip in the address field; toast on changes. |
+| `session_route_persist` | off | Keep the session route ("Use X for this session" in the chip's popover) across restarts. Off: it is never written to the file and Axion starts with the normal routes. `session_route` (a connection id) holds it while on. |
 
 ## Privacy
 
@@ -397,6 +401,7 @@ listed here.
 | **Download location** (**Change…**) | The folder for downloads. | Your desktop's Downloads folder | `downloads.directory` |
 | **Ask where to save each file** | Shows a file chooser for each download. Off: saves straight into the download location. | On | `downloads.ask_where_to_save` |
 | **Open “safe” files after downloading** | Opens pictures, movies, sounds, PDF and text documents when they finish. | Off | `downloads.open_safe_files` |
+| **Site icons in the downloads list** (config only) | Each download shows the icon of the site it came from; the file's icon only when the site has none. | On | `downloads.show_site_icons` |
 | **Remove download list items** | When finished downloads leave the list: **Manually**, **After One Day**, **When Axion Quits**. | Manually | `downloads.remove_list_items` (`manually`, `after_one_day`, `on_quit`) |
 
 ### Print and screenshots

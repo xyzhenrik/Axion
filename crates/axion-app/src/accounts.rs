@@ -16,10 +16,10 @@ use axion_ui::taffy::prelude::*;
 use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, UiEvent, Widget};
 use glam::Vec2;
 
-const CREATE: ActionId = ActionId(9100);
-const CANCEL: ActionId = ActionId(9101);
-const CHOOSE_PHOTO: ActionId = ActionId(9102);
-const REMOVE_PHOTO: ActionId = ActionId(9103);
+const CREATE: ActionId = ActionId(9650);
+const CANCEL: ActionId = ActionId(9651);
+const CHOOSE_PHOTO: ActionId = ActionId(9652);
+const REMOVE_PHOTO: ActionId = ActionId(9653);
 /// The picture preview at the top of the sheet.
 const PREVIEW: f32 = 64.0;
 const WIDTH: f32 = 340.0;
