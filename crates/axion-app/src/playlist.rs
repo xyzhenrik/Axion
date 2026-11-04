@@ -98,8 +98,7 @@ pub fn candidates(
         .or(Some(page_title).filter(|t| !t.is_empty()))
         .map_or_else(|| display_host(page_url), str::to_owned);
     let usable: Vec<&Player> = media
-        .players
-        .iter()
+        .real_players()
         .filter(|p| p.kind == Kind::Video || p.duration > 0.0)
         .filter(|p| !p.src.is_empty() || p.duration > 0.0 || p.area() > 0.0)
         .collect();
@@ -513,7 +512,7 @@ pub fn remember_sniffed(list: &mut Vec<Sniffed>, new: Sniffed, limit: usize) {
 /// yields one; unplayable reasons only count when nothing else was found.
 pub fn resolve_capture(media: Option<&PageMedia>, page_url: &str, sniffed: &[Sniffed]) -> Capture {
     let mut videos: Vec<&Player> =
-        media.map(|m| m.players.iter().filter(|p| p.kind == Kind::Video).collect()).unwrap_or_default();
+        media.map(|m| m.real_players().filter(|p| p.kind == Kind::Video).collect()).unwrap_or_default();
     videos.sort_by(|a, b| b.area().total_cmp(&a.area()));
     let mut fallback = Capture::Nothing;
     for p in videos {
@@ -973,6 +972,26 @@ mod tests {
         assert!(matches!(list[1].source, Source::Streaming(_)));
         assert!(candidates("axion://home/", "", &media, &[], 200).is_empty());
         assert_eq!(truncate_chars("abcdefgh", 5), "abcd…");
+    }
+
+    #[test]
+    fn previews_are_no_candidates_and_not_resolved() {
+        let tile = Player {
+            id: "tile".into(),
+            kind: Kind::Video,
+            w: 300.0,
+            h: 170.0,
+            preview: true,
+            src: "https://cdn.x/tile.mp4".into(),
+            ..Default::default()
+        };
+        let media = PageMedia { players: vec![tile.clone()], ..Default::default() };
+        assert!(candidates("https://x/results", "Results", &media, &[], 200).is_empty());
+        let real = Player { id: "real".into(), preview: false, src: "https://cdn.x/v.mp4".into(), ..tile };
+        let media = PageMedia { players: vec![media.players[0].clone(), real], ..Default::default() };
+        let list = candidates("https://x/watch", "Watch", &media, &[], 200);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].player, "real");
     }
 
     #[test]

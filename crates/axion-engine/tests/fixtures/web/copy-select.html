@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Selection copy</title>
+<!--
+  User-driven copies (Ctrl+C, Ctrl+X, context-menu Copy) of a selection, where Chromium cannot
+  set the desktop clipboard itself. Run serve.py, open http://localhost:8101/copy-select.html and
+  click case N (AXION_CLICK_PROBE) at x=120, y=45+70*N: the click selects that case's text, then
+  a later probe entry presses the keys: AXION_CLICK_PROBE="7:120,Y;10:ctrl+c" (or ctrl+x). The page reports its
+  keydown, copy and cut events to /report. What must be on the desktop clipboard is axion-sel-<kind>.
+    0  text of the page (a paragraph, with markup: the html flavour is a <b>)
+    1  text selected in an <input>
+    2  text selected in a <textarea> (the fixture text is part of a longer value)
+    3  text in a same-origin iframe (selected there; the frame has the focus)
+-->
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  button { position: absolute; left: 20px; width: 200px; height: 50px; }
+  #p, #in, #ta, iframe { position: absolute; left: 240px; width: 300px; }
+  #p { top: 20px; } #in { top: 90px; } #ta { top: 160px; height: 40px; }
+  iframe { top: 230px; height: 50px; border: 1px solid #888; }
+</style>
+<button id="b0" style="top:20px">select text</button>
+<button id="b1" style="top:90px">select in input</button>
+<button id="b2" style="top:160px">select in textarea</button>
+<button id="b3" style="top:230px">select in iframe</button>
+<p id="p">before <b id="sel">axion-sel-page</b> after</p>
+<input id="in" value="one axion-sel-input two">
+<textarea id="ta">first axion-sel-textarea last</textarea>
+<iframe srcdoc="<p id=f>x <b>axion-sel-frame</b> y</p>"></iframe>
+<script>
+  const report = (outcome) => fetch('/report?' + new URLSearchParams({ step: 'selection', outcome }), { keepalive: true });
+  const field = (el, word) => { el.focus(); const i = el.value.indexOf(word); el.setSelectionRange(i, i + word.length); };
+  b0.onclick = () => { const r = document.createRange(); r.selectNodeContents(sel);
+    getSelection().removeAllRanges(); getSelection().addRange(r); report('page selected'); };
+  b1.onclick = () => { field(document.getElementById('in'), 'axion-sel-input'); report('input selected'); };
+  b2.onclick = () => { field(document.getElementById('ta'), 'axion-sel-textarea'); report('textarea selected'); };
+  b3.onclick = () => { const w = document.querySelector('iframe').contentWindow, d = w.document;
+    w.focus(); const r = d.createRange(); r.selectNodeContents(d.querySelector('b'));
+    w.getSelection().removeAllRanges(); w.getSelection().addRange(r); report('frame selected'); };
+  addEventListener('keydown', (e) => e.ctrlKey && report('keydown ctrl+' + e.key), true);
+  addEventListener('copy', () => report('copy event'), true);
+  addEventListener('cut', () => report('cut event'), true);
+</script>

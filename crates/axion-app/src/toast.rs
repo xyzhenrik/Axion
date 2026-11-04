@@ -30,6 +30,8 @@ const MIN_WIDTH: f32 = 120.0;
 const GAP_BELOW_ANCHOR: f32 = 14.0;
 /// The click id of a toast's button.
 const ACTION: ActionId = ActionId(9210);
+/// ... and of its second button.
+const ACTION_SECONDARY: ActionId = ActionId(9211);
 const BUTTON_HEIGHT: f32 = 30.0;
 const BUTTON_PADDING: f32 = 14.0;
 
@@ -43,6 +45,9 @@ pub struct Toast {
     /// The button of a toast with an action ("Update"), hidden otherwise, and its label.
     button: NodeId,
     button_label: NodeId,
+    /// The second button of a toast that offers two choices, hidden otherwise, and its label.
+    secondary: NodeId,
+    secondary_label: NodeId,
     /// Seconds until it flows back (while shown).
     remaining: Option<f32>,
     /// Where it would sit with nothing in the way, and where it sits now.
@@ -81,43 +86,16 @@ impl Toast {
             Style { flex_shrink: 0.0, ..Default::default() },
         );
         let label = ui.add_label(plate, "", TextStyle::Callout, Style::default());
-        let button = ui.add(
-            plate,
-            Widget::container()
-                .with_action(ACTION)
-                .with_radius(CAPSULE)
-                .with_background(Background::Glass(GlassLevel::Thin)),
-            Style {
-                size: Size { width: auto(), height: length(BUTTON_HEIGHT) },
-                flex_shrink: 0.0,
-                padding: Rect {
-                    left: length(BUTTON_PADDING),
-                    right: length(BUTTON_PADDING),
-                    top: length(0.0),
-                    bottom: length(0.0),
-                },
-                margin: Rect {
-                    left: length(4.0),
-                    right: length(-8.0),
-                    top: length(0.0),
-                    bottom: length(0.0),
-                },
-                justify_content: JustifyContent::CENTER,
-                align_items: AlignItems::CENTER,
-                ..Default::default()
-            },
-        );
-        let button_label = ui.add_label(button, "", TextStyle::Callout, Style::default());
-        if let Some(w) = ui.widget_mut(button_label) {
-            w.set_paint(Paint::Accent);
-        }
-        ui.set_visible(button, false);
+        let (button, button_label) = action_button(ui, plate, ACTION);
+        let (secondary, secondary_label) = action_button(ui, plate, ACTION_SECONDARY);
         Self {
             popover,
             icon,
             label,
             button,
             button_label,
+            secondary,
+            secondary_label,
             remaining: None,
             natural: Frame::default(),
             placed: Frame::default(),
@@ -152,10 +130,33 @@ impl Toast {
         text: &str,
         action: Option<&str>,
     ) {
+        self.show_with_actions(ui, config, anchor, window, icon, text, action, None);
+    }
+
+    /// Like [`Self::show_with_action`], with a second button (`secondary`: its label) beside
+    /// the first; [`Self::owns_secondary`] recognises its clicks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn show_with_actions(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        anchor: Frame,
+        window: glam::Vec2,
+        icon: Icon,
+        text: &str,
+        action: Option<&str>,
+        secondary: Option<&str>,
+    ) {
         ui.set_text(self.label, text);
+        ui.set_visible(self.secondary, secondary.is_some());
+        let mut extra = 0.0;
+        if let Some(label) = secondary {
+            ui.set_text(self.secondary_label, label);
+            extra = 2.0 * BUTTON_PADDING + label.chars().count() as f32 * CHAR_WIDTH + GAP;
+        }
         ui.set_icon(self.icon, icon);
         ui.set_visible(self.button, action.is_some());
-        let mut width = toast_width(text);
+        let mut width = toast_width(text) + extra;
         if let Some(action) = action {
             ui.set_text(self.button_label, action);
             width += 2.0 * BUTTON_PADDING + action.chars().count() as f32 * CHAR_WIDTH + GAP;
@@ -167,7 +168,7 @@ impl Toast {
         self.window = window;
         self.placed = self.clear_of_popovers(ui, config);
         self.popover.open(ui, config, anchor, self.placed);
-        let seconds = if action.is_some() {
+        let seconds = if action.is_some() || secondary.is_some() {
             config.toast.action_duration_seconds
         } else {
             config.toast.duration_seconds
@@ -197,6 +198,11 @@ impl Toast {
         id == ACTION
     }
 
+    /// Whether `id` is the click id of the toast's second button.
+    pub fn owns_secondary(&self, id: ActionId) -> bool {
+        id == ACTION_SECONDARY
+    }
+
     /// Flows back into its anchor now.
     pub fn dismiss(&mut self, ui: &mut Ui, config: &Config) {
         self.remaining = None;
@@ -223,6 +229,37 @@ impl Toast {
         }
         self.popover.animate(ui, dt);
     }
+}
+
+/// A glass pill in a toast with `action` as its click id and an (empty) label; hidden.
+fn action_button(ui: &mut Ui, plate: NodeId, action: ActionId) -> (NodeId, NodeId) {
+    let button = ui.add(
+        plate,
+        Widget::container()
+            .with_action(action)
+            .with_radius(CAPSULE)
+            .with_background(Background::Glass(GlassLevel::Thin)),
+        Style {
+            size: Size { width: auto(), height: length(BUTTON_HEIGHT) },
+            flex_shrink: 0.0,
+            padding: Rect {
+                left: length(BUTTON_PADDING),
+                right: length(BUTTON_PADDING),
+                top: length(0.0),
+                bottom: length(0.0),
+            },
+            margin: Rect { left: length(4.0), right: length(-8.0), top: length(0.0), bottom: length(0.0) },
+            justify_content: JustifyContent::CENTER,
+            align_items: AlignItems::CENTER,
+            ..Default::default()
+        },
+    );
+    let label = ui.add_label(button, "", TextStyle::Callout, Style::default());
+    if let Some(w) = ui.widget_mut(label) {
+        w.set_paint(Paint::Accent);
+    }
+    ui.set_visible(button, false);
+    (button, label)
 }
 
 /// Moves `natural` (the toast's frame with nothing in the way) down until it overlaps none of
@@ -266,6 +303,33 @@ fn toast_width(text: &str) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The toast's click ids are literals nobody else may use (a second owner would make one
+    /// click run two handlers).
+    #[test]
+    fn the_toasts_click_ids_are_unique_in_the_app() {
+        assert_ne!(ACTION, ACTION_SECONDARY);
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut owners = Vec::new();
+        let mut stack = vec![dir];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(dir).expect("src dir").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).expect("source");
+                    // Only code that makes an id of these numbers; this test names them in strings.
+                    let (a, b) = (format!("ActionId({}", 9210), format!("ActionId({}", 9211));
+                    if text.contains(&a) || text.contains(&b) {
+                        owners.push(path.file_name().expect("name").to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+        // toast.rs itself (the constants) and this test's own file are the only places.
+        assert_eq!(owners, ["toast.rs"], "{owners:?}");
+    }
 
     fn f(x: f32, y: f32, w: f32, h: f32) -> Frame {
         Frame::new(x, y, w, h)

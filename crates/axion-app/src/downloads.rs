@@ -25,7 +25,9 @@ use crate::url::display_host;
 const DAY_SECONDS: i64 = 24 * 60 * 60;
 const PORTAL: &str = "org.freedesktop.portal.Desktop";
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+#[cfg(not(test))]
 const FILE_MANAGER: &str = "org.freedesktop.FileManager1";
+#[cfg(not(test))]
 const FILE_MANAGER_PATH: &str = "/org/freedesktop/FileManager1";
 /// Chromium's HTTP cache ("cached images and files": what clearing the cache removes).
 const CACHE_DIRS: [&str; 2] = ["Default/Cache", "Cache"];
@@ -43,6 +45,47 @@ enum Row {
     Running(u32),
     /// A finished one, by store id.
     Stored(i64),
+}
+
+/// What a row's button or menu command does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Effect {
+    Engine(u32, DownloadAction),
+    Show(PathBuf),
+    Open(PathBuf),
+    None,
+}
+
+/// Where a row's download stands, for its context menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowState {
+    Running,
+    Paused,
+    /// Finished; whether the file is still where it was saved.
+    Finished {
+        file_exists: bool,
+    },
+    /// Cancelled or failed.
+    Failed,
+}
+
+/// What a context menu knows about a download row.
+#[derive(Clone, Debug)]
+pub struct RowFacts {
+    pub state: RowState,
+    pub url: String,
+}
+
+/// What a context menu does with a download row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowCommand {
+    Open,
+    ShowInFolder,
+    Pause,
+    Resume,
+    Cancel,
+    /// Takes a finished download off the list (the file stays).
+    Remove,
 }
 
 /// A row's trailing buttons.
@@ -243,6 +286,7 @@ impl Downloads {
                 section: section(today),
                 deletable: false,
                 icon: Some(Icon::Download),
+                site_icon: config.downloads.show_site_icons,
                 progress: (d.total_bytes > 0).then(|| d.received_bytes as f32 / d.total_bytes as f32),
                 buttons: buttons.iter().map(|b| b.icon()).collect(),
             });
@@ -267,6 +311,7 @@ impl Downloads {
                 section: section(local_date(d.finished, &tz)),
                 deletable: true,
                 icon: Some(Icon::File),
+                site_icon: config.downloads.show_site_icons,
                 progress: None,
                 buttons: buttons.iter().map(|b| b.icon()).collect(),
             });
@@ -296,19 +341,108 @@ impl Downloads {
 
     /// A row's `k`th button.
     pub fn row_button(&self, list: List, index: usize, k: usize, engine: &mut impl Engine) {
-        let Some((row, buttons)) = self.rows[list as usize].get(index) else { return };
-        let Some(&button) = buttons.get(k) else { return };
+        self.row_button_with(list, index, k, &mut |id, action| engine.download_action(id, action));
+    }
+
+    /// Like [`Self::row_button`], handing a running download's pause/resume/cancel to `control`.
+    pub fn row_button_with(
+        &self,
+        list: List,
+        index: usize,
+        k: usize,
+        control: &mut dyn FnMut(u32, DownloadAction),
+    ) {
+        let effect = self.button_effect(list, index, k);
+        self.apply(effect, control);
+    }
+
+    /// What a row's `k`th button does.
+    fn button_effect(&self, list: List, index: usize, k: usize) -> Effect {
+        let Some((row, buttons)) = self.rows[list as usize].get(index) else { return Effect::None };
+        let Some(&button) = buttons.get(k) else { return Effect::None };
         match (*row, button) {
-            (Row::Running(id), RowButton::Pause) => engine.download_action(id, DownloadAction::Pause),
-            (Row::Running(id), RowButton::Resume) => engine.download_action(id, DownloadAction::Resume),
-            (Row::Running(id), RowButton::Cancel) => engine.download_action(id, DownloadAction::Cancel),
+            (Row::Running(id), RowButton::Pause) => Effect::Engine(id, DownloadAction::Pause),
+            (Row::Running(id), RowButton::Resume) => Effect::Engine(id, DownloadAction::Resume),
+            (Row::Running(id), RowButton::Cancel) => Effect::Engine(id, DownloadAction::Cancel),
             (Row::Stored(id), RowButton::ShowInFolder) => {
-                if let Some(d) = self.stored.get(&id) {
-                    show_in_folder(Path::new(&d.path));
+                self.stored.get(&id).map_or(Effect::None, |d| Effect::Show(PathBuf::from(&d.path)))
+            }
+            _ => Effect::None,
+        }
+    }
+
+    fn apply(&self, effect: Effect, engine: &mut dyn FnMut(u32, DownloadAction)) {
+        match effect {
+            Effect::Engine(id, action) => engine(id, action),
+            Effect::Show(path) => show_in_folder(&path),
+            Effect::Open(path) => open_path(&path),
+            Effect::None => {}
+        }
+    }
+
+    /// What a context menu needs to know about a row.
+    pub fn row_facts(&self, list: List, index: usize) -> Option<RowFacts> {
+        let (row, _) = self.rows[list as usize].get(index)?;
+        Some(match *row {
+            Row::Running(id) => {
+                let d = self.running.iter().find(|d| d.id == id)?;
+                RowFacts {
+                    state: if d.state == DownloadState::Paused {
+                        RowState::Paused
+                    } else {
+                        RowState::Running
+                    },
+                    url: d.url.clone(),
                 }
             }
-            _ => {}
-        }
+            Row::Stored(id) => {
+                let d = self.stored.get(&id)?;
+                let state = match d.state.as_str() {
+                    "complete" => RowState::Finished { file_exists: Path::new(&d.path).exists() },
+                    _ => RowState::Failed,
+                };
+                RowFacts { state, url: d.url.clone() }
+            }
+        })
+    }
+
+    /// Runs a context menu's command on a row.
+    pub fn row_command(
+        &self,
+        list: List,
+        index: usize,
+        command: RowCommand,
+        store: Option<&Store>,
+        engine: &mut impl Engine,
+    ) {
+        let Some((row, buttons)) = self.rows[list as usize].get(index) else { return };
+        let button_effect = |wanted: RowButton| {
+            buttons
+                .iter()
+                .position(|b| *b == wanted)
+                .map_or(Effect::None, |k| self.button_effect(list, index, k))
+        };
+        let effect = match (command, *row) {
+            (RowCommand::Open, Row::Stored(id)) => self
+                .stored
+                .get(&id)
+                .filter(|d| d.state == "complete" && Path::new(&d.path).exists())
+                .map_or(Effect::None, |d| Effect::Open(PathBuf::from(&d.path))),
+            (RowCommand::ShowInFolder, _) => button_effect(RowButton::ShowInFolder),
+            (RowCommand::Pause, _) => button_effect(RowButton::Pause),
+            (RowCommand::Resume, _) => button_effect(RowButton::Resume),
+            (RowCommand::Cancel, _) => button_effect(RowButton::Cancel),
+            (RowCommand::Remove, Row::Stored(id)) => {
+                if let Some(store) = store
+                    && let Err(e) = store.remove_download(id)
+                {
+                    tracing::error!("removing a download from the list failed: {e}");
+                }
+                Effect::None
+            }
+            _ => Effect::None,
+        };
+        self.apply(effect, &mut |id, action| engine.download_action(id, action));
     }
 
     /// A row's ×: removes a finished download from the list (the file stays).
@@ -317,6 +451,15 @@ impl Downloads {
             && let Err(e) = store.remove_download(*id)
         {
             tracing::error!("removing a download from the list failed: {e}");
+        }
+    }
+
+    /// The database id of row `index` of the panel list when it is a finished download that can
+    /// leave the list (a running one cannot).
+    pub fn stored_id(&self, index: usize) -> Option<i64> {
+        match self.rows[List::Panel as usize].get(index) {
+            Some((Row::Stored(id), _)) => Some(*id),
+            _ => None,
         }
     }
 
@@ -535,49 +678,125 @@ pub fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
     }
 }
 
-/// Opens a file or folder in its default application.
-pub(crate) fn open_path(path: &Path) {
-    let path = path.to_path_buf();
-    spawn("xdg-open", move || match std::process::Command::new("xdg-open").arg(&path).status() {
-        Ok(status) if !status.success() => {
-            tracing::warn!(path = %path.display(), "xdg-open failed: {status}")
+/// What the desktop is asked to do for a download (the one place that talks to it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Launch {
+    /// Open a file or folder in its default application.
+    Open(PathBuf),
+    /// Show the file selected in the file manager (its folder when that can't select).
+    Show(PathBuf),
+    /// Open an address (`mailto:` ...).
+    Uri(String),
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What tests record instead of starting anything.
+    pub(crate) static LAUNCHED: std::cell::RefCell<Vec<Launch>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Hands `request` to the desktop. Tests record it; with `AXION_OPENER_LOG=FILE` set (test runs of
+/// the whole browser) a line per request is appended to FILE and nothing is started, so no test
+/// opens a real folder.
+#[cfg(test)]
+pub(crate) fn launch(request: Launch) {
+    LAUNCHED.with_borrow_mut(|launched| launched.push(request));
+}
+
+#[cfg(not(test))]
+pub(crate) fn launch(request: Launch) {
+    if let Some(log) = std::env::var_os("AXION_OPENER_LOG") {
+        use std::io::Write;
+        let line = match &request {
+            Launch::Open(p) => format!("open {}\n", p.display()),
+            Launch::Show(p) => format!("show {}\n", p.display()),
+            Launch::Uri(u) => format!("uri {u}\n"),
+        };
+        let written = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .and_then(|mut f| f.write_all(line.as_bytes()));
+        if let Err(e) = written {
+            tracing::warn!("opener log unavailable: {e}");
         }
+        return;
+    }
+    match request {
+        Launch::Open(path) => run_xdg_open(path.into_os_string()),
+        Launch::Uri(uri) => run_xdg_open(uri.into()),
+        Launch::Show(path) => spawn("show-in-folder", move || show_item(&path)),
+    }
+}
+
+#[cfg(not(test))]
+fn run_xdg_open(target: std::ffi::OsString) {
+    spawn("xdg-open", move || match std::process::Command::new("xdg-open").arg(&target).status() {
+        Ok(status) if !status.success() => tracing::warn!(target = ?target, "xdg-open failed: {status}"),
         Ok(_) => {}
         Err(e) => tracing::warn!("xdg-open unavailable: {e}"),
     });
 }
 
-/// Opens an address (`mailto:` …) in its default application.
+/// Opens a file or folder in its default application.
+pub(crate) fn open_path(path: &Path) {
+    launch(Launch::Open(path.to_path_buf()));
+}
+
+/// Opens an address (`mailto:` ...) in its default application.
 pub(crate) fn open_uri(uri: &str) {
-    let uri = uri.to_owned();
-    spawn("xdg-open", move || match std::process::Command::new("xdg-open").arg(&uri).status() {
-        Ok(status) if !status.success() => tracing::warn!("xdg-open failed: {status}"),
-        Ok(_) => {}
-        Err(e) => tracing::warn!("xdg-open unavailable: {e}"),
-    });
+    launch(Launch::Uri(uri.to_owned()));
 }
 
 /// Shows the file selected in the file manager, or at least opens its folder.
 pub(crate) fn show_in_folder(path: &Path) {
-    let path = path.to_path_buf();
-    spawn("show-in-folder", move || {
-        let shown = Connection::session().and_then(|c| {
-            c.call_method(
-                Some(FILE_MANAGER),
-                FILE_MANAGER_PATH,
-                Some(FILE_MANAGER),
-                "ShowItems",
-                &(vec![file_uri(&path)], ""),
-            )
-            .map(|_| ())
-        });
-        if let Err(e) = shown {
-            tracing::debug!("FileManager1 unavailable ({e}); opening the folder");
-            if let Some(dir) = path.parent() {
-                open_path(dir);
-            }
-        }
+    launch(Launch::Show(path.to_path_buf()));
+}
+
+/// The three ways to show a file, best first: the file manager's own `ShowItems` (selects it),
+/// the desktop portal's `OpenDirectory` (the sandbox-safe route, also selects it) and `xdg-open`
+/// on the folder. The first that works wins.
+#[cfg(not(test))]
+fn show_item(path: &Path) {
+    let by_file_manager = Connection::session().and_then(|c| {
+        c.call_method(
+            Some(FILE_MANAGER),
+            FILE_MANAGER_PATH,
+            Some(FILE_MANAGER),
+            "ShowItems",
+            &(vec![file_uri(path)], ""),
+        )
+        .map(|_| ())
     });
+    let Err(e) = by_file_manager else { return };
+    tracing::debug!("FileManager1 unavailable ({e}); trying the portal");
+    match open_directory_portal(path) {
+        Ok(()) => return,
+        Err(e) => tracing::debug!("portal OpenDirectory unavailable ({e}); opening the folder"),
+    }
+    let folder = if path.is_dir() { Some(path) } else { path.parent() };
+    if let Some(folder) = folder {
+        run_xdg_open(folder.as_os_str().to_owned());
+    }
+}
+
+/// `org.freedesktop.portal.OpenURI.OpenDirectory`: the file manager opens the folder of the file
+/// behind the descriptor, with the file selected.
+#[cfg(not(test))]
+fn open_directory_portal(path: &Path) -> zbus::Result<()> {
+    use std::os::fd::AsFd;
+    let file = std::fs::File::open(path).map_err(|e| zbus::Error::Failure(e.to_string()))?;
+    let connection = Connection::session()?;
+    let options: HashMap<&str, Value<'_>> = HashMap::new();
+    connection
+        .call_method(
+            Some(PORTAL),
+            PORTAL_PATH,
+            Some("org.freedesktop.portal.OpenURI"),
+            "OpenDirectory",
+            &("", zbus::zvariant::Fd::from(file.as_fd()), options),
+        )
+        .map(|_| ())
 }
 
 /// `file://` URI of an absolute path.

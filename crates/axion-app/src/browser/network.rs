@@ -17,6 +17,7 @@ impl Browser {
                 self.refresh_settings();
             }
         }
+        self.network_secret_events();
         if self.private_mode || self.tabs_have_private() {
             self.net.private_tabs_opened();
         }
@@ -38,6 +39,35 @@ impl Browser {
             self.refresh_settings();
         }
         self.circuit_tick();
+    }
+
+    /// What the secrets thread finished: secrets that moved from the vault into the device-key
+    /// store leave the vault, a failed write is shown in Settings.
+    fn network_secret_events(&mut self) {
+        for event in self.net.take_secret_events() {
+            match event {
+                net::SecretsEvent::Migrated(ids) => {
+                    if self.passwords.is_unlocked() {
+                        for id in &ids {
+                            if let Err(e) = self.passwords.remove_network_secret(id) {
+                                tracing::warn!(error = %e, "removing a migrated connection secret from the vault failed");
+                            }
+                        }
+                        tracing::info!(
+                            count = ids.len(),
+                            "connection secrets moved from the vault to the device-key store"
+                        );
+                    }
+                }
+                net::SecretsEvent::WriteFailed(reason) => {
+                    tracing::error!(%reason, "storing connection secrets failed");
+                    self.show_toast(
+                        Icon::WifiOff,
+                        tr("The connection's secrets couldn't be stored. They work until Axion quits."),
+                    );
+                }
+            }
+        }
     }
 
     /// The settings (`[network]`) changed.
@@ -172,6 +202,10 @@ impl Browser {
                 }
             }
             BlockedAction::Direct { url } => {
+                // A site rule is set aside while a session route is on: end the session first.
+                if self.config.network.session_target().is_some() {
+                    self.set_session_route(None);
+                }
                 if let Some(host) = rule_host(&url) {
                     self.config.network.site_rules.retain(|r| r.host != host);
                     self.config
@@ -199,7 +233,11 @@ impl Browser {
     /// The chip of the active tab's address field.
     pub(super) fn update_network_chip(&mut self) {
         let chip = self.active_network_chip();
-        self.chrome.set_network_chip(&mut self.ui, chip.as_ref().map(|c| c.state));
+        self.chrome.set_network_chip(
+            &mut self.ui,
+            chip.as_ref().map(|c| c.state),
+            chip.as_ref().is_some_and(|c| c.session),
+        );
         self.chip_shown = chip.map(|c| c.state);
         self.update_circuit_button();
     }

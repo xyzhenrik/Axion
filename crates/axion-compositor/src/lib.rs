@@ -4,9 +4,9 @@
 //! - [`Layer::Glass`]: Liquid Glass shapes that refract **everything drawn so far**.
 //! - [`Layer::Content`]: rounded rectangles, text and icons on top.
 //!
-//! Layers render into one of two offscreen targets; a glass layer reads the current target
-//! as its backdrop and writes the other, so glass can sit on glass (a card inside the sidebar).
-//! The last target is blitted to the window. All coordinates are physical pixels with the
+//! Layers render into one offscreen target; a glass layer reads it as its backdrop and draws
+//! over it, inside the regions of its shapes only, so glass can sit on glass (a card inside the
+//! sidebar). The target is blitted to the window. All coordinates are physical pixels with the
 //! origin top-left, and colours are sRGB-encoded (CEF frames are too), blended as on the web.
 
 mod icons;
@@ -15,7 +15,7 @@ mod probe;
 /// Cells per side of a page palette measurement ([`Compositor::sample_palette`]).
 pub const PALETTE_CELLS: u32 = 32;
 
-use axion_glass::{GlassFrame, GlassParams, GlassRenderer, GlassShape};
+use axion_glass::{GlassInPlace, GlassParams, GlassRenderer, GlassShape};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec2;
 pub use glyphon;
@@ -346,8 +346,8 @@ struct ImageUniform {
 
 struct Targets {
     size: (u32, u32),
-    textures: [wgpu::Texture; 2],
-    views: [wgpu::TextureView; 2],
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
 }
 
 /// Per-content-layer text state (glyphon prepares one renderer per draw batch).
@@ -381,8 +381,6 @@ pub struct Compositor {
     /// The page palette (see [`Compositor::sample_palette`]).
     palette: probe::LuminanceProbe,
     targets: Option<Targets>,
-    /// Which target holds the finished frame after [`Compositor::render`].
-    last: usize,
 }
 
 impl Compositor {
@@ -508,7 +506,6 @@ impl Compositor {
             probe: probe::LuminanceProbe::new(device, 1),
             palette: probe::LuminanceProbe::new(device, PALETTE_CELLS),
             targets: None,
-            last: 0,
         }
     }
 
@@ -530,10 +527,9 @@ impl Compositor {
                 view_formats: &[],
             })
         };
-        let textures = [make("compositor target a"), make("compositor target b")];
-        let views =
-            [textures[0].create_view(&Default::default()), textures[1].create_view(&Default::default())];
-        self.targets = Some(Targets { size, textures, views });
+        let texture = make("compositor target");
+        let view = texture.create_view(&Default::default());
+        self.targets = Some(Targets { size, texture, view });
     }
 
     /// Rounds the window's corners: `radius` physical px, on a surface whose alpha mode is
@@ -571,49 +567,33 @@ impl Compositor {
 
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("compositor") });
-        let mut current = 0;
-        clear(&mut encoder, &targets.views[current], scene.clear);
+        clear(&mut encoder, &targets.view, scene.clear);
 
         let mut text_batch = 0;
         for layer in &scene.layers {
             match layer {
                 Layer::Image(image) => {
                     let bind_group = self.image_bind_group(image, viewport);
-                    let mut pass = begin_pass(&mut encoder, "image", &targets.views[current]);
+                    let mut pass = begin_pass(&mut encoder, "image", &targets.view);
                     pass.set_pipeline(&self.image_pipeline);
                     pass.set_bind_group(0, &bind_group, &[]);
                     pass.draw(0..4, 0..1);
                 }
                 Layer::Glass { shapes, params } => {
-                    let next = 1 - current;
-                    self.glass.render(
+                    self.glass.render_in_place(
                         &self.device,
                         &mut encoder,
-                        GlassFrame {
-                            backdrop: &targets.views[current],
-                            backdrop_size: size,
-                            target: &targets.views[next],
-                            shapes,
-                            params,
-                        },
+                        GlassInPlace { texture: &targets.texture, view: &targets.view, shapes, params },
                     );
-                    current = next;
                 }
                 Layer::Content(content) => {
-                    self.draw_content(
-                        &mut encoder,
-                        &targets.views[current],
-                        content,
-                        fonts,
-                        text_batch,
-                        viewport,
-                    );
+                    self.draw_content(&mut encoder, &targets.view, content, fonts, text_batch, viewport);
                     text_batch += 1;
                 }
             }
         }
 
-        let mut full = ImageDraw::new(&targets.views[current], Rect::new(0.0, 0.0, viewport.x, viewport.y));
+        let mut full = ImageDraw::new(&targets.view, Rect::new(0.0, 0.0, viewport.x, viewport.y));
         if self.rounds_window() {
             full.radius = self.window_radius;
         }
@@ -633,7 +613,6 @@ impl Compositor {
         }
         self.queue.submit([encoder.finish()]);
         self.text_atlas.trim();
-        self.last = current;
         self.targets = Some(targets);
     }
 
@@ -809,7 +788,7 @@ impl Compositor {
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         encoder.copy_texture_to_buffer(
-            targets.textures[self.last].as_image_copy(),
+            targets.texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
                 layout: wgpu::TexelCopyBufferLayout {

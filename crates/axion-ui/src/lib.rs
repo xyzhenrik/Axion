@@ -507,6 +507,27 @@ impl Ui {
         }
     }
 
+    /// Changes a text field's placeholder (the hint shown while it is empty).
+    pub fn set_placeholder(&mut self, node: NodeId, text: &str) {
+        let family = self.theme.font_family().to_owned();
+        let Some(widget) = self.tree.get_node_context_mut(node) else { return };
+        if let WidgetKind::TextField(field) = &mut widget.kind
+            && field.placeholder_text != text
+        {
+            field.placeholder_text = text.to_owned();
+            set_buffer_text(
+                &mut field.placeholder,
+                self.fonts.get_mut(),
+                &family,
+                text,
+                field.style,
+                Align::Start,
+            );
+            let _ = self.tree.mark_dirty(node);
+            self.needs_layout = true;
+        }
+    }
+
     /// Lets a label wrap onto up to `lines` lines (ellipsis after the last) instead of staying
     /// on one line. The label should be allowed to shrink (`min_size.width: 0`).
     pub fn set_label_lines(&mut self, node: NodeId, lines: usize) {
@@ -911,6 +932,10 @@ impl Ui {
         if let Some(widget) = self.tree.get_node_context_mut(node) {
             widget.frame = frame;
             match &mut widget.kind {
+                // A label that has no room (hidden: taffy gives it no box) has nothing to shape;
+                // shaping a wrapped one at a width of one pixel costs about a millisecond each,
+                // on every layout. It is measured and sized again when it is shown.
+                WidgetKind::Label(_) if frame.size.x <= 0.0 && frame.size.y <= 0.0 => {}
                 WidgetKind::Label(label) => {
                     // A little slack so rounding never ellipsizes a label that fits.
                     if label.max_lines > 1 {
@@ -2311,6 +2336,8 @@ impl Ui {
             }
         }
 
+        // Glass shapes of the subtree start after this node's own (already placed).
+        let glass_mark = (press_xf.is_some() || frame_xf.is_some()).then(|| marks(stacks));
         if widget.clip {
             // The subtree as its own layers, each cut to this widget's frame.
             let mut sub: Vec<Stack<'a>> = Vec::new();
@@ -2335,17 +2362,40 @@ impl Ui {
                 }
             }
             stacks[child_depth].after.extend(layers);
+            Self::carry_subtree(
+                stacks,
+                press_xf,
+                mark,
+                frame_xf,
+                frame_mark,
+                glass_mark.as_deref(),
+                child_depth,
+            );
             return;
         }
-        let glass_mark = press_xf.as_ref().map(|_| marks(stacks));
         for child in self.tree.children(node).unwrap_or_default() {
             self.paint_node(child, child_depth, dim, child_fade, stacks);
         }
+        Self::carry_subtree(stacks, press_xf, mark, frame_xf, frame_mark, glass_mark.as_deref(), child_depth);
+    }
+
+    /// Carries everything a subtree painted along with its root: the animated background
+    /// (`visual_frame`: popover, menu, sheet opening) and then a held glass's swell and pull.
+    /// Content, nested glass (any depth) and clipped lists all move together.
+    fn carry_subtree(
+        stacks: &mut [Stack<'_>],
+        press_xf: Option<PressXf>,
+        mark: Option<Vec<Mark>>,
+        frame_xf: Option<PressXf>,
+        frame_mark: Option<Vec<Mark>>,
+        glass_mark: Option<&[Mark]>,
+        child_depth: usize,
+    ) {
         if let (Some(xf), Some(mark)) = (frame_xf, frame_mark) {
-            transform_since(stacks, &mark, None, &xf, child_depth);
+            transform_since(stacks, &mark, glass_mark, &xf, child_depth);
         }
         if let (Some(xf), Some(mark)) = (press_xf, mark) {
-            transform_since(stacks, &mark, glass_mark.as_deref(), &xf, child_depth);
+            transform_since(stacks, &mark, glass_mark, &xf, child_depth);
         }
     }
 
@@ -2731,9 +2781,19 @@ fn transform_since(
         }
         transform_content(&mut stack.content, m, xf);
         for layer in stack.after.iter_mut().skip(m.after) {
-            if let Layer::Content(c) = layer {
-                transform_content(c, &Mark::NONE, xf);
-                c.clip = c.clip.map(|r| xf.rect(r));
+            match layer {
+                Layer::Content(c) => {
+                    transform_content(c, &Mark::NONE, xf);
+                    c.clip = c.clip.map(|r| xf.rect(r));
+                }
+                Layer::Glass { shapes, .. } if glass_mark.is_some() => {
+                    for shape in shapes {
+                        shape.center = xf.place(shape.center);
+                        shape.half_size *= xf.diag();
+                        shape.corner_radius *= xf.uniform();
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -4017,6 +4077,102 @@ mod tests {
         let want = group.center + (at_rest - Vec2::new(74.0, 22.0)) * g;
         assert!((inner.center - want).length() < 0.6, "{:?} vs {want:?}", inner.center);
         assert!((inner.half_size.x / 18.0 - g.x).abs() < 0.01, "{} vs {}", inner.half_size.x / 18.0, g.x);
+    }
+
+    /// A popover opening: its glass buttons (and glass nested in them) follow the popover's
+    /// animated frame exactly like its content: same scale, offset and overshoot.
+    #[test]
+    fn glass_nested_in_an_opening_popover_follows_its_visual_frame() {
+        for flat in [false, true] {
+            let mut config = axion_config::Config::default();
+            if flat {
+                config.glass.style = axion_config::GlassStyle::Flat;
+            }
+            let mut ui = Ui::new(Theme::new(&config, false), 1.0);
+            ui.set_viewport(Vec2::new(800.0, 600.0), 1.0);
+            let root = ui.root();
+            let popover = ui.add(
+                root,
+                Widget::container().with_background(Background::Glass(GlassLevel::Regular)).with_radius(24.0),
+                Style {
+                    position: Position::Absolute,
+                    inset: taffy::Rect {
+                        left: length(300.0),
+                        top: length(100.0),
+                        right: auto(),
+                        bottom: auto(),
+                    },
+                    size: Size { width: length(200.0), height: length(160.0) },
+                    ..Default::default()
+                },
+            );
+            let button = ui.add(
+                popover,
+                Widget::container()
+                    .with_background(Background::Glass(GlassLevel::Thin))
+                    .with_action(ActionId(77))
+                    .with_radius(CAPSULE),
+                Style {
+                    position: Position::Absolute,
+                    inset: taffy::Rect {
+                        left: length(140.0),
+                        top: length(100.0),
+                        right: auto(),
+                        bottom: auto(),
+                    },
+                    size: Size { width: length(44.0), height: length(44.0) },
+                    justify_content: JustifyContent::CENTER,
+                    align_items: AlignItems::CENTER,
+                    ..Default::default()
+                },
+            );
+            ui.add(button, Widget::icon(axion_compositor::Icon::Back, 20.0), Style::default());
+            ui.layout();
+            let layout = ui.frame(popover);
+            let inner = ui.frame(button);
+            // Growing from a small drop, overshooting past the final size, settled.
+            let steps = [(0.7, 0.65), (0.8, 0.8), (1.0, 1.0), (1.12, 1.08), (0.97, 0.98)];
+            for (kx, ky) in steps {
+                let size = layout.size * Vec2::new(kx, ky);
+                let origin = layout.origin + Vec2::new(10.0, -6.0) * (1.0 - kx) + (layout.size - size) / 2.0;
+                ui.set_visual_frame(popover, Some(Rect { origin, size }));
+                let mut layers = Vec::new();
+                ui.paint(&mut layers);
+                // The expected rect of the button: the layout rect mapped like the content.
+                let ratio = size / layout.size;
+                let centre = origin + size / 2.0 + (inner.center() - layout.center()) * ratio;
+                let want = Rect { origin: centre - inner.size * ratio / 2.0, size: inner.size * ratio };
+                let icon = layers
+                    .iter()
+                    .filter_map(|l| if let Layer::Content(c) = l { c.icons.first().copied() } else { None })
+                    .next_back()
+                    .expect("the icon");
+                assert!(
+                    (icon.rect.center() - want.center()).length() < 0.01,
+                    "flat {flat} {kx}: icon {:?} vs {want:?}",
+                    icon.rect
+                );
+                if flat {
+                    assert!(layers.iter().all(|l| !matches!(l, Layer::Glass { .. })));
+                    continue;
+                }
+                let thin = layers
+                    .iter()
+                    .filter_map(|l| {
+                        if let Layer::Glass { shapes, .. } = l { shapes.last().copied() } else { None }
+                    })
+                    .next_back()
+                    .expect("the button's glass");
+                assert!(
+                    (thin.center - want.center()).length() < 0.01,
+                    "{kx}: glass centre {:?} vs {:?}",
+                    thin.center,
+                    want.center()
+                );
+                assert!((thin.half_size - want.size / 2.0).length() < 0.01, "{kx}: {:?}", thin.half_size);
+                assert!((thin.center - icon.rect.center()).length() < 0.01);
+            }
+        }
     }
 
     #[test]

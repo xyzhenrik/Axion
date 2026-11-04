@@ -83,6 +83,7 @@ These only work while **Developer tools** is on in **Settings > General**.
 | Action | Keys | Name in `keymap.toml` |
 |---|---|---|
 | Settings | Ctrl+,  and Ctrl+S | `open_settings` |
+| Context menu of what the pointer is over (over the page: the page's own) | Menu key and Shift+F10 | `context_menu` |
 | Command palette (search every action) | Ctrl+K | `command_palette` |
 | Fullscreen window | F11 | `toggle_fullscreen` |
 | Quit | Ctrl+Q | `quit` |

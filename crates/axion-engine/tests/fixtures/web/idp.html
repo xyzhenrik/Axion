@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Identity provider</title>
+<!-- The sign-in window of site.html: tells the page that opened it (window.opener.postMessage)
+     and closes itself, as the OAuth popups of Google and others do. Origin http://127.0.0.1:8102. -->
+<style>
+  body { font: 16px sans-serif; background: #fffbe6; }
+  #spin { width: 30px; height: 30px; background: #c63; animation: turn 1s linear infinite; }
+  @keyframes turn { to { transform: rotate(360deg); } }
+</style>
+<div id="spin"></div>
+<p>Signing in ...</p>
+<script>
+  const flow = new URLSearchParams(location.search).get('flow');
+  const report = (o) => fetch('/report?' + new URLSearchParams(o), { keepalive: true });
+  report({ step: 'idp loaded', flow, opener: String(!!window.opener), name: window.name });
+  if (window.opener) {
+    try {
+      window.opener.postMessage({ token: 'xyz', flow }, 'http://localhost:8101');
+      report({ step: 'idp posted', flow });
+    } catch (e) {
+      report({ step: 'idp post failed', flow, error: String(e) });
+    }
+    setTimeout(() => window.close(), 700);
+  }
+</script>
