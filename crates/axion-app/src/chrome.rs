@@ -591,6 +591,8 @@ pub struct Chrome {
     circuit_button: NodeId,
     circuit_wanted: bool,
     network_icon: NodeId,
+    /// "Session" next to the glyph while a session route is on (hidden otherwise).
+    network_label: NodeId,
     /// The zoom indicator: its button and label, and the text it wants (`None`: hidden).
     zoom_button: NodeId,
     zoom_label: NodeId,
@@ -1484,8 +1486,25 @@ impl Chrome {
         tip(ui, circuit_button, tr("Tor circuit for this site"), None);
         ui.set_visible(circuit_button, false);
         // The network connection (proxy, VPN, Tor) the page goes through; hidden for direct.
-        let (network_button, network_icon) =
-            icon_button(ui, address, ChromeAction::Network, Widget::icon(Icon::Network, 18.0), 30.0);
+        let network_button = ui.add(
+            address,
+            Widget::container().with_action(ChromeAction::Network.id()).with_radius(CAPSULE),
+            Style {
+                size: Size { width: auto(), height: length(30.0) },
+                padding: padding(6.0, 6.0, 0.0, 0.0),
+                flex_shrink: 0.0,
+                justify_content: JustifyContent::CENTER,
+                ..row(4.0)
+            },
+        );
+        let network_icon = ui.add(network_button, Widget::icon(Icon::Network, 18.0), Style::default());
+        // The session route is visible right in the address field, next to the glyph.
+        let network_label =
+            ui.add_label(network_button, tr("Session"), TextStyle::Footnote, Style::default());
+        if let Some(w) = ui.widget_mut(network_label) {
+            w.set_paint(Paint::Accent);
+        }
+        ui.set_visible(network_label, false);
         tip(ui, network_button, tr("Network connection"), Some(Action::ToggleNetwork));
         ui.set_visible(network_button, false);
         // A page that is not at its default zoom: the zoom, and a click resets it.
@@ -1750,6 +1769,7 @@ impl Chrome {
             circuit_button,
             circuit_wanted: false,
             network_icon,
+            network_label,
             zoom_button,
             zoom_label,
             zoom_wanted: None,
@@ -2862,9 +2882,10 @@ impl Chrome {
 
     /// The network chip: hidden (`None`), or shown with the route's state (green: connected,
     /// accent: connecting, red: down, grey: this site goes direct).
-    pub fn set_network_chip(&mut self, ui: &mut Ui, chip: Option<crate::network::ChipState>) {
+    pub fn set_network_chip(&mut self, ui: &mut Ui, chip: Option<crate::network::ChipState>, session: bool) {
         use crate::network::ChipState;
         self.network_wanted = chip;
+        ui.set_visible(self.network_label, chip.is_some() && session);
         ui.set_visible(self.network_button, chip.is_some() && self.extras_fit());
         let Some(state) = chip else { return };
         ui.set_icon(

@@ -4,7 +4,6 @@
 use axion_net::{Connection, ConnectionKind, ConnectionSecrets, ConnectionStatus, Secret, Target};
 
 use super::*;
-use crate::network as net;
 use crate::settings::{ConnectionDraft, ConnectionRow, NetRequest};
 
 impl Browser {
@@ -114,11 +113,7 @@ impl Browser {
     fn network_save(&mut self, draft: ConnectionDraft) {
         let id = draft.id.clone().unwrap_or_else(Connection::new_id);
         let is_new = draft.id.is_none();
-        let old_secrets: Option<ConnectionSecrets> = self
-            .passwords
-            .network_secrets()
-            .and_then(|items| items.into_iter().find(|(i, _)| *i == id))
-            .and_then(|(_, text)| net::secrets_from_json(&text));
+        let old_secrets: Option<ConnectionSecrets> = self.net.secrets_of(&id);
         let mut secrets = old_secrets.clone().unwrap_or_default();
         let mut write = false;
         let mut wipe = false;
@@ -140,28 +135,15 @@ impl Browser {
             }
             ConnectionKind::Tor(_) | ConnectionKind::Direct => wipe = old_secrets.is_some(),
         }
-        if write || wipe {
-            if !self.passwords.is_unlocked() {
-                self.settings.set_network_error(Some(
-                    tr("To store the password or keys, unlock Passwords first (Settings › Passwords).")
-                        .to_owned(),
-                ));
-                self.refresh_settings();
-                return;
-            }
-            let result = if wipe && !write {
-                self.passwords.remove_network_secret(&id)
-            } else {
-                self.passwords.set_network_secret(&id, &net::secrets_to_json(&secrets))
-            };
-            if let Err(e) = result {
-                tracing::error!(error = %e, "storing connection secrets failed");
-                self.settings
-                    .set_network_error(Some(tr("The secrets couldn't be stored in the vault.").to_owned()));
-                self.refresh_settings();
-                return;
-            }
-            self.net.cache_secrets(&id, &secrets);
+        // The secrets are encrypted with the device key on the secrets thread: no master
+        // password, and the vault may stay locked. A copy an older version left in the vault goes.
+        if write {
+            self.net.store_secrets(&id, &secrets);
+        } else if wipe {
+            self.net.forget_secrets(&id);
+        }
+        if (write || wipe) && self.passwords.is_unlocked() {
+            let _ = self.passwords.remove_network_secret(&id);
         }
         let connection = Connection { id: id.clone(), name: draft.name, kind: draft.kind };
         match self.config.network.connections.iter_mut().find(|c| c.id == id) {
@@ -191,6 +173,9 @@ impl Browser {
             network.private_connection = None;
         }
         network.site_rules.retain(|r| !used(&r.connection));
+        if network.session_route.as_ref().is_some_and(used) {
+            network.session_route = None;
+        }
         self.net.forget_secrets(id);
         if self.passwords.is_unlocked() {
             let _ = self.passwords.remove_network_secret(id);

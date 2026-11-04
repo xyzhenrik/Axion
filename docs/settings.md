@@ -325,6 +325,7 @@ the password vault, not in `config.toml`.
 | `wireguard_handshake_timeout_secs` | 20 | How long a WireGuard handshake may stay unanswered before the connection is shown as failed (wrong key, dead server and blocked UDP look the same). |
 | `background_priority`, `tor_worker_threads` | on, 2 | Run Tor's directory download and verification at low CPU priority; how many worker threads the Tor client uses (1-8). |
 | `connect_at_start`, `show_chip`, `notify_changes` | on | Start default routes at launch; show the chip in the address field; toast on changes. |
+| `session_route_persist` | off | Keep the session route ("Use X for this session" in the chip's popover) across restarts. Off: it is never written to the file and Axion starts with the normal routes. `session_route` (a connection id) holds it while on. |
 
 ## Privacy
 

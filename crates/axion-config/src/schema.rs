@@ -1931,6 +1931,14 @@ pub struct Network {
     pub show_chip: bool,
     /// Tell the user in a toast when a connection comes up or goes down.
     pub notify_changes: bool,
+    /// Keep the session route ("Use X for this session", from the address field's chip) across
+    /// restarts. Off: it is a pure session setting and Axion starts with the normal routes.
+    pub session_route_persist: bool,
+    /// The session route: while set, every tab (private ones too) goes through this
+    /// connection, whatever the defaults and site rules say; switching it off restores them.
+    /// Only written to the file while `session_route_persist` is on, and ignored when loaded
+    /// with it off.
+    pub session_route: Option<axion_net::Target>,
 }
 
 impl Default for Network {
@@ -1955,12 +1963,15 @@ impl Default for Network {
             connect_at_start: true,
             show_chip: true,
             notify_changes: true,
+            session_route_persist: false,
+            session_route: None,
         }
     }
 }
 
 impl Network {
-    /// The routing part, for `axion_net::NetManager`.
+    /// The routing the settings describe, without the session route (what Settings and the
+    /// per-site choices edit).
     pub fn routing(&self) -> axion_net::RoutingConfig {
         axion_net::RoutingConfig {
             connections: self.connections.clone(),
@@ -1969,6 +1980,34 @@ impl Network {
             site_rules: self.site_rules.clone(),
             kill_switch: self.kill_switch,
         }
+    }
+
+    /// The session route if it is usable: a connection that still exists.
+    pub fn session_target(&self) -> Option<axion_net::Target> {
+        match &self.session_route {
+            Some(axion_net::Target::Connection(id)) if self.connection(id).is_some() => {
+                self.session_route.clone()
+            }
+            _ => None,
+        }
+    }
+
+    /// The routing in force: the settings' routing, or with a session route every tab (private
+    /// ones too) through that connection and no per-site rules.
+    pub fn effective_routing(&self) -> axion_net::RoutingConfig {
+        match self.session_target() {
+            Some(target) => self.routing().with_session_route(&target),
+            None => self.routing(),
+        }
+    }
+
+    /// Drops what must not outlive the session: the session route, unless it is kept.
+    pub fn without_session_state(&self) -> Self {
+        let mut network = self.clone();
+        if !network.session_route_persist {
+            network.session_route = None;
+        }
+        network
     }
 
     pub fn connection(&self, id: &str) -> Option<&axion_net::Connection> {

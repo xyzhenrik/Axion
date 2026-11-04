@@ -680,6 +680,7 @@ pub const INDEX: &[Entry] = &[
     control(C::Network, S::NetConnectAtStart, &["start", "autostart", "connect", "verbinden"]),
     control(C::Network, S::NetShowChip, &["chip", "address field", "adressfeld", "icon"]),
     control(C::Network, S::NetNotify, &["notify", "toast", "melden", "benachrichtigen"]),
+    control(C::Network, S::NetSessionPersist, &["session", "sitzung", "route", "restart", "neustart"]),
     control(
         C::Privacy,
         S::ExtensionsEnabled,

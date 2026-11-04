@@ -267,6 +267,7 @@ enum Setting {
     NetConnectAtStart,
     NetShowChip,
     NetNotify,
+    NetSessionPersist,
 }
 
 impl Setting {
@@ -352,6 +353,7 @@ impl Setting {
             Setting::NetConnectAtStart => tr_mark("Connect when Axion starts"),
             Setting::NetShowChip => tr_mark("Show the connection in the address field"),
             Setting::NetNotify => tr_mark("Tell me when a connection comes up or goes down"),
+            Setting::NetSessionPersist => tr_mark("Keep the session route after a restart"),
             Setting::ExtensionsEnabled => tr_mark("Chrome extensions (after restart)"),
             Setting::ExtensionsWebStore => tr_mark("Install from the Chrome Web Store (after restart)"),
             Setting::ExtensionsAutoUpdate => tr_mark("Update Web Store extensions automatically"),
@@ -431,6 +433,7 @@ impl Setting {
                 | Setting::NetConnectAtStart
                 | Setting::NetShowChip
                 | Setting::NetNotify
+                | Setting::NetSessionPersist
                 | Setting::ExtensionsEnabled
                 | Setting::ExtensionsWebStore
                 | Setting::ExtensionsAutoUpdate
@@ -585,6 +588,7 @@ impl Setting {
             Setting::NetConnectAtStart => return c.network.connect_at_start as u8 as f32,
             Setting::NetShowChip => return c.network.show_chip as u8 as f32,
             Setting::NetNotify => return c.network.notify_changes as u8 as f32,
+            Setting::NetSessionPersist => return c.network.session_route_persist as u8 as f32,
             Setting::ExtensionsEnabled => return c.extensions.enabled as u8 as f32,
             Setting::ExtensionsWebStore => return c.extensions.web_store as u8 as f32,
             Setting::ExtensionsAutoUpdate => return c.extensions.auto_update as u8 as f32,
@@ -690,6 +694,7 @@ impl Setting {
             Setting::NetConnectAtStart => c.network.connect_at_start = on,
             Setting::NetShowChip => c.network.show_chip = on,
             Setting::NetNotify => c.network.notify_changes = on,
+            Setting::NetSessionPersist => c.network.session_route_persist = on,
             Setting::ExtensionsEnabled => c.extensions.enabled = on,
             Setting::ExtensionsWebStore => c.extensions.web_store = on,
             Setting::ExtensionsAutoUpdate => c.extensions.auto_update = on,
