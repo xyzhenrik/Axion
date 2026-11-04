@@ -196,9 +196,10 @@ fn hop_row(hop: &Hop) -> CircuitRow {
             detail: String::new(),
         };
     }
+    // Country names exist in English and German only; every other language shows English.
     let language = match axion_i18n::language() {
         axion_i18n::Language::German => NameLanguage::German,
-        axion_i18n::Language::English => NameLanguage::English,
+        _ => NameLanguage::English,
     };
     let (badge, country) = match hop.country.as_deref() {
         Some(code) => {

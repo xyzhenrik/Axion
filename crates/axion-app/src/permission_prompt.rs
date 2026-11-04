@@ -25,7 +25,7 @@ const STOP_BASE: u32 = ACTION_BASE + 10;
 const STOP_ALL: ActionId = ActionId(ACTION_BASE + 19);
 /// The screen picker's "share sound" row, and its source cards (one id each).
 const PICK_AUDIO: ActionId = ActionId(ACTION_BASE + 4);
-const SOURCE_BASE: u32 = ACTION_BASE + 100;
+const SOURCE_BASE: u32 = ACTION_BASE + 30;
 /// Most source cards the picker can have (ids reserved for them).
 pub const MAX_SOURCES: usize = 64;
 const PICKER_COLUMNS: usize = 3;

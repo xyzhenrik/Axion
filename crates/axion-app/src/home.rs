@@ -17,6 +17,7 @@
 //! serve nothing but listed files from that directory.
 
 mod backgrounds;
+mod model;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -28,8 +29,12 @@ use axion_engine::{InternalPages, InternalRequest, InternalResponse};
 use axion_store::{Store, registrable_domain, site_host};
 use serde_json::{Value, json};
 
-pub use backgrounds::{Arrived, Image, Textures};
-use backgrounds::{Kind, LEGACY_FILE, Library, Thumbnails, valid_name};
+pub use backgrounds::{Arrived, Image, Kind, Textures};
+use backgrounds::{LEGACY_FILE, Library, Thumbnails, valid_name};
+pub use model::{
+    BackgroundEntry, BackgroundFacts, StartModel, clock_text, columns_for, format_bytes, format_count,
+    format_seconds, greeting_for_hour, monogram, monogram_color, page_count,
+};
 
 use crate::downloads::{Choose, choose_portal, spawn};
 use crate::settings::{BACKGROUND_SLOTS, BackgroundCard, SEARCH_ENGINES};
@@ -255,7 +260,15 @@ pub struct HomePage {
     stale: bool,
     /// Bumped when site icons arrive (the page's icon URLs change with it).
     icons_version: u64,
+    /// The top sites last read, when, and for which (count, window days): a site icon arriving
+    /// or the Shields total changing rebuilds the page's state but needn't read the history
+    /// again (that scan took ~20 ms with a large history). Read again after
+    /// `home.top_sites_refresh_seconds` or when the sites were edited.
+    top_sites: Option<(Instant, (u32, u32), TopSites)>,
 }
+
+/// The top sites to show, and how many the user removed.
+type TopSites = (Vec<Site>, usize);
 
 impl HomePage {
     pub fn new(profile: &Path, favicons: Option<PathBuf>) -> Self {
@@ -278,6 +291,7 @@ impl HomePage {
             add_error: None,
             stale: true,
             icons_version: 1,
+            top_sites: None,
         }
     }
 
@@ -451,6 +465,7 @@ impl HomePage {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
+        let sites = store.map(|store| self.cached_top_sites(store, config, now));
         let selected = self.selected(config);
         let names: Vec<&str> = self.library.names().collect();
         let mimes: Vec<&str> = self.library.entries().iter().map(|(_, m)| m.as_str()).collect();
@@ -476,18 +491,10 @@ impl HomePage {
             live_setting: config.home.live_wallpapers,
             error: self.add_error.as_deref().unwrap_or_default(),
         };
-        let state = state_json(
-            self.icons_version,
-            config,
-            store,
-            blocked_total,
-            account_name,
-            false,
-            &backgrounds,
-            now,
-        );
+        let state =
+            state_json(self.icons_version, config, sites, blocked_total, account_name, false, &backgrounds);
         let private_state =
-            state_json(self.icons_version, config, None, 0, account_name, true, &Backgrounds::PRIVATE, now);
+            state_json(self.icons_version, config, None, 0, account_name, true, &Backgrounds::PRIVATE);
         let background = selected.and_then(|name| self.library.file(name));
         let mut served = self.service.0.write().unwrap_or_else(PoisonError::into_inner);
         served.state = state.to_string();
@@ -503,6 +510,71 @@ impl HomePage {
         true
     }
 
+    /// The top sites, read again only when the last reading is older than
+    /// `home.top_sites_refresh_seconds` or was for other limits (see `top_sites` field).
+    fn cached_top_sites(&mut self, store: &Store, config: &Config, now: i64) -> TopSites {
+        let home = &config.home;
+        let key = (home.top_sites_count, home.top_sites_window_days);
+        let fresh = Duration::from_secs_f32(home.top_sites_refresh_seconds.max(0.0));
+        match &self.top_sites {
+            Some((at, k, sites)) if *k == key && at.elapsed() < fresh => sites.clone(),
+            _ => {
+                let sites = top_sites(store, home.top_sites_count as usize, home.top_sites_window_days, now);
+                self.top_sites = Some((Instant::now(), key, sites.clone()));
+                sites
+            }
+        }
+    }
+
+    /// What the native start page shows (the model the JSON of the HTML page is made from too).
+    pub fn start_model(
+        &mut self,
+        config: &Config,
+        store: Option<&Store>,
+        blocked: u64,
+        account_name: &str,
+        private: bool,
+    ) -> StartModel {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        let sites = store.filter(|_| !private).map(|store| self.cached_top_sites(store, config, now));
+        let entries = self
+            .library
+            .names()
+            .map(|name| BackgroundEntry {
+                name: name.to_owned(),
+                kind: self.library.kind(name).unwrap_or(Kind::Image),
+            })
+            .collect();
+        let facts = BackgroundFacts {
+            selected: self.selected(config),
+            entries,
+            live: wallpapers_animated(
+                config.home.live_wallpapers,
+                config.glass.reduce_motion,
+                config.home.live_wallpapers_ignore_reduce_motion,
+            ),
+            error: self.add_error.as_deref().unwrap_or_default(),
+        };
+        StartModel::with_sites(config, sites, blocked, account_name, private, &facts)
+    }
+
+    /// Bumped when site icons arrive or the icon tone changes: tiles ask for their icons again.
+    pub fn icons_version(&self) -> u64 {
+        self.icons_version
+    }
+
+    /// The file of background `name` and the cached thumbnail beside it (it may not exist).
+    pub fn background_files(&self, name: &str) -> Option<(PathBuf, PathBuf)> {
+        self.library.contains(name).then(|| (self.library.dir().join(name), self.library.thumb_path(name)))
+    }
+
+    /// The thumbnail texture of background `name`: `None` while it is being made.
+    pub fn thumbnail(&self, name: &str) -> Option<Option<Image>> {
+        self.thumbs.get(name)
+    }
+
     /// Takes a background picked in the file chooser. Returns whether the config changed.
     pub fn poll_chooser(&mut self, config: &mut Config) -> bool {
         let chosen = self.chosen.lock().unwrap_or_else(PoisonError::into_inner).take();
@@ -515,90 +587,189 @@ impl HomePage {
             tracing::debug!("unreadable start page message");
             return HomeAction::Nothing;
         };
-        let text = |key: &str| message.get(key).and_then(Value::as_str).unwrap_or_default().trim().to_owned();
-        let kind = text("type");
+        match HomeCommand::parse(&message) {
+            Some(command) => self.apply(command, config, store),
+            None => {
+                tracing::debug!(kind = ?message.get("type"), "unknown start page message");
+                HomeAction::Nothing
+            }
+        }
+    }
+
+    /// Does what `command` asks. Shared by the HTML page's messages (`handle`) and the native
+    /// start page, so both behave the same.
+    pub fn apply(&mut self, command: HomeCommand, config: &mut Config, store: Option<&Store>) -> HomeAction {
         let home = &mut config.home;
-        match kind.as_str() {
-            "go" => {
-                let query = text("text");
+        match command {
+            HomeCommand::Go(text) => {
+                let query = text.trim().to_owned();
                 return if query.is_empty() { HomeAction::Nothing } else { HomeAction::Go(query) };
             }
-            "engine" => {
-                let Some(engine) = message
-                    .get("index")
-                    .and_then(Value::as_u64)
-                    .and_then(|i| SEARCH_ENGINES.get(usize::try_from(i).ok()?))
-                else {
-                    return HomeAction::Nothing;
-                };
+            HomeCommand::Engine(index) => {
+                let Some(engine) = SEARCH_ENGINES.get(index) else { return HomeAction::Nothing };
                 config.general.search_url = engine.1.to_owned();
             }
-            "widget" => {
-                let on = message.get("on").and_then(Value::as_bool).unwrap_or(true);
-                match text("name").as_str() {
-                    "clock" => home.show_clock = on,
-                    "greeting" => home.show_greeting = on,
-                    "search" => home.show_search = on,
-                    "topSites" => home.show_top_sites = on,
-                    "stats" => home.show_stats = on,
-                    "liveWallpapers" => home.live_wallpapers = on,
-                    _ => return HomeAction::Nothing,
+            HomeCommand::Widget(widget, on) => match widget {
+                Widget::Clock => home.show_clock = on,
+                Widget::Greeting => home.show_greeting = on,
+                Widget::Search => home.show_search = on,
+                Widget::TopSites => home.show_top_sites = on,
+                Widget::Stats => home.show_stats = on,
+                Widget::LiveWallpapers => home.live_wallpapers = on,
+            },
+            HomeCommand::ClockFormat(format) => home.clock_format = format,
+            HomeCommand::BackgroundLook { dim, blur } => {
+                if let Some(dim) = dim {
+                    home.background_dim = dim.clamp(0.0, 0.9);
                 }
-            }
-            "clockFormat" => {
-                home.clock_format = match text("format").as_str() {
-                    "12h" => ClockFormat::H12,
-                    "24h" => ClockFormat::H24,
-                    _ => ClockFormat::Auto,
-                };
-            }
-            "backgroundLook" => {
-                if let Some(dim) = message.get("dim").and_then(Value::as_f64) {
-                    home.background_dim = (dim as f32).clamp(0.0, 0.9);
-                }
-                if let Some(blur) = message.get("blur").and_then(Value::as_f64) {
-                    home.background_blur = (blur as f32).clamp(0.0, 40.0);
+                if let Some(blur) = blur {
+                    home.background_blur = blur.clamp(0.0, 40.0);
                 }
             }
             // The first frame of a video the page decoded (a data URL), as its thumbnail.
-            "backgroundThumb" => {
-                let data = text("data");
+            HomeCommand::BackgroundThumb { name, data } => {
                 let bytes = data.split_once(";base64,").and_then(|(_, b64)| base64_decode(b64));
-                if bytes.is_some_and(|b| self.library.save_video_thumb(&text("name"), &b)) {
-                    self.thumbs.forget(&text("name"));
+                if bytes.is_some_and(|b| self.library.save_video_thumb(&name, &b)) {
+                    self.thumbs.forget(&name);
                     self.backgrounds_changed();
                 }
                 return HomeAction::Nothing;
             }
-            "chooseBackground" => {
+            HomeCommand::ChooseBackground => {
                 self.choose_background();
                 return HomeAction::Nothing;
             }
-            "backgroundPath" | "selectBackground" | "removeBackground" => {
-                let changed = match kind.as_str() {
-                    "backgroundPath" => self.add_background(&expand_home(&text("path")), config),
-                    "selectBackground" => self.select_background(&text("name"), config),
-                    _ => self.remove_background(&text("name"), config),
+            HomeCommand::BackgroundPath(_)
+            | HomeCommand::SelectBackground(_)
+            | HomeCommand::RemoveBackground(_) => {
+                let changed = match &command {
+                    HomeCommand::BackgroundPath(path) => self.add_background(&expand_home(path), config),
+                    HomeCommand::SelectBackground(name) => self.select_background(name, config),
+                    HomeCommand::RemoveBackground(name) => self.remove_background(name, config),
+                    _ => false,
                 };
                 // Unchanged: the page shows the truth again (e.g. after an unusable path).
                 return if changed { HomeAction::ConfigChanged } else { HomeAction::Refresh };
             }
-            "removeSite" | "unpinSite" | "pinSite" | "editSite" | "restoreSites" => {
+            HomeCommand::Site(edit) => {
                 let Some(store) = store else { return HomeAction::Nothing };
                 let search_url = config.general.search_url.clone();
-                if let Err(e) = edit_top_sites(store, &kind, &text, &search_url) {
+                if let Err(e) = edit_top_sites(store, &edit, &search_url) {
                     tracing::warn!("changing the top sites failed: {e}");
                 }
+                self.top_sites = None;
                 self.stale = true;
                 return HomeAction::Refresh;
             }
-            "openSettings" => return HomeAction::OpenSettings,
-            _ => {
-                tracing::debug!(kind, "unknown start page message");
-                return HomeAction::Nothing;
-            }
+            HomeCommand::OpenSettings => return HomeAction::OpenSettings,
         }
         HomeAction::ConfigChanged
+    }
+}
+
+/// The start page's widgets that can be switched on and off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Widget {
+    Clock,
+    Greeting,
+    Search,
+    TopSites,
+    Stats,
+    LiveWallpapers,
+}
+
+/// A change of the top sites.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SiteEdit {
+    Remove {
+        url: String,
+    },
+    Unpin {
+        url: String,
+    },
+    Pin {
+        url: String,
+        title: String,
+    },
+    /// `old` is empty for a new site.
+    Edit {
+        old: String,
+        url: String,
+        title: String,
+    },
+    Restore,
+}
+
+/// What the start page (either front end) asks of the browser.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HomeCommand {
+    Go(String),
+    /// Index into `SEARCH_ENGINES`.
+    Engine(usize),
+    Widget(Widget, bool),
+    ClockFormat(ClockFormat),
+    BackgroundLook {
+        dim: Option<f32>,
+        blur: Option<f32>,
+    },
+    BackgroundThumb {
+        name: String,
+        data: String,
+    },
+    ChooseBackground,
+    BackgroundPath(String),
+    SelectBackground(String),
+    RemoveBackground(String),
+    Site(SiteEdit),
+    OpenSettings,
+}
+
+impl HomeCommand {
+    /// The command a message of the HTML page (see `home.js`) stands for.
+    fn parse(message: &Value) -> Option<Self> {
+        let text = |key: &str| message.get(key).and_then(Value::as_str).unwrap_or_default().trim().to_owned();
+        Some(match text("type").as_str() {
+            "go" => Self::Go(text("text")),
+            "engine" => Self::Engine(
+                usize::try_from(message.get("index").and_then(Value::as_u64)?).unwrap_or(usize::MAX),
+            ),
+            "widget" => {
+                let on = message.get("on").and_then(Value::as_bool).unwrap_or(true);
+                let widget = match text("name").as_str() {
+                    "clock" => Widget::Clock,
+                    "greeting" => Widget::Greeting,
+                    "search" => Widget::Search,
+                    "topSites" => Widget::TopSites,
+                    "stats" => Widget::Stats,
+                    "liveWallpapers" => Widget::LiveWallpapers,
+                    _ => return None,
+                };
+                Self::Widget(widget, on)
+            }
+            "clockFormat" => Self::ClockFormat(match text("format").as_str() {
+                "12h" => ClockFormat::H12,
+                "24h" => ClockFormat::H24,
+                _ => ClockFormat::Auto,
+            }),
+            "backgroundLook" => Self::BackgroundLook {
+                dim: message.get("dim").and_then(Value::as_f64).map(|v| v as f32),
+                blur: message.get("blur").and_then(Value::as_f64).map(|v| v as f32),
+            },
+            "backgroundThumb" => Self::BackgroundThumb { name: text("name"), data: text("data") },
+            "chooseBackground" => Self::ChooseBackground,
+            "backgroundPath" => Self::BackgroundPath(text("path")),
+            "selectBackground" => Self::SelectBackground(text("name")),
+            "removeBackground" => Self::RemoveBackground(text("name")),
+            "removeSite" => Self::Site(SiteEdit::Remove { url: text("url") }),
+            "unpinSite" => Self::Site(SiteEdit::Unpin { url: text("url") }),
+            "pinSite" => Self::Site(SiteEdit::Pin { url: text("url"), title: text("title") }),
+            "editSite" => {
+                Self::Site(SiteEdit::Edit { old: text("old"), url: text("url"), title: text("title") })
+            }
+            "restoreSites" => Self::Site(SiteEdit::Restore),
+            "openSettings" => Self::OpenSettings,
+            _ => return None,
+        })
     }
 }
 
@@ -679,42 +850,36 @@ fn css_color(c: Color) -> String {
 }
 
 /// Pins, edits, removes or restores top sites.
-fn edit_top_sites(
-    store: &Store,
-    kind: &str,
-    text: &dyn Fn(&str) -> String,
-    search_url: &str,
-) -> axion_store::Result<()> {
+fn edit_top_sites(store: &Store, edit: &SiteEdit, search_url: &str) -> axion_store::Result<()> {
     let host_of = |url: &str| registrable_domain(url);
-    match kind {
-        "removeSite" => {
-            if let Some(host) = host_of(&text("url")) {
+    match edit {
+        SiteEdit::Remove { url } => {
+            if let Some(host) = host_of(url) {
                 store.hide_top_site(&host)?;
             }
         }
-        "unpinSite" => {
-            if let Some(host) = host_of(&text("url")) {
+        SiteEdit::Unpin { url } => {
+            if let Some(host) = host_of(url) {
                 store.unpin_top_site(&host)?;
             }
         }
-        "pinSite" | "editSite" => {
+        SiteEdit::Pin { url: input, title } | SiteEdit::Edit { url: input, title, .. } => {
             // Only web addresses (a typed "example.com" becomes https://example.com).
-            let input = text("url");
             let url =
-                resolve_input(&input, search_url).filter(|u| is_address(&input) && site_host(u).is_some());
+                resolve_input(input, search_url).filter(|u| is_address(input) && site_host(u).is_some());
             let Some(url) = url else {
                 return Ok(());
             };
             let Some(host) = host_of(&url) else { return Ok(()) };
-            let title = text("title");
-            if let Some(old) = host_of(&text("old")).filter(|old| *old != host) {
+            if let SiteEdit::Edit { old, .. } = edit
+                && let Some(old) = host_of(old).filter(|old| *old != host)
+            {
                 // Edited into another site: the old one doesn't come back from history.
                 store.hide_top_site(&old)?;
             }
-            store.pin_top_site(&host, &url, &title)?;
+            store.pin_top_site(&host, &url, title)?;
         }
-        "restoreSites" => store.restore_hidden_top_sites()?,
-        _ => {}
+        SiteEdit::Restore => store.restore_hidden_top_sites()?,
     }
     Ok(())
 }
@@ -798,12 +963,11 @@ fn page_translations() -> Value {
 fn state_json(
     icons_version: u64,
     config: &Config,
-    store: Option<&Store>,
+    sites: Option<TopSites>,
     blocked: u64,
     name: &str,
     private: bool,
     backgrounds: &Backgrounds<'_>,
-    now: i64,
 ) -> Value {
     let home = &config.home;
     let h24 = match home.clock_format {
@@ -817,11 +981,7 @@ fn state_json(
         .map(|(name, url)| json!({ "name": name, "host": site_host(url).unwrap_or_default() }))
         .collect();
     let custom_host = site_host(&config.general.search_url).unwrap_or_default();
-    let limit = home.top_sites_count as usize;
-    let (sites, hidden) = match store {
-        Some(store) if !private => top_sites(store, limit, home.top_sites_window_days, now),
-        _ => (Vec::new(), 0),
-    };
+    let (sites, hidden) = sites.filter(|_| !private).unwrap_or_default();
     let sites: Vec<Value> = sites
         .iter()
         .map(|s| json!({ "url": s.url, "title": s.title, "host": s.host, "pinned": s.pinned }))
@@ -891,7 +1051,7 @@ mod tests {
         assert!(page_html(true).contains("<html data-flat lang=\"en\">"));
         assert!(!page_html(false).contains("data-flat"));
         let mut config = Config::default();
-        let state = |c: &Config| state_json(1, c, None, 0, "", false, &Backgrounds::PRIVATE, 0);
+        let state = |c: &Config| state_json(1, c, None, 0, "", false, &Backgrounds::PRIVATE);
         assert_eq!(state(&config)["flat"], false);
         config.glass.style = axion_config::GlassStyle::Flat;
         assert_eq!(state(&config)["flat"], true);
@@ -994,6 +1154,19 @@ mod tests {
     }
 
     #[test]
+    fn top_sites_are_read_again_only_when_due() {
+        let store = Store::in_memory().unwrap();
+        store.record_visit("https://a.example/", "A", 100).unwrap();
+        let mut page = HomePage::new(Path::new("/nonexistent"), None);
+        let mut config = Config::default();
+        assert_eq!(page.cached_top_sites(&store, &config, 100).0.len(), 1);
+        store.record_visit("https://b.example/", "B", 100).unwrap();
+        assert_eq!(page.cached_top_sites(&store, &config, 100).0.len(), 1, "the last reading is reused");
+        config.home.top_sites_refresh_seconds = 0.0;
+        assert_eq!(page.cached_top_sites(&store, &config, 100).0.len(), 2, "due: read again");
+    }
+
+    #[test]
     fn settings_messages() {
         let mut config = Config::default();
         let mut page = HomePage::new(Path::new("/nonexistent"), None);
@@ -1046,12 +1219,13 @@ mod tests {
             live_setting: true,
             error: "",
         };
-        let state = state_json(1, &config, Some(&store), 7, "Ada Lovelace", true, &Backgrounds::PRIVATE, 100);
+        let sites = || Some(top_sites(&store, 5, 90, 100));
+        let state = state_json(1, &config, sites(), 7, "Ada Lovelace", true, &Backgrounds::PRIVATE);
         assert_eq!(state["topSites"]["sites"].as_array().map(Vec::len), Some(0));
         assert_eq!(state["stats"]["show"], false);
         assert_eq!(state["background"]["show"], false);
         assert_eq!(state["background"]["list"].as_array().map(Vec::len), Some(0));
-        let state = state_json(1, &config, Some(&store), 7, "Ada Lovelace", false, &backgrounds, 100);
+        let state = state_json(1, &config, sites(), 7, "Ada Lovelace", false, &backgrounds);
         assert_eq!(state["accent"], "#E2457A");
         assert_eq!(state["background"]["show"], true);
         assert_eq!(state["background"]["selected"], "bg-1.png");

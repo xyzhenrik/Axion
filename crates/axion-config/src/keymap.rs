@@ -73,6 +73,8 @@ pub enum Action {
     ZoomOut,
     ZoomReset,
     OpenSettings,
+    /// Opens the context menu of what the pointer is over (the Menu key, Shift+F10).
+    ContextMenu,
     /// The command palette: fuzzy search over every other action.
     CommandPalette,
     ToggleFullscreen,
@@ -87,6 +89,12 @@ pub enum Action {
     /// The screenshot tool.
     Screenshot,
     Quit,
+    /// Closes the window (what its close button does).
+    CloseWindow,
+    /// Minimizes the window.
+    MinimizeWindow,
+    /// Maximizes the window, or restores it.
+    ToggleMaximize,
     // Media keys: only while a video plays fullscreen with Axion's controls, so plain keys
     // like Space keep reaching the page otherwise.
     MediaPlayPause,
@@ -161,6 +169,7 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::ZoomOut, "zoom_out"),
     (Action::ZoomReset, "zoom_reset"),
     (Action::OpenSettings, "open_settings"),
+    (Action::ContextMenu, "context_menu"),
     (Action::CommandPalette, "command_palette"),
     (Action::ToggleFullscreen, "toggle_fullscreen"),
     (Action::DevTools, "devtools"),
@@ -169,6 +178,9 @@ const SIMPLE_ACTIONS: &[(Action, &str)] = &[
     (Action::Print, "print"),
     (Action::Screenshot, "screenshot"),
     (Action::Quit, "quit"),
+    (Action::CloseWindow, "close_window"),
+    (Action::MinimizeWindow, "minimize_window"),
+    (Action::ToggleMaximize, "toggle_maximize"),
     (Action::MediaPlayPause, "media_play_pause"),
     (Action::MediaSeekBack, "media_seek_back"),
     (Action::MediaSeekForward, "media_seek_forward"),
@@ -250,6 +262,7 @@ const NAMED_KEYS: &[&str] = &[
     "End",
     "PageUp",
     "PageDown",
+    "ContextMenu",
 ];
 
 impl Key {
@@ -268,6 +281,7 @@ impl Key {
             "arrowup" => "Up",
             "arrowdown" => "Down",
             "del" => "Delete",
+            "menu" => "ContextMenu",
             "plus" => return Some(Key::Char('+')),
             "minus" => return Some(Key::Char('-')),
             "comma" => return Some(Key::Char(',')),
@@ -443,6 +457,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::ZoomOut, &["Ctrl+-"]);
     bind(Action::ZoomReset, &["Ctrl+0"]);
     bind(Action::OpenSettings, &["Ctrl+S", "Ctrl+,"]);
+    bind(Action::ContextMenu, &["ContextMenu", "Shift+F10"]);
     bind(Action::ToggleFullscreen, &["F11"]);
     bind(Action::DevTools, &["F12", "Ctrl+Shift+I"]);
     bind(Action::DevToolsConsole, &["Ctrl+Shift+J"]);
@@ -450,6 +465,7 @@ fn default_bindings() -> BTreeMap<Action, Vec<Chord>> {
     bind(Action::Print, &["Ctrl+P"]);
     bind(Action::Screenshot, &["Ctrl+Shift+S"]);
     bind(Action::Quit, &["Ctrl+Q"]);
+    bind(Action::CloseWindow, &["Ctrl+Shift+W"]);
     bind(Action::MediaPlayPause, &["Space", "K"]);
     bind(Action::MediaSeekBack, &["Left", "J"]);
     bind(Action::MediaSeekForward, &["Right", "L"]);
@@ -481,6 +497,17 @@ mod tests {
         }
         assert_eq!(keymap.action_for(&chord("Space")), Some(Action::MediaPlayPause));
         assert_eq!(keymap.action_for(&chord("Shift+.")), Some(Action::MediaFaster));
+    }
+
+    /// The Menu key and Shift+F10 open the context menu; the key's name survives a round trip.
+    #[test]
+    fn the_menu_key_and_shift_f10_open_the_context_menu() {
+        let keymap = Keymap::default();
+        assert_eq!(keymap.action_for(&chord("ContextMenu")), Some(Action::ContextMenu));
+        assert_eq!(keymap.action_for(&chord("Menu")), Some(Action::ContextMenu));
+        assert_eq!(keymap.action_for(&chord("Shift+F10")), Some(Action::ContextMenu));
+        assert_eq!(chord("Menu").to_string(), "ContextMenu");
+        assert_eq!("context_menu".parse::<Action>().ok(), Some(Action::ContextMenu));
     }
 
     #[test]

@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Signed in</title>
+<!-- Where the redirect flow of site.html ends (idp /authorize redirects here). -->
+<style>
+  body { font: 18px sans-serif; background: #e6ffe9; }
+  #spin { width: 30px; height: 30px; background: #3a6; animation: turn 1s linear infinite; }
+  @keyframes turn { to { transform: rotate(360deg); } }
+</style>
+<div id="spin"></div>
+<p>Signed in: back at the site.</p>
+<script>
+  fetch('/report?' + new URLSearchParams({ step: 'callback reached', search: location.search }), { keepalive: true });
+</script>

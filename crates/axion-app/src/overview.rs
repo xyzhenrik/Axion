@@ -868,7 +868,7 @@ impl Overview {
         &mut self,
         ui: &mut Ui,
         dt: f32,
-        frame_of: impl Fn(ViewId) -> Option<(wgpu::TextureView, (u32, u32))>,
+        mut frame_of: impl FnMut(ViewId) -> Option<(wgpu::TextureView, (u32, u32))>,
     ) -> bool {
         if !self.is_open() {
             return false;
@@ -892,7 +892,7 @@ impl Overview {
         }
         ui.set_visible(self.ghost, zooming);
         if zooming {
-            ui.set_image(self.ghost, ghost_view.and_then(&frame_of));
+            ui.set_image(self.ghost, ghost_view.and_then(&mut frame_of));
             let origin = self.ghost_origin.value;
             let size = self.ghost_size.value.max(Vec2::ONE);
             ui.set_style(

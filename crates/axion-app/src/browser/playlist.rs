@@ -827,6 +827,10 @@ impl Browser {
             self.engine.set_hidden(view, false);
             self.engine.resize(view, self.view_size());
             self.engine.set_focus(view, true);
+            // A start tab's view goes back under the native page.
+            if self.start_ui.hidden_view == Some(view) {
+                self.start_ui.hidden_view = None;
+            }
         }
         self.playlist_ui.button = None;
         self.tabs_changed = true;
@@ -922,6 +926,7 @@ impl Browser {
     /// The player half with nothing playing: idle, looking for a video, or a message with
     /// *Open page*.
     fn playlist_player_idle(&mut self) {
+        self.playlist_views.clear();
         let current = self.playlist_current_item().and_then(|id| self.playlist.item(id)).cloned();
         let site = current.as_ref().map(|i| display_host(&i.page_url)).unwrap_or_default();
         let (note, open_page) = if self.playlist.resolving.is_some() {
@@ -994,7 +999,7 @@ impl Browser {
                 _ => (tex.x / tex.y.max(1.0), Rect { origin: Vec2::ZERO, size: Vec2::ONE }),
             };
             VideoPicture {
-                view: f.texture.create_view(&Default::default()),
+                view: self.playlist_views.view(view, &f.texture),
                 size: (f.texture.width(), f.texture.height()),
                 uv,
                 aspect,
@@ -1484,8 +1489,7 @@ impl Browser {
         let wait = Duration::from_secs_f32(cfg.resolve_click_seconds.max(0.2));
         let due = r.clicked_at.is_none_or(|t| t.elapsed() >= wait);
         let click = r.media.as_ref().and_then(|m| {
-            m.players
-                .iter()
+            m.real_players()
                 .filter(|p| {
                     p.kind == axion_media::Kind::Video && !p.native && p.area() > 0.0 && !p.is_playing()
                 })
