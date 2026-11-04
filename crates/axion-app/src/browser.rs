@@ -310,6 +310,11 @@ pub struct Browser {
     hardware_status: crate::hardware::Status,
     /// When the first automatic update check runs (a moment after start; none when not due).
     update_check_at: Option<Instant>,
+    /// Desktop notifications (an update was found while the window is in the background).
+    notifier: crate::platform::notify::Notifier,
+    /// The running update's progress lines are refreshed on this schedule (and the bar moves).
+    update_progress_at: Instant,
+    update_progress_tick: u32,
     /// Where the install stood when the About page was last drawn.
     update_phase: Phase,
     /// The app icon as a texture for the About page (made when first needed).
@@ -910,6 +915,9 @@ impl Browser {
             gpu_confirm: false,
             hardware_status,
             update_check_at,
+            notifier: crate::platform::notify::Notifier::default(),
+            update_progress_at: Instant::now(),
+            update_progress_tick: 0,
             update_phase: Phase::Idle,
             about_icon: None,
             tooltip,
@@ -1782,6 +1790,7 @@ impl Browser {
             maximized: self.window.is_maximized(),
             capture,
             exe: None,
+            swap: self.updater.pending_swap(),
         });
         self.capture = None;
         // The next start of a plain `axion` opens it too.
@@ -1802,6 +1811,11 @@ impl Browser {
 
     pub fn set_shutdown_guard(&mut self, guard: crate::shutdown::Guard) {
         self.shutdown_guard = Some(guard);
+    }
+
+    /// A tarball update waiting to be swapped in (applied when Axion quits without relaunching).
+    pub fn pending_swap(&self) -> Option<axion_update::Staged> {
+        self.updater.pending_swap()
     }
 
     /// The relaunch to start once this browser is dropped (Chromium shut down).
@@ -4800,6 +4814,21 @@ impl Browser {
             Outcome::InstallUpdate => self.request_update_install(),
             Outcome::OpenReleasePage => self.open_release_page(),
             Outcome::RelaunchNow => self.relaunch_for_update(),
+            Outcome::CancelUpdate => {
+                self.updater.cancel();
+            }
+            Outcome::DismissUpdate => {
+                if self.updater.phase() == Phase::Done {
+                    self.updater.defer();
+                } else {
+                    self.updater.dismiss();
+                }
+                self.refresh_about();
+            }
+            Outcome::RetryUpdate => {
+                self.updater.retry(&self.config);
+                self.refresh_about();
+            }
             Outcome::CopyDiagnostics => self.copy_gpu_diagnostics(),
             Outcome::RestartAxion => self.restart_to_apply_settings(),
             Outcome::ConfirmGpuFrames => self.confirm_gpu_frames(),
@@ -5060,6 +5089,7 @@ impl Browser {
             || self.tab_search.is_open()
             || self.onboarding.is_open()
             || self.update_alert.is_open()
+            || (self.updater.phase() == Phase::Running && self.settings.is_open())
             || self.print_dialog.is_open()
             || self.shot.is_active()
             || self.lock_screen.is_alert_open()
@@ -5397,6 +5427,8 @@ impl Browser {
             self.updater.check(&self.config, false);
             self.refresh_about();
         }
+        self.poll_notifications();
+        self.tick_update_progress();
         let notices = self.updater.poll();
         if notices.is_empty() {
             return;
@@ -5420,11 +5452,26 @@ impl Browser {
                         )
                         && self.config.updates.notified_version != release.version.to_string()
                     {
+                        // Decided before the version is marked as announced.
+                        let desktop = crate::platform::notify::should_notify(
+                            &self.config.updates,
+                            &release,
+                            self.window.has_focus(),
+                            &axion_update::SystemClock,
+                        );
                         self.config.updates.notified_version = release.version.to_string();
                         self.config_dirty_since.get_or_insert(Instant::now());
                         let text =
                             tr_fmt!("Axion {version} is available", version = release.version.to_string());
                         self.show_toast_with_action(Icon::Download, &text, tr("Update"));
+                        if desktop {
+                            self.notifier.send(crate::platform::notify::update_payload(
+                                &text,
+                                &axion_update::plain_notes(&release.notes, 400),
+                                tr("Update"),
+                                tr("Later"),
+                            ));
+                        }
                     }
                 }
                 Notice::Changed => self.sync_update_alert(),
@@ -5433,6 +5480,42 @@ impl Browser {
         // The page redraws when the install starts or ends, not for every progress line.
         if checked || self.updater.phase() != self.update_phase {
             self.refresh_about();
+        }
+    }
+
+    /// What the user did with a desktop notification: "Update" opens Info & Updates and asks to
+    /// install, "Later" snoozes the reminders.
+    fn poll_notifications(&mut self) {
+        for event in self.notifier.events() {
+            match event {
+                crate::platform::notify::NotifyEvent::Update => {
+                    self.window.focus_window();
+                    self.open_about(false);
+                    self.request_update_install();
+                }
+                crate::platform::notify::NotifyEvent::Later => {
+                    axion_update::remind_later(&mut self.config.updates, &axion_update::SystemClock);
+                    self.config_dirty_since.get_or_insert(Instant::now());
+                    self.refresh_about();
+                }
+            }
+        }
+    }
+
+    /// While an update runs: the page's step, last output line and bar are changed in place a
+    /// few times a second (rebuilding the page for every line would be wasteful).
+    fn tick_update_progress(&mut self) {
+        if self.updater.phase() != Phase::Running || !self.settings.shows_run() {
+            return;
+        }
+        let interval = Duration::from_millis(u64::from(self.config.updates.progress_interval_ms.max(50)));
+        if self.update_progress_at.elapsed() < interval {
+            return;
+        }
+        self.update_progress_at = Instant::now();
+        self.update_progress_tick = self.update_progress_tick.wrapping_add(1);
+        if let Some(run) = self.updater.run_info() {
+            self.settings.update_run(&mut self.ui, &run, self.update_progress_tick);
         }
     }
 
@@ -5526,35 +5609,28 @@ impl Browser {
             return;
         }
         match self.updater.phase() {
-            Phase::Idle => self.update_alert.close(),
             Phase::Confirm => {
+                self.update_alert.close();
                 if action == AlertAction::Primary {
+                    // The sheet is gone at once; progress, result and errors are on the page.
                     self.updater.start_install(&self.config);
-                    self.sync_update_alert();
-                    self.refresh_about();
+                    self.show_update_progress();
                 } else {
                     self.updater.dismiss();
-                    self.update_alert.close();
                 }
             }
-            Phase::Running => {
-                if action == AlertAction::Secondary {
-                    self.updater.cancel();
-                }
-            }
-            Phase::Done => {
-                if action == AlertAction::Primary {
-                    self.relaunch_for_update();
-                } else {
-                    // The page keeps offering "Relaunch Now".
-                    self.update_alert.close();
-                }
-            }
-            Phase::Failed => {
-                self.updater.dismiss();
-                self.update_alert.close();
-                self.refresh_about();
-            }
+            // Only the confirmation is a sheet.
+            _ => self.update_alert.close(),
+        }
+    }
+
+    /// Shows Settings › Info & Updates, where an update that is running reports itself.
+    fn show_update_progress(&mut self) {
+        self.settings.set_category(Category::About);
+        if self.settings.is_open() {
+            self.refresh_about();
+        } else {
+            self.run(Action::OpenSettings);
         }
     }
 
@@ -5570,6 +5646,7 @@ impl Browser {
             maximized: self.window.is_maximized(),
             capture: None,
             exe: Some(exe),
+            swap: self.updater.pending_swap(),
         });
         tracing::info!("relaunching into the updated Axion");
     }
@@ -7071,6 +7148,17 @@ impl Browser {
                 "update-install" => self.request_update_install(),
                 "update-confirm" => self.update_alert_action(AlertAction::Primary),
                 "update-cancel" => self.update_alert_action(AlertAction::Secondary),
+                // Capture aids for the page's buttons: Cancel, Later / Close, Try again, Restart.
+                "update-stop" => self.updater.cancel(),
+                "update-later" => {
+                    self.updater.defer();
+                    self.refresh_about();
+                }
+                "update-retry" => {
+                    self.updater.retry(&self.config);
+                    self.refresh_about();
+                }
+                "update-restart" => self.relaunch_for_update(),
                 // Capture aid: a real pointer click on the toast's Update button.
                 "toast-click" => {
                     let at = self.toast.button_center(&self.ui);
