@@ -86,7 +86,7 @@ impl StartUi {
 }
 
 /// `axion://home/?html=1` always opens the HTML page.
-fn wants_html(url: &str) -> bool {
+pub(super) fn wants_html(url: &str) -> bool {
     url.split_once('?').is_some_and(|(_, q)| q.split('&').any(|p| p == "html=1"))
 }
 
@@ -553,7 +553,7 @@ impl Browser {
     /// arrows the tiles, Enter and Space press, Esc closes, a typed character goes to the search
     /// field. Returns whether the key was used.
     pub(super) fn start_key(&mut self, event: &winit::event::KeyEvent) -> bool {
-        if !self.start_shown() || !event.state.is_pressed() || self.start_ui.page.editor_open() && false {
+        if !self.start_shown() || !event.state.is_pressed() || self.start_ui.page.editor_open() {
             return false;
         }
         let key = input::key(event);
@@ -664,6 +664,39 @@ impl Browser {
                 self.start_ui.stale = true;
             }
             "start-pin-first" => self.start_action(StartAction::TilePin(0)),
+            // `start-do:KIND:N` runs a page action as a click on it would (hover buttons and
+            // panel controls have no real click aid): pin, edit, remove, dot, tile.
+            act if act.starts_with("start-do:") => {
+                let mut parts = act["start-do:".len()..].split(':');
+                let (kind, n) = (
+                    parts.next().unwrap_or(""),
+                    parts.next().and_then(|n| n.parse::<usize>().ok()).unwrap_or(0),
+                );
+                let action = match kind {
+                    "pin" => StartAction::TilePin(n),
+                    "edit" => StartAction::TileEdit(n),
+                    "remove" => StartAction::TileRemove(n),
+                    "dot" => StartAction::Dot(n),
+                    "tile" => StartAction::Tile(n),
+                    "restore" => StartAction::Restore,
+                    "save" => StartAction::EditorSave,
+                    "widget" => {
+                        let on = parts.next() == Some("1");
+                        let widget = match n {
+                            0 => HomeWidget::Clock,
+                            1 => HomeWidget::Greeting,
+                            2 => HomeWidget::Search,
+                            3 => HomeWidget::TopSites,
+                            _ => HomeWidget::Stats,
+                        };
+                        StartAction::Widget(widget, on)
+                    }
+                    "dim" => StartAction::Look { dim: Some(n as f32 / 10.0), blur: None },
+                    "blur" => StartAction::Look { dim: None, blur: Some(n as f32) },
+                    _ => return false,
+                };
+                self.start_action(action);
+            }
             "start-clock-off" => self.start_action(StartAction::Widget(HomeWidget::Clock, false)),
             _ => return false,
         }

@@ -1698,11 +1698,7 @@ impl StartPage {
                     ..row(10.0)
                 },
             );
-            let text = if model.sites.hidden == 1 {
-                tr("1 removed site").to_owned()
-            } else {
-                tr_fmt!("{n} removed sites", n = model.sites.hidden)
-            };
+            let text = tr_fmt!("{n} removed sites", n = model.sites.hidden);
             let l = ui.add_label(r, &text, TextStyle::Callout, Style { flex_grow: 1.0, ..shrinking() });
             secondary(ui, l);
             let link = ui.add(
@@ -2067,13 +2063,13 @@ impl StartPage {
             && w.background != wanted
         {
             w.background = wanted;
-            // The glyph reads on the tint (it is the accent colour on plain glass).
-            let ink = if on { Paint::OnAccent } else { paint_of(Ink::Accent, self.over_image) };
-            if let Some(glyph) = ui.children(self.gear).first().copied()
-                && let Some(g) = ui.widget_mut(glyph)
-            {
-                g.set_paint(ink);
-            }
+        }
+        // The glyph reads on the tint (it is the accent colour on plain glass).
+        let ink = if on { Paint::OnAccent } else { paint_of(Ink::Accent, self.over_image) };
+        if let Some(glyph) = ui.children(self.gear).first().copied()
+            && let Some(g) = ui.widget_mut(glyph)
+        {
+            g.set_paint(ink);
         }
     }
 

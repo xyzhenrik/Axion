@@ -1562,6 +1562,8 @@ impl Browser {
                 self.chrome.toggle_sidebar();
                 self.update_layout();
             }
+            // The native start page is not scaled by page zoom (its web view is hidden).
+            Action::ZoomIn | Action::ZoomOut | Action::ZoomReset if self.start_shown() => {}
             Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => {
                 if let Some(tab) = self.tabs.active() {
                     let level = match action {
@@ -7328,6 +7330,7 @@ impl Browser {
                     }
                 }
                 aid if aid.starts_with("start-") && self.start_aid(aid) => {}
+                "back" => self.run(Action::Back),
                 "overview-open" => self.open_overview(),
                 card if card.starts_with("overview-close:") => {
                     if let Ok(i) = card["overview-close:".len()..].parse::<usize>() {
@@ -8286,7 +8289,7 @@ impl Browser {
                 .tabs
                 .all()
                 .iter()
-                .filter(|t| native && is_home_url(&t.url) && !t.private)
+                .filter(|t| native && is_home_url(&t.url) && !start::wants_html(&t.url) && !t.private)
                 .map(|t| t.view)
                 .collect();
             let card = self.start_card_picture();
