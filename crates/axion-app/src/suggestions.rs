@@ -111,6 +111,9 @@ pub struct SuggestionList {
     items: Vec<Suggestion>,
     selected: Option<usize>,
     query: String,
+    /// An answer that arrived while a row was held: the rows are replaced once it is let go
+    /// (rebuilding them under the pointer would cancel the click, and the row's meaning).
+    pending: Option<(String, Vec<Suggestion>)>,
 }
 
 impl SuggestionList {
@@ -132,7 +135,15 @@ impl SuggestionList {
             },
         );
         let plate = popover.root();
-        Self { popover, plate, rows: Vec::new(), items: Vec::new(), selected: None, query: String::new() }
+        Self {
+            popover,
+            plate,
+            rows: Vec::new(),
+            items: Vec::new(),
+            selected: None,
+            query: String::new(),
+            pending: None,
+        }
     }
 
     pub fn row_action(id: ActionId) -> Option<usize> {
@@ -141,6 +152,18 @@ impl SuggestionList {
 
     pub fn is_visible(&self) -> bool {
         self.popover.is_open()
+    }
+
+    /// Where row `i` is drawn (test aid for pointer tests).
+    #[cfg(test)]
+    pub(crate) fn row_center(&self, ui: &Ui, i: usize) -> Option<glam::Vec2> {
+        self.rows.get(i).map(|&row| ui.frame(row).center())
+    }
+
+    /// The card's frame (test aid).
+    #[cfg(test)]
+    pub(crate) fn card(&self, ui: &Ui) -> Frame {
+        ui.frame(self.plate)
     }
 
     /// Updates the list for `query`, placed under `anchor` (the address field, logical px).
@@ -187,13 +210,36 @@ impl SuggestionList {
         if query != self.query || items == self.items {
             return;
         }
+        if self.row_held(ui) {
+            self.pending = Some((query.to_owned(), items));
+            return;
+        }
         let selected = self.selected.and_then(|i| self.items.get(i)).map(|s| s.url.clone());
         self.items = if query.trim().is_empty() { Vec::new() } else { items };
         self.selected = selected.and_then(|url| self.items.iter().position(|s| s.url == url));
         self.rebuild(ui, config, anchor, favicons);
     }
 
+    /// Whether the pointer holds one of the rows (pressed, not yet let go).
+    fn row_held(&self, ui: &Ui) -> bool {
+        ui.pressed_action()
+            .and_then(|n| ui.widget(n))
+            .and_then(|w| w.action)
+            .is_some_and(|a| Self::row_action(a).is_some())
+    }
+
+    /// Applies the answer that waited for a held row to be let go. Call every frame.
+    pub fn flush_pending(&mut self, ui: &mut Ui, config: &Config, anchor: Frame, favicons: &Favicons) {
+        if self.pending.is_some()
+            && !self.row_held(ui)
+            && let Some((query, items)) = self.pending.take()
+        {
+            self.set_items(ui, config, &query, items, anchor, favicons);
+        }
+    }
+
     pub fn hide(&mut self, ui: &mut Ui, config: &Config) {
+        self.pending = None;
         self.items.clear();
         self.query.clear();
         self.selected = None;
@@ -228,7 +274,12 @@ impl SuggestionList {
         for (i, item) in self.items.iter().enumerate() {
             let row = ui.add(
                 self.plate,
-                Widget::container().with_action(ActionId(ROW_BASE + i as u32)).with_radius(CAPSULE),
+                Widget::container()
+                    .with_action(ActionId(ROW_BASE + i as u32))
+                    .with_radius(CAPSULE)
+                    // The field stays focused while a row is pressed: blurring would close the
+                    // card (and drop its rows) before the click is done.
+                    .keeping_focus(),
                 Style {
                     size: Size { width: auto(), height: length(ROW_HEIGHT) },
                     flex_direction: FlexDirection::Row,

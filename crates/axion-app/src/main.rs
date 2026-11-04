@@ -76,6 +76,8 @@ mod playlist;
 mod playlist_page;
 mod playlist_popover;
 mod popover;
+#[cfg(test)]
+mod press_test;
 mod print_dialog;
 mod private;
 mod reader_popover;

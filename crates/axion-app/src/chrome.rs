@@ -2949,6 +2949,10 @@ impl Chrome {
         let bars = [self.bar, self.tab_strip, self.bookmarks.bar];
         let mut at = Some(node);
         while let Some(n) = at {
+            // A popover is built inside the bar it flows out of, but floats above it.
+            if ui.widget(n).is_some_and(|w| w.overlay) {
+                return false;
+            }
             if bars.contains(&n) {
                 return true;
             }
