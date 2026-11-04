@@ -1000,4 +1000,63 @@ mod tests {
         let tall = target_frame(Placement::AboveStart, anchor, Vec2::new(1000.0, 300.0), 210.0, 270.0, 10.0);
         assert!(tall.origin.y >= WINDOW_MARGIN);
     }
+
+    /// What the first scene painted right after `open` draws, as (kind, centre, half-size).
+    fn first_scene(layout: bool) -> Vec<(&'static str, Vec2, Vec2)> {
+        use axion_ui::Theme;
+        let config = Config::default();
+        let mut ui = Ui::new(Theme::new(&config, true), 1.0);
+        ui.set_viewport(WINDOW, 1.0);
+        let root = ui.add(
+            ui.root(),
+            Widget::container(),
+            Style { size: Size { width: length(WINDOW.x), height: length(WINDOW.y) }, ..Default::default() },
+        );
+        let mut menu = Menu::build(&mut ui, root, 100, Placement::Below);
+        ui.layout();
+        let anchor = Frame::new(900.0, 20.0, 40.0, 40.0);
+        let items = vec![
+            MenuItem::new(Icon::Bookmark, "Add Bookmark", MenuAction::AddBookmark),
+            MenuItem::new(Icon::Share, "Copy Link", MenuAction::CopyLink),
+            MenuItem::new(Icon::Settings, "Settings", MenuAction::Settings),
+        ];
+        menu.open(&mut ui, &config, anchor, WINDOW, items);
+        if layout {
+            ui.layout();
+        }
+        let mut layers = Vec::new();
+        ui.paint(&mut layers);
+        let mut out = Vec::new();
+        for layer in &layers {
+            match layer {
+                axion_compositor::Layer::Glass { shapes, .. } => {
+                    out.extend(shapes.iter().map(|s| ("glass", s.center, s.half_size)));
+                }
+                axion_compositor::Layer::Content(c) => {
+                    out.extend(
+                        c.quads
+                            .iter()
+                            .filter(|q| q.color[3] > 0.01)
+                            .map(|q| ("quad", q.rect.origin + q.rect.size / 2.0, q.rect.size / 2.0)),
+                    );
+                    out.extend(c.text.iter().map(|_| ("text", Vec2::ZERO, Vec2::ZERO)));
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_first_scene_after_open_has_nothing_at_the_final_position() {
+        for layout in [true, false] {
+            for (kind, center, half) in first_scene(layout) {
+                eprintln!("layout={layout} {kind} centre={center:?} half={half:?}");
+                assert!(
+                    half.x <= 40.0 && half.y <= 40.0,
+                    "layout={layout}: {kind} already {half:?} at {center:?}"
+                );
+            }
+        }
+    }
 }

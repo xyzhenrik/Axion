@@ -45,6 +45,8 @@ pub enum Step {
     /// Bookmarks and history of the other browsers found on this computer (only offered when
     /// there are some).
     Import,
+    /// Make Axion the system's default browser (offered on Linux; "Continue" skips it).
+    Default,
     /// Name, picture and an optional password of the local account.
     Account,
 }
@@ -54,6 +56,19 @@ impl Step {
     /// The steps when there is something to import.
     pub const WITH_IMPORT: [Step; 6] =
         [Step::Welcome, Step::Appearance, Step::Layout, Step::Glass, Step::Import, Step::Account];
+    /// The steps with the default browser offer.
+    pub const WITH_DEFAULT: [Step; 6] =
+        [Step::Welcome, Step::Appearance, Step::Layout, Step::Glass, Step::Default, Step::Account];
+    /// The steps with both.
+    pub const WITH_IMPORT_AND_DEFAULT: [Step; 7] = [
+        Step::Welcome,
+        Step::Appearance,
+        Step::Layout,
+        Step::Glass,
+        Step::Import,
+        Step::Default,
+        Step::Account,
+    ];
 }
 
 /// How the introduction ended.
@@ -72,20 +87,32 @@ pub struct Flow {
     ending: Option<Ending>,
     /// Whether the import step is part of the flow.
     import: bool,
+    /// Whether the default browser step is part of the flow.
+    default_offer: bool,
 }
 
 impl Flow {
     /// Starts at step `index` (counting from 0; clamped to the last step); `import`: the
     /// import step is part of the flow.
     pub fn at(index: usize, import: bool) -> Self {
-        let mut flow = Self { index: 0, ending: None, import };
+        Self::at_with(index, import, false)
+    }
+
+    /// [`Self::at`], with the default browser step part of the flow if `default_offer`.
+    pub fn at_with(index: usize, import: bool, default_offer: bool) -> Self {
+        let mut flow = Self { index: 0, ending: None, import, default_offer };
         flow.index = index.min(flow.steps().len() - 1);
         flow
     }
 
     /// The steps of this flow, in order.
     pub fn steps(&self) -> &'static [Step] {
-        if self.import { &Step::WITH_IMPORT } else { &Step::ALL }
+        match (self.import, self.default_offer) {
+            (false, false) => &Step::ALL,
+            (true, false) => &Step::WITH_IMPORT,
+            (false, true) => &Step::WITH_DEFAULT,
+            (true, true) => &Step::WITH_IMPORT_AND_DEFAULT,
+        }
     }
 
     pub fn step(&self) -> Step {
@@ -207,6 +234,7 @@ const BACK: ActionId = ActionId(BASE + 1);
 const SKIP: ActionId = ActionId(BASE + 2);
 const CHOOSE_PHOTO: ActionId = ActionId(BASE + 3);
 const REMOVE_PHOTO: ActionId = ActionId(BASE + 4);
+const MAKE_DEFAULT: ActionId = ActionId(BASE + 5);
 const LANGUAGE_BASE: u32 = BASE + 10;
 const THEME_BASE: u32 = BASE + 20;
 const ACCENT_BASE: u32 = BASE + 30;
@@ -261,6 +289,8 @@ pub enum Click {
     Skip,
     ChoosePhoto,
     RemovePhoto,
+    /// Make Axion the default browser (the default browser step).
+    MakeDefault,
     /// Selects or deselects the browser at this index in the import step.
     Import(usize),
     Pick(Pick),
@@ -275,6 +305,7 @@ fn click_of(id: ActionId) -> Option<Click> {
         SKIP => Click::Skip,
         CHOOSE_PHOTO => Click::ChoosePhoto,
         REMOVE_PHOTO => Click::RemovePhoto,
+        MAKE_DEFAULT => Click::MakeDefault,
         _ => {
             if let Some(i) = index(LANGUAGE_BASE, LANGUAGES.len()) {
                 Click::Pick(Pick::Language(LANGUAGES[i].1))
@@ -329,6 +360,8 @@ pub enum Reaction {
     Moved,
     ChoosePhoto,
     RemovePhoto,
+    /// Make Axion the default browser; the step stays.
+    MakeDefault,
     /// The import step was left with these browsers (indexes into the offered ones) selected:
     /// start importing their bookmarks and history. The step has moved on.
     Import(Vec<usize>),
@@ -1000,6 +1033,10 @@ pub struct Onboarding {
     /// import of the current picks was started already.
     sources: Vec<ImportChoice>,
     import_started: bool,
+    /// The default browser step is part of the introduction, and who the default is now
+    /// (`None`: not known yet).
+    default_offer: bool,
+    default_state: Option<crate::default_browser::State>,
 }
 
 impl Onboarding {
@@ -1046,7 +1083,21 @@ impl Onboarding {
             apart: 28.0,
             sources: Vec::new(),
             import_started: false,
+            default_offer: false,
+            default_state: None,
         }
+    }
+
+    /// Whether the introduction offers to make Axion the default browser; set before
+    /// [`Self::open`].
+    pub fn set_default_offer(&mut self, offered: bool, state: Option<crate::default_browser::State>) {
+        self.default_offer = offered;
+        self.default_state = state;
+    }
+
+    /// Who the default browser is now (the step shows it); rebuild afterwards.
+    pub fn set_default_state(&mut self, state: Option<crate::default_browser::State>) {
+        self.default_state = state;
     }
 
     /// The browsers whose data can be imported. With none, the introduction has no import
@@ -1098,7 +1149,7 @@ impl Onboarding {
     /// Shows the introduction from the first step (or `step`, a capture aid).
     pub fn open(&mut self, ui: &mut Ui, config: &Config, window: Vec2, step: usize) -> Vec<UiEvent> {
         self.open = true;
-        self.flow = Flow::at(step, !self.sources.is_empty());
+        self.flow = Flow::at_with(step, !self.sources.is_empty(), self.default_offer);
         self.draft = Draft { name: self.account.name.clone(), ..Draft::default() };
         self.error = None;
         self.focus = None;
@@ -1226,6 +1277,7 @@ impl Onboarding {
                 self.sync_draft(ui);
                 Reaction::RemovePhoto
             }
+            Click::MakeDefault => Reaction::MakeDefault,
             Click::Import(i) => {
                 if let Some(source) = self.sources.get_mut(i) {
                     source.selected = !source.selected;
@@ -1479,6 +1531,7 @@ impl Onboarding {
             Step::Layout => self.layout(ui, body, config, inner),
             Step::Glass => self.glass(ui, body, config, inner),
             Step::Import => self.import_step(ui, body, config, inner),
+            Step::Default => self.default_step(ui, body, inner),
             Step::Account => self.account_step(ui, body, config, inner),
         }
         self.footer(ui, config);
@@ -1993,6 +2046,32 @@ impl Onboarding {
         }
     }
 
+    /// Offers to make Axion the default browser; "Continue" skips it.
+    fn default_step(&mut self, ui: &mut Ui, body: NodeId, inner: f32) {
+        use crate::default_browser::State;
+        self.title(
+            ui,
+            body,
+            tr("Make Axion your default browser"),
+            tr("Links you click in other apps will open in Axion. You can change this any time in Settings."),
+            inner,
+        );
+        let (note, can_change) = match &self.default_state {
+            Some(State::Axion) => (tr("Axion is your default browser."), false),
+            Some(State::Other(_)) | None => (tr("Your system opens links in another browser."), true),
+            Some(State::Unavailable) => (tr("This system does not let Axion change that."), false),
+        };
+        if can_change {
+            let row =
+                ui.add(body, Widget::container(), Style { margin: margin(0.0, 0.0, 6.0, 0.0), ..row(0.0) });
+            self.pill(ui, row, MAKE_DEFAULT, tr("Make Default"), PillKind::Primary);
+        }
+        let label = ui.add_label(body, note, TextStyle::Footnote, Style::default());
+        if let Some(w) = ui.widget_mut(label) {
+            w.set_paint(Paint::Secondary);
+        }
+    }
+
     /// A browser to import from: a wide piece of glass with its name, what it holds and a
     /// selection mark.
     fn source_row(&mut self, ui: &mut Ui, parent: NodeId, index: usize, source: &ImportChoice, width: f32) {
@@ -2189,6 +2268,30 @@ enum PillKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_browser_step_is_optional_and_comes_before_the_account() {
+        assert!(!Flow::at(0, false).steps().contains(&Step::Default));
+        let flow = Flow::at_with(0, false, true);
+        assert_eq!(flow.steps(), Step::WITH_DEFAULT);
+        let both = Flow::at_with(0, true, true);
+        assert_eq!(both.steps(), Step::WITH_IMPORT_AND_DEFAULT);
+        // Continue skips it: it only offers.
+        let mut flow = Flow::at_with(4, false, true);
+        assert_eq!(flow.step(), Step::Default);
+        assert!(flow.next());
+        assert_eq!(flow.step(), Step::Account);
+        assert_eq!(Flow::at_with(99, true, true).step(), Step::Account);
+    }
+
+    #[test]
+    fn the_offer_button_is_a_click_of_its_own() {
+        assert_eq!(click_of(MAKE_DEFAULT), Some(Click::MakeDefault));
+        let others = [CONTINUE, BACK, SKIP, CHOOSE_PHOTO, REMOVE_PHOTO];
+        assert!(others.iter().all(|&id| id != MAKE_DEFAULT));
+        // Nothing else maps to the same click.
+        assert_eq!((0..20_000).filter(|&n| click_of(ActionId(n)) == Some(Click::MakeDefault)).count(), 1);
+    }
 
     #[test]
     fn next_walks_through_the_steps_and_ends_finished() {
