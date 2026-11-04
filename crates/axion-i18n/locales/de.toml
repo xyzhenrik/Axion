@@ -1138,6 +1138,7 @@
 "No matching tabs or history." = "Keine passenden Tabs oder Einträge im Verlauf."
 "New tabs join the group they open from" = "Neue Tabs treten der Gruppe bei, aus der sie sich öffnen"
 "Show tab group names in the tab bar" = "Namen von Tab-Gruppen in der Tab-Leiste zeigen"
+"Hide the tab bar with a single tab" = "Tab-Leiste bei nur einem Tab ausblenden"
 "Show a speaker on tabs playing sound" = "Lautsprecher auf Tabs mit Ton zeigen"
 "Remember muted sites" = "Stummgeschaltete Websites merken"
 "Search tabs" = "Tabs durchsuchen"

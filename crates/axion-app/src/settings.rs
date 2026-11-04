@@ -223,6 +223,7 @@ enum Setting {
     MiddleClickClosesTab,
     NewTabJoinsGroup,
     GroupChipsInBar,
+    HideSingleTabBar,
     ShowAudioIndicator,
     RememberSiteMute,
     DragOutLinks,
@@ -321,6 +322,7 @@ impl Setting {
             Setting::MiddleClickClosesTab => tr_mark("Middle click closes tabs"),
             Setting::NewTabJoinsGroup => tr_mark("New tabs join the group they open from"),
             Setting::GroupChipsInBar => tr_mark("Show tab group names in the tab bar"),
+            Setting::HideSingleTabBar => tr_mark("Hide the tab bar with a single tab"),
             Setting::ShowAudioIndicator => tr_mark("Show a speaker on tabs playing sound"),
             Setting::RememberSiteMute => tr_mark("Remember muted sites"),
             Setting::DragOutLinks => tr_mark("Drag tabs out as links"),
@@ -404,6 +406,7 @@ impl Setting {
                 | Setting::MiddleClickClosesTab
                 | Setting::NewTabJoinsGroup
                 | Setting::GroupChipsInBar
+                | Setting::HideSingleTabBar
                 | Setting::ShowAudioIndicator
                 | Setting::RememberSiteMute
                 | Setting::DragOutLinks
@@ -557,6 +560,7 @@ impl Setting {
             Setting::MiddleClickClosesTab => return c.tabs.middle_click_closes_tab as u8 as f32,
             Setting::NewTabJoinsGroup => return c.tabs.new_tab_joins_group as u8 as f32,
             Setting::GroupChipsInBar => return c.tabs.group_chips_in_bar as u8 as f32,
+            Setting::HideSingleTabBar => return c.layout.hide_single_tab_bar as u8 as f32,
             Setting::ShowAudioIndicator => return c.tabs.show_audio_indicator as u8 as f32,
             Setting::RememberSiteMute => return c.tabs.remember_site_mute as u8 as f32,
             Setting::DragOutLinks => return c.tabs.drag_out_links as u8 as f32,
@@ -662,6 +666,7 @@ impl Setting {
             Setting::MiddleClickClosesTab => c.tabs.middle_click_closes_tab = on,
             Setting::NewTabJoinsGroup => c.tabs.new_tab_joins_group = on,
             Setting::GroupChipsInBar => c.tabs.group_chips_in_bar = on,
+            Setting::HideSingleTabBar => c.layout.hide_single_tab_bar = on,
             Setting::ShowAudioIndicator => c.tabs.show_audio_indicator = on,
             Setting::RememberSiteMute => c.tabs.remember_site_mute = on,
             Setting::DragOutLinks => c.tabs.drag_out_links = on,
@@ -2047,6 +2052,7 @@ impl SettingsSheet {
             }
             Category::Tabs => {
                 self.tab_bar_choice(ui, config);
+                self.control(ui, config, Setting::HideSingleTabBar);
                 self.control(ui, config, Setting::TintFromPage);
                 if config.appearance.tint_from_page {
                     let row_node = self.row(ui, tr("Page colour"));

@@ -7705,6 +7705,12 @@ impl Browser {
                         self.open_tab_menu(item);
                     }
                 }
+                // Capture aid: the menu of a right click on the address field.
+                "address-menu" => {
+                    if let Some(view) = self.active_view() {
+                        self.open_address_menu(view);
+                    }
+                }
                 "add-account" => self.open_add_account(),
                 // Capture aid: type "add-account-name:NAME" into the open Add Account sheet.
                 name if name.starts_with("add-account-name:") => {
@@ -7792,7 +7798,13 @@ impl Browser {
         self.last_frame = now;
         self.ui.animate(dt);
         let was_sliding = self.chrome.is_sliding();
+        let strip_was_moving = self.chrome.strip_moving();
         self.chrome.animate_all(&mut self.ui, dt);
+        if strip_was_moving {
+            // The tab row slides in or away (a lone tab): the bookmarks bar and the page follow
+            // it every frame; the page's engine view is resized paced, like with a window resize.
+            self.update_layout();
+        }
         if was_sliding {
             // The page's rectangle and the toolbar follow the sidebar frame by frame, but the
             // page itself is resized once, as the slide starts, to its size once it settles:

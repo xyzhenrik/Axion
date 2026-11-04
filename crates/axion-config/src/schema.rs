@@ -408,6 +408,9 @@ pub struct Appearance {
     pub accent: Color,
     /// How strongly glass tints towards the accent (0–1).
     pub accent_tint: f32,
+    /// The destructive red: closing tabs (the tab close button on hover, "Close Tab", "Close
+    /// Other Tabs", ...). Used as a glass tint, never as a fill behind a glass button.
+    pub destructive: Color,
     /// UI font family; falls back to the system sans-serif when missing.
     pub font_family: String,
     /// Scales every UI text size.
@@ -448,6 +451,7 @@ impl Default for Appearance {
             theme: ThemeMode::Auto,
             accent: Color::rgb(0x2E6BFF),
             accent_tint: 0.06,
+            destructive: Color::rgb(0xD0362B),
             font_family: "Inter".into(),
             text_scale: 1.0,
             adapt_to_page: false,
@@ -898,6 +902,9 @@ pub struct Layout {
     pub page_margin: f32,
     /// Tabs in their own row under the address bar, or in one compact row with it.
     pub tab_bar: TabBarStyle,
+    /// Separate tab bar: the row of tabs slides away while exactly one tab is open and there are
+    /// no tab groups or pinned tabs (like Safari); it comes back with the second tab.
+    pub hide_single_tab_bar: bool,
     /// A home button (opens `general.homepage`) next to back and forward.
     pub home_button: bool,
     /// F11 fullscreen: resting the pointer at the window's top edge brings the toolbar, tab
@@ -962,6 +969,7 @@ impl Default for Layout {
             page_corner_radius: 10.0,
             page_margin: 8.0,
             tab_bar: TabBarStyle::Separate,
+            hide_single_tab_bar: true,
             home_button: true,
             fullscreen_reveal_chrome: true,
             fullscreen_reveal_delay: 0.35,
@@ -2006,6 +2014,9 @@ pub struct Tabs {
     pub open_links_in_background: bool,
     /// A middle click on a tab (in the tab bar, the sidebar or the tab overview) closes it.
     pub middle_click_closes_tab: bool,
+    /// A right click on the address field of the separate tab bar opens the current tab's menu
+    /// (the one a right click on its tab opens).
+    pub address_context_menu: bool,
     /// A tab opened from a tab of a tab group (a link, New Tab to the Right) joins that group.
     pub new_tab_joins_group: bool,
     /// Tab groups show as a coloured chip with their name in the compact tab bar and the
@@ -2073,6 +2084,7 @@ impl Default for Tabs {
             restore_session: true,
             open_links_in_background: true,
             middle_click_closes_tab: true,
+            address_context_menu: true,
             new_tab_joins_group: true,
             group_chips_in_bar: true,
             show_audio_indicator: true,

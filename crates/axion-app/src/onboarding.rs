@@ -941,11 +941,19 @@ struct Draft {
     name_set: bool,
 }
 
+/// The account step's fields. An account that has a password already shows no password fields
+/// (`None`): nothing is read from, or required of, them.
 #[derive(Clone, Copy)]
 struct Fields {
     name: NodeId,
-    password: NodeId,
-    confirm: NodeId,
+    password: Option<NodeId>,
+    confirm: Option<NodeId>,
+}
+
+impl Fields {
+    fn contains(&self, node: NodeId) -> bool {
+        [Some(self.name), self.password, self.confirm].contains(&Some(node))
+    }
 }
 
 /// A browser offered in the import step.
@@ -1133,7 +1141,7 @@ impl Onboarding {
                 Some(*node) == self.reduce_transparency || Some(*node) == self.reduce_motion
             }
             UiEvent::Submitted { node, .. } | UiEvent::Cancelled { node } => {
-                self.fields.is_some_and(|f| [f.name, f.password, f.confirm].contains(node))
+                self.fields.is_some_and(|f| f.contains(*node))
             }
             _ => false,
         }
@@ -1154,15 +1162,22 @@ impl Onboarding {
     /// Enter in a field of the account step: on to the next field, then finish.
     pub fn submitted(&mut self, ui: &mut Ui, config: &Config, node: NodeId) -> Reaction {
         let Some(f) = self.fields else { return Reaction::Nothing };
+        // Name, password, repeat; without password fields (the account has one) Enter in the name
+        // finishes.
         let next = if node == f.name {
             f.password
-        } else if node == f.password {
+        } else if Some(node) == f.password {
             f.confirm
         } else {
-            return self.press(ui, config, Click::Continue);
+            None
         };
-        let _ = ui.focus(next);
-        Reaction::Nothing
+        match next {
+            Some(next) => {
+                let _ = ui.focus(next);
+                Reaction::Nothing
+            }
+            None => self.press(ui, config, Click::Continue),
+        }
     }
 
     /// Takes a click; the browser applies the configuration picks.
@@ -1262,7 +1277,9 @@ impl Onboarding {
         if name.is_empty() {
             return Err(tr("Enter a name.").to_owned());
         }
-        let password = (!self.draft.password.is_empty()).then(|| self.draft.password.clone());
+        // An account with a password keeps it: there is nothing to set, so nothing to check.
+        let password =
+            (!self.has_password && !self.draft.password.is_empty()).then(|| self.draft.password.clone());
         if let Some(password) = &password {
             if password.chars().count() < MIN_MASTER_LENGTH {
                 return Err(tr_fmt!("Use at least {count} characters.", count = MIN_MASTER_LENGTH));
@@ -1283,8 +1300,11 @@ impl Onboarding {
             }
             self.draft.name = name.to_owned();
         }
-        self.draft.password = Zeroizing::new(ui.field_text(fields.password).unwrap_or_default().to_owned());
-        self.draft.confirm = Zeroizing::new(ui.field_text(fields.confirm).unwrap_or_default().to_owned());
+        let text = |node: Option<NodeId>| {
+            Zeroizing::new(node.and_then(|n| ui.field_text(n)).unwrap_or_default().to_owned())
+        };
+        self.draft.password = text(fields.password);
+        self.draft.confirm = text(fields.confirm);
     }
 
     /// Capture aid: types a name into the account step.
@@ -1301,8 +1321,9 @@ impl Onboarding {
         self.draft.password = Zeroizing::new(text.to_owned());
         self.draft.confirm = Zeroizing::new(text.to_owned());
         if let Some(fields) = self.fields {
-            ui.set_field_text(fields.password, text);
-            ui.set_field_text(fields.confirm, text);
+            for node in [fields.password, fields.confirm].into_iter().flatten() {
+                ui.set_field_text(node, text);
+            }
         }
     }
 
@@ -1345,8 +1366,7 @@ impl Onboarding {
 
     /// Whether a field of the sheet has the keyboard.
     pub fn editing(&self, ui: &Ui) -> bool {
-        self.fields
-            .is_some_and(|f| ui.focused().is_some_and(|n| [f.name, f.password, f.confirm].contains(&n)))
+        self.fields.is_some_and(|f| ui.focused().is_some_and(|n| f.contains(n)))
     }
 
     /// Marks the focused control: it grows a little and thickens its glass.
@@ -2095,11 +2115,11 @@ impl Onboarding {
             w.set_paint(Paint::Secondary);
         }
         let (password, confirm) = if self.has_password {
-            (name, name)
+            (None, None)
         } else {
             (
-                self.field(ui, fields, tr("Password"), width, true),
-                self.field(ui, fields, tr("Repeat password"), width, true),
+                Some(self.field(ui, fields, tr("Password"), width, true)),
+                Some(self.field(ui, fields, tr("Repeat password"), width, true)),
             )
         };
         if self.has_password {
@@ -2114,8 +2134,10 @@ impl Onboarding {
             }
         }
         ui.set_field_text(name, &self.draft.name);
-        if !self.has_password {
+        if let Some(password) = password {
             ui.set_field_text(password, &self.draft.password);
+        }
+        if let Some(confirm) = confirm {
             ui.set_field_text(confirm, &self.draft.confirm);
         }
         self.fields = Some(Fields { name, password, confirm });
@@ -2246,6 +2268,60 @@ mod tests {
         onboarding.set_sources(sources);
         onboarding.open(&mut ui, &config, Vec2::new(1280.0, 800.0), 0);
         (ui, onboarding)
+    }
+
+    /// Finishing the account step: the field texts typed there, and `Continue`.
+    fn finish_account(has_password: bool, name: &str, password: Option<&str>) -> (Reaction, Ui, Onboarding) {
+        let config = Config::default();
+        let (mut ui, mut onboarding) = sheet(Vec::new());
+        onboarding.set_account(AccountView { name: "Henrik".into(), ..AccountView::default() }, has_password);
+        onboarding.goto(&mut ui, &config, 4);
+        assert_eq!(onboarding.flow.step(), Step::Account);
+        assert!(onboarding.flow.is_last());
+        onboarding.set_name(&mut ui, name);
+        if let Some(password) = password {
+            onboarding.set_password(&mut ui, password);
+        }
+        let reaction = onboarding.press(&mut ui, &config, Click::Continue);
+        (reaction, ui, onboarding)
+    }
+
+    #[test]
+    fn an_account_with_a_password_finishes_without_one() {
+        // Regression: the hidden password fields stood for the name field, so the name
+        // ("Henrik", 6 characters) was read as a new password and refused.
+        let (reaction, ..) = finish_account(true, "Henrik", None);
+        match reaction {
+            Reaction::End(Ending::Finished, Some(choice)) => {
+                assert_eq!(choice.name, "Henrik");
+                assert!(choice.password.is_none(), "an existing password is left alone");
+            }
+            _ => panic!("the account step should have finished"),
+        }
+        // Even with a short name and Enter in the name field.
+        let (reaction, ..) = finish_account(true, "Al", None);
+        assert!(matches!(reaction, Reaction::End(Ending::Finished, Some(_))));
+    }
+
+    #[test]
+    fn an_account_with_a_password_has_no_password_fields() {
+        let (_, _, onboarding) = finish_account(true, "Henrik", None);
+        let fields = onboarding.fields.expect("the account step was built");
+        assert!(fields.password.is_none() && fields.confirm.is_none());
+    }
+
+    #[test]
+    fn a_new_password_is_still_checked_for_accounts_without_one() {
+        let (reaction, ..) = finish_account(false, "Henrik", Some("short"));
+        assert!(matches!(reaction, Reaction::Nothing), "too short is refused");
+        let (reaction, ..) = finish_account(false, "Henrik", Some("long enough password"));
+        match reaction {
+            Reaction::End(Ending::Finished, Some(choice)) => assert!(choice.password.is_some()),
+            _ => panic!("a good password finishes"),
+        }
+        // No password at all is fine (it is optional).
+        let (reaction, ..) = finish_account(false, "Henrik", None);
+        assert!(matches!(reaction, Reaction::End(Ending::Finished, Some(c)) if c.password.is_none()));
     }
 
     fn choice(label: &str, selected: bool) -> ImportChoice {

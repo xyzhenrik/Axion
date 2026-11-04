@@ -42,6 +42,10 @@ const TAB_CAPSULE_TINT: f32 = 0.06;
 const TAB_STRIP_GAP: f32 = 8.0;
 /// Below this the F11 fullscreen transition counts as settled.
 const PRESENTATION_SETTLED: f32 = 0.001;
+/// The tab row counts as slid away (and is not drawn) below this share.
+const STRIP_GONE: f32 = 0.01;
+/// The tab close button's dot at rest: the label colour at this opacity.
+const CLOSE_DOT_OPACITY: f32 = 0.85;
 /// The address field's widest size with the separate tab bar.
 const SEPARATE_ADDRESS_MAX: f32 = 680.0;
 /// The loading line's distance from the address field's ends.
@@ -486,6 +490,10 @@ pub struct Chrome {
     group_markers: Vec<(NodeId, NodeId)>,
     /// The row under the pointer, lit with a glass highlight (`update_hover`).
     hovered_row: Option<NodeId>,
+    /// The tab close button the pointer is on (its dot is lit red), see `update_hover`.
+    hovered_close: Option<NodeId>,
+    /// `appearance.destructive`.
+    destructive: Color,
     /// Private tabs are the current group (listed under "Private" instead of "N Tabs").
     private_mode: bool,
     /// How many normal tabs there are while private tabs are shown.
@@ -538,6 +546,15 @@ pub struct Chrome {
     /// The separate tab bar's row of tabs.
     tab_strip: NodeId,
     tab_bar: TabBarStyle,
+    /// The separate tab row is shown (1) or slid away (0), animated: it is away while one
+    /// lone tab is open (`layout.hide_single_tab_bar`).
+    strip_k: Animated<f32>,
+    /// `strip_k` has been given its first target (the first one is taken at once).
+    strip_placed: bool,
+    /// Exactly one tab is open and it is neither pinned nor in a group (see `sync_tabs`).
+    lone_tab: bool,
+    /// `layout.hide_single_tab_bar`.
+    hide_lone_tab: bool,
     /// Whole-page fullscreen (F11): all of the chrome gives way to the page …
     presentation: bool,
     /// … animated 0 (chrome shown) → 1 (only the page).
@@ -840,6 +857,12 @@ pub fn bookmarks_that_fit(widths: &[f32], gap: f32, available: f32, more: f32) -
     widths.len()
 }
 
+/// One tab open, neither pinned nor in a tab group: the separate tab row has nothing to show
+/// that the address field doesn't (`layout.hide_single_tab_bar`).
+fn lone_tab(tabs: &Tabs) -> bool {
+    matches!(tabs.all(), [tab] if !tab.pinned && tab.group.is_none())
+}
+
 /// What decides whether the toolbar area's rows are drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BarsState {
@@ -965,7 +988,9 @@ fn close_dot_sized(ui: &mut Ui, parent: NodeId, action: ChromeAction, hit: f32, 
     );
     let dot_node = ui.add(
         button,
-        Widget::container().with_background(Background::Fill(Paint::Label, 0.85)).with_radius(CAPSULE),
+        Widget::container()
+            .with_background(Background::Fill(Paint::Label, CLOSE_DOT_OPACITY))
+            .with_radius(CAPSULE),
         Style { size: square(dot), justify_content: JustifyContent::CENTER, ..row(0.0) },
     );
     let cross =
@@ -1679,6 +1704,8 @@ impl Chrome {
             group_nodes: Vec::new(),
             group_markers: Vec::new(),
             hovered_row: None,
+            hovered_close: None,
+            destructive: config.appearance.destructive,
             private_mode: false,
             normal_count: 0,
             locked: false,
@@ -1716,6 +1743,10 @@ impl Chrome {
             address_slot,
             tab_strip,
             tab_bar: TabBarStyle::Compact,
+            strip_k: Animated::new(1.0, Spring::SMOOTH),
+            strip_placed: false,
+            lone_tab: false,
+            hide_lone_tab: layout.hide_single_tab_bar,
             presentation: false,
             presentation_k: Animated::new(0.0, Spring::SMOOTH),
             bar_top: 0.0,
@@ -2362,6 +2393,42 @@ impl Chrome {
         settled_value(&self.presentation_k) * (1.0 - settled_value(&self.reveal_k))
     }
 
+    /// The separate tab row should be slid away (a lone tab, `layout.hide_single_tab_bar`).
+    fn strip_wanted_away(&self) -> bool {
+        self.hide_lone_tab && self.lone_tab
+    }
+
+    /// Points `strip_k` at the row's shown/away state; the first target is taken at once.
+    fn retarget_strip(&mut self, config: &Config) {
+        self.strip_k.spring = chrome_spring(config);
+        self.aim_strip();
+    }
+
+    /// Sets `strip_k`'s target from the lone-tab state (the first one is taken at once).
+    fn aim_strip(&mut self) {
+        let target = if self.strip_wanted_away() { 0.0 } else { 1.0 };
+        self.strip_k.target = target;
+        if !self.strip_placed {
+            self.strip_placed = true;
+            self.strip_k.snap(target);
+        }
+    }
+
+    /// The separate tab row is sliding in or away (the page follows it every frame).
+    pub fn strip_moving(&self) -> bool {
+        !self.strip_k.is_settled(PRESENTATION_SETTLED)
+    }
+
+    /// How much of the separate tab row is shown (0-1), exactly its target once settled.
+    fn strip_shown(&self) -> f32 {
+        settled_value(&self.strip_k)
+    }
+
+    /// The room the separate tab row (with its gap) takes under the toolbar, `shown` of it.
+    fn strip_room(tab_bar: TabBarStyle, shown: f32) -> f32 {
+        if tab_bar == TabBarStyle::Separate { (TAB_STRIP_HEIGHT + TAB_STRIP_GAP) * shown } else { 0.0 }
+    }
+
     /// F11 fullscreen has fully hidden the bars (and they aren't being revealed).
     fn chrome_gone(&self) -> bool {
         self.presentation
@@ -2400,8 +2467,11 @@ impl Chrome {
                 style.inset.top = wanted;
                 ui.set_style(node, style);
             }
-            ui.set_opacity(node, 1.0 - away);
-            ui.set_visible(node, shown);
+            let strip = node == self.tab_strip;
+            // The tab row fades as it slides away (a lone tab); it is gone once away.
+            let fade = if strip { self.strip_shown().powi(2) } else { 1.0 };
+            ui.set_opacity(node, (1.0 - away) * fade);
+            ui.set_visible(node, shown && (!strip || self.strip_shown() > STRIP_GONE));
         }
         // Flat mode's toolbar surface follows the bars (its height follows the page's top).
         ui.set_opacity(self.toolbar_band, 1.0 - away);
@@ -2414,6 +2484,10 @@ impl Chrome {
         if moving || self.presentation {
             self.presentation_k.step(dt);
             self.reveal_k.step(dt);
+            self.place_bars(ui);
+        }
+        if self.strip_moving() {
+            self.strip_k.step(dt);
             self.place_bars(ui);
         }
         self.animate(ui, dt);
@@ -2501,6 +2575,9 @@ impl Chrome {
             self.tab_widths.ready = false;
         }
         self.tab_bar = l.tab_bar;
+        self.hide_lone_tab = l.hide_single_tab_bar;
+        self.destructive = config.appearance.destructive;
+        self.retarget_strip(config);
         ui.set_visible(self.home_button, l.home_button);
         let separate = l.tab_bar == TabBarStyle::Separate;
         ui.set_visible(self.tab_capsule, !separate);
@@ -2664,12 +2741,18 @@ impl Chrome {
     /// The page's rectangle (logical px): below the toolbar, beside a docked sidebar, with a
     /// small margin to the window edges so its rounded corners read as a card.
     pub fn page_rect(&self, config: &Config, window: Vec2) -> Frame {
-        self.card_rect(config, window, self.chrome_away(), self.docked_sidebar_width(config))
+        self.card_rect(
+            config,
+            window,
+            self.chrome_away(),
+            self.docked_sidebar_width(config),
+            self.strip_shown(),
+        )
     }
 
     /// The page card for a docked sidebar `sidebar` wide, with the chrome `away` (0–1) gone
     /// (F11: the card's margins shrink away as the chrome leaves).
-    fn card_rect(&self, config: &Config, window: Vec2, away: f32, sidebar: f32) -> Frame {
+    fn card_rect(&self, config: &Config, window: Vec2, away: f32, sidebar: f32, strip: f32) -> Frame {
         if away >= 1.0 {
             return Frame { origin: Vec2::ZERO, size: window };
         }
@@ -2677,8 +2760,7 @@ impl Chrome {
         let l = &layout_in_use;
         // The page's left edge follows the sidebar as it slides.
         let left = sidebar + l.page_margin;
-        let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 }
-            + self.bookmarks_room();
+        let strip = Self::strip_room(l.tab_bar, strip) + self.bookmarks_room();
         let top = l.margin + l.bar_height + strip + l.margin / 2.0;
         let keep = 1.0 - away;
         let origin = Vec2::new(left, top) * keep;
@@ -2703,7 +2785,7 @@ impl Chrome {
         } else {
             0.0
         };
-        self.card_rect(config, window, 0.0, sidebar)
+        self.card_rect(config, window, 0.0, sidebar, self.strip_k.target)
     }
 
     /// The toolbar node: popovers that should flow out of the bar's glass live in it.
@@ -3191,6 +3273,7 @@ impl Chrome {
     /// fill). Call every frame with the UI's hovered node.
     pub fn update_hover(&mut self, ui: &mut Ui, hovered: Option<NodeId>) {
         self.update_separators(ui, hovered);
+        self.update_close_hover(ui, hovered);
         let row = hovered.filter(|&n| {
             self.items.iter().any(|i| i.node == n && i.surface == Surface::Sidebar)
                 && ui.widget(n).is_some_and(|w| w.background != Background::Glass(GlassLevel::Thin))
@@ -3212,9 +3295,54 @@ impl Chrome {
         self.hovered_row = row;
     }
 
+    /// Lights the dot of the tab close button under the pointer red: tinted glass in the
+    /// destructive colour (a flat tint in flat mode), never a fill behind a glass button.
+    fn update_close_hover(&mut self, ui: &mut Ui, hovered: Option<NodeId>) {
+        let is_close = |ui: &Ui, n: NodeId| {
+            ui.widget(n)
+                .and_then(|w| w.action)
+                .and_then(ChromeAction::from_id)
+                .is_some_and(|a| matches!(a, ChromeAction::CloseTab(_)))
+        };
+        let now = hovered.filter(|&n| is_close(ui, n));
+        if now == self.hovered_close {
+            return;
+        }
+        if let Some(old) = self.hovered_close.take()
+            && is_close(ui, old)
+        {
+            self.paint_close_dot(ui, old, false);
+        }
+        if let Some(new) = now {
+            self.paint_close_dot(ui, new, true);
+        }
+        self.hovered_close = now;
+    }
+
+    /// The dot of close button `button` at rest, or lit red.
+    fn paint_close_dot(&self, ui: &mut Ui, button: NodeId, lit: bool) {
+        let Some(dot) = ui.children(button).first().copied() else { return };
+        if let Some(w) = ui.widget_mut(dot) {
+            w.background = if lit {
+                Background::TintedGlass(GlassLevel::Thin, Paint::Fixed(self.destructive))
+            } else {
+                Background::Fill(Paint::Label, CLOSE_DOT_OPACITY)
+            };
+        }
+        if let Some(cross) = ui.children(dot).first().copied()
+            && let Some(w) = ui.widget_mut(cross)
+        {
+            w.set_paint(if lit { Paint::OnColor(self.destructive) } else { Paint::Surface });
+        }
+    }
+
     /// Rebuilds the tab segments and sidebar rows from the tab model. `other` is the group
     /// not shown (listed in the sidebar only).
     pub fn sync_tabs(&mut self, ui: &mut Ui, tabs: &Tabs, other: &Tabs, favicons: &Favicons) {
+        // The rebuilt close buttons are at rest; the persistent one of the address is put back.
+        if self.hovered_close.take() == Some(self.address_close) {
+            self.paint_close_dot(ui, self.address_close, false);
+        }
         for pill in std::mem::take(&mut self.pills) {
             ui.remove(pill);
         }
@@ -3229,6 +3357,8 @@ impl Chrome {
         self.tab_widths.separator_hover = None;
         let narrow = self.mode == Mode::Narrow;
         let separate = self.tab_bar == TabBarStyle::Separate;
+        self.lone_tab = lone_tab(tabs);
+        self.aim_strip();
         let mut order = Vec::with_capacity(tabs.len());
         let private = self.private_mode;
         ui.set_opacity(self.address, 1.0);
@@ -4145,6 +4275,21 @@ impl Chrome {
         }
     }
 
+    /// Whether `node` is the address field's slot of the separate tab bar (or inside it).
+    pub fn address_slot_contains(&self, ui: &Ui, node: NodeId) -> bool {
+        if self.tab_bar != TabBarStyle::Separate {
+            return false;
+        }
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if n == self.address {
+                return true;
+            }
+            at = ui.parent(n);
+        }
+        false
+    }
+
     /// The separate tab bar's row (a plane of its own).
     pub fn tab_strip_node(&self) -> NodeId {
         self.tab_strip
@@ -4156,7 +4301,7 @@ impl Chrome {
         let layout_in_use = config.effective_layout();
         let l = &layout_in_use;
         let m = l.margin;
-        let strip = if l.tab_bar == TabBarStyle::Separate { TAB_STRIP_HEIGHT + TAB_STRIP_GAP } else { 0.0 };
+        let strip = Self::strip_room(l.tab_bar, self.strip_shown());
         let bar = self.bookmarks.bar;
         let mut style = ui.style(bar);
         // Left and width follow the items (see `fit_bookmarks`); the top follows F11's
@@ -4525,6 +4670,99 @@ mod tests {
             chrome.set_page_fullscreen(false);
             chrome.apply_layout(&mut ui, &config, window);
             assert!(bars.iter().all(|&n| shown(&ui, n)), "flat {flat}: after the video");
+        }
+    }
+
+    /// The separate tab row slides away with one lone tab and comes back with a second tab, a
+    /// pinned or a grouped one; the page follows it; the key turns it off; flat mode and Reduce
+    /// Motion get there too.
+    #[test]
+    fn the_tab_row_hides_with_a_lone_tab() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let favicons = Favicons::new(device, queue, None);
+        let window = Vec2::new(1400.0, 900.0);
+        let tabs_of = |n: u32, pinned: bool, group: Option<u32>| {
+            let mut tabs = Tabs::default();
+            for i in 0..n {
+                let mut tab = Tab::new(ViewId(i), &format!("https://t{i}.example"));
+                tab.pinned = pinned;
+                tab.group = group;
+                tabs.insert(tab, i == 0);
+            }
+            tabs
+        };
+        assert!(lone_tab(&tabs_of(1, false, None)));
+        assert!(!lone_tab(&tabs_of(0, false, None)));
+        assert!(!lone_tab(&tabs_of(2, false, None)));
+        assert!(!lone_tab(&tabs_of(1, true, None)), "a pinned tab keeps the row");
+        assert!(!lone_tab(&tabs_of(1, false, Some(1))), "a grouped tab keeps the row");
+        // (The sidebar's slide settles within a fraction of a pixel.)
+        let near =
+            |a: Frame, b: Frame| (a.origin - b.origin).length() < 0.1 && (a.size - b.size).length() < 0.1;
+        for (flat, reduce) in [(false, false), (true, false), (false, true)] {
+            let mut config = Config::default();
+            config.layout.tab_bar = TabBarStyle::Separate;
+            config.glass.reduce_motion = reduce;
+            if flat {
+                config.glass.style = axion_config::GlassStyle::Flat;
+            }
+            let case = format!("flat {flat}, reduce motion {reduce}");
+            let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+            ui.set_viewport(window, 1.0);
+            let mut chrome = Chrome::build(&mut ui, &config);
+            let other = Tabs::default();
+            let settle = |chrome: &mut Chrome, ui: &mut Ui, config: &Config| {
+                for _ in 0..300 {
+                    chrome.animate_all(ui, 1.0 / 60.0);
+                    chrome.apply_layout(ui, config, window);
+                    ui.layout();
+                }
+            };
+            chrome.apply_layout(&mut ui, &config, window);
+            chrome.sync_tabs(&mut ui, &tabs_of(3, false, None), &other, &favicons);
+            settle(&mut chrome, &mut ui, &config);
+            let with_row = chrome.page_rect(&config, window);
+            assert!(shown(&ui, chrome.tab_strip), "{case}: three tabs show the row");
+
+            // Down to one tab: the row slides away over several frames, the page grows into it.
+            chrome.sync_tabs(&mut ui, &tabs_of(1, false, None), &other, &favicons);
+            assert!(chrome.strip_moving(), "{case}: animated, not at once");
+            let mut heights = Vec::new();
+            for _ in 0..300 {
+                chrome.animate_all(&mut ui, 1.0 / 60.0);
+                chrome.apply_layout(&mut ui, &config, window);
+                heights.push(chrome.page_rect(&config, window).size.y);
+            }
+            assert!(heights.windows(2).any(|w| w[1] > w[0] + 0.5), "{case}: grows frame by frame");
+            ui.layout();
+            assert!(!chrome.strip_moving());
+            assert!(!shown(&ui, chrome.tab_strip), "{case}: the row is gone");
+            let alone = chrome.page_rect(&config, window);
+            let gained = alone.size.y - with_row.size.y;
+            assert!(
+                (gained - (TAB_STRIP_HEIGHT + TAB_STRIP_GAP)).abs() < 0.01
+                    && alone.origin.y < with_row.origin.y,
+                "{case}: the page gained the row's room ({gained})"
+            );
+            assert!(near(alone, chrome.settled_page_rect(&config, window)));
+
+            // A second tab, or a pinned one: back.
+            for tabs in [tabs_of(2, false, None), tabs_of(1, true, None)] {
+                chrome.sync_tabs(&mut ui, &tabs, &other, &favicons);
+                settle(&mut chrome, &mut ui, &config);
+                assert!(shown(&ui, chrome.tab_strip), "{case}: the row is back");
+                assert!(near(chrome.page_rect(&config, window), with_row), "{case}: page as before");
+                chrome.sync_tabs(&mut ui, &tabs_of(1, false, None), &other, &favicons);
+                settle(&mut chrome, &mut ui, &config);
+                assert!(!shown(&ui, chrome.tab_strip));
+            }
+
+            // Switched off: the row stays with a lone tab.
+            config.layout.hide_single_tab_bar = false;
+            chrome.apply_layout(&mut ui, &config, window);
+            settle(&mut chrome, &mut ui, &config);
+            assert!(shown(&ui, chrome.tab_strip), "{case}: the key keeps the row");
+            assert!(near(chrome.page_rect(&config, window), with_row), "{case}: page as before");
         }
     }
 

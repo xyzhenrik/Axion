@@ -8,7 +8,7 @@
 use axion_compositor::{Icon, Rect as Frame};
 use axion_config::{Color, Config};
 use axion_ui::taffy::prelude::*;
-use axion_ui::{ActionId, Background, CAPSULE, Paint, TextStyle, Ui, Widget};
+use axion_ui::{ActionId, Background, CAPSULE, GlassLevel, Paint, TextStyle, Ui, Widget, WidgetKind};
 use glam::Vec2;
 
 use crate::drip::Phase;
@@ -150,6 +150,9 @@ pub struct MenuItem {
     pub submenu: Vec<MenuItem>,
     /// Instead of icon and label: a row of compact buttons. They keep the menu open.
     pub controls: Vec<MenuControl>,
+    /// The row closes or deletes something: its icon and label are the destructive red
+    /// (`appearance.destructive`) and the pointer lights it with red-tinted glass.
+    pub destructive: bool,
     pub action: MenuAction,
 }
 
@@ -166,6 +169,7 @@ impl MenuItem {
             caption: None,
             submenu: Vec::new(),
             controls: Vec::new(),
+            destructive: false,
             action,
         }
     }
@@ -210,6 +214,12 @@ impl MenuItem {
 
     pub fn separated(mut self) -> Self {
         self.separated = true;
+        self
+    }
+
+    /// Marks the row as destructive (closing, deleting): red.
+    pub fn destructive(mut self) -> Self {
+        self.destructive = true;
         self
     }
 
@@ -363,6 +373,12 @@ pub struct Menu {
     min_width: f32,
     /// See [`Menu::set_covered_if_under`].
     cover_if_under: Vec<NodeId>,
+    /// The destructive rows (menu or submenu) and the one the pointer lights, see
+    /// [`Menu::track_hover`].
+    destructive_rows: Vec<NodeId>,
+    lit_row: Option<NodeId>,
+    /// `appearance.destructive` as of the last `open`.
+    destructive_color: Color,
 }
 
 impl Menu {
@@ -391,6 +407,9 @@ impl Menu {
             window: Vec2::ZERO,
             min_width: 0.0,
             cover_if_under: Vec::new(),
+            destructive_rows: Vec::new(),
+            lit_row: None,
+            destructive_color: Color::rgb(0xD0362B),
         }
     }
 
@@ -446,6 +465,9 @@ impl Menu {
         self.slots.clear();
         self.rows.clear();
         self.labels.clear();
+        self.destructive_rows.clear();
+        self.lit_row = None;
+        self.destructive_color = config.appearance.destructive;
         self.window = window;
         plate(ui, root, config);
         let mut height = 2.0 * PADDING;
@@ -545,6 +567,9 @@ impl Menu {
         } else {
             Widget::container().with_action(self.slot(slot)).with_radius(CAPSULE)
         };
+        // A destructive row is lit by red-tinted glass (see `track_hover`), not by the grey plate.
+        let container = if item.destructive { container.without_hover_fill() } else { container };
+        let ink = item.destructive.then_some(Paint::Fixed(self.destructive_color));
         let row = ui.add(
             panel,
             container,
@@ -573,11 +598,16 @@ impl Menu {
                 ui.set_style(avatar, style);
             }
             (None, Some(icon)) => {
-                ui.add(row, Widget::icon(icon, ICON), Style::default());
+                let widget = Widget::icon(icon, ICON);
+                let widget = match ink {
+                    Some(paint) => widget.with_paint(paint),
+                    None => widget,
+                };
+                ui.add(row, widget, Style::default());
             }
             (None, None) => {}
         }
-        ui.add_label(
+        let label = ui.add_label(
             row,
             &item.label,
             TextStyle::Body,
@@ -588,6 +618,14 @@ impl Menu {
                 ..Default::default()
             },
         );
+        if let Some(ink) = ink
+            && let Some(w) = ui.widget_mut(label)
+        {
+            w.set_paint(ink);
+        }
+        if item.destructive && !item.disabled {
+            self.destructive_rows.push(row);
+        }
         if let Some(detail) = &item.detail {
             let label = ui.add_label(row, detail, TextStyle::Body, Style::default());
             if let Some(w) = ui.widget_mut(label) {
@@ -721,6 +759,7 @@ impl Menu {
         if !self.popover.is_open() || self.popover.phase() == Phase::Opening {
             return;
         }
+        self.light_destructive_row(ui);
         let Some(hovered) = ui.hovered() else { return };
         let Some(row) = self.rows.iter().position(|(n, _)| *n == hovered) else { return };
         if self.rows[row].1.is_empty() {
@@ -728,6 +767,29 @@ impl Menu {
         } else {
             self.open_submenu(ui, config, row);
         }
+    }
+
+    /// Lights the destructive row under the pointer with red-tinted glass (a lens, like the
+    /// sidebar rows' highlight): the red goes through the glass tint, never a fill.
+    fn light_destructive_row(&mut self, ui: &mut Ui) {
+        let hovered = ui.hovered().filter(|n| self.destructive_rows.contains(n));
+        if hovered == self.lit_row {
+            return;
+        }
+        let red = self.destructive_color;
+        if let Some(old) = self.lit_row.take() {
+            if let Some(w) = ui.widget_mut(old) {
+                w.background = Background::None;
+            }
+            ink_row(ui, old, red, false);
+        }
+        if let Some(new) = hovered {
+            if let Some(w) = ui.widget_mut(new) {
+                w.background = Background::TintedGlass(GlassLevel::Lens, Paint::Fixed(red));
+            }
+            ink_row(ui, new, red, true);
+        }
+        self.lit_row = hovered;
     }
 
     pub fn close(&mut self, ui: &mut Ui, config: &Config) {
@@ -785,6 +847,25 @@ impl Menu {
     }
 }
 
+/// The ink of a destructive row: red on the plain panel, the legible label colour of red glass
+/// (`Paint::OnColor`) while the row is lit by it. The shortcut at its end is secondary text again
+/// once it is not lit.
+fn ink_row(ui: &mut Ui, row: NodeId, red: Color, lit: bool) {
+    let mut first_label = true;
+    for child in ui.children(row) {
+        let Some(w) = ui.widget_mut(child) else { continue };
+        match &w.kind {
+            WidgetKind::Icon { .. } => w.set_paint(if lit { Paint::OnColor(red) } else { Paint::Fixed(red) }),
+            WidgetKind::Label(_) if first_label => {
+                first_label = false;
+                w.set_paint(if lit { Paint::OnColor(red) } else { Paint::Fixed(red) });
+            }
+            WidgetKind::Label(_) => w.set_paint(if lit { Paint::OnColor(red) } else { Paint::Secondary }),
+            _ => {}
+        }
+    }
+}
+
 /// A hairline between groups of rows.
 fn separator(ui: &mut Ui, panel: NodeId) {
     let line = ui.add(
@@ -827,6 +908,74 @@ mod tests {
     use super::*;
 
     const WINDOW: Vec2 = Vec2::new(1000.0, 800.0);
+
+    /// A destructive row is red (icon and label) and lit by red-tinted glass under the pointer,
+    /// never by a fill; a normal row is neither, in glass and flat mode.
+    #[test]
+    fn a_destructive_row_is_lit_by_red_glass_not_a_fill() {
+        for flat in [false, true] {
+            let mut config = Config::default();
+            if flat {
+                config.glass.style = axion_config::GlassStyle::Flat;
+            }
+            let red = config.appearance.destructive;
+            let mut ui = Ui::new(axion_ui::Theme::new(&config, false), 1.0);
+            ui.set_viewport(WINDOW, 1.0);
+            let root = ui.add(
+                ui.root(),
+                Widget::container(),
+                Style {
+                    size: Size { width: length(WINDOW.x), height: length(WINDOW.y) },
+                    ..Default::default()
+                },
+            );
+            let mut menu = Menu::build(&mut ui, root, 17_000, Placement::BelowStart);
+            let items = vec![
+                MenuItem::new(Icon::Reload, "Reload", MenuAction::Settings),
+                MenuItem::new(Icon::Close, "Close Tab", MenuAction::Settings).destructive(),
+            ];
+            menu.open(&mut ui, &config, Frame::new(300.0, 50.0, 200.0, 40.0), WINDOW, items);
+            for _ in 0..120 {
+                menu.animate(&mut ui, 1.0 / 60.0);
+                ui.layout();
+            }
+            let rows = menu.rows.iter().map(|(n, _)| *n).collect::<Vec<_>>();
+            let center = |ui: &Ui, n: NodeId| {
+                let f = ui.frame(n);
+                f.origin + f.size / 2.0
+            };
+            let tinted = Background::TintedGlass(GlassLevel::Lens, Paint::Fixed(red));
+            // Red ink on the destructive row only.
+            let ink = |ui: &Ui, row: NodeId| {
+                ui.children(row)
+                    .into_iter()
+                    .filter_map(|n| match &ui.widget(n)?.kind {
+                        axion_ui::WidgetKind::Label(label) => Some(label.paint),
+                        axion_ui::WidgetKind::Icon { paint, .. } => Some(*paint),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert!(ink(&ui, rows[1]).contains(&Paint::Fixed(red)), "flat {flat}: red ink");
+            assert!(!ink(&ui, rows[0]).contains(&Paint::Fixed(red)));
+            ui.handle(axion_ui::UiInput::PointerMove(center(&ui, rows[1])));
+            menu.track_hover(&mut ui, &config);
+            assert_eq!(ui.widget(rows[1]).map(|w| w.background), Some(tinted), "flat {flat}: lit");
+            assert!(
+                ink(&ui, rows[1]).iter().all(|p| *p == Paint::OnColor(red)),
+                "flat {flat}: legible on red"
+            );
+            assert!(ui.widget(rows[1]).is_some_and(|w| !w.hover_fill), "no grey plate on top");
+            ui.handle(axion_ui::UiInput::PointerMove(center(&ui, rows[0])));
+            menu.track_hover(&mut ui, &config);
+            assert_eq!(
+                ui.widget(rows[1]).map(|w| w.background),
+                Some(Background::None),
+                "flat {flat}: unlit"
+            );
+            assert_eq!(ui.widget(rows[0]).map(|w| w.background), Some(Background::None));
+        }
+    }
 
     #[test]
     fn a_menu_above_a_button_clears_it_and_the_controls_beside_it() {
