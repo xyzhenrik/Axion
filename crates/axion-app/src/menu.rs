@@ -31,6 +31,8 @@ const SEPARATOR_HEIGHT: f32 = 9.0;
 const PADDING: f32 = 6.0;
 const ROW_INSET: f32 = 14.0;
 const ICON: f32 = 19.0;
+/// Corner radius of a site's icon in a row.
+const PICTURE_RADIUS: f32 = 4.5;
 const GAP_TO_ANCHOR: f32 = 14.0;
 /// A menu below its button reaches this far past the button's right edge.
 const BEYOND_ANCHOR: f32 = 12.0;
@@ -139,6 +141,8 @@ pub struct MenuItem {
     pub icon: Option<Icon>,
     /// An account's avatar (initials and colour, or its picture) instead of an icon.
     pub avatar: Option<(String, Color, Option<Image>)>,
+    /// A picture (a site's icon) in place of `icon`, which stays as its fallback while there is none.
+    pub picture: Option<Image>,
     pub label: String,
     /// Secondary text at the end of the row (e.g. the current zoom).
     pub detail: Option<String>,
@@ -165,6 +169,7 @@ impl MenuItem {
         Self {
             icon: Some(icon),
             avatar: None,
+            picture: None,
             label: label.to_owned(),
             detail: None,
             checked: false,
@@ -190,6 +195,7 @@ impl MenuItem {
         Self {
             icon: None,
             avatar: Some((initials, color, picture)),
+            picture: None,
             checked,
             ..Self::new(Icon::Person, name, action)
         }
@@ -285,8 +291,8 @@ pub fn target_frame(
         }
         Placement::BelowStart => {
             let left = anchor.origin.x.clamp(WINDOW_MARGIN, max_left);
-            let below = anchor.origin.y + anchor.size.y + GAP_TO_ANCHOR;
-            let above = anchor.origin.y - GAP_TO_ANCHOR - height;
+            let below = anchor.origin.y + anchor.size.y + standalone_gap;
+            let above = anchor.origin.y - standalone_gap - height;
             // Below the anchor; flips above it when it would run off the window's bottom
             // and fits there; else it is pushed up as far as it must.
             let top = if below + height + WINDOW_MARGIN <= window.y || above < WINDOW_MARGIN {
@@ -383,6 +389,8 @@ pub struct Menu {
     lit_row: Option<NodeId>,
     /// `appearance.destructive` as of the last `open`.
     destructive_color: Color,
+    /// Never joined to its anchor by a bridge, whatever the placement.
+    unjoined: bool,
 }
 
 impl Menu {
@@ -414,6 +422,7 @@ impl Menu {
             destructive_rows: Vec::new(),
             lit_row: None,
             destructive_color: Color::rgb(0xD0362B),
+            unjoined: false,
         }
     }
 
@@ -426,6 +435,12 @@ impl Menu {
     /// The least width of the next opened menu (0: the usual).
     pub fn set_min_width(&mut self, width: f32) {
         self.min_width = width;
+    }
+
+    /// A plain floating menu: no liquid bridge to its anchor (a gap of `glass.menu_anchor_gap`
+    /// instead), for menus that open from a button inside another control.
+    pub fn set_unjoined(&mut self, unjoined: bool) {
+        self.unjoined = unjoined;
     }
 
     /// See [`Popover::set_bridge_into_join`].
@@ -508,7 +523,8 @@ impl Menu {
             }
         }
         .max(self.min_width);
-        let standalone = matches!(self.placement, Placement::AboveStart | Placement::AboveCentered);
+        let standalone =
+            self.unjoined || matches!(self.placement, Placement::AboveStart | Placement::AboveCentered);
         self.popover.set_standalone(ui, standalone);
         self.sub.set_standalone(ui, standalone);
         let gap = if standalone { config.glass.menu_anchor_gap.max(0.0) } else { GAP_TO_ANCHOR };
@@ -606,6 +622,14 @@ impl Menu {
                 style.margin =
                     Rect { left: length(-3.5), right: length(-3.5), top: length(0.0), bottom: length(0.0) };
                 ui.set_style(avatar, style);
+            }
+            (None, _) if item.picture.is_some() => {
+                let node = ui.add(
+                    row,
+                    Widget::image().with_radius(PICTURE_RADIUS),
+                    Style { size: Size { width: length(ICON), height: length(ICON) }, ..Default::default() },
+                );
+                ui.set_image(node, item.picture.clone());
             }
             (None, Some(icon)) => {
                 let widget = Widget::icon(icon, ICON);

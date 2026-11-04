@@ -155,6 +155,9 @@ const MINI: f32 = 24.0;
 const GEAR: f32 = 40.0;
 const GEAR_MARGIN: f32 = 18.0;
 const STATS_BOTTOM: f32 = 18.0;
+const STATS_RADIUS: f32 = 20.0;
+/// The Shields card's padding (x, y).
+const STATS_PAD: Vec2 = Vec2::new(22.0, 10.0);
 /// The Shields row hides when the content comes closer than this.
 const STATS_CLEARANCE: f32 = 12.0;
 const PRIVATE_WIDTH: f32 = 560.0;
@@ -167,7 +170,6 @@ const SWATCH_GAP: f32 = 8.0;
 const DIM_MAX: f32 = 0.8;
 const BLUR_MAX: f32 = 30.0;
 const EDITOR_WIDTH: f32 = 380.0;
-const MENU_ANCHOR_GAP: f32 = 6.0;
 /// Springs: paging (smooth, no overshoot beyond the config's), tile actions, the editor's fade.
 const PAGE_SPRING: (f32, f32) = (0.5, 0.9);
 const POP_SPRING: (f32, f32) = (0.3, 0.7);
@@ -199,6 +201,14 @@ fn pad(l: f32, r: f32, t: f32, b: f32) -> Rect<LengthPercentage> {
     Rect { left: length(l), right: length(r), top: length(t), bottom: length(b) }
 }
 
+/// The size of an icon of `pixels` shown inside a `side` square without distortion (the HTML
+/// page's `object-fit: contain`): the longer edge is `side`.
+fn contain(side: f32, pixels: (u32, u32)) -> Size<Dimension> {
+    let (w, h) = (pixels.0.max(1) as f32, pixels.1.max(1) as f32);
+    let scale = side / w.max(h);
+    Size { width: length((w * scale).round().max(1.0)), height: length((h * scale).round().max(1.0)) }
+}
+
 fn shrinking() -> Style {
     Style { flex_shrink: 1.0, min_size: Size { width: length(0.0), height: auto() }, ..Default::default() }
 }
@@ -217,7 +227,6 @@ enum Ink {
 const BANDWIDTH_COLOR: Color = Color::rgb(0x8C8BFF);
 const WHITE: Color = Color::rgb(0xFFFFFF);
 const LIGHT_SECONDARY: Color = Color::rgb(0xE8E8EE);
-const SHIELD_OVER_IMAGE: Color = Color::rgb(0x7BE0A8);
 
 fn paint_of(ink: Ink, over_image: bool) -> Paint {
     match (ink, over_image) {
@@ -227,8 +236,8 @@ fn paint_of(ink: Ink, over_image: bool) -> Paint {
         (Ink::Secondary, true) => Paint::Fixed(LIGHT_SECONDARY),
         (Ink::Accent, false) => Paint::Accent,
         (Ink::Accent, true) => Paint::Fixed(WHITE),
-        (Ink::Blocked, false) => Paint::Accent,
-        (Ink::Blocked, true) => Paint::Fixed(SHIELD_OVER_IMAGE),
+        // The HTML start page's colours: the accent, wallpaper or not.
+        (Ink::Blocked, _) => Paint::Accent,
         (Ink::Bandwidth, _) => Paint::Fixed(BANDWIDTH_COLOR),
     }
 }
@@ -295,6 +304,8 @@ pub struct StartPage {
     search: NodeId,
     engine: NodeId,
     engine_icon: NodeId,
+    /// Each engine's icon (as far as it is known), for the engine menu's rows.
+    engine_images: Vec<Option<home::Image>>,
     query: NodeId,
     sites: NodeId,
     viewport: NodeId,
@@ -512,6 +523,20 @@ impl StartPage {
                     top: auto(),
                     bottom: length(STATS_BOTTOM),
                 },
+                justify_content: JustifyContent::CENTER,
+                ..row(0.0)
+            },
+        );
+        let card = ui.add(
+            stats,
+            // A glass card of its own, so the numbers stay readable over any wallpaper.
+            UiWidget::container()
+                .with_background(Background::Glass(GlassLevel::Regular))
+                // The tint of a thick glass: the accent and the purple stay legible on any wallpaper.
+                .with_glass_density(GlassLevel::Thick)
+                .with_radius(STATS_RADIUS),
+            Style {
+                padding: pad(STATS_PAD.x, STATS_PAD.x, STATS_PAD.y, STATS_PAD.y),
                 flex_direction: FlexDirection::Row,
                 flex_wrap: FlexWrap::Wrap,
                 justify_content: JustifyContent::CENTER,
@@ -520,6 +545,7 @@ impl StartPage {
                 ..Default::default()
             },
         );
+        ui.set_passthrough(card, true);
         ui.set_passthrough(stats, true);
         let mut stat_values = [stats; 3];
         for (i, (text, ink)) in [
@@ -530,7 +556,7 @@ impl StartPage {
         .into_iter()
         .enumerate()
         {
-            let stat = ui.add(stats, UiWidget::container(), row(7.0));
+            let stat = ui.add(card, UiWidget::container(), row(7.0));
             stat_values[i] =
                 ink_label(ui, &mut labels, stat, "", TextStyle::BodyEmphasis, ink, Style::default());
             ink_label(ui, &mut labels, stat, text, TextStyle::Footnote, Ink::Secondary, Style::default());
@@ -579,7 +605,9 @@ impl StartPage {
             height: 0.0,
         };
         let editor = Self::build_editor(ui, overlay, config);
-        let menu = Menu::build(ui, overlay, MENU_BASE, Placement::BelowStart);
+        let mut menu = Menu::build(ui, overlay, MENU_BASE, Placement::BelowStart);
+        // The engine menu floats free below its button: no neck joining it to the field.
+        menu.set_unjoined(true);
 
         let mut page = Self {
             root,
@@ -593,6 +621,7 @@ impl StartPage {
             search,
             engine,
             engine_icon,
+            engine_images: Vec::new(),
             query,
             sites,
             viewport,
@@ -972,6 +1001,8 @@ impl StartPage {
     }
 
     fn rebuild_engine_icon(&mut self, ui: &mut Ui, model: &StartModel, favicons: &Favicons) {
+        self.engine_images =
+            model.search.engines.iter().map(|e| favicons.get(&format!("https://{}/", e.host))).collect();
         ui.clear_children(self.engine_icon);
         let host = model.search.icon_host().to_owned();
         match (!host.is_empty()).then(|| favicons.get(&format!("https://{host}/"))).flatten() {
@@ -979,7 +1010,7 @@ impl StartPage {
                 let node = ui.add(
                     self.engine_icon,
                     UiWidget::image().with_radius(6.0),
-                    Style { size: square(22.0), ..Default::default() },
+                    Style { size: contain(22.0, image.1), ..Default::default() },
                 );
                 ui.set_image(node, Some(image));
             }
@@ -1162,7 +1193,7 @@ impl StartPage {
                 let node = ui.add(
                     face,
                     UiWidget::image().with_radius(ICON_RADIUS),
-                    Style { size: square(ICON), flex_shrink: 0.0, ..Default::default() },
+                    Style { size: contain(ICON, image.1), flex_shrink: 0.0, ..Default::default() },
                 );
                 ui.set_image(node, Some(image));
             }
@@ -1984,13 +2015,12 @@ impl StartPage {
             .enumerate()
             .map(|(i, e)| {
                 let mut item = MenuItem::new(Icon::Globe, e.name, MenuAction::StartEngine(i));
+                item.picture = self.engine_images.get(i).cloned().flatten();
                 item.checked = model.search.current == Some(i);
                 item
             })
             .collect();
         let anchor = ui.frame(self.engine);
-        let anchor =
-            Frame::new(anchor.origin.x, anchor.origin.y, anchor.size.x, anchor.size.y + MENU_ANCHOR_GAP);
         let window = self.rect.size + self.rect.origin;
         self.menu.open(ui, config, anchor, window, items);
     }
@@ -2122,6 +2152,15 @@ fn uniform(v: f32) -> Rect<LengthPercentage> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn icons_keep_their_aspect_ratio() {
+        let size = |s: Size<Dimension>| (s.width.value(), s.height.value());
+        assert_eq!(size(contain(40.0, (64, 64))), (40.0, 40.0));
+        assert_eq!(size(contain(40.0, (64, 32))), (40.0, 20.0));
+        assert_eq!(size(contain(40.0, (16, 32))), (20.0, 40.0));
+        assert_eq!(size(contain(40.0, (0, 0))), (40.0, 40.0));
+    }
+
     use super::*;
 
     fn site(i: usize, pinned: bool) -> Site {
