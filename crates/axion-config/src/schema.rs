@@ -1755,6 +1755,14 @@ pub struct Ui {
     /// again: while nothing moves the GPU rests (the window still checks for changes once per
     /// display refresh). Off: every frame is drawn.
     pub skip_unchanged_frames: bool,
+    /// After this many frames in a row were skipped as unchanged, the window checks for changes
+    /// less often (`idle_check_interval_ms`): an idle window wakes a few times a second instead
+    /// of at every display refresh. Input, page frames and page events still show at once.
+    pub idle_frames_before_slowing: u32,
+    /// How often an idle window checks for changes once it slowed down (milliseconds; 0: at
+    /// every display refresh). This is also the most a timer-driven change of the interface
+    /// (a tooltip appearing, a notice leaving) can come late.
+    pub idle_check_interval_ms: u32,
 }
 
 impl Default for Ui {
@@ -1769,6 +1777,8 @@ impl Default for Ui {
             onboarding_max_height: 640.0,
             onboarding_dim: 0.84,
             skip_unchanged_frames: true,
+            idle_frames_before_slowing: 30,
+            idle_check_interval_ms: 50,
         }
     }
 }

@@ -593,6 +593,8 @@ pub struct Browser {
     /// The shown scene's layer fingerprints (trace logging only).
     shown_layers: Vec<u64>,
     idle_redraw_at: Option<Instant>,
+    /// Frames skipped as unchanged in a row (see `ui.idle_frames_before_slowing`).
+    idle_skips: u32,
     /// Whether the pointer was hidden with the fullscreen player's controls at the last check.
     player_pointer_hidden: bool,
     frame_interval: Duration,
@@ -1165,6 +1167,7 @@ impl Browser {
             overview_views: Default::default(),
             playlist_views: Default::default(),
             idle_redraw_at: None,
+            idle_skips: 0,
             player_pointer_hidden: false,
             frame_interval: frame_rate::display_interval(None),
             refresh_watch: RefreshWatch::default(),
@@ -8623,9 +8626,11 @@ impl Browser {
         {
             drop(scene);
             self.frames_skipped += 1;
-            self.idle_redraw_at = Some(now + self.frame_interval);
+            self.idle_skips = self.idle_skips.saturating_add(1);
+            self.idle_redraw_at = Some(now + self.idle_wait());
             return Ok(());
         }
+        self.idle_skips = 0;
         self.idle_redraw_at = None;
         if tracing::enabled!(tracing::Level::TRACE) {
             // Debug aid: which layers changed since the frame shown (why it was drawn).
@@ -8889,6 +8894,18 @@ impl Browser {
     /// changed, nothing presented, so nothing waited for the display), one display refresh later.
     pub fn redraw_at(&self) -> Option<Instant> {
         self.idle_redraw_at
+    }
+
+    /// How long after a skipped frame the next one runs: a display refresh, or once the window
+    /// has been idle for a while, `ui.idle_check_interval_ms` (see `frame_rate::idle_wait`).
+    fn idle_wait(&self) -> Duration {
+        let ui = &self.config.ui;
+        frame_rate::idle_wait(
+            self.frame_interval,
+            self.idle_skips,
+            ui.idle_frames_before_slowing,
+            Duration::from_millis(u64::from(ui.idle_check_interval_ms)),
+        )
     }
 
     /// While the sidebar slides: the frame to show for the page, drawn from the page
