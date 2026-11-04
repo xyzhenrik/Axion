@@ -124,17 +124,61 @@ pub struct General {
     pub desktop_integration: bool,
 }
 
-/// Which language the interface is shown in.
+/// Which language the interface is shown in. The values are the language tags of
+/// `axion-i18n`'s registry (`en`, `de`, `es`, `fr`, `tr`, `ja`, `pt-BR`, `it`, `ru`, `zh-Hans`,
+/// `ko`, `nl`, `pl`), or `system`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum UiLanguage {
-    /// The system's (`LC_ALL`/`LC_MESSAGES`/`LANG`), English when unsupported.
+    /// The system's (`LC_ALL`/`LC_MESSAGES`/`LANGUAGE`/`LANG`), English when unsupported.
     #[default]
+    #[serde(rename = "system")]
     System,
     #[serde(rename = "en")]
     English,
     #[serde(rename = "de")]
     German,
+    #[serde(rename = "es")]
+    Spanish,
+    #[serde(rename = "fr")]
+    French,
+    #[serde(rename = "tr")]
+    Turkish,
+    #[serde(rename = "ja")]
+    Japanese,
+    #[serde(rename = "pt-BR")]
+    PortugueseBrazil,
+    #[serde(rename = "it")]
+    Italian,
+    #[serde(rename = "ru")]
+    Russian,
+    #[serde(rename = "zh-Hans")]
+    ChineseSimplified,
+    #[serde(rename = "ko")]
+    Korean,
+    #[serde(rename = "nl")]
+    Dutch,
+    #[serde(rename = "pl")]
+    Polish,
+}
+
+impl UiLanguage {
+    /// Every choice, "system" first (the order the pickers list them in).
+    pub const ALL: [UiLanguage; 14] = [
+        UiLanguage::System,
+        UiLanguage::English,
+        UiLanguage::German,
+        UiLanguage::Spanish,
+        UiLanguage::French,
+        UiLanguage::Turkish,
+        UiLanguage::Japanese,
+        UiLanguage::PortugueseBrazil,
+        UiLanguage::Italian,
+        UiLanguage::Russian,
+        UiLanguage::ChineseSimplified,
+        UiLanguage::Korean,
+        UiLanguage::Dutch,
+        UiLanguage::Polish,
+    ];
 }
 
 /// The homepage Axion used before it had its own start page; configs that still carry it (or
@@ -176,6 +220,37 @@ impl Default for General {
             onboarding_done: false,
             desktop_integration: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+
+    #[test]
+    fn every_language_round_trips_through_toml() {
+        for language in UiLanguage::ALL {
+            let general = General { language, ..General::default() };
+            let text = toml::to_string(&general).unwrap();
+            let back: General = toml::from_str(&text).unwrap();
+            assert_eq!(back.language, language, "{text}");
+        }
+        let general: General = toml::from_str("language = \"pt-BR\"").unwrap();
+        assert_eq!(general.language, UiLanguage::PortugueseBrazil);
+        let general: General = toml::from_str("language = \"zh-Hans\"").unwrap();
+        assert_eq!(general.language, UiLanguage::ChineseSimplified);
+        // Existing files keep working.
+        let general: General = toml::from_str("language = \"system\"").unwrap();
+        assert_eq!(general.language, UiLanguage::System);
+    }
+
+    #[test]
+    fn all_lists_each_variant_once() {
+        let mut seen = std::collections::HashSet::new();
+        for language in UiLanguage::ALL {
+            assert!(seen.insert(toml::to_string(&General { language, ..General::default() }).unwrap()));
+        }
+        assert_eq!(UiLanguage::ALL[0], UiLanguage::System);
     }
 }
 

@@ -264,11 +264,8 @@ impl Browser {
                 }
             }
             "lang" => {
-                let language = match value {
-                    "de" => UiLanguage::German,
-                    "en" => UiLanguage::English,
-                    _ => UiLanguage::System,
-                };
+                let language = axion_i18n::Language::from_code(value)
+                    .map_or(UiLanguage::System, crate::locale::setting_for);
                 self.onboarding_pick(Pick::Language(language));
             }
             "theme" => {

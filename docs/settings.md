@@ -54,7 +54,7 @@ passwords, website data and settings. More in [Accounts and privacy](features/ac
 |---|---|---|---|
 | **Homepage** | The page that opens in new windows and tabs. Leave the field empty for Axion's own start page. | Axion Home (`axion://home/`) | `general.homepage` |
 | **Search engine** | Where searches typed in the address field and on the start page go. Choices: DuckDuckGo, Google, Brave, Startpage, Ecosia. | DuckDuckGo | `general.search_url` |
-| **Language** | The language of Axion's own interface: System, English or Deutsch. Applies after you restart Axion. | System | `general.language` (`system`, `en`, `de`) |
+| **Language** | The language of Axion's own interface. Every language is written in its own name (English, Deutsch, Español, Français, Türkçe, 日本語, Português (Brasil), Italiano, Русский, 简体中文, 한국어, Nederlands, Polski); **System default** follows `LC_ALL`/`LC_MESSAGES`/`LANGUAGE`/`LANG` (English when Axion has no catalog for it). Text a catalog does not translate yet shows English. Applies after you restart Axion. | System default | `general.language` (`system`, `en`, `de`, `es`, `fr`, `tr`, `ja`, `pt-BR`, `it`, `ru`, `zh-Hans`, `ko`, `nl`, `pl`) |
 | **Add Axion to the application menu** | Linux: adds Axion's desktop entry and icons for your user, which gives the window its icon in the taskbar and the application menu (on Wayland this is the only way). Applies after you restart Axion. | On | `general.desktop_integration` |
 | **Welcome tour** (**Show Welcome Tour**) | Runs the first-start introduction again. | - | `general.onboarding_done` |
 | **Show home button** | Puts a home button next to back and forward. It opens your homepage. | On | `layout.home_button` |
@@ -244,7 +244,7 @@ Reader View and page translation. See [Reading and translation](features/reading
 | **Offer to translate pages in other languages** | Shows the Translate button when a page is in a language other than the target and can be translated. | On | `translation.offer` |
 | **Open the offer by itself** | The offer opens once when such a page has loaded. | On | `translation.prompt` |
 | **Translate text that appears later** | New text on a translated page (feeds, comments) is translated too. | On | `translation.translate_changes` |
-| **Translate pages into** | The target language: Interface (Axion's own language), English, German, French or Spanish. Any other code from the list below can be set in the file. | Interface | `translation.target_language` (empty = interface) |
+| **Translate pages into** | The target language: Interface (Axion's own language) or any of the languages the local models cover (every language Mozilla offers, 58 with English; they translate in both directions through English; Chinese is offered as Simplified and Traditional). Languages Mozilla does not offer are not listed. In the file, an ISO 639-1 code such as `ja`, `pt` or `nb`; `zh` is Simplified, `zht` Traditional. | Interface | `translation.target_language` (empty = interface) |
 | **Translate** | Where translating runs: **On this computer** (Bergamot models, nothing leaves the computer) or **Your server** (a LibreTranslate-compatible server; page text is sent to it). | On this computer | `translation.backend` (`local` or `endpoint`) |
 | **Downloaded language data** | Deletes the models downloaded for local translation. | - | - |
 | *(file only)* Server address | LibreTranslate-compatible endpoint, for example `http://localhost:5000/translate`. Only used with `backend = "endpoint"`; empty by default. | empty | `translation.endpoint_url` |

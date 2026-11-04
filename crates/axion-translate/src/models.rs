@@ -444,7 +444,8 @@ fn make_plan(
     if !pairs.is_empty() {
         let list = get_list(&agent, &settings.models_records_url, "translations-models")?;
         for (from, to) in pairs {
-            for file in pair_files(&list, from, to)? {
+            // Mozilla's list says `zh-Hans`/`zh-Hant`; the store and the engine use `zh`/`zht`.
+            for file in pair_files(&list, lang::model_code(from), lang::model_code(to))? {
                 let path = store.pair_dir(from, to).join(file.role.local_name());
                 files.push((path, file, Some((from.clone(), to.clone()))));
             }
