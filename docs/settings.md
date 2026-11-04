@@ -244,6 +244,7 @@ Reader View and page translation. See [Reading and translation](features/reading
 |---|---|---|---|
 | **Offer to translate pages in other languages** | Shows the Translate button when a page is in a language other than the target and can be translated. | On | `translation.offer` |
 | **Open the offer by itself** | The offer opens once when such a page has loaded. | On | `translation.prompt` |
+| *(file only)* Offer once per page | The offer opens by itself at most once for each page load in a tab, and closing it is final for that page: dynamic page changes or other popovers closing never bring it back. The Translate button still opens it. Off: it may open again when the page reports its language anew. | On | `translation.offer_once_per_page` |
 | **Translate text that appears later** | New text on a translated page (feeds, comments) is translated too. | On | `translation.translate_changes` |
 | **Translate pages into** | The target language: Interface (Axion's own language), English, German, French or Spanish. Any other code from the list below can be set in the file. | Interface | `translation.target_language` (empty = interface) |
 | **Translate** | Where translating runs: **On this computer** (Bergamot models, nothing leaves the computer) or **Your server** (a LibreTranslate-compatible server; page text is sent to it). | On this computer | `translation.backend` (`local` or `endpoint`) |
@@ -517,8 +518,12 @@ Version information and updates. See [Updates](features/updates.md).
 |---|---|---|---|
 | **Check for Updates** | Asks the update source for the newest version now. | - | - |
 | **Check for updates automatically** | Looks for a new version a few seconds after Axion starts, at most once a day. | On | `updates.auto_check_on_start` |
+| **Notify me about updates** | Also announces a new version with a desktop notification (**Update** / **Later**) while Axion's window is in the background. The in-app message always shows. | On | `updates.desktop_notification`, `updates.desktop_notification_when_focused` |
 | **Include pre-releases** | Also offers alpha, beta and release-candidate versions. | Off | `updates.channel` (`stable`, `prerelease`) |
 | **Repository** (**Save**) | Where releases are published, written `owner/name`. The field is empty and shows the default as a placeholder; typing your own repository overrides it, clearing the field returns to the default (nothing is stored for the default). | `xyzhenrik/Axion` (empty field) | `updates.repository` |
+
+While an update runs, the page shows its progress with **Cancel**; afterwards **Restart Axion** and
+**Later**, or the reason it failed with **Try again**.
 
 When an update is available the page also shows the release notes and the buttons **Update** (or
 **Update from Git**, or **Open Release Page**), **Skip This Version** and **Remind Me Later**.

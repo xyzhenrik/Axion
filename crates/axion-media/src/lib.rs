@@ -126,6 +126,13 @@ pub struct Player {
 }
 
 impl Player {
+    /// Real playback: not a hover preview or an autoplaying tile. The one predicate every
+    /// consumer of the player list uses (Now Playing, desktop controls, the Playlist's Add
+    /// button, "a media tab is never frozen", the page menu); see [`PageMedia::real_players`].
+    pub fn is_real(&self) -> bool {
+        !self.preview
+    }
+
     pub fn is_playing(&self) -> bool {
         !self.paused && !self.ended
     }
@@ -206,14 +213,17 @@ impl PageMedia {
     /// else the biggest video, else any audio.
     pub fn primary(&self) -> Option<&Player> {
         let biggest = |filter: &dyn Fn(&Player) -> bool| {
-            self.players
-                .iter()
-                .filter(|p| !p.preview && filter(p))
-                .max_by(|a, b| a.area().total_cmp(&b.area()))
+            self.real_players().filter(|p| filter(p)).max_by(|a, b| a.area().total_cmp(&b.area()))
         };
         biggest(&|p| p.is_playing())
             .or_else(|| biggest(&|p| p.kind == Kind::Video && p.area() > 0.0))
-            .or_else(|| self.players.iter().find(|p| !p.preview))
+            .or_else(|| self.real_players().next())
+    }
+
+    /// The players that are real playback (no hover previews or autoplaying tiles). Every
+    /// consumer of the list goes through this, never through `players` directly.
+    pub fn real_players(&self) -> impl Iterator<Item = &Player> + Clone {
+        self.players.iter().filter(|p| p.is_real())
     }
 
     /// The state of a view Axion plays a video in itself (the Playlist's): nothing there is a
@@ -232,12 +242,12 @@ impl PageMedia {
 
     /// Something real plays aloud (a hover preview does not count: it never keeps a tab awake).
     pub fn is_audible(&self) -> bool {
-        self.players.iter().any(|p| !p.preview && p.is_audible())
+        self.real_players().any(Player::is_audible)
     }
 
     /// Something real plays (previews do not count).
     pub fn is_playing(&self) -> bool {
-        self.players.iter().any(|p| !p.preview && p.is_playing())
+        self.real_players().any(Player::is_playing)
     }
 }
 
@@ -591,6 +601,27 @@ mod tests {
         });
         assert!(m.is_audible() && m.is_playing());
         assert_eq!(m.primary().map(|p| p.id.as_str()), Some("main"));
+    }
+
+    #[test]
+    fn real_players_leave_out_previews_for_every_consumer() {
+        let tile = Player {
+            id: "tile".into(),
+            paused: false,
+            preview: true,
+            w: 300.0,
+            h: 170.0,
+            ..Default::default()
+        };
+        let real = Player { id: "real".into(), paused: true, w: 800.0, h: 450.0, ..Default::default() };
+        let only_tile = PageMedia { players: vec![tile.clone()], ..Default::default() };
+        assert_eq!(only_tile.real_players().count(), 0);
+        assert!(!tile.is_real() && real.is_real());
+        let both = PageMedia { players: vec![tile, real], ..Default::default() };
+        let ids: Vec<&str> = both.real_players().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["real"]);
+        // A paused real player does not make the tile count as playing.
+        assert!(!both.is_playing() && !both.is_audible());
     }
 
     #[test]

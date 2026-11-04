@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Builds ./site for mock_server.py (usage: make_site.py [PORT]): manifests, a GitHub-like API tree
+"""Also builds tarball.json (a good Axion-9.9.0-linux-x86_64.tar.gz), tarball-badsum.json,
+tarball-evil.json (path traversal) and tarball-slow.json (throttled) for the tarball updater.
+
+Builds ./site for mock_server.py (usage: make_site.py [PORT]): manifests, a GitHub-like API tree
 (repos/mock/axion/releases/latest), a fake AppImage with SHA256SUMS, a big throttled one, and
 broken variants (bad checksum, no checksum, invalid JSON) for trying the updater by hand:
 
@@ -8,9 +11,12 @@ broken variants (bad checksum, no checksum, invalid JSON) for trying the updater
     axion --check-update
 """
 import hashlib
+import io
 import json
 import os
 import sys
+import tarfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SITE = os.path.join(HERE, "site")
@@ -86,5 +92,60 @@ bad_assets[1] = {"name": "SHA256SUMS", "url": "dl/bad/SHA256SUMS"}
 write("dl/bad/SHA256SUMS", f"{'0' * 64}  Axion-9.9.0-x86_64.AppImage\n")
 write("badsum.json", json.dumps({**manifest, "assets": bad_assets}))
 write("nosum.json", json.dumps({**manifest, "assets": assets[:1]}))
+
+
+def tarball(extra=None, version="9.9.0", slow_size=0):
+    """Axion-<v>-linux-x86_64.tar.gz as tools/package.sh builds it: one top folder with AppRun,
+    usr/bin/axion (a shell stand-in that prints its version), the marker and a symlink."""
+    top = f"Axion-{version}-linux-x86_64"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        def add(name, data, mode=0o644):
+            info = tarfile.TarInfo(f"{top}/{name}")
+            info.size, info.mode, info.mtime = len(data), mode, int(time.time())
+            tar.addfile(info, io.BytesIO(data))
+        add("AppRun", b'#!/bin/sh\nexec "$(dirname "$0")/usr/bin/axion" "$@"\n', 0o755)
+        add("usr/bin/axion", f'#!/bin/sh\necho "axion {version} (mock)"\n'.encode(), 0o755)
+        add("axion-install.json", json.dumps({"kind": "tarball", "version": version, "installed_at": 0}).encode())
+        if slow_size:
+            add("usr/lib/filler.bin", os.urandom(1024) * slow_size)
+        info = tarfile.TarInfo(f"{top}/axion")
+        info.type, info.linkname = tarfile.SYMTYPE, "AppRun"
+        tar.addfile(info)
+        for name, data in (extra or {}).items():
+            add(name, data)
+    return buf.getvalue()
+
+
+tgz_name = "Axion-9.9.0-linux-x86_64.tar.gz"
+tgz = tarball()
+write(f"dl/tar/{tgz_name}", tgz, True)
+write("dl/tar/SHA256SUMS", f"{hashlib.sha256(tgz).hexdigest()}  {tgz_name}\n")
+tar_assets = [
+    {"name": tgz_name, "url": f"dl/tar/{tgz_name}", "size": len(tgz)},
+    {"name": "SHA256SUMS", "url": "dl/tar/SHA256SUMS"},
+]
+write("tarball.json", json.dumps({**manifest, "assets": tar_assets}))
+# A tarball whose checksum is wrong, and one with an entry that climbs out of the folder.
+write("dl/tar/bad/SHA256SUMS", f"{'0' * 64}  {tgz_name}\n")
+write("tarball-badsum.json", json.dumps({**manifest, "assets": [tar_assets[0], {"name": "SHA256SUMS", "url": "dl/tar/bad/SHA256SUMS"}]}))
+evil = io.BytesIO()
+with tarfile.open(fileobj=evil, mode="w:gz") as tar:
+    info = tarfile.TarInfo("Axion-9.9.0-linux-x86_64/../../evil.txt")
+    info.size = 4
+    tar.addfile(info, io.BytesIO(b"evil"))
+evil_bytes = evil.getvalue()
+write("dl/tar/evil/" + tgz_name, evil_bytes, True)
+write("dl/tar/evil/SHA256SUMS", f"{hashlib.sha256(evil_bytes).hexdigest()}  {tgz_name}\n")
+write("tarball-evil.json", json.dumps({**manifest, "assets": [
+    {"name": tgz_name, "url": f"dl/tar/evil/{tgz_name}", "size": len(evil_bytes)},
+    {"name": "SHA256SUMS", "url": "dl/tar/evil/SHA256SUMS"}]}))
+# A big, throttled one for watching the progress bar.
+slow = tarball(slow_size=20000)
+write("dl/tar/slow/" + tgz_name, slow, True)
+write("dl/tar/slow/SHA256SUMS", f"{hashlib.sha256(slow).hexdigest()}  {tgz_name}\n")
+write("tarball-slow.json", json.dumps({**manifest, "assets": [
+    {"name": tgz_name, "url": f"throttle/dl/tar/slow/{tgz_name}", "size": len(slow)},
+    {"name": "SHA256SUMS", "url": "dl/tar/slow/SHA256SUMS"}]}))
 # For the "slow" state, the same documents below /slow/.
 print("site written to", SITE, "digest", digest)

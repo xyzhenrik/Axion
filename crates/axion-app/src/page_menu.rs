@@ -156,13 +156,17 @@ pub fn anchor(pos: Vec2, window: Vec2, width: f32) -> Frame {
 
 /// The player under a click: the smallest one whose rectangle holds the point, else the one
 /// that plays `source_url`. `css` is the click in CSS pixels of the top frame's viewport.
-pub fn player_at<'a>(players: &'a [Player], css: Vec2, source_url: &str) -> Option<&'a Player> {
+pub fn player_at<'a>(
+    players: impl Iterator<Item = &'a Player> + Clone,
+    css: Vec2,
+    source_url: &str,
+) -> Option<&'a Player> {
     let inside = |p: &&Player| css.x >= p.x && css.x <= p.x + p.w && css.y >= p.y && css.y <= p.y + p.h;
     players
-        .iter()
+        .clone()
         .filter(inside)
         .min_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)))
-        .or_else(|| players.iter().find(|p| !source_url.is_empty() && p.src == source_url))
+        .or_else(|| players.into_iter().find(|p| !source_url.is_empty() && p.src == source_url))
 }
 
 /// The rows of the page's context menu for a click described by `params`.
@@ -640,11 +644,20 @@ mod tests {
     fn the_smallest_player_under_the_click_wins() {
         let players =
             [player("big", 0.0, 0.0, 800.0, 600.0, "a"), player("small", 100.0, 100.0, 200.0, 100.0, "b")];
-        assert_eq!(player_at(&players, Vec2::new(150.0, 150.0), "").map(|p| p.id.as_str()), Some("small"));
-        assert_eq!(player_at(&players, Vec2::new(700.0, 500.0), "").map(|p| p.id.as_str()), Some("big"));
+        assert_eq!(
+            player_at(players.iter(), Vec2::new(150.0, 150.0), "").map(|p| p.id.as_str()),
+            Some("small")
+        );
+        assert_eq!(
+            player_at(players.iter(), Vec2::new(700.0, 500.0), "").map(|p| p.id.as_str()),
+            Some("big")
+        );
         // Off every player: found by the address it plays.
-        assert_eq!(player_at(&players, Vec2::new(900.0, 900.0), "b").map(|p| p.id.as_str()), Some("small"));
-        assert!(player_at(&players, Vec2::new(900.0, 900.0), "").is_none());
+        assert_eq!(
+            player_at(players.iter(), Vec2::new(900.0, 900.0), "b").map(|p| p.id.as_str()),
+            Some("small")
+        );
+        assert!(player_at(players.iter(), Vec2::new(900.0, 900.0), "").is_none());
     }
 
     #[test]
