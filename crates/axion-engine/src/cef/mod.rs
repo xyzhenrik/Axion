@@ -253,6 +253,8 @@ pub struct CefOptions {
     pub max_frame_rate: u32,
     /// How long after Chromium hands over a GPU frame it is copied (see `ViewContext::submit_gpu_frame`).
     pub frame_settle: std::time::Duration,
+    /// Software frames upload only what Chromium repainted (see `ViewContext::upload`).
+    pub partial_uploads: bool,
     /// Decode video on the GPU (VA-API).
     pub hardware_video_decoding: bool,
     /// Run Chromium's extension system (see [`extension_switches`]).
@@ -348,7 +350,11 @@ impl CefEngine {
         Ok(Self {
             device,
             queue,
-            shared: Rc::new(Shared { frame_settle: options.frame_settle, ..Default::default() }),
+            shared: Rc::new(Shared {
+                frame_settle: options.frame_settle,
+                partial_uploads: options.partial_uploads,
+                ..Default::default()
+            }),
             views: BTreeMap::new(),
             next_id: 1,
             accelerated: options.accelerated,

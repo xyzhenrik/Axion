@@ -748,6 +748,7 @@ impl Browser {
                         .max(0.0)
                         / 1000.0,
                 ),
+                partial_uploads: config.hardware.partial_page_uploads,
                 hardware_video_decoding: crate::hardware::video_decoding(&config),
                 extra_switches: {
                     let mut switches = crate::hardware::chromium_switches(&config.hardware);

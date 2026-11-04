@@ -1811,11 +1811,20 @@ pub struct Hardware {
     pub gpu: GpuChoice,
     /// GPU rasterization (also what makes WebGL and canvas smooth) and zero-copy uploads.
     pub gpu_rasterization: bool,
+    /// Software page frames (the path used on AMD and under XWayland) upload only the parts
+    /// Chromium repainted, not the whole page every frame. Off: always the whole frame.
+    pub partial_page_uploads: bool,
 }
 
 impl Default for Hardware {
     fn default() -> Self {
-        Self { enabled: true, page_frames: PageFrames::Auto, gpu: GpuChoice::Auto, gpu_rasterization: true }
+        Self {
+            enabled: true,
+            page_frames: PageFrames::Auto,
+            gpu: GpuChoice::Auto,
+            gpu_rasterization: true,
+            partial_page_uploads: true,
+        }
     }
 }
 
