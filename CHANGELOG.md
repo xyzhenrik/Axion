@@ -4,6 +4,11 @@
 
 (nothing yet)
 
+## 0.4.1
+
+### New
+- **Welcome tour**: the language step uses the same glass dropdown as Settings (search, native names).
+
 ## 0.4.0
 
 ### Fixed
