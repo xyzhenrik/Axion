@@ -76,6 +76,11 @@ impl Browser {
         // The import step exists when other browsers are installed.
         let choices = if self.importer.available() { self.onboarding_import_choices() } else { Vec::new() };
         self.onboarding.set_sources(choices);
+        // Linux: the introduction offers to make Axion the default browser.
+        self.onboarding.set_default_offer(
+            cfg!(target_os = "linux") && self.config.general.default_browser_hint,
+            self.default_browser_view().state,
+        );
         let size = self.logical_size();
         let events = self.onboarding.open(&mut self.ui, &self.config, size, step);
         self.handle_ui_events(events);
@@ -126,6 +131,7 @@ impl Browser {
             Reaction::Config(pick) => self.onboarding_pick(pick),
             Reaction::ChoosePhoto => self.photo_chooser.choose(PhotoFor::Current),
             Reaction::RemovePhoto => self.settings_outcome(Outcome::RemoveAccountPhoto),
+            Reaction::MakeDefault => self.make_default_browser(),
             Reaction::Import(picks) => self.onboarding_import(picks),
             Reaction::End(ending, choice) => self.finish_onboarding(ending, choice),
         }
@@ -264,11 +270,8 @@ impl Browser {
                 }
             }
             "lang" => {
-                let language = match value {
-                    "de" => UiLanguage::German,
-                    "en" => UiLanguage::English,
-                    _ => UiLanguage::System,
-                };
+                let language = axion_i18n::Language::from_code(value)
+                    .map_or(UiLanguage::System, crate::locale::setting_for);
                 self.onboarding_pick(Pick::Language(language));
             }
             "theme" => {

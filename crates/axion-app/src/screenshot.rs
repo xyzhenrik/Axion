@@ -85,7 +85,7 @@ pub struct ShotTool {
 }
 
 struct Review {
-    image: (wgpu::TextureView, (u32, u32)),
+    image: Option<(wgpu::TextureView, (u32, u32))>,
     info: String,
 }
 
@@ -285,7 +285,11 @@ impl ShotTool {
             CLOSE => Some(ShotAction::Close),
             COPY => Some(ShotAction::Copy),
             SAVE => Some(ShotAction::Save),
-            DISMISS | REVIEW_BACKDROP => Some(ShotAction::Dismiss),
+            // The review's Close button closes outright; only the backdrop's own action
+            // (which also fires for a click on the card's background) is checked against the
+            // card by the browser. Mapping both to `Dismiss` made the button do nothing.
+            DISMISS => Some(ShotAction::Close),
+            REVIEW_BACKDROP => Some(ShotAction::Dismiss),
             ActionId(n) if (MODE_BASE..MODE_BASE + 3).contains(&n) => {
                 Some(ShotAction::Mode(MODES[(n - MODE_BASE) as usize]))
             }
@@ -350,7 +354,7 @@ impl ShotTool {
         info: String,
     ) {
         self.phase = Phase::Review;
-        self.review = Some(Review { image, info });
+        self.review = Some(Review { image: Some(image), info });
         self.review_dirty = true;
         ui.set_visible(self.overlay, false);
         ui.set_visible(self.review_root, true);
@@ -390,7 +394,7 @@ impl ShotTool {
         ui.add(head, Widget::icon(Icon::Screen, 26.0).with_paint(Paint::Accent), Style::default());
         let title = ui.add_label(head, tr("Screenshot"), TextStyle::BodyEmphasis, Style::default());
         ui.set_label_lines(title, 1);
-        let (w, h) = review.image.1;
+        let (w, h) = review.image.as_ref().map_or((PREVIEW_MAX.x as u32, PREVIEW_MAX.y as u32), |i| i.1);
         let scale = (PREVIEW_MAX.x / w as f32).min(PREVIEW_MAX.y / h as f32).min(1.0);
         let (pw, ph) = ((w as f32 * scale).max(1.0), (h as f32 * scale).max(1.0));
         let holder = ui.add(
@@ -416,7 +420,7 @@ impl ShotTool {
                 ..Default::default()
             },
         );
-        ui.set_image(image, Some(review.image.clone()));
+        ui.set_image(image, review.image.clone());
         let info = ui.add_label(card, &review.info, TextStyle::Footnote, Style::default());
         ui.set_label_lines(info, 2);
         if let Some(wid) = ui.widget_mut(info) {
@@ -537,5 +541,150 @@ impl ShotTool {
             style.inset = inset;
             ui.set_style(self.toolbar, style);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axion_ui::{Theme, UiEvent, UiInput};
+
+    fn ui() -> Ui {
+        let mut ui = Ui::new(Theme::new(&Config::default(), false), 1.0);
+        ui.set_viewport(Vec2::new(1000.0, 700.0), 1.0);
+        ui
+    }
+
+    fn page() -> Frame {
+        Frame::new(200.0, 80.0, 780.0, 600.0)
+    }
+
+    /// A real click: move, press, release; the actions of the `Clicked` events.
+    fn click(ui: &mut Ui, at: Vec2) -> Vec<ActionId> {
+        let mut clicked = Vec::new();
+        let _ = ui.handle(UiInput::PointerMove(at));
+        for input in [UiInput::PointerDown, UiInput::PointerUp] {
+            let (_, events) = ui.handle(input);
+            for event in events {
+                if let UiEvent::Clicked { action, .. } = event {
+                    clicked.push(action);
+                }
+            }
+        }
+        clicked
+    }
+
+    fn select_tool() -> (Ui, ShotTool) {
+        let mut ui = ui();
+        let mut tool = ShotTool::build(&mut ui);
+        tool.start(&mut ui, page());
+        let config = Config::default();
+        ui.layout();
+        tool.animate(&mut ui, &config, page(), 0.016);
+        ui.layout();
+        (ui, tool)
+    }
+
+    fn review_tool() -> (Ui, ShotTool) {
+        let mut ui = ui();
+        let mut tool = ShotTool::build(&mut ui);
+        let config = Config::default();
+        tool.phase = Phase::Review;
+        tool.review = Some(Review { image: None, info: "1 x 1".into() });
+        tool.review_dirty = true;
+        ui.set_visible(tool.review_root, true);
+        tool.review_open = true;
+        tool.appear.snap(1.0);
+        tool.appear.target = 1.0;
+        tool.animate(&mut ui, &config, page(), 0.016);
+        ui.layout();
+        tool.animate(&mut ui, &config, page(), 0.016);
+        (ui, tool)
+    }
+
+    fn find(ui: &Ui, node: NodeId, action: ActionId) -> Option<NodeId> {
+        if ui.widget(node).is_some_and(|w| w.action == Some(action)) {
+            return Some(node);
+        }
+        ui.children(node).into_iter().find_map(|c| find(ui, c, action))
+    }
+
+    fn center_of(ui: &Ui, action: ActionId) -> Vec2 {
+        let node = find(ui, ui.root(), action).expect("button exists");
+        let f = ui.frame(node);
+        f.origin + f.size / 2.0
+    }
+
+    #[test]
+    fn toolbar_cancel_is_a_close() {
+        let (mut ui, tool) = select_tool();
+        let at = center_of(&ui, CLOSE);
+        assert!(tool.toolbar_contains(&ui, at));
+        let clicked = click(&mut ui, at);
+        let actions: Vec<_> = clicked.iter().filter_map(|a| tool.action(*a)).collect();
+        assert_eq!(actions, vec![ShotAction::Close]);
+    }
+
+    #[test]
+    fn review_close_button_closes_even_though_it_lies_on_the_card() {
+        let (mut ui, tool) = review_tool();
+        let at = center_of(&ui, DISMISS);
+        assert!(tool.review_contains(&ui, at), "the button is inside the card");
+        let clicked = click(&mut ui, at);
+        let actions: Vec<_> = clicked.iter().filter_map(|a| tool.action(*a)).collect();
+        assert_eq!(actions, vec![ShotAction::Close], "must not be the card-checked Dismiss");
+    }
+
+    #[test]
+    fn review_backdrop_click_dismisses_and_copy_save_are_their_own() {
+        let (mut ui, tool) = review_tool();
+        let outside = Vec2::new(5.0, 5.0);
+        assert!(!tool.review_contains(&ui, outside));
+        let actions: Vec<_> = click(&mut ui, outside).iter().filter_map(|a| tool.action(*a)).collect();
+        assert_eq!(actions, vec![ShotAction::Dismiss]);
+        let at = center_of(&ui, COPY);
+        let copy = click(&mut ui, at);
+        assert_eq!(tool.action(copy[0]), Some(ShotAction::Copy));
+        let at = center_of(&ui, SAVE);
+        let save = click(&mut ui, at);
+        assert_eq!(tool.action(save[0]), Some(ShotAction::Save));
+    }
+
+    #[test]
+    fn close_resets_every_state_and_hides_the_overlays() {
+        let (mut ui, mut tool) = select_tool();
+        tool.pointer_down(Vec2::new(300.0, 200.0));
+        tool.pointer_move(Vec2::new(500.0, 400.0));
+        tool.close(&mut ui);
+        assert!(!tool.is_active());
+        assert_eq!(tool.phase(), Phase::Idle);
+        assert!(tool.selection().is_none());
+        assert!(!tool.toolbar_contains(&ui, Vec2::new(500.0, 650.0)));
+        // A press after closing starts nothing.
+        tool.pointer_down(Vec2::new(300.0, 200.0));
+        assert!(tool.selection().is_none());
+        // The review fades out and its backdrop stops taking clicks.
+        let (mut ui, mut tool) = review_tool();
+        tool.close(&mut ui);
+        let config = Config::default();
+        for _ in 0..240 {
+            tool.animate(&mut ui, &config, page(), 0.016);
+        }
+        assert!(!ui.is_visible(tool.review_root), "the faded review no longer covers the window");
+        assert!(click(&mut ui, Vec2::new(5.0, 5.0)).is_empty());
+    }
+
+    #[test]
+    fn every_action_id_is_distinct_and_maps_back() {
+        let ids = [CLOSE, REVIEW_BACKDROP, COPY, SAVE, DISMISS, MODE_VISIBLE, MODE_FULL, ActionId(MODE_BASE)];
+        for (i, a) in ids.iter().enumerate() {
+            assert!(tool_action(*a).is_some(), "{a:?} maps");
+            assert!(!ids[..i].contains(a), "{a:?} is unique");
+        }
+    }
+
+    fn tool_action(id: ActionId) -> Option<ShotAction> {
+        let mut ui = ui();
+        ShotTool::build(&mut ui).action(id)
     }
 }

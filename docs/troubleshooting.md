@@ -246,6 +246,24 @@ Not related to the icon: the system log and `systemd-cgls` show Axion in a scope
 the browser engine registering itself with systemd and the desktop portal under a name built into it;
 KWin does not use it to find the icon or the entry.
 
+## The window has no title bar, or the corners are square
+
+Axion draws its own window frame by default (**Settings > Appearance > Window frame**,
+`window.decorations = "custom"`): the red, yellow and green buttons are in the toolbar, and the
+desktop's title bar is gone on purpose. Move the window by dragging free toolbar space, resize it
+from its edges, maximize it with a double click on the toolbar.
+
+- **Square corners.** Rounded corners need a transparent window, which only Wayland gives. On X11
+  and XWayland (also `env -u WAYLAND_DISPLAY`) the corners stay square; this is not an error.
+- **KDE.** KWin adds no title bar to a window that asks for none, and draws its own shadow around
+  it (Axion draws no shadow). Alt+drag, Super shortcuts and window snapping act on the window as
+  on any other. The toolbar's right click opens KWin's window menu where KWin supports it.
+- **Edge snapping and tiling** are the desktop's: a tiled window gets no special treatment in
+  Axion yet (its corners stay rounded).
+- **It misbehaves** (no way to move or resize, buttons do nothing). Set **Window frame** to
+  **System** or `window.decorations = "system"` in `config.toml`; that brings back the desktop's
+  title bar and frame at once.
+
 ## I cannot open my private tabs
 
 Private tabs are locked with your account password (**Settings > Privacy > Lock private tabs with

@@ -44,6 +44,32 @@ enum Translating {
     Failed(String),
 }
 
+/// Whether the translate offer already opened by itself for the current document.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct OfferGate {
+    shown: bool,
+}
+
+impl OfferGate {
+    /// The offer may open by itself now.
+    fn may_open(self) -> bool {
+        !self.shown
+    }
+
+    /// The offer opened (by itself or through the button): that was its one time.
+    fn opened(&mut self) {
+        self.shown = true;
+    }
+
+    /// The page reported its language (again). With `once_per_page` this changes nothing: the
+    /// gate only reopens with a new document.
+    fn language_reported(&mut self, once_per_page: bool) {
+        if !once_per_page {
+            self.shown = false;
+        }
+    }
+}
+
 struct PageTools {
     readable: bool,
     reader_active: bool,
@@ -51,7 +77,7 @@ struct PageTools {
     /// The page's language as it said or as guessed (normalised), and whether the offer was
     /// already shown for this document.
     lang: Option<String>,
-    offered: bool,
+    offered: OfferGate,
     translating: Translating,
 }
 
@@ -62,7 +88,7 @@ impl Default for PageTools {
             reader_active: false,
             look: None,
             lang: None,
-            offered: false,
+            offered: OfferGate::default(),
             translating: Translating::Idle,
         }
     }
@@ -215,9 +241,10 @@ impl Browser {
     fn translate_page_message(&mut self, view: ViewId, message: page::Message) {
         match message {
             page::Message::Lang { lang, .. } => {
+                let once = self.config.translation.offer_once_per_page;
                 let tools = self.reading.pages.entry(view).or_default();
                 tools.lang = lang::normalize(&lang);
-                tools.offered = false;
+                tools.offered.language_reported(once);
             }
             page::Message::Batch { id, texts } => {
                 // A translated page goes on asking while it is scrolled (and when it changes).
@@ -428,15 +455,9 @@ impl Browser {
 
     /// The language pages are translated into.
     fn translate_target(&self) -> String {
-        lang::normalize(&self.config.translation.target_language).filter(|l| !l.is_empty()).unwrap_or_else(
-            || {
-                match axion_i18n::language() {
-                    axion_i18n::Language::German => "de",
-                    axion_i18n::Language::English => "en",
-                }
-                .to_owned()
-            },
-        )
+        lang::normalize(&self.config.translation.target_language)
+            .filter(|l| !l.is_empty())
+            .unwrap_or_else(|| axion_i18n::language().translation_code().to_owned())
     }
 
     /// Whether `tab` is worth offering a translation: its language differs from the target and
@@ -488,6 +509,9 @@ impl Browser {
 
     fn open_translate_popover(&mut self) {
         let Some(view) = self.active_view() else { return };
+        if let Some(tools) = self.reading.pages.get_mut(&view) {
+            tools.offered.opened();
+        }
         let Some(content) = self.translate_content(view) else { return };
         let anchor = self.chrome.translate_button_frame(&self.ui);
         let width = self.logical_size().x;
@@ -669,11 +693,11 @@ impl Browser {
                 && let Some(tab) = find_tab(&self.tabs, &self.parked, view)
                 && !tab.loading
                 && let Some(tools) = self.reading.pages.get(&view)
-                && !tools.offered
+                && tools.offered.may_open()
                 && tools.translating == Translating::Idle
             {
                 if let Some(tools) = self.reading.pages.get_mut(&view) {
-                    tools.offered = true;
+                    tools.offered.opened();
                 }
                 self.open_translate_popover();
             }
@@ -795,5 +819,40 @@ impl Browser {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OfferGate;
+
+    #[test]
+    fn the_offer_opens_once_and_a_repeated_language_report_does_not_bring_it_back() {
+        let mut gate = OfferGate::default();
+        assert!(gate.may_open());
+        gate.language_reported(true);
+        assert!(gate.may_open(), "a first report does not use the offer up");
+        gate.opened();
+        assert!(!gate.may_open());
+        // The page reports again (dynamic changes, title updates): still final.
+        gate.language_reported(true);
+        gate.language_reported(true);
+        assert!(!gate.may_open());
+    }
+
+    #[test]
+    fn without_the_once_setting_a_new_report_allows_the_offer_again() {
+        let mut gate = OfferGate::default();
+        gate.opened();
+        gate.language_reported(false);
+        assert!(gate.may_open());
+    }
+
+    #[test]
+    fn a_new_document_starts_with_a_fresh_gate() {
+        let mut gate = OfferGate::default();
+        gate.opened();
+        gate = OfferGate::default();
+        assert!(gate.may_open());
     }
 }
