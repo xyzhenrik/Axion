@@ -188,6 +188,9 @@ pub struct Favicons {
     aliases: HashMap<String, String>,
     /// The app icon, the icon of all `axion://` pages.
     app_icon: Option<SiteIcon>,
+    /// Per domain, a cached subdomain's host (`accounts.google.com` for `google.com`) found by
+    /// scanning the cache folder; emptied when icons arrive.
+    subdomains: RefCell<HashMap<String, Option<String>>>,
 }
 
 impl Favicons {
@@ -210,6 +213,7 @@ impl Favicons {
             shown: RefCell::default(),
             aliases: HashMap::new(),
             app_icon: None,
+            subdomains: RefCell::default(),
         };
         this.app_icon = image::load_from_memory_with_format(APP_ICON_PNG, image::ImageFormat::Png)
             .inspect_err(|e| tracing::warn!("app icon as site icon: {e}"))
@@ -225,6 +229,7 @@ impl Favicons {
     /// none on disk are looked up again.
     pub fn rescan_disk(&self) {
         self.not_on_disk.borrow_mut().clear();
+        self.subdomains.borrow_mut().clear();
     }
 
     /// Where the icons are cached (`None`: nowhere, they live in memory only).
@@ -287,11 +292,60 @@ impl Favicons {
         if host.is_empty() {
             return None;
         }
+        self.get_host(&host)
+    }
+
+    /// The icon cached under exactly `host` (current scheme, else the other one's).
+    fn get_host(&self, host: &str) -> Option<SiteIcon> {
         let (scheme, cached) = self
-            .cached(&host, self.scheme)
+            .cached(host, self.scheme)
             .map(|c| (self.scheme, c))
-            .or_else(|| self.cached(&host, self.scheme.other()).map(|c| (self.scheme.other(), c)))?;
-        Some(self.shown_icon((host, scheme), &cached))
+            .or_else(|| self.cached(host, self.scheme.other()).map(|c| (self.scheme.other(), c)))?;
+        Some(self.shown_icon((host.to_owned(), scheme), &cached))
+    }
+
+    /// The icon that stands for `url`'s site wherever any cached icon of it exists (the start
+    /// page's tiles): the host's own, then its parent domains (a tile for `www.google.com` or
+    /// `mail.google.com` shows `google.com`'s icon), then a cached subdomain of the host (a
+    /// site only visited as `accounts.google.com` still gets its tile icon).
+    pub fn get_site(&self, url: &str) -> Option<SiteIcon> {
+        if is_internal(url) {
+            return self.app_icon.clone();
+        }
+        let hosts = site_hosts(url);
+        hosts
+            .iter()
+            .find_map(|h| self.get_host(h))
+            .or_else(|| self.subdomain_host(hosts.last()?).and_then(|h| self.get_host(&h)))
+    }
+
+    /// A cached host below `domain`, if any (the cache folder is scanned once per domain).
+    fn subdomain_host(&self, domain: &str) -> Option<String> {
+        if let Some(found) = self.subdomains.borrow().get(domain) {
+            return found.clone();
+        }
+        let in_memory = self
+            .by_key
+            .borrow()
+            .keys()
+            .map(|(h, _)| h.as_str())
+            .filter(|h| h.strip_suffix(domain).is_some_and(|rest| rest.ends_with('.')))
+            .min()
+            .map(str::to_owned);
+        let found = in_memory.or_else(|| {
+            let mut names: Vec<String> = std::fs::read_dir(self.dir.as_ref()?)
+                .ok()?
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter_map(|n| {
+                    let host = n.strip_suffix(".dark.png").or_else(|| n.strip_suffix(".png"))?;
+                    host.strip_suffix(domain)?.ends_with('.').then(|| host.to_owned())
+                })
+                .collect();
+            names.sort();
+            names.into_iter().next()
+        });
+        self.subdomains.borrow_mut().insert(domain.to_owned(), found.clone());
+        found
     }
 
     /// The site's own icon pixels for `page_url` (current scheme, else the other), for drawing
@@ -516,6 +570,7 @@ impl Favicons {
         let key = (host.clone(), scheme);
         let raw = Arc::new(Raw { width, height, rgba: rgba.to_vec() });
         self.shown.borrow_mut().remove(&key);
+        self.subdomains.borrow_mut().clear();
         self.by_key.borrow_mut().insert(key.clone(), Cached { icon, raw, source: Some(url.to_owned()) });
         self.not_on_disk.borrow_mut().remove(&key);
         if let Some(search) = self.searches.get_mut(&key) {
@@ -573,6 +628,23 @@ fn next(search: &mut Search) -> Option<String> {
         }
     }
     None
+}
+
+/// The hosts whose cached icon may stand for `url`'s site, best first: its own, then its parent
+/// domains down to the registrable one (`www.` is already dropped by `display_host`).
+pub fn site_hosts(url: &str) -> Vec<String> {
+    let host = display_host(url);
+    let host = host.split(':').next().unwrap_or_default().to_owned();
+    if host.is_empty() || host.parse::<std::net::IpAddr>().is_ok() {
+        return Vec::new();
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    // `co.uk`, `com.au`, ...: a two-letter country code under a generic second-level label.
+    let compound = labels.len() >= 3
+        && labels[labels.len() - 1].len() == 2
+        && ["co", "com", "org", "net", "gov", "ac", "edu", "or", "ne"].contains(&labels[labels.len() - 2]);
+    let floor = if compound { 3 } else { 2 };
+    (0..labels.len().saturating_sub(floor - 1).max(1)).map(|skip| labels[skip..].join(".")).collect()
 }
 
 /// The cache file of a host's icon (anything but letters, digits, '.' and '-' becomes '_').
@@ -761,5 +833,49 @@ mod tests {
         let dir = Path::new("/c");
         assert_ne!(cache_file(dir, "github.com", false), cache_file(dir, "github.com", true));
         assert_eq!(cache_file(dir, "github.com", true), Path::new("/c/github.com.dark.png"));
+    }
+
+    #[test]
+    fn site_hosts_fall_back_to_parent_domains() {
+        assert_eq!(site_hosts("https://www.google.com/search"), ["google.com"]);
+        assert_eq!(
+            site_hosts("https://accounts.mail.google.com/"),
+            ["accounts.mail.google.com", "mail.google.com", "google.com"]
+        );
+        assert_eq!(site_hosts("https://news.bbc.co.uk/x"), ["news.bbc.co.uk", "bbc.co.uk"]);
+        assert_eq!(site_hosts("http://localhost:8080/"), ["localhost"]);
+        assert!(site_hosts("http://127.0.0.1:8080/").is_empty());
+        assert!(site_hosts("about:blank").is_empty());
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("axion-favicons-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn write_icon(dir: &Path, host: &str) {
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 30, 30, 255]))
+            .save(cache_file(dir, host, false))
+            .expect("write icon");
+    }
+
+    #[test]
+    fn tiles_find_icons_under_related_keys() {
+        let dir = scratch_dir("lookup");
+        write_icon(&dir, "google.com");
+        write_icon(&dir, "accounts.discord.com");
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let favicons = Favicons::new(device, queue, Some(dir.clone()));
+        // Exact host, www-stripped, a parent domain, a cached subdomain.
+        assert!(favicons.get_site("https://google.com/").is_some());
+        assert!(favicons.get_site("https://www.google.com/").is_some());
+        assert!(favicons.get_site("https://mail.google.com/").is_some());
+        assert!(favicons.get_site("https://discord.com/").is_some());
+        // `get` stays exact.
+        assert!(favicons.get("https://discord.com/").is_none());
+        assert!(favicons.get_site("https://github.com/").is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

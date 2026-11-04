@@ -8368,6 +8368,7 @@ impl Browser {
         let link_blocked = blocked && !self.find.is_open() && !self.suggestions.is_visible();
         self.link_preview.animate(&mut self.ui, &self.config, page, pointer, active, link_blocked, dt);
         self.take_engine_icons();
+        self.take_tile_icons();
         self.poll_svg_icons();
         if self.now_art.poll(&self.favicons) {
             self.update_now_playing();

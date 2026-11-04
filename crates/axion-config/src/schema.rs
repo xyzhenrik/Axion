@@ -427,6 +427,16 @@ pub struct Home {
     /// When a tab leaves the native start page for a site, the native page stays up for at most
     /// this long (ms) until the site's first frame arrives (no flash of the hidden HTML page).
     pub native_handoff_ms: u32,
+    /// Top sites whose icon is in no cache are fetched in the background (the site's own
+    /// `/favicon.ico`, Apple touch icon or page links), only over a direct route: a site
+    /// routed through a connection fills in when it is visited. Off: tiles show a letter until
+    /// the site was visited.
+    pub fetch_missing_site_icons: bool,
+    /// A site whose icon could not be fetched is not tried again for this many hours (also
+    /// after a restart).
+    pub site_icon_retry_hours: u32,
+    /// At most this many missing tile icons are fetched each time the start page shows.
+    pub site_icon_fetch_limit: u32,
     /// The native start page keeps at most this many MB of decoded frames of an animated
     /// wallpaper (GIF, WebP, APNG); a longer animation is cut there.
     pub animated_wallpaper_max_mb: u32,
@@ -472,6 +482,9 @@ impl Default for Home {
             top_sites_swipe_px: 80.0,
             top_sites_swipe_lock_ms: 400,
             native_handoff_ms: 800,
+            fetch_missing_site_icons: true,
+            site_icon_retry_hours: 72,
+            site_icon_fetch_limit: 24,
             animated_wallpaper_max_mb: 128,
             animated_wallpaper_max_edge: 1280,
             show_background_image: None,

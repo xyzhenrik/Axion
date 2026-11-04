@@ -7,6 +7,7 @@
 //! browser (`browser/start.rs`), what the page shows by [`StartModel`]. The HTML page stays the
 //! fallback (`home.native`); both are fed by `home::HomePage` and take the same `HomeCommand`s.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use axion_compositor::{Icon, IconWeight, Rect as Frame};
@@ -306,6 +307,9 @@ pub struct StartPage {
     engine_icon: NodeId,
     /// Each engine's icon (as far as it is known), for the engine menu's rows.
     engine_images: Vec<Option<home::Image>>,
+    /// The tiles' icons by site address, as last looked up (`set_model`). Rebuilding the tiles
+    /// for a new width reuses them: only a lookup in the icon cache changes them.
+    site_icons: HashMap<String, crate::favicons::SiteIcon>,
     query: NodeId,
     sites: NodeId,
     viewport: NodeId,
@@ -622,6 +626,7 @@ impl StartPage {
             engine,
             engine_icon,
             engine_images: Vec::new(),
+            site_icons: HashMap::new(),
             query,
             sites,
             viewport,
@@ -1051,9 +1056,32 @@ impl StartPage {
         self.columns as usize * rows
     }
 
+    /// The hosts of the tiles that show a letter because no icon is cached for them.
+    pub fn sites_without_icon(&self) -> Vec<String> {
+        let Some(model) = &self.model else { return Vec::new() };
+        if !model.sites.show {
+            return Vec::new();
+        }
+        model
+            .sites
+            .sites
+            .iter()
+            .filter(|s| !self.site_icons.contains_key(&s.url))
+            .map(|s| crate::url::display_host(&s.url))
+            .collect()
+    }
+
     /// Rebuilds the tiles and the dots (the sites, the width or the icons changed).
     fn sync_sites(&mut self, ui: &mut Ui, favicons: Option<&Favicons>) {
         let Some(model) = self.model.clone() else { return };
+        if let Some(favicons) = favicons {
+            self.site_icons = model
+                .sites
+                .sites
+                .iter()
+                .filter_map(|s| Some((s.url.clone(), favicons.get_site(&s.url)?)))
+                .collect();
+        }
         ui.set_visible(self.sites, model.sites.show);
         ui.clear_children(self.track);
         ui.clear_children(self.dots);
@@ -1081,7 +1109,6 @@ impl StartPage {
         vp.size = Size { width: length(width), height: length(height) };
         ui.set_style(self.viewport, vp);
 
-        let icons = favicons;
         for chunk_start in (0..items).step_by(per_page) {
             let slot = ui.add(
                 self.track,
@@ -1107,7 +1134,7 @@ impl StartPage {
             );
             for i in chunk_start..(chunk_start + per_page).min(items) {
                 let tile = match sites.get(i) {
-                    Some(site) => self.build_tile(ui, grid, i, site, tile_w, icons),
+                    Some(site) => self.build_tile(ui, grid, i, site, tile_w),
                     None => self.build_add_tile(ui, grid, tile_w),
                 };
                 if i < sites.len() {
@@ -1153,15 +1180,7 @@ impl StartPage {
         self.apply_focus(ui);
     }
 
-    fn build_tile(
-        &mut self,
-        ui: &mut Ui,
-        parent: NodeId,
-        i: usize,
-        site: &Site,
-        width: f32,
-        favicons: Option<&Favicons>,
-    ) -> TileNodes {
+    fn build_tile(&mut self, ui: &mut Ui, parent: NodeId, i: usize, site: &Site, width: f32) -> TileNodes {
         let root = ui.add(
             parent,
             UiWidget::container(),
@@ -1188,7 +1207,7 @@ impl StartPage {
                 ..row(0.0)
             },
         );
-        match favicons.and_then(|f| f.get(&site.url)) {
+        match self.site_icons.get(&site.url).cloned() {
             Some(image) => {
                 let node = ui.add(
                     face,
@@ -2319,5 +2338,40 @@ mod tests {
         assert!(PICKER_BASE > TILE_BASE + TILE_KINDS * (MAX_TILES as u32 - 1) + 3);
         assert!(DOT_BASE > PICKER_BASE + 2 * MAX_PICKER as u32);
         assert!(MENU_BASE > DOT_BASE + MAX_DOTS as u32);
+    }
+
+    #[test]
+    fn tile_icons_survive_a_resize() {
+        // The tiles are rebuilt whenever the page's size changes; that must not lose the icons
+        // (it once did: the rebuild had no icon cache, so tiles fell back to their letters).
+        let (mut ui, mut page) = page_at(1100.0, 800.0, model(3, 5));
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut favicons = Favicons::new(device, queue, None);
+        favicons.insert(
+            "https://site0.example/",
+            "https://site0.example/favicon.png",
+            2,
+            2,
+            &[255; 16],
+            false,
+        );
+        let config = Config::default();
+        let m = page.model.clone().expect("model");
+        page.set_model(&mut ui, &config, m, &favicons, 2);
+        let with_image = |ui: &Ui, page: &StartPage| {
+            page.tiles
+                .iter()
+                .filter(|t| {
+                    ui.children(t.face).iter().any(|c| {
+                        ui.widget(*c).is_some_and(|w| matches!(w.kind, axion_ui::WidgetKind::Image { .. }))
+                    })
+                })
+                .count()
+        };
+        assert_eq!(with_image(&ui, &page), 1);
+        assert_eq!(page.sites_without_icon().len(), 2);
+        page.place(&mut ui, &config, Frame { origin: Vec2::new(10.0, 70.0), size: Vec2::new(700.0, 600.0) });
+        assert_eq!(with_image(&ui, &page), 1, "the icon survives the rebuild");
+        assert_eq!(page.sites_without_icon().len(), 2);
     }
 }

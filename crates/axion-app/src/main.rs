@@ -95,6 +95,7 @@ mod tab_search;
 mod tabclose;
 mod tabdrag;
 mod tabs;
+mod tile_icons;
 mod toast;
 mod tooltip;
 mod translate_popover;

@@ -7,7 +7,9 @@
 //! hidden and not drawn. Where that changes behaviour (zoom, find, printing, the overview's
 //! cards, navigation timing) is noted at the place that handles it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::SystemTime;
 
 use super::*;
 use crate::home::{HomeCommand, SiteEdit, StartModel, Widget as HomeWidget};
@@ -55,6 +57,18 @@ pub(super) struct StartUi {
     pub stale: bool,
     gpu: bool,
     engine_icons_asked: bool,
+    /// The background fetch of missing tile icons, if one runs.
+    tile_fetch: Option<TileFetch>,
+    /// Hosts whose icon was asked for this session (a miss is not asked again before the retry
+    /// interval, see `tile_icons`).
+    tile_asked: HashSet<String>,
+}
+
+/// Tile icons being fetched on a thread.
+struct TileFetch {
+    rx: Receiver<crate::engine_icons::EngineIcon>,
+    requested: Vec<String>,
+    got: HashSet<String>,
 }
 
 impl StartUi {
@@ -81,6 +95,8 @@ impl StartUi {
             stale: true,
             gpu: false,
             engine_icons_asked: false,
+            tile_fetch: None,
+            tile_asked: HashSet::new(),
         }
     }
 }
@@ -248,6 +264,76 @@ impl Browser {
         self.start_ui.page.set_model(&mut self.ui, &self.config, model, &self.favicons, inputs.icons);
         self.start_ui.time = None;
         self.start_ui.inputs = Some(inputs);
+        self.schedule_tile_icons();
+    }
+
+    /// Fetches the icons of the tiles that show a letter because no cache has theirs: off the UI
+    /// thread, for hosts on a direct route only (a routed site's icon arrives when it is
+    /// visited: a request from here must not bypass the connection), and not again before the
+    /// retry interval after a miss.
+    fn schedule_tile_icons(&mut self) {
+        let cfg = &self.config.home;
+        if !cfg.fetch_missing_site_icons || self.start_ui.tile_fetch.is_some() {
+            return;
+        }
+        let Some(dir) = self.favicons.dir().map(std::path::Path::to_path_buf) else { return };
+        let missing: Vec<String> = self
+            .start_ui
+            .page
+            .sites_without_icon()
+            .into_iter()
+            .filter(|host| self.net.route_of(&self.config, &format!("https://{host}/"), false).is_direct())
+            .collect();
+        let retry = Duration::from_secs(u64::from(cfg.site_icon_retry_hours) * 3600);
+        let hosts = crate::tile_icons::hosts_to_fetch(
+            &missing,
+            &self.start_ui.tile_asked,
+            |host| crate::tile_icons::noted_at(&dir, host),
+            SystemTime::now(),
+            retry,
+            cfg.site_icon_fetch_limit as usize,
+        );
+        if hosts.is_empty() {
+            return;
+        }
+        tracing::debug!("fetching tile icons for {hosts:?}");
+        self.start_ui.tile_asked.extend(hosts.iter().cloned());
+        let rx = crate::engine_icons::fetch(hosts.clone());
+        self.start_ui.tile_fetch = Some(TileFetch { rx, requested: hosts, got: HashSet::new() });
+    }
+
+    /// Tile icons that arrived: cached like any site's and shown at once; hosts that gave none
+    /// are noted as misses when the fetch ends.
+    pub(super) fn take_tile_icons(&mut self) {
+        let Some(fetch) = &mut self.start_ui.tile_fetch else { return };
+        let mut arrived = Vec::new();
+        let mut finished = false;
+        loop {
+            match fetch.rx.try_recv() {
+                Ok(icon) => arrived.push(icon),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    finished = true;
+                    break;
+                }
+            }
+        }
+        for icon in &arrived {
+            self.favicons.insert(&icon.site, &icon.url, icon.width, icon.height, &icon.rgba, true);
+            fetch.got.insert(crate::url::display_host(&icon.site));
+        }
+        if !arrived.is_empty() {
+            self.home.icons_changed();
+        }
+        if !finished {
+            return;
+        }
+        if let (Some(fetch), Some(dir)) = (self.start_ui.tile_fetch.take(), self.favicons.dir()) {
+            for host in fetch.requested.iter().filter(|h| !fetch.got.contains(*h)) {
+                crate::tile_icons::note_miss(dir, host);
+            }
+        }
+        self.schedule_tile_icons();
     }
 
     fn update_start_clock(&mut self) {
